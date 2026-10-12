@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MDATK
+GenericName=Molecular Dynamic Analysis Tool Kit
+Comment=Analyse MD trajectories of RNA systems and render multi-panel videos
+Exec=mdatk-gui %f
+Icon=applications-science
+Terminal=false
+Categories=Science;Chemistry;Education;
+MimeType=application/json;

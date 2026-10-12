@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdatk"
+version = "0.0.1"
+description = "Molecular Dynamic Analysis Tool Kit (MDATK): offline analysis and multi-panel video rendering of MD trajectories of RNA systems"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "MDATK contributors" }]
+keywords = ["molecular dynamics", "RNA", "aptamer", "MDAnalysis", "cpptraj", "Amber", "visualization"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "MDAnalysis>=2.4",
+    "numpy>=1.22",
+    "scipy>=1.8",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+gui = ["PyGObject>=3.36", "pycairo>=1.16"]
+netcdf4 = ["netCDF4"]
+test = ["pytest>=7"]
+
+[project.scripts]
+mdatk = "mdatk.cli:main"
+
+[project.gui-scripts]
+mdatk-gui = "mdatk.gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["mdatk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:gi.*",
+    "ignore:No coordinate reader found:UserWarning",
+    "ignore:constrained_layout not applied:UserWarning",
+    "ignore:numpy.ndarray size changed:RuntimeWarning",
+]
