@@ -34,33 +34,46 @@ Everything runs locally; MDATK makes no network calls.
 
 ## Installation
 
-MDATK needs Python ≥ 3.9 on Linux.
+MDATK needs Python ≥ 3.9 on Linux. It is installed from a clone of this repository:
+`pip install .` only works from **inside the cloned project directory** (the one containing
+`pyproject.toml`).
 
-System packages (Debian/Ubuntu names):
+**1. Install the system packages** (Debian/Ubuntu names):
 
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 ffmpeg
+sudo apt install git python3-venv python3-gi python3-gi-cairo gir1.2-gtk-3.0 ffmpeg
 ```
 
-- `python3-gi`, `python3-gi-cairo`, `gir1.2-gtk-3.0` provide PyGObject, its Cairo bridge and
-  GTK 3 (GUI only; the CLI does not need them).
+- `python3-gi`, `python3-gi-cairo` and `gir1.2-gtk-3.0` provide PyGObject, its Cairo bridge and
+  GTK 3 (needed for the GUI only; the CLI works without them).
 - `ffmpeg` encodes the videos.
-- **cpptraj** (part of [AmberTools](https://ambermd.org/AmberTools.php), e.g.
-  `conda install -c conda-forge ambertools`) is only needed for automated stripping/cleaning.
-  It can be on `PATH`, in `$AMBERHOME/bin`, or set explicitly in the cleaning options.
 
-Python packages:
+**2. Clone the repository and enter it:**
 
 ```bash
-# PyGObject comes from the system, so give the venv access to system site-packages
+git clone https://github.com/htchamblee/MDATK.git
+cd MDATK
+```
+
+**3. Create a virtual environment and install MDATK** (still inside `MDATK/`):
+
+```bash
+# PyGObject comes from the system packages, so the venv needs --system-site-packages
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
-pip install .            # MDAnalysis, NumPy, SciPy, Matplotlib
-pip install '.[test]'    # + pytest
+pip install .            # installs MDAnalysis, NumPy, SciPy, Matplotlib
+pip install '.[test]'    # optional: adds pytest for running the test suite
 ```
 
-This installs two commands: `mdatk` (CLI) and `mdatk-gui` (GUI). `python -m mdatk` works too.
-A desktop entry is provided in `data/mdatk.desktop`.
+This installs two commands: `mdatk` (CLI) and `mdatk-gui` (GUI); `python -m mdatk` works too.
+Activate the venv (`. .venv/bin/activate`) in each new shell before using them. A desktop
+entry is provided in `data/mdatk.desktop`.
+
+**Optional: cpptraj.** cpptraj (part of [AmberTools](https://ambermd.org/AmberTools.php), e.g.
+`conda install -c conda-forge ambertools`) is only needed for automated solvent stripping and
+cleaning. Everything else works without it, e.g. on trajectories you have already cleaned. If
+you use it, MDATK finds it on `PATH`, in `$AMBERHOME/bin`, or at the path set in the cleaning
+options.
 
 ## Quick start
 
