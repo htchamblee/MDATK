@@ -16,12 +16,13 @@ import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from .. import PROJECT_ABBREV, __version__
 from ..config import CleaningParams, file_fingerprint, stable_hash
 from ..io.cache import write_json
 from ..progress import Cancelled
+from . import conda
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def find_cpptraj(path: str = "cpptraj") -> str:
 
 def cleaning_key(params: CleaningParams, topology: str, trajectories: Sequence[str]) -> str:
     relevant = {k: v for k, v in vars(params).items()
-                if k not in ("enabled", "cpptraj_path", "output_dir")}
+                if k not in ("enabled", "cpptraj_path", "output_dir", "conda_env", "conda_exe")}
     return stable_hash({
         "version": 1,
         "topology": file_fingerprint(topology),
@@ -148,12 +149,56 @@ def build_script(params: CleaningParams, topology: str, trajectories: Sequence[s
     return "\n".join(lines) + "\n"
 
 
-def run_cpptraj(executable: str, script_path: str, log_path: str, cwd: str,
+def cpptraj_command(params: CleaningParams,
+                    log_cb: Optional[Callable[[str], None]] = None) -> List[str]:
+    """Command prefix that starts cpptraj (possibly inside a conda environment).
+
+    * ``conda_env`` set: ``conda run -n <env> cpptraj`` (like ``conda activate``);
+      if no conda executable can be found, the environment's ``bin/cpptraj`` is
+      called directly.
+    * otherwise ``cpptraj_path`` (a name on PATH or an absolute path) is used, and
+      when that fails an environment containing cpptraj is detected automatically.
+    """
+    def say(msg: str) -> None:
+        log.info(msg)
+        if log_cb:
+            log_cb(msg)
+
+    env_spec = (params.conda_env or "").strip()
+    if env_spec:
+        env = conda.resolve_env(env_spec)
+        exe = conda.find_conda_exe(params.conda_exe, env)
+        if exe:
+            return conda.run_command(exe, env.prefix if env else env_spec, ["cpptraj"])
+        if env is not None and env.has_cpptraj:
+            say(f"No conda executable found; calling {env.cpptraj} directly")
+            return [env.cpptraj]
+        raise CpptrajError(f"conda environment {env_spec!r} not found or has no cpptraj, and "
+                           "no conda/mamba executable is available to activate it")
+    try:
+        return [find_cpptraj(params.cpptraj_path)]
+    except CpptrajError:
+        if params.cpptraj_path not in ("", "cpptraj"):
+            raise
+        env = conda.detect_ambertools_env()
+        if env is None:
+            raise
+        exe = conda.find_conda_exe(params.conda_exe, env)
+        say(f"cpptraj is not on PATH; using conda environment {env.name!r} ({env.prefix})")
+        return conda.run_command(exe, env.prefix, ["cpptraj"]) if exe else [env.cpptraj]
+
+
+def run_cpptraj(command: Sequence[str], script_path: str, log_path: str, cwd: str,
                 log_cb: Optional[Callable[[str], None]] = None,
                 progress_cb: Optional[Callable[[float], None]] = None,
                 cancel_event: Optional[threading.Event] = None) -> int:
-    """Run cpptraj, streaming stdout/stderr line by line into ``log_cb``."""
-    cmd = [executable, "-i", script_path]
+    """Run cpptraj, streaming stdout/stderr line by line into ``log_cb``.
+
+    ``command`` is the program prefix (e.g. ``["cpptraj"]`` or a ``conda run`` line).
+    """
+    if isinstance(command, str):
+        command = [command]
+    cmd = [*command, "-i", script_path]
     log.info("running %s", " ".join(cmd))
     with open(log_path, "w", encoding="utf-8") as logfh:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -226,7 +271,7 @@ def clean(params: CleaningParams, topology: str, trajectories: Sequence[str], ca
                 log_cb(msg)
             return result
 
-    exe = find_cpptraj(params.cpptraj_path)
+    command = cpptraj_command(params, log_cb)
     os.makedirs(out_dir, exist_ok=True)
     if os.path.exists(marker):
         os.remove(marker)
@@ -237,7 +282,7 @@ def clean(params: CleaningParams, topology: str, trajectories: Sequence[str], ca
         log_cb(f"cpptraj script written to {result.script}:")
         for line in script.splitlines():
             log_cb(f"    {line}")
-    rc = run_cpptraj(exe, result.script, result.log, out_dir, log_cb, progress_cb, cancel_event)
+    rc = run_cpptraj(command, result.script, result.log, out_dir, log_cb, progress_cb, cancel_event)
     if rc != 0:
         raise CpptrajError(f"cpptraj failed with exit code {rc}; see {result.log}")
     missing = [p for p in (result.topology, result.trajectory) if not os.path.exists(p)]
@@ -246,7 +291,7 @@ def clean(params: CleaningParams, topology: str, trajectories: Sequence[str], ca
     write_json(marker, {
         "project": PROJECT_ABBREV, "mdatk_version": __version__, "key": key,
         "created": _dt.datetime.now().isoformat(timespec="seconds"),
-        "cpptraj": exe, "topology_in": os.path.abspath(topology),
+        "cpptraj": " ".join(command), "topology_in": os.path.abspath(topology),
         "trajectories_in": [os.path.abspath(t) for t in trajectories],
         "params": vars(params), "outputs": {
             "topology": result.topology, "trajectory": result.trajectory,

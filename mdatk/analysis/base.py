@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Sequence, Type
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
 import numpy as np
 
@@ -25,10 +25,65 @@ ANALYSES: Dict[str, Type["Analysis"]] = {}
 
 _GROUP_TOKEN = re.compile(r"group:([A-Za-z0-9_.+\-']+)")
 
+#: ``contacts@Aptamer+Mg`` is the contacts analysis run on the groups Aptamer and Mg
+INSTANCE_SEP = "@"
+GROUP_SEP = "+"
+
 
 def register(cls: Type["Analysis"]) -> Type["Analysis"]:
     ANALYSES[cls.name] = cls
     return cls
+
+
+def parse_instance(instance: str) -> Tuple[str, Tuple[str, ...]]:
+    """``"contacts@A+B"`` -> ``("contacts", ("A", "B"))``; ``"rmsd"`` -> ``("rmsd", ())``."""
+    base, _, groups = instance.partition(INSTANCE_SEP)
+    return base, tuple(g for g in groups.split(GROUP_SEP) if g) if groups else ()
+
+
+def instance_id(base: str, groups: Sequence[str] = ()) -> str:
+    groups = [g for g in groups if g]
+    return f"{base}{INSTANCE_SEP}{GROUP_SEP.join(groups)}" if groups else base
+
+
+def split_key(key: str) -> Tuple[str, str]:
+    """``"contacts@A+B/atom_pairs"`` -> ``("contacts@A+B", "atom_pairs")``."""
+    instance, _, out = key.partition("/")
+    return instance, out
+
+
+def analysis_class(instance: str) -> Type["Analysis"]:
+    base, _ = parse_instance(instance)
+    if base not in ANALYSES:
+        raise KeyError(f"unknown analysis {base!r} (known: {', '.join(ANALYSES)})")
+    return ANALYSES[base]
+
+
+def instance_project(project: Project, instance: str) -> Project:
+    """The project an analysis instance runs with (its groups substituted)."""
+    cls = analysis_class(instance)
+    _, groups = parse_instance(instance)
+    if not groups:
+        return project
+    if cls.group_slots == 0:
+        raise ValueError(f"{cls.name} does not take residue groups ({instance!r})")
+    if len(groups) != cls.group_slots:
+        raise ValueError(f"{instance!r}: {cls.name} takes {cls.group_slots} group(s)")
+    known = set(project.group_names())
+    missing = [g for g in groups if g not in known]
+    if missing:
+        raise ValueError(f"{instance!r}: unknown residue group(s) {', '.join(missing)}")
+    return cls.with_groups(project.copy(), groups)
+
+
+def key_label(key: str, project: Project) -> str:
+    """Human readable label of a data key, without computing anything."""
+    instance, out = split_key(key)
+    try:
+        cls = analysis_class(instance)
+        return cls.output_label(instance_project(project, instance), out)
+    except (KeyError, ValueError):
+        return key
 
 
 def referenced_groups(texts: Sequence[str], project: Project) -> List[Dict[str, str]]:
@@ -88,10 +143,15 @@ class Analysis:
     version = 1
     #: internal analyses (trace / proximity) feed panels but are not user-selectable
     internal = False
+    #: number of residue groups a data key may choose (0, 1 or 2)
+    group_slots = 0
+    #: output name -> label; ``{a}`` / ``{b}`` are replaced by the group names
+    OUTPUT_LABELS: Dict[str, str] = {}
 
-    def __init__(self, ctx: AnalysisContext):
+    def __init__(self, ctx: AnalysisContext, instance: Optional[str] = None):
         self.ctx = ctx
         self.project = ctx.project
+        self.instance = instance or self.name
         self.n_frames = 0
 
     # ---------------------------------------------------------- class level
@@ -113,6 +173,27 @@ class Analysis:
     def expected_outputs(cls, project: Project) -> Dict[str, List[str]]:
         """Output names this analysis will produce (for GUI choices, before running)."""
         return {"series": [], "matrices": [], "pairmaps": []}
+
+    @classmethod
+    def groups(cls, project: Project) -> Tuple[str, ...]:
+        """The residue groups the configured (default) analysis uses."""
+        params = getattr(project.analyses, cls.name, None)
+        if cls.group_slots == 2 and params is not None:
+            return params.group_a, params.group_b
+        return ()
+
+    @classmethod
+    def with_groups(cls, project: Project, groups: Sequence[str]) -> Project:
+        """Return ``project`` (a private copy) set up to run on ``groups``."""
+        params = getattr(project.analyses, cls.name)
+        params.group_a, params.group_b = groups
+        return project
+
+    @classmethod
+    def output_label(cls, project: Project, out: str) -> str:
+        a, b = (list(cls.groups(project)) + ["A", "B"])[:2]
+        template = cls.OUTPUT_LABELS.get(out)
+        return template.format(a=a, b=b) if template else f"{cls.label}: {out}"
 
     @classmethod
     def cache_key(cls, project: Project, inputs: Dict[str, Any]) -> str:
@@ -137,8 +218,8 @@ class Analysis:
 
     def new_result(self, key: str = "", **meta) -> AnalysisResult:
         project = self.project
-        return AnalysisResult(name=self.name, key=key, params=self.params_for(project),
-                              arrays={}, meta=dict(meta, label=self.label))
+        return AnalysisResult(name=self.instance, key=key, params=self.params_for(project),
+                              arrays={}, meta=dict(meta, label=self.label, analysis=self.name))
 
 
 def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indices: np.ndarray,

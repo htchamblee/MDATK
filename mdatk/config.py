@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import typing
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -79,6 +80,8 @@ class CleaningParams:
 
     enabled: bool = False
     cpptraj_path: str = "cpptraj"
+    conda_env: str = ""  # e.g. "AmberTools26" or a prefix path; run as `conda run -n <env> cpptraj`
+    conda_exe: str = ""  # conda / mamba / micromamba executable ("" = auto-detect)
     solvent_mask: str = ":WAT,HOH,TIP3,SOL,T3P,T4P,SPC"
     ion_mask: str = ":Na+,Cl-,K+,NA,CL,K,Na,Cl,SOD,CLA,POT"  # Mg2+ is kept
     extra_strip_mask: str = ""
@@ -104,10 +107,15 @@ class RMSDTarget:
     fit_selection: str = ""  # "" -> same as selection
 
 
+def _default_rmsd_targets() -> List[RMSDTarget]:
+    return [RMSDTarget(),
+            RMSDTarget("Backbone", "(group:Aptamer or group:Target) and name C4'")]
+
+
 @dataclass
 class RMSDParams:
     enabled: bool = True
-    targets: List[RMSDTarget] = field(default_factory=lambda: [RMSDTarget()])
+    targets: List[RMSDTarget] = field(default_factory=_default_rmsd_targets)
     reference_frame: int = 0  # index into the analysed frames
     superposition: bool = True
     mass_weighted: bool = False
@@ -213,6 +221,8 @@ class VisualParams:
     theme: str = "light"  # "light" or "dark"
     font_size: float = 11.0
     show_time_label: bool = True
+    label_every: int = 0  # residue-number tags on every N-th residue (0: off)
+    label_residues: str = ""  # explicit residue numbers / ranges to tag, e.g. "1, 12, 24"
     title: str = ""
 
 
@@ -297,6 +307,7 @@ class OutputParams:
     charts: ChartParams = field(default_factory=ChartParams)
     pdb: PDBParams = field(default_factory=PDBParams)
     write_params_log: bool = True
+    timestamp_files: bool = True  # e.g. MDATK_video_2026-10-15_143205.mp4 (cache/log keep fixed names)
 
 
 def _default_groups() -> List[ResidueGroup]:
@@ -421,8 +432,9 @@ class Project:
         for g in self.groups:
             if not g.name.strip():
                 problems.append("Residue groups need a name.")
-            elif any(c.isspace() for c in g.name):
-                problems.append(f"Group name {g.name!r} must not contain spaces.")
+            elif not re.fullmatch(r"[A-Za-z0-9_.\-]+", g.name):
+                problems.append(f"Group name {g.name!r} may only contain letters, digits, "
+                                "'_', '.' and '-' (no spaces).")
             if not (g.residues.strip() or g.selection.strip()):
                 problems.append(f"Group {g.name!r} has neither residues nor a selection.")
         a = self.analyses

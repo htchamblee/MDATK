@@ -25,6 +25,13 @@ from .common import labels, per_row_counts, residue_rows, without
 class HBondAnalysis(Analysis):
     name = "hbonds"
     label = "Hydrogen bonds"
+    group_slots = 2
+    OUTPUT_LABELS = {
+        "count": "{a}\u2013{b} H-bonds",
+        "per_residue_a": "{a} residue H-bonds",
+        "per_residue_b": "{b} residue H-bonds",
+        "map": "{a}\u2013{b} H-bond map",
+    }
 
     @classmethod
     def enabled(cls, project):

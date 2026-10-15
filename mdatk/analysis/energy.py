@@ -97,6 +97,13 @@ def _bonded_exclusions(u, a, b, depth: int) -> np.ndarray:
 class EnergyAnalysis(Analysis):
     name = "energy"
     label = "Intermolecular energy"
+    group_slots = 2
+    OUTPUT_LABELS = {
+        "total": "{a}–{b} interaction energy",
+        "elec": "{a}–{b} electrostatic energy",
+        "vdw": "{a}–{b} van der Waals energy",
+        "net_force": "Net force of {b} on {a}",
+    }
 
     @classmethod
     def enabled(cls, project):

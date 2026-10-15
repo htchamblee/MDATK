@@ -40,7 +40,12 @@ def _parse_value(text: str) -> Any:
 
 
 def apply_override(project: Project, assignment: str) -> None:
-    """Apply ``dotted.path=value`` (value parsed as JSON when possible)."""
+    """Apply ``dotted.path=value`` (value parsed as JSON when possible).
+
+    List elements are addressed by index (``groups.0.residues``, ``layout.panels.2``).
+    Every assignment goes through the validating preset loader, so nested objects
+    given as JSON become proper parameter objects and type errors are reported.
+    """
     if "=" not in assignment:
         raise ValueError(f"--set expects key=value, got {assignment!r}")
     path, raw = assignment.split("=", 1)
@@ -48,35 +53,35 @@ def apply_override(project: Project, assignment: str) -> None:
     if not parts:
         raise ValueError(f"empty key in {assignment!r}")
     obj: Any = project
-    for part in parts[:-1]:
-        obj = obj[int(part)] if isinstance(obj, list) else getattr(obj, part)
-    last = parts[-1]
+    current: Any = None
+    for n, part in enumerate(parts):
+        if isinstance(obj, list):
+            if not part.lstrip("-").isdigit() or not -len(obj) <= int(part) < len(obj):
+                raise ValueError(f"{path}: no list element {part!r}")
+            current = obj[int(part)]
+        else:
+            if not dataclasses.is_dataclass(obj) or not hasattr(obj, part):
+                raise ValueError(f"unknown parameter {path!r}")
+            current = getattr(obj, part)
+        if n < len(parts) - 1:
+            obj = current
     value = _parse_value(raw)
-    if isinstance(obj, list):
-        obj[int(last)] = value
-        return
-    if not hasattr(obj, last):
-        raise ValueError(f"unknown parameter {path!r}")
-    current = getattr(obj, last)
-    if dataclasses.is_dataclass(current) or (isinstance(current, list) and current
-                                              and dataclasses.is_dataclass(current[0])):
-        # rebuild nested structures through the validating loader
-        data = project.to_dict()
-        node = data
-        for part in parts[:-1]:
-            node = node[int(part)] if isinstance(node, list) else node[part]
-        node[last] = value
-        fresh = Project.from_dict(data)
-        for f in dataclasses.fields(Project):
-            setattr(project, f.name, getattr(fresh, f.name))
-        return
     if isinstance(current, bool) and not isinstance(value, bool):
         raise ValueError(f"{path} expects true/false")
-    if isinstance(current, float) and isinstance(value, int) and not isinstance(value, bool):
-        value = float(value)
     if isinstance(current, str) and not isinstance(value, str):
         value = raw
-    setattr(obj, last, value)
+    data = project.to_dict()
+    node: Any = data
+    for part in parts[:-1]:
+        node = node[int(part)] if isinstance(node, list) else node[part]
+    last = parts[-1]
+    if isinstance(node, list):
+        node[int(last)] = value
+    else:
+        node[last] = value
+    fresh = Project.from_dict(data)
+    for f in dataclasses.fields(Project):
+        setattr(project, f.name, getattr(fresh, f.name))
 
 
 def load_project(args) -> Project:
@@ -94,6 +99,8 @@ def load_project(args) -> Project:
         project.output.cache_dir = os.path.abspath(args.cache_dir)
     if getattr(args, "cpptraj", None):
         project.cleaning.cpptraj_path = args.cpptraj
+    if getattr(args, "conda_env", None):
+        project.cleaning.conda_env = args.conda_env
     if getattr(args, "clean", None) is not None:
         project.cleaning.enabled = args.clean
     if getattr(args, "frames", None):
@@ -227,6 +234,13 @@ def cmd_list(args) -> int:
     for name, cls in ANALYSES.items():
         tag = " (internal, used by the structure panel)" if cls.internal else ""
         print(f"  {name:10s} {cls.label}{tag}")
+    print("\nConda environments with cpptraj:")
+    from .cleaning import conda
+    envs = conda.find_cpptraj_envs()
+    for env in envs:
+        print(f"  {env.name:14s} {env.prefix}")
+    if not envs:
+        print("  (none found)")
     print("\nPanel types:")
     for name, cls in PANEL_TYPES.items():
         print(f"  {name:12s} {cls.label} - {cls.description}")
@@ -235,6 +249,8 @@ def cmd_list(args) -> int:
         print(f"  {name:14s} {label}")
     print("\nData keys for panels/charts look like '<analysis>/<output>', e.g. rmsd/Complex, "
           "contacts/atom_pairs,\ncontacts/per_residue_a (matrix), contacts/map (contact map). "
+          "Add residue groups after '@' to\nrun an analysis on other groups: "
+          "contacts@Target+Mg/atom_pairs, rmsd@Aptamer/Backbone.\n"
           "Run 'mdatk analyze' to list the keys of a system.")
     return 0
 
@@ -341,6 +357,8 @@ def _common(p: argparse.ArgumentParser, inputs: bool = True) -> None:
                        help="enable cpptraj cleaning")
         p.add_argument("--no-clean", dest="clean", action="store_false", help="disable cleaning")
         p.add_argument("--cpptraj", help="path to the cpptraj executable")
+        p.add_argument("--conda-env", help="conda environment providing cpptraj (e.g. AmberTools26); "
+                       "cpptraj then runs via `conda run`")
     p.add_argument("--out-dir", "-o", help="output directory")
     p.add_argument("--cache-dir", help="cache directory (default <out-dir>/MDATK_cache)")
     p.add_argument("--set", "-s", action="append", metavar="KEY=VALUE",

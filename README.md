@@ -72,8 +72,12 @@ entry is provided in `data/mdatk.desktop`.
 **Optional: cpptraj.** cpptraj (part of [AmberTools](https://ambermd.org/AmberTools.php), e.g.
 `conda install -c conda-forge ambertools`) is only needed for automated solvent stripping and
 cleaning. Everything else works without it, e.g. on trajectories you have already cleaned. If
-you use it, MDATK finds it on `PATH`, in `$AMBERHOME/bin`, or at the path set in the cleaning
-options.
+you use it, set the **conda environment** that provides it (e.g. `AmberTools26`) in the cleaning
+options or with `--conda-env`; every cpptraj call then runs through `conda run -n <env>`, which is
+equivalent to `conda activate <env>`. When no environment is set, MDATK uses cpptraj from `PATH`
+or `$AMBERHOME/bin`, and otherwise finds an environment by looking for `bin/cpptraj` in
+`~/miniforge3`, `~/mambaforge`, `~/miniconda3`, `~/anaconda3`, `/opt/conda`, … (the GUI
+pre-fills the field with what it finds; `mdatk list` prints the candidates).
 
 ## Quick start
 
@@ -110,18 +114,33 @@ preset are resolved against the preset's folder) or from the GUI.
 
 ### The GUI
 
-| Tab | Contents |
-|---|---|
-| **Input & cleaning** | topology/trajectory/external-data choosers, frame range (start/stop/step), time-step override, display time unit, cpptraj cleaning options, *Run cleaning now*, *Inspect system* |
-| **Residue groups** | editable table of named groups (residue ranges or selections) with colour pickers |
-| **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
-| **Structure view** | preview of the reference frame (drag with the mouse to rotate), X/Y/Z sliders with exact degree and radian read-out, colouring, proximity and glow, appearance |
-| **Layout & panels** | grid preset and, per slot, panel type, data keys, title and options; *Render still* previews one composite frame |
-| **Outputs** | output/cache folders, video (resolution, DPI, FPS, stride, codec, CRF), charts (series, formats, DPI, size, style, labels, smoothing), PDB export, *Re-render from cache* |
+The main window *is* the figure: it shows the selected layout drawn by the same code that renders
+the video, at the video's aspect ratio, filled with **example data** (sine-like traces, residue
+heatmaps sized from your groups and a schematic duplex) so the layout can be arranged without
+computing anything. *Load real frame* replaces the schematic with the reference frame of your
+trajectory.
 
-The bottom bar holds **Render**, **Cancel**, the progress bar and the log (pipeline and cpptraj
-output). Presets are opened/saved from the header bar (Ctrl+O / Ctrl+S, Ctrl+R renders).
-Long jobs run in a background thread, so the window stays responsive and jobs can be cancelled.
+- **Drag a panel** onto another slot to swap them; panels snap to the slots of the grid preset.
+- **Drag the structure panel** to rotate the model (drag its title strip, or hold Shift, to move
+  it instead). The X/Y/Z sliders follow and show the exact angles in degrees and radians.
+- **Double-click a panel** to edit its settings.
+
+The settings live in drop-down menus that slide out a side panel (close it to refresh the
+preview):
+
+| Menu | Contents |
+|---|---|
+| **Input** | topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
+| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker |
+| **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
+| **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
+| **Layout** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
+| **Outputs** | output/cache folders, video, charts, PDB export, timestamps, *Re-render from cache* |
+
+The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
+your file manager) and **Open video** (the most recent video); the log of the pipeline and of
+cpptraj is in the expander above it. Presets are opened/saved from the header bar (Ctrl+O /
+Ctrl+S, Ctrl+R renders). Long jobs run in a background thread and can be cancelled.
 
 ## Analyses
 
@@ -131,7 +150,7 @@ when periodic distances are enabled), so the cost grows roughly linearly with sy
 
 | Analysis | What is computed | Key parameters |
 |---|---|---|
-| **RMSD** | RMSD of each target selection to a reference frame, optionally after superposition on a separate fit selection | targets (label, selection, fit selection), reference frame, superposition, mass weighting |
+| **RMSD** | RMSD of each target selection to a reference frame, optionally after superposition on a separate fit selection; default targets are all heavy atoms (`rmsd/Complex`) and the C4′ backbone (`rmsd/Backbone`) | targets (label, selection, fit selection), reference frame, superposition, mass weighting |
 | **Pairwise contacts** | heavy-atom pairs between group A and B within the cutoff; residue–residue contact counts per frame (sparse), per-residue contact heatmaps, fraction of native residue contacts *Q* | groups, cutoff (4.5 Å) |
 | **H-bonds** | inter-group H-bonds: donor–acceptor distance ≤ cutoff and D–H···A angle ≥ cutoff. Donor hydrogens come from topology bonds (or are assigned by distance); N atoms bearing H or three heavy neighbours are not acceptors; without hydrogens a distance-only criterion is used | groups, distance (3.5 Å), angle (135°) |
 | **O–Mg–O / Mg occupancy** | Mg–O inner-sphere (≤ 2.6 Å) and outer-sphere (≤ 4.5 Å) contacts with oxygens of the selected ranges; O–Mg–O bridges (pairs of oxygens on one ion), bridges between group A and B and the ions forming them; optional octahedral geometry check (O–Mg–O ≈ 90°/180° ± tolerance); per-residue occupancy class per frame (none / outer / inner sphere) | Mg selection, ligand selection/elements, cutoffs, bridge shell, geometry |
@@ -168,6 +187,10 @@ topologies number residues 1…N in file order. Defaults are provided for the re
   1. `ever` — glows for the entire movie if the residue ever meets the cutoff;
   2. `fade` — glows while in proximity, then fades over *fade frames* after separation;
   3. `current` — glows only while in proximity (no fade).
+- **Residue-number tags** on every N-th residue (`visual.label_every`) and/or listed residues
+  (`visual.label_residues`, e.g. `1, 12, 24, 40-45`), placed just outside the trace, in the video
+  and in the GUI.
+- The view is framed by the model's bounding sphere, so changing the orientation never zooms.
 
 ## Panels, data keys and layouts
 
@@ -178,6 +201,17 @@ Every analysis output is addressed by a data key `<analysis>/<output>`:
 | time series | `rmsd/<label>`, `contacts/atom_pairs`, `contacts/residue_pairs`, `contacts/q_native`, `hbonds/count`, `mg/contacts`, `mg/outer_contacts`, `mg/bridges`, `mg/inter_bridges`, `mg/bridging_ions`, `mg/inner_residues`, `stacking/count`, `stacking/inter`, `stacking/intra`, `energy/total`, `energy/elec`, `energy/vdw`, `energy/net_force`, `external/<label>.<column>` |
 | per-residue matrices | `contacts/per_residue_a`, `contacts/per_residue_b`, `hbonds/per_residue_a`, `hbonds/per_residue_b`, `mg/occupancy`, `proximity/min_distance` |
 | residue maps | `contacts/map`, `hbonds/map`, `stacking/map` |
+
+**Residue groups per panel.** By default an analysis compares the groups set in its settings
+(e.g. contacts between *Aptamer* and *Target*). A data key can name its own groups after `@`:
+`contacts@Target+Mg/atom_pairs`, `hbonds@Aptamer+Target/count`, `energy@Aptamer+Target/total`,
+or a single group for RMSD (`rmsd@Aptamer/Heavy`, `rmsd@Aptamer/Backbone`). Each group choice is
+computed on demand in the same pass over the trajectory and cached on its own; in the GUI the
+*Groups* drop-downs of a panel build these keys. Group names may contain letters, digits, `_`,
+`.` and `-`.
+
+Panel titles default to the label of the data shown. Count series (contacts, H-bonds, Mg
+bridges, stacked pairs …) always get whole-number axis ticks, in panels and charts.
 
 Panel types (`mdatk list` prints them):
 
@@ -200,11 +234,15 @@ All outputs go to the output directory (default `MDATK_output/`):
 
 | File | Content |
 |---|---|
-| `MDATK_video.mp4` | H.264 video of the multi-panel figure (FPS, resolution, DPI, frame stride, codec and CRF configurable). Rendering is headless (Matplotlib Agg) and frames are piped straight into FFmpeg; static content is drawn once and only moving artists are redrawn per frame. |
-| `MDATK_chart_<key>.png/svg/pdf` | standalone time charts (all series or a chosen subset), optionally per-residue heatmaps; DPI, size, Matplotlib style (or MDATK's own chrome), colour, labels, title template, running-mean smoothing and target line are configurable |
-| `MDATK_frame_<n>.pdb` | selected frames by number (`0, 10, 20-50:10, last`) and/or time (`1.5ns, 2000ps`, nearest frame), optionally restricted to groups or a selection |
-| `MDATK_params_log.json` | full parameters, software versions, input fingerprints, cache keys and the list of outputs |
+| `MDATK_video_<timestamp>.mp4` | H.264 video of the multi-panel figure (FPS, resolution, DPI, frame stride, codec and CRF configurable). Rendering is headless (Matplotlib Agg) and frames are piped straight into FFmpeg; static content is drawn once and only moving artists are redrawn per frame. |
+| `MDATK_chart_<key>_<timestamp>.png/svg/pdf` | standalone time charts (all series or a chosen subset), optionally per-residue heatmaps; DPI, size, Matplotlib style (or MDATK's own chrome), colour, labels, title template, running-mean smoothing and target line are configurable |
+| `MDATK_frame_<n>_<timestamp>.pdb` | selected frames by number (`0, 10, 20-50:10, last`) and/or time (`1.5ns, 2000ps`, nearest frame), optionally restricted to groups or a selection |
+| `MDATK_params_log.json` | full parameters, software versions, input fingerprints, cache keys, the run's timestamp and the list of outputs |
 | `MDATK_cache/` | analysis cache (see below) and cleaned trajectories |
+
+All outputs of one run share a timestamp such as `2026-10-15_143205`, so runs never overwrite
+each other; the cache and the parameter log keep fixed names. Set
+`output.timestamp_files` to `false` for plain names.
 
 ## Caching and reproducibility
 
@@ -238,7 +276,7 @@ mdatk preview   -p PRESET --frame N [--output still.png] [--from-cache]
 ```
 
 Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
-`--cpptraj PATH`, `-o/--out-dir`, `--cache-dir`, `-q/--quiet`, `-v/--verbose` and
+`--cpptraj PATH`, `--conda-env NAME`, `-o/--out-dir`, `--cache-dir`, `-q/--quiet`, `-v/--verbose` and
 `-s/--set KEY=VALUE` (repeatable; values are JSON when they parse as JSON), for example:
 
 ```bash
@@ -275,22 +313,25 @@ mdatk/
   config.py          parameter model, JSON presets, hashing
   selections.py      residue ranges, group:<Name> expansion, frame/time specs, elements
   spatial.py         cKDTree / cell-list neighbour search, Kabsch superposition
-  cleaning/cpptraj   script generation, streaming execution, cached cleaned outputs
+  cleaning/          cpptraj script generation, streaming execution, cached cleaned outputs;
+                     conda environment detection / `conda run`
   io/                trajectory loading, parm7 parser/writer, cache store, external data, PDB export
   analysis/          registry + single-pass runner; rmsd, contacts, hbonds, mg, stacking, energy,
                      structure (trace, proximity)
   data.py            standardised results: series, matrices, sparse residue maps; Dataset
-  render/            layouts, panels, colouring/glow, orientation, theme, video (FFmpeg), charts
+  render/            layouts, panels, colouring/glow, orientation, theme, video (FFmpeg), charts,
+                     example data for the GUI preview
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
-  cli.py, gui/       command line and GTK 3 front ends
+  cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas)
   demo.py            synthetic RNA system generator
 ```
 
 **Adding an analysis**: subclass `mdatk.analysis.base.Analysis`, implement `enabled`,
 `params_for`, `selection_texts`, `expected_outputs`, `setup`, `process(k, ts)` and `finalize`,
 describe the outputs on the returned `AnalysisResult` (`add_series`, `add_matrix`,
-`add_pairmap`) and decorate the class with `@register`. Its data keys immediately work in panels,
-charts, the cache and the GUI.
+`add_pairmap`) and decorate the class with `@register`. Set `group_slots` (and `OUTPUT_LABELS`)
+to let panels choose residue groups for it. Its data keys immediately work in panels, charts,
+the cache and the GUI.
 
 **Adding a panel type**: subclass `mdatk.render.panels.Panel`, implement `setup` /
 `draw_frame` (and `animated_artists` for fast blitting) and decorate it with `@register_panel`.
@@ -309,7 +350,8 @@ available), the full pipeline including FFmpeg output, the CLI and GUI smoke tes
 
 ## Notes and limitations
 
-- Version 0.0.1 produces finished files; there is no interactive playback or frame scrubbing.
+- MDATK produces finished files; there is no interactive playback or frame scrubbing (the GUI
+  preview shows example data, or one real frame, for arranging the layout).
 - Interaction energies are non-bonded pair sums within a cutoff (no PME / long-range
   electrostatics, no solvent); use them for trends and comparisons against a target value.
 - Without a parm7 topology, Lennard-Jones parameters are approximate element defaults and the

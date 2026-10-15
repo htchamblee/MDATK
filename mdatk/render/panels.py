@@ -15,6 +15,7 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 
 from ..config import PanelSpec, Project
 from ..data import Dataset
@@ -50,6 +51,11 @@ class RenderContext:
         return f"t = {self.time[pos]:.3f} {self.time_unit.replace('us', chr(0xb5) + 's')}  (frame {frame})"
 
 
+def integer_axis(axis) -> None:
+    """Whole-number ticks only (for counts)."""
+    axis.set_major_locator(MaxNLocator(integer=True))
+
+
 def thin_ticks(n: int, max_ticks: int = 20) -> np.ndarray:
     step = max(1, int(np.ceil(n / max_ticks)))
     return np.arange(0, n, step)
@@ -81,12 +87,14 @@ class Panel:
         style_axes(self.ax, self.theme, font_size=ctx.font_size)
         self.options = dict(spec.options or {})
         self.ok = True
+        self.auto_title = ""
         try:
             self.setup()
         except KeyError as exc:
             self.show_message(f"No data: {exc.args[0] if exc.args else exc}")
-        if spec.title:
-            self.ax.set_title(spec.title, color=self.theme.ink, fontsize=ctx.font_size, loc="left")
+        title = spec.title or self.auto_title  # default: the label of the data shown
+        if title:
+            self.ax.set_title(title, color=self.theme.ink, fontsize=ctx.font_size, loc="left")
 
     def setup(self) -> None:
         pass
@@ -152,17 +160,20 @@ class StructurePanel(Panel):
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
         center = coords[0].mean(axis=0)
-        r = euler_to_matrix(v.rotation)
-        self.view = (coords - center) @ r.T
-        self.ion_view = (ions - center) @ r.T if ions.size else np.zeros((len(coords), 0, 3))
+        # centred coordinates; the view is a rotation of these (see set_rotation)
+        self.centred = coords - center
+        self.ions_centred = ions - center if ions.size else np.zeros((len(coords), 0, 3))
         self.links = np.asarray(tr.arrays["links"], dtype=np.int64).reshape(-1, 2)
         n_res = coords.shape[1]
-        allxy = self.view[..., :2].reshape(-1, 2)
-        if self.ion_view.size:
-            allxy = np.vstack([allxy, self.ion_view[..., :2].reshape(-1, 2)])
-        lo, hi = allxy.min(axis=0), allxy.max(axis=0)
-        pad = 0.08 * max(hi - lo) + 2.0
-        self.data_lo, self.data_hi = lo - pad, hi + pad
+        # Frame the model by its bounding sphere so any orientation fits without zooming.
+        radius = float(np.linalg.norm(self.centred, axis=-1).max())
+        if self.ions_centred.size:
+            radius = max(radius, float(np.linalg.norm(self.ions_centred, axis=-1).max()))
+        radius = max(radius, 1.0)
+        self.radius = radius
+        pad = 0.06 * radius + 2.0
+        self.data_lo = np.array([-radius - pad, -radius - pad])
+        self.data_hi = np.array([radius + pad, radius + pad])
         self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
         self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
         self.ax.set_xticks([])
@@ -170,8 +181,9 @@ class StructurePanel(Panel):
         self.ax.grid(False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
-        z = self.view[..., 2]
-        self.zmin, self.zmax = float(z.min()), float(z.max())
+        self.zmin, self.zmax = -radius, radius
+        self.set_rotation(v.rotation)
+        self.auto_title = "Structure"
 
         project = self.ctx.project
         group_colors = [g.color for g in project.groups]
@@ -214,7 +226,34 @@ class StructurePanel(Panel):
         self.time_text = self.ax.text(0.01, 0.99, "", transform=self.ax.transAxes, va="top",
                                       ha="left", color=self.theme.ink2,
                                       fontsize=self.ctx.font_size * 0.85) if v.show_time_label else None
+        self._residue_tags(v, tr)
         self._legend(v, tr)
+
+    def set_rotation(self, angles) -> None:
+        """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
+        r = euler_to_matrix(angles)
+        self.view = self.centred @ r.T
+        self.ion_view = self.ions_centred @ r.T
+
+    def _residue_tags(self, v, tr):
+        """Residue-number labels: every N-th residue and/or an explicit list."""
+        resid = np.asarray(tr.arrays["resid"]) if "resid" in tr.arrays else None
+        self.tag_rows = np.zeros(0, dtype=np.int64)
+        self.tags = []
+        if resid is None or not (v.label_every > 0 or v.label_residues.strip()):
+            return
+        wanted = np.zeros(len(resid), bool)
+        if v.label_every > 0:
+            wanted |= (resid % int(v.label_every)) == 0
+        if v.label_residues.strip():
+            from ..selections import parse_residue_ranges
+
+            for _chain, a, b in parse_residue_ranges(v.label_residues):
+                wanted |= (resid >= a) & (resid <= b)
+        self.tag_rows = np.flatnonzero(wanted)
+        self.tags = [self.ax.text(0, 0, str(int(resid[k])), ha="center", va="center",
+                                  color=self.theme.ink2, fontsize=self.ctx.font_size * 0.7,
+                                  zorder=6, clip_on=True) for k in self.tag_rows]
 
     def after_layout(self):
         """Equal x/y scale: grow the data window to the panel's pixel aspect ratio."""
@@ -264,6 +303,7 @@ class StructurePanel(Panel):
 
     def animated_artists(self):
         arts = [self.halo_outer, self.halo_inner, self.lines, self.points, self.ion_points]
+        arts += self.tags
         if self.time_text is not None:
             arts.append(self.time_text)
         if self.legend is not None:  # keep the legend above moving residues
@@ -315,6 +355,15 @@ class StructurePanel(Panel):
             self.halo_inner.set_offsets(np.zeros((0, 2)))
         if self.ion_view.shape[1]:
             self.ion_points.set_offsets(self.ion_view[pos][:, :2])
+        if self.tags:  # push each label outward, away from the projected centre
+            xy = xyz[self.tag_rows, :2]
+            centre = xyz[:, :2].mean(axis=0)
+            out = xy - centre
+            norm = np.linalg.norm(out, axis=1, keepdims=True)
+            out = np.where(norm > 1e-6, out / np.maximum(norm, 1e-6), np.array([[0.0, 1.0]]))
+            pos_xy = xy + out * (0.07 * self.radius + 1.5)
+            for text, (x, y) in zip(self.tags, pos_xy):
+                text.set_position((x, y))
         if self.time_text is not None:
             self.time_text.set_text(self.ctx.format_time(pos))
 
@@ -375,6 +424,9 @@ class TimeSeriesPanel(Panel):
             self.ax.set_ylim(*self.options["ylim"])
         self.ax.set_xlabel(self.ctx.time_label)
         units = {s.unit for s in self.series}
+        if units == {"count"}:
+            integer_axis(self.ax.yaxis)
+        self.auto_title = self.series[0].label if len(self.series) == 1 else ""
         if len(self.series) == 1:
             self.ax.set_ylabel(self.series[0].axis_label)
         elif len(units) == 1 and next(iter(units)) not in ("", "count"):
@@ -424,6 +476,11 @@ class DualAxisPanel(Panel):
                               mec=self.theme.surface, mew=1.5, zorder=5)
         self.ax.set_ylabel(s1.axis_label)
         ax2.set_ylabel(s2.axis_label)
+        if s1.unit == "count":
+            integer_axis(self.ax.yaxis)
+        if s2.unit == "count":
+            integer_axis(ax2.yaxis)
+        self.auto_title = f"{s1.label} / {s2.label}"
         self.ax.set_xlabel(self.ctx.time_label)
         self.ax.set_xlim(t[0], t[-1] if len(t) > 1 else t[0] + 1)
         self.cursor = self.ax.axvline(t[0], color=self.theme.ink, lw=1.0, alpha=0.7)
@@ -465,6 +522,7 @@ class HeatmapPanel(Panel):
         m = ds.matrix(self.spec.series[0])
         if m.values.size == 0:
             raise KeyError(f"{m.key} is empty")
+        self.auto_title = m.label
         t = self.ctx.time
         dt = (t[1] - t[0]) if len(t) > 1 else 1.0
         values = np.ma.masked_invalid(np.asarray(m.values, dtype=np.float64))
@@ -484,6 +542,8 @@ class HeatmapPanel(Panel):
                                 vmax=max(vmax, 1e-9))
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02)
             cb.set_label(m.unit or "count", color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
+            if m.kind == "count":
+                integer_axis(cb.ax.yaxis)
         cb.outline.set_edgecolor(self.theme.grid)
         cb.ax.tick_params(colors=self.theme.muted, labelcolor=self.theme.ink2,
                           labelsize=self.ctx.font_size * 0.75)
@@ -533,6 +593,9 @@ class ContactMapPanel(Panel):
                                  vmin=0.0, vmax=vmax, origin="upper")
         cb = self.fig.colorbar(self.im, ax=self.ax, fraction=0.04, pad=0.02)
         cb.set_label(label, color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
+        if label == "count":
+            integer_axis(cb.ax.yaxis)
+        self.auto_title = self.pm.label
         cb.outline.set_edgecolor(self.theme.grid)
         cb.ax.tick_params(colors=self.theme.muted, labelcolor=self.theme.ink2,
                           labelsize=self.ctx.font_size * 0.75)

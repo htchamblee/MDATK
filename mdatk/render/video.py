@@ -120,7 +120,7 @@ def figure_size(width: int, height: int) -> Tuple[int, int]:
 
 
 def build_figure(dataset: Dataset, project: Project, width: Optional[int] = None,
-                 height: Optional[int] = None, dpi: Optional[int] = None):
+                 height: Optional[int] = None, dpi: Optional[float] = None, watermark: str = ""):
     """Create the figure, its canvas and the panels (frozen layout)."""
     vp = project.output.video
     w, h = figure_size(width or vp.width, height or vp.height)
@@ -143,6 +143,9 @@ def build_figure(dataset: Dataset, project: Project, width: Optional[int] = None
         panels.append(cls(fig, gs[r0:r1, c0:c1], spec, ctx))
     if project.visual.title:
         fig.suptitle(project.visual.title, color=theme.ink, fontsize=project.visual.font_size * 1.3)
+    if watermark:
+        fig.text(0.997, 0.003, watermark, ha="right", va="bottom", color=theme.muted,
+                 fontsize=project.visual.font_size * 0.75)
     if dataset.n_frames:
         for p in panels:
             p.update(0)

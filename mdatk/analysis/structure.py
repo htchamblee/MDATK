@@ -91,6 +91,7 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
+    version = 2  # v2: residue numbers for tags
 
     @classmethod
     def params_for(cls, project):
@@ -180,7 +181,8 @@ class TraceAnalysis(Analysis):
         res.arrays.update(coords=self.coords, ion_coords=self.ion_coords,
                           chain=self.chain, group_index=self.group_index,
                           is_point=self.is_point, links=self.links,
-                          resindex=self.residues.ix.astype(np.int64))
+                          resindex=self.residues.ix.astype(np.int64),
+                          resid=self.residues.resids.astype(np.int64))
         return res
 
 

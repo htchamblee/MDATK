@@ -21,8 +21,9 @@ import numpy as np
 
 from . import PROJECT_ABBREV, PROJECT_TITLE, __version__
 from .analysis import ANALYSES, AnalysisContext, run_analyses
+from .analysis.base import analysis_class, instance_project, parse_instance, split_key
 from .cleaning import CleanResult, clean, cleaning_key
-from .cleaning.cpptraj import MARKER, find_cpptraj
+from .cleaning.cpptraj import MARKER, cpptraj_command
 from .config import Project, file_fingerprint
 from .data import Dataset
 from .io.cache import CacheStore, write_json
@@ -34,6 +35,15 @@ from .progress import Reporter
 log = logging.getLogger(__name__)
 
 PARAMS_LOG_NAME = f"{PROJECT_ABBREV}_params_log.json"
+STAMP_FORMAT = "%Y-%m-%d_%H%M%S"
+
+
+def stamped(name: str, stamp: str) -> str:
+    """``MDATK_video.mp4`` -> ``MDATK_video_2026-10-15_143205.mp4``."""
+    if not stamp:
+        return name
+    root, ext = os.path.splitext(name)
+    return f"{root}_{stamp}{ext}"
 
 
 class PipelineError(RuntimeError):
@@ -69,6 +79,20 @@ class Pipeline:
         self._inputs: Optional[ResolvedInputs] = None
         self._universe = None
         self.analysis_keys: Dict[str, str] = {}
+        self._stamp: Optional[str] = None
+        self.last_video: Optional[str] = None
+
+    # ------------------------------------------------------------ file names
+    def stamp(self) -> str:
+        """Timestamp shared by all outputs of one run ('' when disabled)."""
+        if not self.project.output.timestamp_files:
+            return ""
+        if self._stamp is None:
+            self._stamp = _dt.datetime.now().strftime(STAMP_FORMAT)
+        return self._stamp
+
+    def new_stamp(self) -> None:
+        self._stamp = None
 
     # ---------------------------------------------------------------- inputs
     def check(self) -> None:
@@ -135,13 +159,18 @@ class Pipeline:
         if video:
             names |= panel_requirements(p)
         if charts:
-            names |= {k.split("/", 1)[0] for k in p.output.charts.series if "/" in k}
+            names |= {split_key(k)[0] for k in p.output.charts.series if "/" in k}
         names.discard("external")
-        unknown = sorted(n for n in names if n not in ANALYSES)
-        if unknown:  # the affected panels / charts report "No data"
-            self.reporter.log(f"WARNING: unknown data source(s) {', '.join(unknown)} "
-                              f"(known: {', '.join(ANALYSES)})")
-        return [n for n in ANALYSES if n in names]
+        usable = []
+        for inst in names:
+            try:  # the affected panels / charts report "No data"
+                instance_project(p, inst)
+            except (KeyError, ValueError) as exc:
+                self.reporter.log(f"WARNING: skipping data source {inst!r}: {exc}")
+                continue
+            usable.append(inst)
+        order = list(ANALYSES)
+        return sorted(usable, key=lambda i: (order.index(parse_instance(i)[0]), i))
 
     def analyze(self, names: Optional[Sequence[str]] = None, force: bool = False,
                 reporter: Optional[Reporter] = None) -> Optional[Dataset]:
@@ -150,7 +179,8 @@ class Pipeline:
         names = list(self.required_analyses() if names is None else names)
         inputs = self.resolve_inputs(rep.sub(0.0, 0.02))
         fp = self.input_fingerprint(inputs)
-        keys = {n: ANALYSES[n].cache_key(p, fp) for n in names}
+        projects = {n: instance_project(p, n) for n in names}
+        keys = {n: analysis_class(n).cache_key(projects[n], fp) for n in names}
         self.analysis_keys = dict(keys)
         results = {}
         frames = time_ps = None
@@ -162,14 +192,14 @@ class Pipeline:
                 res, fr, tm = loaded
                 results[n] = res
                 frames, time_ps = fr, tm
-                rep.log(f"{ANALYSES[n].label}: loaded from cache ({n}-{keys[n]})")
+                rep.log(f"{analysis_class(n).label}: loaded from cache ({n}-{keys[n]})")
         missing = [n for n in names if n not in results]
         if missing:
             u = self.universe()
             idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
-            ctx = AnalysisContext(u, p, inputs.topology, rep)
-            objs = [ANALYSES[n](ctx) for n in missing]
-            new, times = run_analyses(ctx, objs, idx, rep.sub(0.02, 1.0))
+            objs = [analysis_class(n)(AnalysisContext(u, projects[n], inputs.topology, rep), n)
+                    for n in missing]
+            new, times = run_analyses(objs[0].ctx, objs, idx, rep.sub(0.02, 1.0))
             for res in new:
                 res.key = keys[res.name]
                 self.cache.save_result(res, idx, times)
@@ -199,9 +229,9 @@ class Pipeline:
 
     def apply_display_overrides(self, dataset: Dataset) -> None:
         """Parameters that change presentation but not the cached numbers."""
-        energy = dataset.results.get("energy")
-        if energy is not None and "total" in energy.outputs.get("series", {}):
-            energy.outputs["series"]["total"]["target"] = self.project.analyses.energy.target_value
+        for name, res in dataset.results.items():
+            if parse_instance(name)[0] == "energy" and "total" in res.outputs.get("series", {}):
+                res.outputs["series"]["total"]["target"] = self.project.analyses.energy.target_value
 
     def load_cached_dataset(self) -> Dataset:
         """Dataset of the most recent run, straight from the cache manifest."""
@@ -216,13 +246,15 @@ class Pipeline:
     def render_video(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> str:
         from .render.video import render_video
 
-        path = self.output_path(self.project.output.video.filename)
-        return render_video(dataset, self.project, path, reporter or self.reporter)
+        path = self.output_path(stamped(self.project.output.video.filename, self.stamp()))
+        self.last_video = render_video(dataset, self.project, path, reporter or self.reporter)
+        return self.last_video
 
     def render_charts(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> List[str]:
         from .render.charts import render_charts
 
-        return render_charts(dataset, self.project, self.project.out_dir, reporter or self.reporter)
+        return render_charts(dataset, self.project, self.project.out_dir, reporter or self.reporter,
+                             self.stamp())
 
     def export_pdbs(self, reporter: Optional[Reporter] = None) -> List[str]:
         rep = reporter or self.reporter
@@ -235,7 +267,7 @@ class Pipeline:
         atoms = resolve_export_selection(u, pp.selection, p.groups)
         rep.log(f"Exporting {len(frames)} frame(s) ({atoms.n_atoms} atoms) as PDB")
         return export_frames(u, frames, atoms, p.out_dir, pp.prefix,
-                             progress=lambda f, m: rep.progress(f, m))
+                             progress=lambda f, m: rep.progress(f, m), stamp=self.stamp())
 
     def render_preview(self, dataset: Dataset, pos: int, path: str) -> str:
         from .render.video import render_frame
@@ -260,6 +292,7 @@ class Pipeline:
             },
             "cache_dir": self.project.cache_dir,
             "analysis_keys": self.analysis_keys,
+            "timestamp": self._stamp,
             "outputs": outputs.summary(),
             "parameters": self.project.to_dict(),
         })
@@ -277,6 +310,7 @@ class Pipeline:
         os.makedirs(p.out_dir, exist_ok=True)
         outputs = RunOutputs()
         start = _dt.datetime.now()
+        self.new_stamp()
         rep.log(f"{PROJECT_TITLE} {__version__} - output directory {p.out_dir}")
         self.resolve_inputs(rep.sub(0.0, 0.15))
         names = self.required_analyses(video, charts)
@@ -321,6 +355,7 @@ class Pipeline:
                 "ions": res.arrays["ion_coords"][0].astype(float),
                 "links": res.arrays["links"], "colors": colors,
                 "chain": res.arrays["chain"], "group_index": res.arrays["group_index"],
+                "resid": res.arrays["resid"],
                 "labels": res.meta.get("residue_labels", []),
                 "cleaned": inputs.topology != p.inputs.topology}
 
@@ -348,8 +383,7 @@ def environment_info(project: Optional[Project] = None) -> Dict[str, Any]:
     info["ffmpeg"] = _tool_version([ffmpeg, "-version"])
     if project and project.cleaning.enabled:
         try:
-            exe = find_cpptraj(project.cleaning.cpptraj_path)
-            info["cpptraj"] = {"path": exe}
+            info["cpptraj"] = {"command": " ".join(cpptraj_command(project.cleaning))}
         except Exception as exc:  # noqa: BLE001 - informational only
             info["cpptraj"] = {"error": str(exc)}
     return info

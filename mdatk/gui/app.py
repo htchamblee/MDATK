@@ -5,27 +5,34 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import warnings
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from .. import PROJECT_ABBREV, PROJECT_TITLE, __version__  # noqa: E402
 from ..analysis import expected_keys  # noqa: E402
+from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E402
+                             parse_instance, split_key)
+from ..cleaning import conda  # noqa: E402
 from ..config import ExternalSeries, PanelSpec, Project, ResidueGroup, RMSDTarget  # noqa: E402
 from ..progress import Cancelled  # noqa: E402
-from ..render.coloring import COLOR_MODES, static_colors  # noqa: E402
+from ..render.coloring import COLOR_MODES  # noqa: E402
+from ..render.example import example_dataset  # noqa: E402
 from ..render.layout import PRESET_LABELS, PRESETS, n_slots  # noqa: E402
 from ..render.orientation import format_angles  # noqa: E402
 from ..render.panels import PANEL_TYPES  # noqa: E402
+from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
-from .preview import OrientationView  # noqa: E402
+from .canvas import FigureCanvas  # noqa: E402
 from .worker import Worker  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -33,6 +40,15 @@ log = logging.getLogger(__name__)
 APP_ID = "org.mdatk.MDATK"
 TIME_UNITS = [("ps", "ps"), ("ns", "ns"), ("us", "µs"), ("frame", "frames")]
 X_UNITS = ["ps", "ns", "us", "frame", "frame1"]
+DEFAULT_GROUP = ""  # "(analysis default)" entry of the per-panel group choosers
+PAGES = [  # (id, menu label, side panel title)
+    ("input", "Input", "Input & cleaning"),
+    ("groups", "Groups", "Residue groups"),
+    ("analyses", "Analyses", "Analyses"),
+    ("structure", "Structure", "Structure view"),
+    ("layout", "Layout", "Layout & panels"),
+    ("outputs", "Outputs", "Outputs"),
+]
 
 
 class GuiLogHandler(logging.Handler):
@@ -55,30 +71,37 @@ class MainWindow(Gtk.ApplicationWindow):
         self.preset_path = preset_path
         self.binder = W.Binder()
         self.worker: Optional[Worker] = None
-        self.preview_data = None
+        self.preview_data = None  # reference-frame trace once "Load real frame" ran
+        self.last_video: Optional[str] = None
         self._syncing = False
+        self._loading = False
         self.group_combos: List[Gtk.ComboBoxText] = []
         self.slot_rows: List[dict] = []
         self.busy_widgets: List[Gtk.Widget] = []
+        self.pages: Dict[str, Gtk.Widget] = {}
+        self.sections: Dict[str, List[Gtk.Frame]] = {}
 
         self._build_header()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(outer)
-        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        outer.pack_start(paned, True, True, 0)
-        self.notebook = Gtk.Notebook()
-        self.notebook.set_scrollable(True)
-        paned.pack1(self.notebook, resize=True, shrink=False)
-        paned.pack2(self._build_log(), resize=False, shrink=True)
-        paned.set_position(660)
+        self.canvas = FigureCanvas(on_rotate=self._on_canvas_rotate, on_swap=self._on_canvas_swap,
+                                   on_activate=self._on_canvas_activate)
+        builders = {"input": self._tab_input, "groups": self._tab_groups,
+                    "analyses": self._tab_analyses, "structure": self._tab_visual,
+                    "layout": self._tab_layout, "outputs": self._tab_outputs}
+        side = self._build_side_panel(builders)
+        outer.pack_start(self._build_toolbar(), False, False, 0)
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.NONE)
+        frame.add(self.canvas)
+        body.pack_start(frame, True, True, 0)
+        body.pack_start(side, False, False, 0)
+        outer.pack_start(body, True, True, 0)
+        self.log_expander = Gtk.Expander(label="Log (pipeline and cpptraj output)")
+        self.log_expander.add(self._build_log())
+        outer.pack_start(self.log_expander, False, False, 0)
         outer.pack_start(self._build_action_bar(), False, False, 0)
-
-        self.notebook.append_page(self._tab_input(), Gtk.Label(label="Input & cleaning"))
-        self.notebook.append_page(self._tab_groups(), Gtk.Label(label="Residue groups"))
-        self.notebook.append_page(self._tab_analyses(), Gtk.Label(label="Analyses"))
-        self.notebook.append_page(self._tab_visual(), Gtk.Label(label="Structure view"))
-        self.notebook.append_page(self._tab_layout(), Gtk.Label(label="Layout & panels"))
-        self.notebook.append_page(self._tab_outputs(), Gtk.Label(label="Outputs"))
         self._install_actions()
         self.load_project(self.project, preset_path)
         self.connect("delete-event", self._on_close)
@@ -110,6 +133,155 @@ class MainWindow(Gtk.ApplicationWindow):
         mb.set_popup(menu)
         hb.pack_end(mb)
 
+    def _build_toolbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, margin=4)
+        for page, menu_label, _title in PAGES:
+            menu = Gtk.Menu()
+            item = Gtk.MenuItem(label="Show all")
+            item.connect("activate", lambda _w, p=page: self.open_section(p))
+            menu.append(item)
+            menu.append(Gtk.SeparatorMenuItem())
+            for frame in self.sections.get(page, []):
+                item = Gtk.MenuItem(label=self._frame_title(frame))
+                item.connect("activate", lambda _w, p=page, f=frame: self.open_section(p, f))
+                menu.append(item)
+            menu.show_all()
+            mb = Gtk.MenuButton()
+            content = Gtk.Box(spacing=4)
+            content.pack_start(Gtk.Label(label=menu_label), False, False, 0)
+            content.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
+                               False, False, 0)
+            mb.add(content)
+            mb.set_popup(menu)
+            mb.set_relief(Gtk.ReliefStyle.NONE)
+            bar.pack_start(mb, False, False, 0)
+        bar.pack_end(W.button("Refresh", self.refresh_canvas,
+                              "Redraw the layout preview with the current settings",
+                              "view-refresh-symbolic"), False, False, 0)
+        lp = W.button("Load real frame", self.load_preview,
+                      "Show the real reference-frame structure in the preview "
+                      "(cleaned files are used when cached)", "document-open-symbolic")
+        self.busy_widgets.append(lp)
+        bar.pack_end(lp, False, False, 0)
+        bar.pack_end(W.hint("Drag panels to swap them \u00b7 drag the structure to rotate it "
+                            "\u00b7 double-click a panel to edit it"), False, False, 8)
+        return bar
+
+    def _build_side_panel(self, builders):
+        self.side_revealer = Gtk.Revealer()
+        # GTK 3 boxes treat a child as expanding when anything inside it expands; the side
+        # panel must never take space from the figure while it is hidden.
+        self.side_revealer.set_hexpand(False)
+        self.side_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self.side_revealer.set_transition_duration(180)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_size_request(610, -1)
+        head = Gtk.Box(spacing=6, margin=6)
+        self.side_title = W.label("", markup=True)
+        head.pack_start(self.side_title, True, True, 0)
+        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
+        close.set_relief(Gtk.ReliefStyle.NONE)
+        close.set_tooltip_text("Close and refresh the preview")
+        close.connect("clicked", lambda *_: self.close_side_panel())
+        head.pack_end(close, False, False, 0)
+        box.pack_start(head, False, False, 0)
+        box.pack_start(Gtk.Separator(), False, False, 0)
+        self.side_stack = Gtk.Stack()
+        self.side_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        for page, _menu, title in PAGES:
+            widget = builders[page]()
+            if isinstance(widget, Gtk.ScrolledWindow):  # fixed panel width; wide rows scroll
+                widget.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            self.pages[page] = widget
+            self.sections[page] = self._find_frames(widget)
+            self.side_stack.add_titled(widget, page, title)
+        box.pack_start(self.side_stack, True, True, 0)
+        sep = Gtk.Box()
+        sep.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+        sep.pack_start(box, True, True, 0)
+        self.side_revealer.add(sep)
+        return self.side_revealer
+
+    @staticmethod
+    def _find_frames(widget) -> List[Gtk.Frame]:
+        found: List[Gtk.Frame] = []
+
+        def walk(w, depth=0):
+            if isinstance(w, Gtk.Frame) and w.get_label_widget() is not None:
+                found.append(w)
+                return
+            if depth < 6 and isinstance(w, Gtk.Container):
+                for child in w.get_children():
+                    walk(child, depth + 1)
+
+        walk(widget)
+        return found
+
+    @staticmethod
+    def _frame_title(frame: Gtk.Frame) -> str:
+        lab = frame.get_label_widget()
+        return lab.get_text() if isinstance(lab, Gtk.Label) else "Section"
+
+    def open_section(self, page: str, frame: Optional[Gtk.Frame] = None) -> None:
+        """Slide out the side panel at ``page`` and scroll to ``frame``."""
+        title = dict((p, t) for p, _m, t in PAGES)[page]
+        self.side_title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        self.side_stack.set_visible_child_name(page)
+        self.side_revealer.set_reveal_child(True)
+        if frame is not None:
+            GLib.timeout_add(220, self._scroll_to, page, frame)
+
+    def _scroll_to(self, page, frame):
+        sw = self.pages[page]
+        if isinstance(sw, Gtk.ScrolledWindow):
+            coords = frame.translate_coordinates(sw.get_child(), 0, 0)
+            if coords:
+                sw.get_vadjustment().set_value(max(0, coords[1] - 6))
+        return False
+
+    def close_side_panel(self) -> None:
+        self.side_revealer.set_reveal_child(False)
+        self.refresh_canvas()
+
+    # ----------------------------------------------------------- canvas
+    def refresh_canvas(self) -> None:
+        """Redraw the WYSIWYG figure with example data (never computes anything)."""
+        try:
+            project = self.collect(validate=False)
+        except ValueError as exc:
+            self.append_log(f"Preview not updated: {exc}")
+            return
+        try:
+            ds = example_dataset(project, self.preview_data)
+        except Exception as exc:  # noqa: BLE001 - a bad layout must not break the window
+            self.append_log(f"Preview not updated: {exc}")
+            return
+        mark = ("Example data \u2013 layout preview (structure: reference frame)"
+                if self.preview_data is not None else "Example data \u2013 layout preview")
+        self.canvas.set_content(project, ds, mark)
+
+    def _on_canvas_rotate(self, angles):
+        self._syncing = True
+        try:
+            for sc, a in zip(self.rot_scales, angles):
+                sc.set_value(float(a))
+        finally:
+            self._syncing = False
+        self.angle_label.set_text(format_angles(angles))
+
+    def _on_canvas_swap(self, i: int, j: int) -> None:
+        specs = self._read_slots()
+        if max(i, j) >= len(specs):
+            return
+        specs[i], specs[j] = specs[j], specs[i]
+        self._rebuild_slots(specs)
+        self.append_log(f"Swapped panels {i + 1} and {j + 1}")
+        self.refresh_canvas()
+
+    def _on_canvas_activate(self, slot: int) -> None:
+        frame = self.slot_rows[slot]["frame"] if slot < len(self.slot_rows) else None
+        self.open_section("layout", frame)
+
     def _build_log(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin=4)
@@ -140,7 +312,10 @@ class MainWindow(Gtk.ApplicationWindow):
         bar.pack_start(self.render_button, False, False, 0)
         bar.pack_start(self.cancel_button, False, False, 0)
         bar.pack_start(self.progress, True, True, 0)
-        bar.pack_end(W.button("Open output folder", self.open_output_dir, icon="folder-open-symbolic"),
+        bar.pack_end(W.button("Open video", self.open_video, "Play the most recent video",
+                              "video-x-generic-symbolic"), False, False, 0)
+        bar.pack_end(W.button("Open output folder", self.open_output_dir,
+                              "Show the output folder in the file manager", "folder-open-symbolic"),
                      False, False, 0)
         self.busy_widgets.append(self.render_button)
         return bar
@@ -167,7 +342,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("Topologies", ["*.parm7", "*.prmtop", "*.top", "*.pdb", "*.psf", "*.gro"])])
         b.path_entry("inputs.topology", files.add("Topology", top,
                      "Amber .parm7 (preferred), cleaned PDB or another MDAnalysis topology"))
-        self.traj_editor = W.ListEditor([("Trajectory file(s), in order", 500)], height=70)
+        self.traj_editor = W.ListEditor([("Trajectory file(s), in order", 300)], height=70)
         self.traj_editor.buttons.pack_start(
             W.button("Browse…", self._browse_trajectories, icon="document-open-symbolic"),
             False, False, 0)
@@ -187,8 +362,8 @@ class MainWindow(Gtk.ApplicationWindow):
         fr.add("Time step override (ps)", b.optional_float("inputs.dt_ps", W.entry("from file", width=10)),
                "Leave blank to use the trajectory's time stamps")
         fr.add("Display time unit", b.combo("inputs.time_unit", W.combo(TIME_UNITS)))
-        self.ext_editor = W.ListEditor([("Path", 260), ("Label", 80), ("x column", 70),
-                                        ("x unit", 60), ("Columns (comma)", 120)], height=60,
+        self.ext_editor = W.ListEditor([("Path", 150), ("Label", 60), ("x col", 50),
+                                        ("x unit", 50), ("Columns", 70)], height=60,
                                        defaults=["", "", "", "ps", ""], combos={3: X_UNITS})
         self.ext_editor.buttons.pack_start(W.button("Browse…", self._browse_external),
                                            False, False, 0)
@@ -203,19 +378,27 @@ class MainWindow(Gtk.ApplicationWindow):
         cl.add_wide(self.clean_enable)
         cl.add("cpptraj executable", b.path_entry("cleaning.cpptraj_path",
                W.file_chooser_button("Select cpptraj")), "Name on PATH or absolute path")
+        self.conda_entry = b.entry("cleaning.conda_env", W.entry("e.g. AmberTools26 (blank: cpptraj on PATH)",
+                                                                 width=18))
+        cl.add_row("Conda environment", [self.conda_entry,
+                                         W.button("Detect", self.detect_conda,
+                                                  "Find environments that contain bin/cpptraj")],
+                   "Activated for every cpptraj call (conda run -n <env> cpptraj); a name or a path")
+        cl.add("conda executable", b.path_entry("cleaning.conda_exe",
+               W.file_chooser_button("Select conda / mamba / micromamba")),
+               "Blank: found automatically (conda, mamba or micromamba)")
         cl.add("Solvent mask", b.entry("cleaning.solvent_mask", W.entry()))
         cl.add("Ion mask", b.entry("cleaning.ion_mask", W.entry()), "Mg2+ is kept by default")
         cl.add("Extra strip mask", b.entry("cleaning.extra_strip_mask", W.entry("optional")))
-        cl.add_row("Imaging", [b.check("cleaning.autoimage", W.check("autoimage (recentre)")),
-                               W.label("anchor"), b.entry("cleaning.autoimage_anchor",
-                                                          W.entry("default: first molecule", width=18))])
-        cl.add_row("Fitting", [b.check("cleaning.fit", W.check("rms fit")), W.label("mask"),
-                               b.entry("cleaning.fit_mask", W.entry(width=14)),
-                               W.label("reference"),
-                               b.combo("cleaning.fit_reference", W.combo(
-                                   [("first", "first frame"), ("frame", "frame #"),
-                                    ("file", "file")])),
-                               b.spin_int("cleaning.reference_frame", W.spin(1, 10 ** 9, 1))])
+        cl.add_row("Imaging", [b.check("cleaning.autoimage", W.check("autoimage, anchor")),
+                               b.entry("cleaning.autoimage_anchor",
+                                       W.entry("first molecule", width=14))])
+        cl.add_row("Fitting", [b.check("cleaning.fit", W.check("rms fit, mask")),
+                               b.entry("cleaning.fit_mask", W.entry(width=14))])
+        cl.add_row("Fit reference", [b.combo("cleaning.fit_reference", W.combo(
+                                         [("first", "first frame"), ("frame", "frame #"),
+                                          ("file", "file")])),
+                                     b.spin_int("cleaning.reference_frame", W.spin(1, 10 ** 9, 1))])
         cl.add("Reference file", b.path_entry("cleaning.reference_file",
                W.file_chooser_button("Select reference structure")))
         cl.add_wide(b.check("cleaning.remove_box_after_fit", W.check(
@@ -283,14 +466,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def _tab_groups(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         form = W.Form()
-        self.group_editor = W.ListEditor([("Name", 110), ("Residues", 200), ("Selection (overrides residues)", 260),
-                                          ("Colour", 80)], height=180,
+        self.group_editor = W.ListEditor([("Name", 80), ("Residues", 110), ("Selection (overrides)", 140),
+                                          ("Colour", 70)], height=180,
                                          defaults=["NewGroup", "", "", "#6250d6"])
-        swatch = Gtk.CellRendererText()
+        swatch = Gtk.CellRendererPixbuf()  # a pixbuf keeps its colour when the row is selected
         col = Gtk.TreeViewColumn("", swatch)
         col.set_cell_data_func(swatch, self._swatch)
-        col.set_min_width(28)
+        col.set_min_width(34)
         self.group_editor.view.append_column(col)
+        self._swatches: Dict[str, GdkPixbuf.Pixbuf] = {}
         self.group_editor.buttons.pack_start(W.button("Pick colour…", self._pick_group_color,
                                                       icon="applications-graphics-symbolic"),
                                              False, False, 0)
@@ -306,11 +490,19 @@ class MainWindow(Gtk.ApplicationWindow):
         return W.scrolled(box)
 
     def _swatch(self, _col, cell, model, it, _data):
+        cell.set_property("pixbuf", self.swatch_pixbuf(model[it][3] or ""))
+
+    def swatch_pixbuf(self, color: str) -> Optional[GdkPixbuf.Pixbuf]:
         rgba = Gdk.RGBA()
-        if rgba.parse(model[it][3] or ""):
-            cell.set_property("cell-background-rgba", rgba)
-        else:
-            cell.set_property("cell-background-set", False)
+        if not rgba.parse(color):
+            return None
+        hexa = W.rgba_to_hex(rgba)
+        if hexa not in self._swatches:
+            pix = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, 26, 16)
+            pix.fill(0xFFFFFFFF)  # light frame keeps the swatch distinct on the selection colour
+            pix.new_subpixbuf(2, 2, 22, 12).fill(int(hexa[1:], 16) << 8 | 0xFF)
+            self._swatches[hexa] = pix
+        return self._swatches[hexa]
 
     def _pick_group_color(self):
         k = self.group_editor.selected_index()
@@ -337,7 +529,11 @@ class MainWindow(Gtk.ApplicationWindow):
         names = [r[0].strip() for r in self.group_editor.rows() if r[0].strip()]
         for c in self.group_combos:
             W.set_combo_entry_items(c, names)
-        self._recolor_preview()
+        if self.slot_rows and not self._loading:
+            try:  # per-panel group choosers list the current group names
+                self._rebuild_slots()
+            except ValueError:
+                pass
 
     def _group_combo(self, path):
         c = W.combo_entry()
@@ -395,7 +591,7 @@ class MainWindow(Gtk.ApplicationWindow):
         m = W.Form()
         m.add_wide(b.check("analyses.mg.enabled", W.check("Analyse Mg²⁺ coordination")))
         m.add("Mg selection", b.entry("analyses.mg.mg_selection", W.entry()))
-        m.add_row("Ligand selection / elements", [b.entry("analyses.mg.ligand_selection", W.entry(width=30)),
+        m.add_row("Ligand selection / elements", [b.entry("analyses.mg.ligand_selection", W.entry(width=20)),
                                                   b.entry("analyses.mg.ligand_elements", W.entry(width=6))],
                   "Oxygens of these residue ranges count for Mg–O and O–Mg–O")
         m.add_row("Bridging groups", [self._group_combo("analyses.mg.group_a"), W.label("vs"),
@@ -410,7 +606,7 @@ class MainWindow(Gtk.ApplicationWindow):
             b.check("analyses.mg.geometry", W.check("require octahedral O–Mg–O angles ±")),
             b.spin_float("analyses.mg.angle_tolerance", W.spin(5, 45, 1, 0))])
         m.add_row("Occupancy residues / atoms", [
-            b.entry("analyses.mg.occupancy_selection", W.entry("default: ligand selection", width=30)),
+            b.entry("analyses.mg.occupancy_selection", W.entry("default: ligand selection", width=20)),
             b.entry("analyses.mg.occupancy_elements", W.entry(width=6))])
         box.pack_start(W.frame("O–Mg–O contacts and Mg occupancy", m), False, False, 0)
 
@@ -450,42 +646,37 @@ class MainWindow(Gtk.ApplicationWindow):
     # ----------------------------------------------------------------- visual
     def _tab_visual(self):
         b = self.binder
-        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10, margin=10)
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.preview = OrientationView(self._on_preview_rotate)
-        pf = Gtk.Frame()
-        pf.add(self.preview)
-        left.pack_start(pf, True, True, 0)
-        row = Gtk.Box(spacing=6)
-        lp = W.button("Load preview (reference frame)", self.load_preview,
-                      "Reads the first selected frame (cleaned files are used when cached)",
-                      "view-refresh-symbolic")
-        self.busy_widgets.append(lp)
-        row.pack_start(lp, False, False, 0)
-        row.pack_start(W.button("Reset orientation", lambda: self._set_rotation([0, 0, 0])), False, False, 0)
-        left.pack_start(row, False, False, 0)
-        self.angle_label = W.label("")
-        self.angle_label.set_selectable(True)
-        left.pack_start(self.angle_label, False, False, 0)
-        left.pack_start(W.hint("Drag with the left mouse button to rotate. The orientation is set "
-                               "on the reference frame and applied to every frame of the video."),
-                        False, False, 0)
-        outer.pack_start(left, True, True, 0)
-
-        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         rot = W.Form()
         self.rot_scales = []
-        for k, axis in enumerate("XYZ"):
+        for axis in "XYZ":
             sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -180, 180, 0.5)
             sc.set_digits(1)
             sc.set_value_pos(Gtk.PositionType.RIGHT)
-            sc.set_size_request(260, -1)
+            sc.set_size_request(220, -1)
             sc.connect("value-changed", self._on_scale)
             self.rot_scales.append(sc)
-            rot.add(f"Rotation {axis} (°)", sc)
+            rot.add(f"Rotation {axis} (\u00b0)", sc)
         b._add("visual.rotation", self.rot_scales[0],
                lambda: [round(s.get_value(), 3) for s in self.rot_scales], self._set_rotation)
-        right.pack_start(W.frame("Orientation", rot), False, False, 0)
+        self.angle_label = W.label("")
+        self.angle_label.set_selectable(True)
+        rot.add_wide(self.angle_label)
+        row = Gtk.Box(spacing=6)
+        row.pack_start(W.button("Reset orientation", lambda: self._set_rotation([0, 0, 0])),
+                       False, False, 0)
+        rot.add_wide(row)
+        rot.add_wide(W.hint("Drag the structure panel in the figure to rotate the model. The "
+                            "orientation is set on the reference frame and applied to every frame "
+                            "of the video."))
+        box.pack_start(W.frame("Orientation", rot), False, False, 0)
+
+        tags = W.Form()
+        tags.add("Label every N-th residue", b.spin_int("visual.label_every", W.spin(0, 10000)),
+                 "0 turns interval labels off")
+        tags.add("Label residues", b.entry("visual.label_residues", W.entry("e.g. 1, 12, 24, 40-45")),
+                 "Residue numbers or ranges to tag (in addition to the interval)")
+        box.pack_start(W.frame("Residue number tags", tags), False, False, 0)
 
         f = W.Form()
         f.add("Groups shown", b.csv("visual.structure_groups", W.entry("all groups", width=24)),
@@ -493,21 +684,16 @@ class MainWindow(Gtk.ApplicationWindow):
         f.add("Trace atoms (priority)", b.entry("visual.trace_atoms", W.entry(width=16)),
               "First atom found per residue, e.g. P or C4' (CA for proteins)")
         f.add_row("Options", [b.check("visual.align_frames", W.check("superpose frames")),
-                              b.check("visual.show_ions", W.check("show Mg²⁺")),
+                              b.check("visual.show_ions", W.check("show Mg\u00b2\u207a")),
                               b.check("visual.depth_cue", W.check("depth cue"))])
-        self.color_mode = b.combo("visual.color_mode", W.combo([(m, m) for m in COLOR_MODES]))
-        self.color_mode.connect("changed", lambda *_: self._recolor_preview())
-        f.add("Colouring", self.color_mode)
-        self.base_color = b.color("visual.base_color", W.color_button())
-        self.base_color.connect("color-set", lambda *_: self._recolor_preview())
-        f.add_row("Base / ion colour", [self.base_color, b.color("visual.ion_color", W.color_button())])
-        self.chain_palette = b.combo_text("visual.chain_palette", W.combo_entry(
-            ["tab10", "Set2", "Dark2", "viridis"]))
-        self.chain_palette.connect("changed", lambda *_: self._recolor_preview())
-        f.add("Chain palette", self.chain_palette)
+        f.add("Colouring", b.combo("visual.color_mode", W.combo([(m, m) for m in COLOR_MODES])))
+        f.add_row("Base / ion colour", [b.color("visual.base_color", W.color_button()),
+                                        b.color("visual.ion_color", W.color_button())])
+        f.add("Chain palette", b.combo_text("visual.chain_palette", W.combo_entry(
+            ["tab10", "Set2", "Dark2", "viridis"])))
         f.add("Proximity set", b.entry("visual.proximity_set", W.entry(width=20)),
               "Group name, or sel:<selection>")
-        f.add_row("Proximity cutoff (Å) / colour", [
+        f.add_row("Proximity cutoff (\u00c5) / colour", [
             b.spin_float("visual.proximity_cutoff", W.spin(1, 30, 0.1, 1)),
             b.color("visual.proximity_color", W.color_button())])
         f.add_row("Glow", [b.combo("visual.glow_mode", W.combo([
@@ -518,18 +704,13 @@ class MainWindow(Gtk.ApplicationWindow):
                                              b.spin_float("visual.glow_strength", W.spin(0, 3, 0.1, 1))])
         f.add_row("Line width / point size", [b.spin_float("visual.line_width", W.spin(0.2, 10, 0.1, 1)),
                                               b.spin_float("visual.point_size", W.spin(1, 200, 1, 0))])
-        self.theme_combo = b.combo("visual.theme", W.combo([("light", "light"), ("dark", "dark")]))
-        self.theme_combo.connect("changed", lambda *_: self.preview.set_theme(
-            self.theme_combo.get_active_id() or "light"))
-        f.add_row("Theme / font size", [self.theme_combo, b.spin_float("visual.font_size",
-                                                                       W.spin(6, 30, 0.5, 1))])
+        f.add_row("Theme / font size", [b.combo("visual.theme", W.combo([("light", "light"),
+                                                                          ("dark", "dark")])),
+                                        b.spin_float("visual.font_size", W.spin(6, 30, 0.5, 1))])
         f.add_row("Labels", [b.check("visual.show_time_label", W.check("time label")),
                              b.entry("visual.title", W.entry("figure title (optional)", width=20))])
-        right.pack_start(W.frame("Appearance", f), False, False, 0)
-        sw = W.scrolled(right)
-        sw.set_size_request(470, -1)
-        outer.pack_start(sw, False, False, 0)
-        return outer
+        box.pack_start(W.frame("Appearance", f), False, False, 0)
+        return W.scrolled(box)
 
     def _set_rotation(self, angles):
         self._syncing = True
@@ -543,45 +724,27 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_scale(self, *_):
         angles = [s.get_value() for s in self.rot_scales]
         self.angle_label.set_text(format_angles(angles))
-        self.preview.set_angles(angles)
-
-    def _on_preview_rotate(self, angles):
-        self._syncing = True
-        try:
-            for sc, a in zip(self.rot_scales, angles):
-                sc.set_value(float(a))
-        finally:
-            self._syncing = False
-        self.angle_label.set_text(format_angles(angles))
-
-    def _recolor_preview(self):
-        if not self.preview_data or not hasattr(self, "color_mode"):
-            return
-        groups = self._get_groups()
-        mode = self.color_mode.get_active_id() or "groups"
-        colors = static_colors(mode, self.preview_data["chain"], self.preview_data["group_index"],
-                               [g.color for g in groups], W.rgba_to_hex(self.base_color.get_rgba()),
-                               self.chain_palette.get_child().get_text().strip() or "tab10")
-        d = self.preview_data
-        self.preview.set_structure(d["coords"], d["ions"], d["links"], colors)
+        if not self._syncing:  # (the canvas already shows rotations it reported itself)
+            self.canvas.set_rotation(angles)
 
     # ----------------------------------------------------------------- layout
     def _tab_layout(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         form = W.Form()
         self.preset_combo = W.combo([(k, PRESET_LABELS.get(k, k)) for k in PRESETS])
-        self.preset_combo.connect("changed", lambda *_: self._rebuild_slots())
+        self.preset_combo.connect("changed", lambda *_: self._on_preset_changed())
         form.add("Grid preset", self.preset_combo)
         form.add_wide(W.hint(
-            "Data keys look like <analysis>/<output>: time-series panels take one or more series "
-            "(comma separated), dual-axis panels exactly two, heatmaps a per-residue matrix, contact "
-            "maps a residue map. Options are JSON, e.g. {\"mode\": \"frequency\"} for a contact map, "
-            "{\"progressive\": true} or {\"target\": -50} for a time series."))
-        self.slot_grid = Gtk.Grid(column_spacing=8, row_spacing=6, margin=8)
-        form.add_wide(self.slot_grid)
+            "Panels fill the slots in order (slot 1 is the large one). Drag panels in the figure "
+            "to swap them. Choose the data and, for analyses that compare residue groups, which "
+            "groups to use: each group choice is computed and cached on its own. \u201cMore keys\u201d "
+            "adds series to a time-series panel (comma separated data keys); options are JSON, e.g. "
+            "{\"mode\": \"frequency\"} for a contact map or {\"progressive\": true} for a time series."))
+        self.slot_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        form.add_wide(self.slot_box)
         prev = Gtk.Box(spacing=6)
         self.preview_pos = W.spin(0, 10 ** 9)
-        prev.pack_start(W.label("Preview composite frame"), False, False, 0)
+        prev.pack_start(W.label("Real-data still of frame"), False, False, 0)
         prev.pack_start(self.preview_pos, False, False, 0)
         pb = W.button("Render still", self.preview_frame,
                       "Analyse (or load cached results) and render one frame of the video",
@@ -593,51 +756,167 @@ class MainWindow(Gtk.ApplicationWindow):
         self.binder._add("layout", self.preset_combo, self._get_layout, self._set_layout)
         return W.scrolled(box)
 
-    def _key_suggestions(self, panel_type: str) -> List[str]:
+    def _on_preset_changed(self):
+        if self._loading:
+            return
+        self._rebuild_slots()
+        self.refresh_canvas()
+
+    def _project_for_choices(self) -> Project:
         try:
-            project = self.collect(validate=False)
-        except Exception:  # noqa: BLE001 - suggestions are best effort
-            project = self.project
-        keys = expected_keys(project)
-        kind = PANEL_TYPES[panel_type].data_kind if panel_type in PANEL_TYPES else "series"
-        if panel_type == "structure":
+            return self.collect(validate=False, include_layout=False)
+        except Exception:  # noqa: BLE001 - choices are best effort
+            return self.project
+
+    def _data_choices(self, panel_type: str, project: Project) -> List[str]:
+        if panel_type == "structure" or panel_type not in PANEL_TYPES:
             return []
-        return keys.get(kind, [])
+        return expected_keys(project).get(PANEL_TYPES[panel_type].data_kind, [])
+
+    def _slot_editor(self, k: int, spec: PanelSpec, preset: str, project: Project) -> dict:
+        row: dict = {"auto": ""}
+        form = W.Form()
+        title = f"Slot {k + 1}" + (" (large)" if k == 0 and preset.startswith("large") else "")
+        frame = W.frame(title, form)
+        row["frame"] = frame
+        tcombo = W.combo([(t, cls.label) for t, cls in PANEL_TYPES.items()])
+        form.add("Panel type", tcombo)
+        data = Gtk.ComboBoxText()
+        data.set_hexpand(True)
+        data.set_size_request(320, -1)
+        for cell in data.get_cells():  # long labels shrink with an ellipsis
+            cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+        form.add("Data", data)
+        ga, gb = Gtk.ComboBoxText(), Gtk.ComboBoxText()
+        for c in (ga, gb):
+            c.append(DEFAULT_GROUP, "(analysis default)")
+            for name in project.group_names():
+                c.append(name, name)
+        form.add_row("Groups", [ga, W.label("vs"), gb],
+                     "Residue groups this panel's analysis compares; each choice is cached separately")
+        more = W.entry("additional data keys (comma separated)")
+        form.add("More keys", more)
+        title_entry = W.entry("automatic")
+        form.add("Title", title_entry, "Follows the selected data until you type your own title")
+        opts = W.entry("{}")
+        form.add("Options (JSON)", opts)
+        row.update(type=tcombo, data=data, ga=ga, gb=gb, more=more, title=title_entry, opts=opts)
+
+        primary = spec.series[0] if spec.series else ""
+        base_key, groups = primary, ()
+        if primary and "/" in primary:
+            inst, out = split_key(primary)
+            base, groups = parse_instance(inst)
+            base_key = f"{base}/{out}"
+        tcombo.set_active_id(spec.type)
+        self._fill_data(row, spec.type, project, base_key)
+        ga.set_active_id(groups[0] if len(groups) > 0 else DEFAULT_GROUP)
+        gb.set_active_id(groups[1] if len(groups) > 1 else DEFAULT_GROUP)
+        if ga.get_active_id() is None:
+            ga.set_active_id(DEFAULT_GROUP)
+        if gb.get_active_id() is None:
+            gb.set_active_id(DEFAULT_GROUP)
+        more.set_text(", ".join(spec.series[1:]))
+        opts.set_text(json.dumps(spec.options) if spec.options else "")
+        title_entry.set_text(spec.title)
+        row["auto"] = spec.title if spec.title == self._auto_title(row, project) else ""
+        self._update_group_widgets(row)
+
+        tcombo.connect("changed", lambda *_: self._on_slot_type(row))
+        data.connect("changed", lambda *_: self._on_slot_data(row))
+        ga.connect("changed", lambda *_: self._on_slot_data(row))
+        gb.connect("changed", lambda *_: self._on_slot_data(row))
+        for w in (more, title_entry, opts):
+            w.connect("activate", lambda *_: self.refresh_canvas())
+        return row
+
+    def _fill_data(self, row, panel_type, project, select=""):
+        data = row["data"]
+        data.remove_all()
+        keys = self._data_choices(panel_type, project)
+        if select and select not in keys:
+            keys = [select] + keys
+        for key in keys:
+            data.append(key, f"{key_label(key, project)}   [{key}]")
+        if keys:
+            data.set_active_id(select if select else keys[0])
+        data.set_sensitive(bool(keys))
+
+    def _update_group_widgets(self, row):
+        key = row["data"].get_active_id() or ""
+        slots = 0
+        if "/" in key:
+            try:
+                slots = analysis_class(split_key(key)[0]).group_slots
+            except KeyError:
+                slots = 0
+        row["ga"].set_sensitive(slots >= 1)
+        row["gb"].set_sensitive(slots >= 2)
+
+    def _primary_key(self, row, project: Optional[Project] = None) -> str:
+        key = row["data"].get_active_id() or ""
+        if "/" not in key:
+            return key
+        inst, out = split_key(key)
+        base, _ = parse_instance(inst)
+        try:
+            cls = analysis_class(base)
+        except KeyError:
+            return key
+        chosen = [row["ga"].get_active_id() or DEFAULT_GROUP,
+                  row["gb"].get_active_id() or DEFAULT_GROUP][:cls.group_slots]
+        if not any(chosen):
+            return key
+        defaults = list(cls.groups(project or self._project_for_choices())) or [""] * cls.group_slots
+        groups = [c or d for c, d in zip(chosen, defaults)]
+        if cls.group_slots == 1 and not groups[0]:
+            return key
+        return f"{instance_id(base, groups)}/{out}"
+
+    def _auto_title(self, row, project) -> str:
+        if (row["type"].get_active_id() or "") == "structure":
+            return "Structure"
+        key = self._primary_key(row, project)
+        return key_label(key, project) if key else ""
+
+    def _on_slot_type(self, row):
+        project = self._project_for_choices()
+        self._fill_data(row, row["type"].get_active_id() or "timeseries", project)
+        self._on_slot_data(row)
+
+    def _on_slot_data(self, row):
+        self._update_group_widgets(row)
+        project = self._project_for_choices()
+        auto = self._auto_title(row, project)
+        current = row["title"].get_text().strip()
+        if not current or current == row["auto"]:
+            row["title"].set_text(auto)
+        row["auto"] = auto
+        if not self._loading:
+            self.refresh_canvas()
 
     def _rebuild_slots(self, specs: Optional[List[PanelSpec]] = None):
         if specs is None:
             specs = self._read_slots()
-        for child in self.slot_grid.get_children():
-            self.slot_grid.remove(child)
+        for child in self.slot_box.get_children():
+            self.slot_box.remove(child)
         self.slot_rows = []
         preset = self.preset_combo.get_active_id() or "single"
-        for col, text in enumerate(("Slot", "Panel type", "Data keys", "Title", "Options (JSON)")):
-            self.slot_grid.attach(W.label(f"<b>{text}</b>", markup=True), col, 0, 1, 1)
-        for k in range(n_slots(preset)):
-            spec = specs[k] if k < len(specs) else PanelSpec("timeseries", [], "")
-            tcombo = W.combo([(t, cls.label) for t, cls in PANEL_TYPES.items()])
-            tcombo.set_active_id(spec.type)
-            keys = W.combo_entry(self._key_suggestions(spec.type))
-            keys.get_child().set_text(", ".join(spec.series))
-            keys.set_size_request(260, -1)
-            title = W.entry(width=18)
-            title.set_text(spec.title)
-            opts = W.entry("{}", width=18)
-            opts.set_text(json.dumps(spec.options) if spec.options else "")
-            tcombo.connect("changed", lambda c, kc=keys: W.set_combo_entry_items(
-                kc, self._key_suggestions(c.get_active_id() or "timeseries")))
-            r = k + 1
-            self.slot_grid.attach(W.label(f"{k + 1}{' (large)' if k == 0 and 'large' in preset else ''}"),
-                                  0, r, 1, 1)
-            self.slot_grid.attach(tcombo, 1, r, 1, 1)
-            self.slot_grid.attach(keys, 2, r, 1, 1)
-            self.slot_grid.attach(title, 3, r, 1, 1)
-            self.slot_grid.attach(opts, 4, r, 1, 1)
-            self.slot_rows.append({"type": tcombo, "keys": keys, "title": title, "opts": opts})
-        self.slot_grid.show_all()
+        project = self._project_for_choices()
+        loading, self._loading = self._loading, True
+        try:
+            for k in range(n_slots(preset)):
+                spec = specs[k] if k < len(specs) else PanelSpec("timeseries", [], "")
+                row = self._slot_editor(k, spec, preset, project)
+                self.slot_rows.append(row)
+                self.slot_box.pack_start(row["frame"], False, False, 0)
+        finally:
+            self._loading = loading
+        self.slot_box.show_all()
 
     def _read_slots(self) -> List[PanelSpec]:
         specs = []
+        project = None
         for row in self.slot_rows:
             text = row["opts"].get_text().strip()
             try:
@@ -646,9 +925,14 @@ class MainWindow(Gtk.ApplicationWindow):
                     raise ValueError("options must be a JSON object")
             except ValueError as exc:
                 raise ValueError(f"panel options {text!r}: {exc}") from exc
-            keys = [k.strip() for k in row["keys"].get_child().get_text().split(",") if k.strip()]
-            specs.append(PanelSpec(row["type"].get_active_id() or "timeseries", keys,
-                                   row["title"].get_text().strip(), options))
+            ptype = row["type"].get_active_id() or "timeseries"
+            keys = []
+            if ptype != "structure":
+                project = project or self._project_for_choices()
+                primary = self._primary_key(row, project)
+                keys = ([primary] if primary else []) + [
+                    k.strip() for k in row["more"].get_text().split(",") if k.strip()]
+            specs.append(PanelSpec(ptype, keys, row["title"].get_text().strip(), options))
         return specs
 
     def _get_layout(self):
@@ -657,7 +941,11 @@ class MainWindow(Gtk.ApplicationWindow):
                             panels=self._read_slots())
 
     def _set_layout(self, layout):
-        self.preset_combo.set_active_id(layout.preset)  # "changed" rebuilds from old rows
+        loading, self._loading = self._loading, True
+        try:
+            self.preset_combo.set_active_id(layout.preset)
+        finally:
+            self._loading = loading
         self._rebuild_slots(list(layout.panels))
 
     # ---------------------------------------------------------------- outputs
@@ -691,7 +979,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         c = W.Form()
         c.add_wide(b.check("output.charts.enabled", W.check("Write standalone time charts")))
-        c.add("Series", b.csv("output.charts.series", W.entry("all series", width=40)),
+        c.add("Series", b.csv("output.charts.series", W.entry("all series", width=24)),
               "Comma separated data keys, blank = every time series")
         c.add_wide(b.check("output.charts.include_heatmaps", W.check("Also chart per-residue heatmaps")))
         fmt_box = Gtk.Box(spacing=6)
@@ -748,14 +1036,41 @@ class MainWindow(Gtk.ApplicationWindow):
     def load_project(self, project: Project, path: Optional[str] = None) -> None:
         self.project = project
         self.preset_path = path
-        self.binder.load(project)
+        self._loading = True
+        try:
+            self.binder.load(project)
+        finally:
+            self._loading = False
         self._on_scale()
-        self.preview.set_theme(project.visual.theme)
         self.header.set_subtitle(path or "unsaved parameters")
+        self._prefill_conda()
+        self.refresh_canvas()
 
-    def collect(self, validate: bool = True) -> Project:
+    def _prefill_conda(self) -> None:
+        """Suggest an AmberTools environment when cpptraj is not on PATH."""
+        c = self.project.cleaning
+        if self.conda_entry.get_text().strip() or shutil.which(c.cpptraj_path or "cpptraj"):
+            return
+        env = conda.detect_ambertools_env()
+        if env is not None:
+            self.conda_entry.set_text(env.name)
+            self.append_log(f"cpptraj is not on PATH; pre-filled conda environment {env.name!r} "
+                            f"({env.prefix}) - it is activated for every cpptraj call.")
+
+    def detect_conda(self) -> None:
+        envs = conda.find_cpptraj_envs()
+        if not envs:
+            roots = ", ".join(conda.candidate_roots()) or "none found"
+            self.info("No conda environment with cpptraj found",
+                      f"Searched installations: {roots}. Enter the environment name or path manually.")
+            return
+        self.conda_entry.set_text(envs[0].name)
+        self.append_log("Conda environments with cpptraj: " +
+                        ", ".join(f"{e.name} ({e.prefix})" for e in envs))
+
+    def collect(self, validate: bool = True, include_layout: bool = True) -> Project:
         project = self.project.copy()
-        errors = self.binder.store(project)
+        errors = self.binder.store(project, skip=() if include_layout else ("layout",))
         if errors:
             raise ValueError("\n".join(errors))
         if validate:
@@ -766,10 +1081,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ================================================================ actions
     def new_project(self):
-        self.load_project(Project(), None)
         self.preview_data = None
-        self.preview.coords = None
-        self.preview.set_message("Load a topology and trajectory, then click “Load preview”.")
+        self.load_project(Project(), None)
 
     def open_preset(self):
         dlg = Gtk.FileChooserDialog(title="Open parameter preset", transient_for=self,
@@ -863,9 +1176,26 @@ class MainWindow(Gtk.ApplicationWindow):
             self.error("The output directory does not exist yet.", path)
             return
         try:
-            Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(path, None), None)
-        except GLib.Error as exc:
+            how = desktop.open_folder(path)
+            self.append_log(f"Opened {path} ({how})")
+        except (OSError, RuntimeError, GLib.Error) as exc:
             self.error("Could not open the folder", str(exc))
+
+    def open_video(self):
+        try:
+            project = self.collect(validate=False)
+        except ValueError:
+            project = self.project
+        path = self.last_video if self.last_video and os.path.isfile(self.last_video) else \
+            desktop.latest_video(project.out_dir, project.output.video.filename)
+        if not path:
+            self.error("No video has been rendered yet.", project.out_dir)
+            return
+        try:
+            desktop.open_file(path)
+            self.append_log(f"Opened {path}")
+        except (OSError, GLib.Error) as exc:
+            self.error("Could not open the video", str(exc))
 
     # --------------------------------------------------------------- jobs
     def _pipeline(self, project, rep):
@@ -884,6 +1214,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def done(outputs):
             s = outputs.summary()
+            if s["video"]:
+                self.last_video = s["video"]
             lines = []
             if s["video"]:
                 lines.append(f"Video: {s['video']}")
@@ -950,16 +1282,14 @@ class MainWindow(Gtk.ApplicationWindow):
         except ValueError as exc:
             self.error("Invalid parameters", str(exc))
             return
-        self.preview.set_message("Loading reference frame …")
 
         def job(rep):
             return self._pipeline(project, rep).structure_preview()
 
         def done(data):
             self.preview_data = data
-            self._recolor_preview()
-            self.preview.set_angles([s.get_value() for s in self.rot_scales])
-            self.append_log(f"Preview loaded: {len(data['coords'])} residues "
+            self.refresh_canvas()
+            self.append_log(f"Reference frame loaded: {len(data['coords'])} residues "
                             f"({'cleaned' if data['cleaned'] else 'raw'} files).")
 
         self.start_job("Loading preview", job, done)

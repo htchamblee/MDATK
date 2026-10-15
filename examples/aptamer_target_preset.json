@@ -1,7 +1,7 @@
 {
   "format": "mdatk-preset",
   "format_version": 1,
-  "mdatk_version": "0.0.1",
+  "mdatk_version": "0.0.2",
   "inputs": {
     "topology": "system.parm7",
     "trajectories": [
@@ -17,6 +17,8 @@
   "cleaning": {
     "enabled": true,
     "cpptraj_path": "cpptraj",
+    "conda_env": "AmberTools26",
+    "conda_exe": "",
     "solvent_mask": ":WAT,HOH,TIP3,SOL,T3P,T4P,SPC",
     "ion_mask": ":Na+,Cl-,K+,NA,CL,K,Na,Cl,SOD,CLA,POT",
     "extra_strip_mask": "",
@@ -55,6 +57,11 @@
         {
           "label": "Complex",
           "selection": "(group:Aptamer or group:Target) and not name H*",
+          "fit_selection": ""
+        },
+        {
+          "label": "Backbone",
+          "selection": "(group:Aptamer or group:Target) and name C4'",
           "fit_selection": ""
         }
       ],
@@ -146,6 +153,8 @@
     "theme": "light",
     "font_size": 11.0,
     "show_time_label": true,
+    "label_every": 10,
+    "label_residues": "",
     "title": ""
   },
   "layout": {
@@ -160,7 +169,8 @@
       {
         "type": "timeseries",
         "series": [
-          "rmsd/Complex"
+          "rmsd/Complex",
+          "rmsd/Backbone"
         ],
         "title": "RMSD",
         "options": {}
@@ -170,7 +180,7 @@
         "series": [
           "hbonds/count"
         ],
-        "title": "Aptamer-target H-bonds",
+        "title": "",
         "options": {}
       },
       {
@@ -178,7 +188,7 @@
         "series": [
           "contacts/per_residue_a"
         ],
-        "title": "Aptamer residue contacts",
+        "title": "",
         "options": {}
       },
       {
@@ -186,7 +196,7 @@
         "series": [
           "mg/occupancy"
         ],
-        "title": "Mg occupancy",
+        "title": "",
         "options": {}
       }
     ]
@@ -233,6 +243,7 @@
       "selection": "",
       "prefix": "MDATK_frame"
     },
-    "write_params_log": true
+    "write_params_log": true,
+    "timestamp_files": true
   }
 }
