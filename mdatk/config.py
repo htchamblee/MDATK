@@ -310,6 +310,54 @@ class OutputParams:
     timestamp_files: bool = True  # e.g. MDATK_video_2026-10-15_143205.mp4 (cache/log keep fixed names)
 
 
+@dataclass
+class PlanNode:
+    """One box of the Project Planner (a step that writes files for one program).
+
+    ``tool`` names a generator in :mod:`mdatk.workflows`; ``settings`` holds its
+    options (see ``mdatk workflow tools``) and ``files`` hand-picked input files
+    for ports that no connection feeds (``{port: path}``).
+    """
+
+    id: str = ""
+    tool: str = "note"
+    step: int = 1
+    title: str = ""  # "" -> the tool's label
+    x: float = 40.0
+    y: float = 40.0
+    settings: Dict[str, Any] = field(default_factory=dict)
+    files: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PlanEdge:
+    """A connection: output ``output`` of node ``source`` feeds input ``input`` of ``target``."""
+
+    source: str = ""
+    output: str = ""
+    target: str = ""
+    input: str = ""
+
+
+@dataclass
+class WorkflowParams:
+    """Project Planner and script-wizard settings (saved with the preset).
+
+    Generated files are named ``<project>_<step>_<tool>_<stamp>.<ext>``, e.g.
+    ``apt1_03_tleap_20261015-1432.parm7``.  ``stamp`` is fixed the first time
+    files are written so later re-generations keep matching names.
+    """
+
+    project_name: str = "project"
+    stamp: str = ""
+    use_stamp: bool = True
+    out_dir: str = ""  # "" -> <output.out_dir>/<project_name>_workflow
+    step_folders: bool = True  # one sub-folder per step, e.g. 03_amber-build/
+    nodes: List[PlanNode] = field(default_factory=list)
+    edges: List[PlanEdge] = field(default_factory=list)
+    scratch: List[PlanNode] = field(default_factory=list)  # stand-alone wizard settings per tool
+
+
 def _default_groups() -> List[ResidueGroup]:
     # Editable defaults for the reference aptamer/target system.
     return [
@@ -329,6 +377,7 @@ class Project:
     visual: VisualParams = field(default_factory=VisualParams)
     layout: LayoutParams = field(default_factory=LayoutParams)
     output: OutputParams = field(default_factory=OutputParams)
+    workflow: WorkflowParams = field(default_factory=WorkflowParams)
 
     # ------------------------------------------------------------------ I/O
     def to_dict(self) -> Dict[str, Any]:
@@ -391,6 +440,10 @@ class Project:
             self.cleaning.cpptraj_path = fix(self.cleaning.cpptraj_path)
         self.output.out_dir = fix(self.output.out_dir)
         self.output.cache_dir = fix(self.output.cache_dir)
+        self.workflow.out_dir = fix(self.workflow.out_dir)
+        from .workflows import resolve_node_paths  # lazy: workflows imports this module
+        for node in list(self.workflow.nodes) + list(self.workflow.scratch):
+            resolve_node_paths(node, fix)
 
     def group(self, name: str) -> ResidueGroup:
         for g in self.groups:
@@ -405,6 +458,14 @@ class Project:
     @property
     def out_dir(self) -> str:
         return os.path.abspath(self.output.out_dir or f"{PROJECT_ABBREV}_output")
+
+    @property
+    def workflow_dir(self) -> str:
+        """Folder that receives Project Planner / wizard files."""
+        if self.workflow.out_dir:
+            return os.path.abspath(self.workflow.out_dir)
+        from .workflows.naming import sanitize_project
+        return os.path.join(self.out_dir, f"{sanitize_project(self.workflow.project_name)}_workflow")
 
     @property
     def cache_dir(self) -> str:

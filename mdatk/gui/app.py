@@ -80,6 +80,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.busy_widgets: List[Gtk.Widget] = []
         self.pages: Dict[str, Gtk.Widget] = {}
         self.sections: Dict[str, List[Gtk.Frame]] = {}
+        self.planner = None  # Project Planner window (created on demand)
+        self.wizard = None  # stand-alone script wizard window
 
         self._build_header()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -120,6 +122,29 @@ class MainWindow(Gtk.ApplicationWindow):
                                "document-save-symbolic"))
         hb.pack_start(W.button("Save as…", lambda: self.save_preset(True),
                                "Save parameters to a new file (Ctrl+Shift+S)"))
+        wf_menu = Gtk.Menu()
+        for text, cb, tip in (("Project Planner…", self.open_planner,
+                               "Lay out the steps from sequence to MD ensemble on a canvas (Ctrl+P)"),
+                              ("Script wizard…", self.open_wizard,
+                               "Write control files and scripts for one program (Ctrl+Shift+W)")):
+            item = Gtk.MenuItem(label=text)
+            item.set_tooltip_text(tip)
+            item.connect("activate", lambda _w, c=cb: c())
+            wf_menu.append(item)
+        wf_menu.show_all()
+        wf = Gtk.MenuButton()
+        wf_box = Gtk.Box(spacing=4)
+        wf_box.pack_start(Gtk.Image.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON),
+                          False, False, 0)
+        wf_box.pack_start(Gtk.Label(label="Workflow"), False, False, 0)
+        wf_box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
+                          False, False, 0)
+        wf.add(wf_box)
+        wf.set_tooltip_text("Project Planner and script wizard (Rosetta FARFAR2, SimRNA, RNAMake, "
+                            "Amber, GROMACS, VMD)")
+        wf.set_popup(wf_menu)
+        self.workflow_button = wf
+        hb.pack_start(wf)
         menu = Gtk.Menu()
         for text, cb in (("New (defaults)", self.new_project),
                          ("Create demo system…", self.create_demo),
@@ -325,7 +350,9 @@ class MainWindow(Gtk.ApplicationWindow):
         for name, cb, accels in (("open", self.open_preset, ["<Control>o"]),
                                  ("save", self.save_preset, ["<Control>s"]),
                                  ("saveas", lambda: self.save_preset(True), ["<Control><Shift>s"]),
-                                 ("render", self.render, ["<Control>r"])):
+                                 ("render", self.render, ["<Control>r"]),
+                                 ("planner", self.open_planner, ["<Control>p"]),
+                                 ("wizard", self.open_wizard, ["<Control><Shift>w"])):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda _a, _p, c=cb: c())
             self.add_action(action)
@@ -1045,6 +1072,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.header.set_subtitle(path or "unsaved parameters")
         self._prefill_conda()
         self.refresh_canvas()
+        if self.wizard is not None:
+            self.wizard.destroy()
+            self.wizard = None
+        if self.planner is not None:
+            self.planner.reload()
 
     def _prefill_conda(self) -> None:
         """Suggest an AmberTools environment when cpptraj is not on PATH."""
@@ -1070,6 +1102,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def collect(self, validate: bool = True, include_layout: bool = True) -> Project:
         project = self.project.copy()
+        # the planner / wizard edit the live workflow object; keep sharing it
+        project.workflow = self.project.workflow
         errors = self.binder.store(project, skip=() if include_layout else ("layout",))
         if errors:
             raise ValueError("\n".join(errors))
@@ -1155,6 +1189,43 @@ class MainWindow(Gtk.ApplicationWindow):
             self.open_path(result["preset"])
 
         self.start_job("Creating demo", job, done)
+
+    def open_planner(self):
+        from .planner import PlannerWindow
+        if self.planner is None:
+            self.planner = PlannerWindow(self)
+            self.planner.connect("destroy", lambda *_: setattr(self, "planner", None))
+        self.planner.present()
+
+    def open_wizard(self, tool: Optional[str] = None):
+        from .wizard import WizardWindow
+        if self.wizard is None:
+            self.wizard = WizardWindow(self, tool=tool)
+            self.wizard.connect("destroy", lambda *_: setattr(self, "wizard", None))
+        elif tool:
+            self.wizard.select_tool(tool)
+        self.wizard.present()
+
+    def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
+        """Use files planned by the Project Planner as this project's analysis inputs."""
+        try:
+            project = self.collect(validate=False)
+        except ValueError:
+            project = self.project.copy()
+            project.workflow = self.project.workflow
+        project.inputs.topology = topology
+        project.inputs.trajectories = list(trajectories)
+        if clean:
+            project.cleaning.enabled = True
+        planner, wizard = self.planner, self.wizard
+        self.planner = self.wizard = None  # same workflow object: keep the windows as they are
+        try:
+            self.load_project(project, self.preset_path)
+        finally:
+            self.planner, self.wizard = planner, wizard
+        missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
+        self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
+                        f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))
 
     def show_about(self):
         dlg = Gtk.AboutDialog(transient_for=self, modal=True)

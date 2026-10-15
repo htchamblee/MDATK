@@ -12,6 +12,11 @@ heatmaps and contact maps.
 
 Everything runs locally; MDATK makes no network calls.
 
+Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
+wizard and a free-form **Project Planner** generate consistently named control files for Rosetta
+FARFAR2, SimRNA, RNAMake, Amber (tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD
+ensemble. MDATK only writes these files; it never runs those programs.
+
 ---
 
 ## Contents
@@ -19,6 +24,7 @@ Everything runs locally; MDATK makes no network calls.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Workflow](#workflow)
+- [Script wizard and Project Planner](#script-wizard-and-project-planner)
 - [Analyses](#analyses)
 - [Structural view, colouring and glow](#structural-view-colouring-and-glow)
 - [Panels, data keys and layouts](#panels-data-keys-and-layouts)
@@ -141,6 +147,112 @@ The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output fol
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
 cpptraj is in the expander above it. Presets are opened/saved from the header bar (Ctrl+O /
 Ctrl+S, Ctrl+R renders). Long jobs run in a background thread and can be cancelled.
+
+## Script wizard and Project Planner
+
+The **Workflow** menu in the header bar opens two windows (they also work from the command
+line, see below). Both only **write** files and scripts; nothing is executed.
+
+- **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
+  radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
+  The options are the RNA-relevant ones for each program plus a free-text box for anything else.
+  Logic checks run on every change: **errors** (conflicting or impossible settings) block writing,
+  **warnings** flag likely mistakes and **infos** point out redundant or noteworthy choices; the
+  offending fields are highlighted and clicking a message jumps to the field. A live preview shows
+  every file that will be written.
+- **Project Planner** (Ctrl+P): a canvas on which you place boxes (steps) and connect them by
+  dragging from an output port (right edge) to an input port (left edge); only compatible files
+  connect, and loops are refused. Double-click a box to edit it in the wizard. *Templates* insert
+  pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
+  VMD; Amber protocol; Amber → GROMACS). *Write all files* writes every step, a master script that
+  runs the steps in order, and a Markdown summary of the plan. *Use for analysis* (on an MDATK
+  analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
+  the preset (`workflow` section), so one JSON file holds the plan and the analysis settings.
+  `examples/rna_plan_preset.json` is a complete example plan (open it, set the output folder, and
+  open the planner).
+
+### File names
+
+Every file is named `<project>_<step>_<tool>_<time>.<ext>`, e.g. `apt1_03_tleap_20261015-1432.parm7`:
+the project name, the step number of the box, the program or stage that writes the file, and one
+time stamp per plan. The stamp is fixed the first time files are written (and stored in the preset),
+so later re-generations keep the same names; *New stamp* starts a new set, and the stamp can be
+switched off. Each step writes into its own folder (`03_amber-build/`), and scripts refer to the files
+of other steps by relative paths (`../03_amber-build/apt1_03_parmed_….parm7`), so a whole plan folder
+can be copied to a cluster. Every script starts with `cd "$(dirname "$0")"`, so it can be started from
+anywhere.
+
+### Step types
+
+| Step | Writes | Notes |
+|---|---|---|
+| **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise) |
+| **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
+| **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
+| **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
+| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, a PDB-preparation helper and the build script | see below |
+| **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
+| **Amber · MD stages** | one mdin per stage and the run scripts | see below |
+| **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
+| **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours, bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
+| **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
+
+**Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (`frcmod.99bsc0-chiol3-CaseP`),
+the NBfix19 and 0BPh Lennard-Jones pair modifications applied with ParmEd (only offered with OL3 + CP,
+whose atom types their masks assume), SPC/E water in a 15 Å truncated octahedron, neutralising Na⁺,
+optional Mg²⁺ balanced with Cl⁻, and the stages min1 (solute restrained) → min2 → heat (Langevin from
+0 K) → NPT equilibration → NPT equilibration without positional restraints → production; the mdin files
+match the hand-written reference files line for line. Other choices: RNA force fields OL3, LJbb,
+ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D; 12-6-4 Mg²⁺ (loads the
+matching `frcmod.ions…_1264_<water>` and runs ParmEd `add12_6_4`); hydrogen mass repartitioning;
+positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
+temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
+a separate production script for the cluster; resuming (finished stages are skipped); a dry PDB and a
+dry, imaged production trajectory. The **two-pass build** (dry tleap → ParmEd → ambpdb → `to_lrna.sh`
+→ solvated tleap → ParmEd) is there for L-RNA: leap cannot reload a prmtop, and ambpdb writes D-RNA
+residue names, so `to_lrna.sh` renames the given ranges before the second pass. The engine is pmemd,
+pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
+the same input, the version is recorded in the scripts. The *Environment* section adds
+`conda activate` / `module load` / `source amber.sh` lines.
+
+> tleap merges atom types with identical Lennard-Jones parameters: HO (2′-OH hydrogen) shares its LJ
+> type with water HW (both have zero LJ terms) and O2 with base carbonyl O. ParmEd's
+> `changeLJPair @%HO @%O2` / `@%OS` therefore also changes water-H…O2/OS and HO…O interactions. The
+> wizard says so, and *Separate HO and O2 Lennard-Jones types first* (`addLJType @%HO`,
+> `addLJType @%O2`) restricts the pairs to the intended atoms. It is off by default so the reference
+> protocol is reproduced unchanged.
+
+**GROMACS.** ParmEd's GROMACS writer (and acpype) keep only the diagonal Lennard-Jones terms, so the
+NBfix19 / 0BPh pairs would be lost silently. MDATK's conversion script therefore gives every LJ type
+its own name and adds the modified pairs from the Amber tables as `[ nonbond_params ]` (and, for 1-4
+interactions, `[ pairtypes ]` scaled by fudgeLJ); converting such a topology with acpype is an error,
+and 12-6-4 topologies cannot be converted. Checks cover grompp warnings that stop a run with
+`-maxwarn 0` (Berendsen coupling, Parrinello-Rahman with new velocities), `-update gpu` restrictions
+(no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
+(GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
+
+### Command line
+
+```bash
+mdatk workflow tools                       # step types; `mdatk workflow tools amber-md` lists options
+mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
+    -i topology=sys.parm7 -i coordinates=sys.rst7 -i restraints=helix.dist \
+    --set engine=pmemd.MPI --set nproc=32 --set stages.5.nstlim=150000000
+mdatk workflow template farfar2-amber -p plan.json   # add a template to a preset's plan
+mdatk workflow check -p plan.json                    # list the plan's problems
+mdatk workflow write -p plan.json [--step 3]         # write files, master script, summary
+mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
+    --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
+```
+
+### What was tested
+
+The Amber chain was run end to end with AmberTools 26: tleap, ParmEd 4.3.1, ambpdb and cpptraj, with
+sander standing in for pmemd. The restraints, segments, a 4 fs HMR step and the dry trajectory were
+included. The GROMACS output was run through ParmEd conversion, grompp and mdrun with GROMACS 2023.3.
+For Rosetta, SimRNA, RNAMake, VMD and x3dna-dssr, the flags were checked against each program's
+source or documentation. The scripts were tested with stand-in executables. Review the generated
+scripts before running them on your machines.
 
 ## Analyses
 
@@ -273,6 +385,7 @@ mdatk render    -p PRESET [--no-video|--no-charts|--no-pdb] [--force] [--from-ca
 mdatk charts    -p PRESET [--series k1,k2] [--formats png,svg,pdf] [--dpi N] [--from-cache]
 mdatk export-pdb -p PRESET [--frame-list "0, last"] [--times "1ns"] [--selection "Aptamer"]
 mdatk preview   -p PRESET --frame N [--output still.png] [--from-cache]
+mdatk workflow tools|generate|template|check|write|restraints   (see Script wizard and Project Planner)
 ```
 
 Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
@@ -301,6 +414,9 @@ visual     structure_groups, trace_atoms, align_frames, rotation, color_mode, co
            proximity_set/cutoff, glow_mode/color/fade_frames/strength, theme, sizes, title
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log
+workflow   project_name, stamp, use_stamp, out_dir, step_folders,
+           nodes[] {id, tool, step, title, x, y, settings{}, files{}},
+           edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
 
 Unknown keys are ignored with a warning and missing keys take their defaults, so presets stay
@@ -322,7 +438,12 @@ mdatk/
   render/            layouts, panels, colouring/glow, orientation, theme, video (FFmpeg), charts,
                      example data for the GUI preview
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
-  cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas)
+  workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
+                     SimRNA, RNAMake, Amber, GROMACS, VMD; plan.py resolves the Project Planner
+                     graph and names files; scripts/ holds self-contained helper programs that
+                     are embedded in generated workflows
+  cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas,
+                     gui/wizard.py: script wizard, gui/planner.py: Project Planner)
   demo.py            synthetic RNA system generator
 ```
 
@@ -336,12 +457,22 @@ the cache and the GUI.
 **Adding a panel type**: subclass `mdatk.render.panels.Panel`, implement `setup` /
 `draw_frame` (and `animated_artists` for fast blitting) and decorate it with `@register_panel`.
 
+**Adding a step type (script generator)**: subclass `mdatk.workflows.base.Tool`, describe the options
+as `Section`s of `Option`s (the wizard builds its forms from them), declare `inputs` / `outputs`
+ports with file kinds, and implement `check` (return `Issue`s), `output_values` (the planned output
+names, from `ctx.name(tag, ext)`) and `generate` (return `GeneratedFile`s); decorate it with
+`@register`. It appears in the wizard, the planner and `mdatk workflow`.
+
 ## Testing
 
 ```bash
 pip install '.[test]'
 xvfb-run -a pytest                                # GUI tests need a display (Xvfb works)
 MDATK_TEST_CPPTRAJ=/path/to/cpptraj pytest        # also run the real-cpptraj test
+MDATK_TEST_AMBERHOME=$AMBERHOME pytest tests/test_workflow_integration.py
+                                                  # run generated Amber scripts with tleap, ParmEd,
+                                                  # ambpdb, sander, cpptraj (add MDATK_TEST_GROMACS=1
+                                                  # with gmx on PATH for the GROMACS conversion + run)
 ```
 
 The suite covers exact geometric criteria of every analysis on hand-built systems, cache keys
@@ -361,6 +492,9 @@ available), the full pipeline including FFmpeg output, the CLI and GUI smoke tes
 - Very large systems: restrict groups and the structure selection to the region of interest;
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
+- The script wizard and planner only write files. Generated scripts call the programs by name
+  (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
+  step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.
