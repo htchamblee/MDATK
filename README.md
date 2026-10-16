@@ -649,6 +649,10 @@ fog, glow and translucency, thread safety and a render without a display.
 - The script wizard and planner only write files. Generated scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
+- 3D representations are made for nucleic acids. Protein residues get a tube through CA in
+  cartoons (no helix / sheet detection), and licorice, VDW, surface and trace work for any
+  residue. Surfaces are rebuilt every frame (tens of ms for a few thousand atoms; the grid
+  coarsens to 1.5 Å above 5 000 atoms).
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.
