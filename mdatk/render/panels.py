@@ -236,7 +236,8 @@ class StructurePanel(Panel):
         self._residue_tags(v, tr)
         self._legend(v, tr)
         self.stage = None
-        self.covered = np.zeros(n_res, dtype=bool)  # residues drawn by a 3D representation
+        self.stage_note = ""
+        self.covered = np.zeros(n_res, dtype=bool)  # residues the 2D trace leaves to the 3D scene
         if v.representations:
             self._setup_stage(ds, tr)
 
@@ -250,27 +251,36 @@ class StructurePanel(Panel):
         atoms = ds.results.get("atoms")
         if atoms is None:
             raise KeyError("atoms")
-        scene = build_scene(atoms, tr, v.representations, self.ctx.project.group_names(), v.backbone_atom)
-        renderer, note = get_renderer(v.renderer)
-        if renderer is None:
-            self.stage_note = note
+        scene = build_scene(atoms, tr, v.representations, self.ctx.project.group_names(), v.backbone_atom,
+                            v.rep_rest)
+        if scene is None:
             return
+        renderer, note = get_renderer(v.renderer)
+        if note:
+            self.stage_note = note
+            log.warning("3D representations: %s", note)
         xyz = np.asarray(atoms.arrays["coords"], dtype=np.float32) - self.center.astype(np.float32)
         self.stage = MoleculeStage(self, scene, xyz, renderer)
-        for style in scene.styles:
-            if style is not None:
-                self.covered |= style.mask
-        if note:
-            log.info(note)
+        self.covered[:] = True  # the scene draws every residue (or hides it): no 2D trace
 
     def residue_rgb(self, pos: int) -> np.ndarray:
-        """Residue colours of a frame without fog (the 3D renderer fogs by depth), tinted
-        toward the glow colour while a residue glows."""
+        """Residue colours of a frame without fog (the 3D renderer fogs by depth); renderers
+        that do not draw the glow themselves get them tinted toward the glow colour."""
         v = self.ctx.project.visual
         rgb = frame_colors(self.static, v.color_mode, v.base_color, v.proximity_color,
                            self.color_i[:, pos], self.member)[:, :3].astype(np.float64)
+        if self.stage is not None and getattr(self.stage.renderer, "draws_glow", False):
+            return rgb
         glow = np.clip(self.glow[:, pos] * v.glow_strength, 0, 1)[:, None]
         return rgb * (1 - 0.35 * glow) + self.glow_rgb[None, :] * 0.35 * glow
+
+    def shading(self, pos: int):
+        """Depth cue and glow of a frame for the 3D renderer."""
+        from .molecule.scene import Shading
+
+        v = self.ctx.project.visual
+        return Shading(self.fog_rgb(), self.fog_strength(),
+                       np.clip(self.glow[:, pos] * v.glow_strength, 0, 1).astype(np.float32), self.glow_rgb)
 
     def fog_rgb(self) -> np.ndarray:
         return np.array(to_rgba(self.theme.surface))[:3]
@@ -315,8 +325,8 @@ class StructurePanel(Panel):
         self._level = map_level(self._dmap, d.level)
         self._density_rgb = np.array(to_rgba(d.color))[:3]
         self.density_img = self.ax.imshow(np.zeros((2, 2, 4), np.float32), extent=(0, 1, 0, 1),
-                                          origin="lower", interpolation="bilinear", zorder=0.5,
-                                          aspect="auto")
+                                          origin="lower", interpolation="bilinear",
+                                          zorder=3.5 if d.front else 0.5, aspect="auto")
         self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
         self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
 
@@ -497,6 +507,8 @@ class StructurePanel(Panel):
             self.lines.set_color(seg_col[so])
             self.lines.set_linewidths(v.line_width * (0.5 + 0.9 * seg_depth[so]))
         intensity = self.glow[:, pos] * v.glow_strength
+        if self.stage is not None and getattr(self.stage.renderer, "draws_glow", False):
+            intensity = np.zeros(0)  # the renderer draws the glow around the 3D residues
         sel = np.flatnonzero(intensity > 0.01)
         if len(sel):
             rgba_o = np.zeros((len(sel), 4))

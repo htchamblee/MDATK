@@ -6,7 +6,7 @@ plus per-primitive RGBA colours, which a renderer turns into pixels.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -23,6 +23,36 @@ class Colored:
     prim: object  # Mesh, Spheres or Sticks
     rgb: np.ndarray  # per vertex (Mesh) or per primitive (Spheres / Sticks)
     opacity: float = 1.0
+
+
+@dataclass
+class Shading:
+    """Per-render look shared by every renderer: depth cue and glow."""
+
+    fog_rgb: np.ndarray  # colour distant parts fade toward (the panel surface)
+    fog_strength: float = 0.0  # 0 = no depth cue
+    glow: Optional[np.ndarray] = None  # per residue row, 0..1
+    glow_rgb: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.69, 0.0]))
+
+
+def depth_range(items: Sequence[Colored], axis: np.ndarray) -> "tuple[float, float]":
+    """View-depth extent (Å along ``axis``) of every primitive, radii included, plus 1 Å."""
+    lo, hi = np.inf, -np.inf
+    for it in items:
+        p = it.prim
+        if isinstance(p, Mesh):
+            pts, rad = [p.verts], 0.0
+        elif isinstance(p, Spheres):
+            pts, rad = [p.xyz], float(np.max(p.radius)) if len(p.radius) else 0.0
+        else:
+            pts, rad = [p.a, p.b], float(np.max(p.radius)) if len(p.radius) else 0.0
+        for q in pts:
+            if len(q):
+                z = np.asarray(q, np.float64) @ axis
+                lo, hi = min(lo, float(z.min()) - rad), max(hi, float(z.max()) + rad)
+    if not np.isfinite(lo):
+        return -1.0, 1.0
+    return lo - 1.0, hi + 1.0
 
 
 def residue_masks(specs: Sequence[RepSpec], member: np.ndarray, group_names: Sequence[str],
@@ -102,8 +132,9 @@ class MoleculeScene:
 
 
 def build_scene(atoms_result, trace_result, specs: Sequence[RepSpec], group_names: Sequence[str],
-                backbone_atom: str = "P") -> Optional[MoleculeScene]:
-    """Scene from the cached ``atoms`` and ``trace`` results (None without atoms)."""
+                backbone_atom: str = "P", rest: str = "trace") -> Optional[MoleculeScene]:
+    """Scene from the cached ``atoms`` and ``trace`` results (None without atoms).  Residues
+    no representation draws get a ``trace`` representation unless ``rest`` is "hide"."""
     if atoms_result is None or not specs:
         return None
     a, tr = atoms_result, trace_result
@@ -116,8 +147,17 @@ def build_scene(atoms_result, trace_result, specs: Sequence[RepSpec], group_name
     if member is None:
         gi = np.asarray(tr.arrays["group_index"])
         member = np.array([gi == k for k in range(len(group_names))], dtype=bool).reshape(-1, n_res)
+    specs = list(specs)
     masks = residue_masks(specs, np.asarray(member, dtype=bool), list(group_names), n_res)
+    drawn = np.zeros(n_res, bool)
+    for spec, mask in zip(specs, masks):
+        if spec.style in STYLES:
+            drawn |= mask
+    if rest == "trace" and not drawn.all():
+        specs.append(RepSpec(style="trace", color="residue"))
+        masks.append(~drawn)
     return MoleculeScene(topo, specs, masks)
 
 
-__all__ = ["Colored", "MoleculeScene", "build_scene", "residue_masks", "Mesh", "Spheres", "Sticks"]
+__all__ = ["Colored", "Shading", "MoleculeScene", "depth_range", "build_scene", "residue_masks", "Mesh",
+           "Spheres", "Sticks"]

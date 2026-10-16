@@ -176,7 +176,8 @@ class FigureCanvas(Gtk.DrawingArea):
         below the structure panel's animated artists."""
         if self.structure is None:
             return []
-        return self.structure.rotation_artists() + self.structure.animated_artists()
+        arts = self.structure.rotation_artists() + self.structure.animated_artists()
+        return sorted(arts, key=lambda a: a.get_zorder())  # as a full draw (density shadow in front)
 
     def _blit(self) -> None:
         canvas = self._canvas

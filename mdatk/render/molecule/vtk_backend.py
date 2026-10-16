@@ -1,14 +1,16 @@
 """Optional VTK renderer for the 3D representations (``pip install vtk``).
 
-VTK renders offscreen into an RGBA image with a transparent background, so the
-density shadow and the glow halos drawn by matplotlib show around the molecule.
+Used only when ``renderer: vtk`` is chosen; the built-in software renderer is the
+default.  VTK renders offscreen into an RGBA image with a transparent background, so
+the density shadow and the glow halos drawn by matplotlib show around the molecule.
 
 * Only ``vtkmodules`` is used (no pyvista).  Spheres and sticks are GPU
   impostors; meshes are ordinary polydata.
 * The view rotation is the actors' user matrix, the camera is orthographic and
   matched to the panel's axes limits, and the depth cue is applied in the
-  fragment shader (blend toward the panel colour with depth).
-* Anti-aliasing: 2x supersampling, averaged with premultiplied alpha.
+  fragment shader (blend toward the panel colour over the panel's depth range,
+  as the software renderer does).
+* Anti-aliasing: the silhouette alpha is smoothed like the software renderer's.
 * OpenGL contexts belong to the thread that created them, so every thread
   (GUI main loop, video worker) gets its own scene; call :func:`release_thread`
   when a thread is done.
@@ -30,10 +32,10 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .geometry import Mesh, Spheres, Sticks
-from .scene import Colored
+from .scene import Colored, Shading, depth_range
 
 _PROBE: Dict[Tuple, Tuple[bool, str]] = {}
-_SCENES: Dict[int, "Scene"] = {}
+_SCENES: Dict[int, Tuple[threading.Thread, "Scene"]] = {}
 _LOCK = threading.Lock()
 
 
@@ -96,23 +98,29 @@ def _probe() -> None:  # pragma: no cover - runs in a subprocess
 def release_thread() -> None:
     """Free the calling thread's VTK scene (call it from that thread)."""
     with _LOCK:
-        scene = _SCENES.pop(threading.get_ident(), None)
-    if scene is not None:
-        scene.finalize()
+        entry = _SCENES.pop(threading.get_ident(), None)
+    if entry is not None and entry[0] is threading.current_thread():
+        entry[1].finalize()
 
 
 class VtkRenderer:
     name = "vtk"
+    draws_glow = False  # the panel keeps its glow halos and tints glowing residues
 
-    def render(self, items: List[Colored], viewport, fog_rgb, fog_strength: float,
-               quality: str = "high") -> np.ndarray:
-        tid = threading.get_ident()
+    def render(self, items: List[Colored], viewport, shading: Shading, quality: str = "high") -> np.ndarray:
+        tid, me = threading.get_ident(), threading.current_thread()
         with _LOCK:
-            scene = _SCENES.get(tid)
-            if scene is None:
-                scene = _SCENES[tid] = Scene()
-        ss = 2 if quality == "high" else 1
-        return scene.render(items, viewport, np.asarray(fog_rgb, float), float(fog_strength), ss)
+            entry = _SCENES.get(tid)
+            if entry is None or entry[0] is not me:  # thread ids are reused: never share a context
+                entry = _SCENES[tid] = (me, Scene())
+        rgba = entry[1].render(items, viewport, shading)
+        if quality != "fast":
+            from scipy import ndimage
+
+            a = rgba[..., 3].astype(np.float32)
+            a3 = ndimage.uniform_filter(a, 3, mode="constant")
+            rgba[..., 3] = np.where(np.abs(a3 - a) > 1, 0.5 * (a + a3), a).astype(np.uint8)
+        return rgba
 
 
 class Scene:
@@ -190,18 +198,25 @@ class Scene:
         return a
 
     def _set_fog(self, actor, fog) -> None:
-        if actor.fog == fog:
-            return
+        """Fog fraction ``clamp(a + b * depth01, 0, strength)`` toward ``rgb`` (uniforms, so
+        only switching it on or off recompiles the shader)."""
+        r, g, b, strength, fa, fb = fog
         sp = actor.GetShaderProperty()
-        sp.ClearAllFragmentShaderReplacements()
-        r, g, b, strength = fog
-        if strength > 0:
-            sp.AddFragmentShaderReplacement(
-                "//VTK::Light::Impl", False,
-                "//VTK::Light::Impl\n  gl_FragData[0].rgb = mix(gl_FragData[0].rgb, "
-                f"vec3({r:.4f}, {g:.4f}, {b:.4f}), {strength:.4f} * clamp(gl_FragCoord.z, 0.0, 1.0));\n",
-                False)
-        actor.fog = fog
+        on = strength > 0
+        if actor.fog != on:
+            sp.ClearAllFragmentShaderReplacements()
+            if on:
+                sp.AddFragmentShaderReplacement(
+                    "//VTK::Light::Impl", False,
+                    "//VTK::Light::Impl\n  gl_FragData[0].rgb = mix(gl_FragData[0].rgb, fogColor, "
+                    "clamp(fogA + fogB * gl_FragCoord.z, 0.0, fogMax));\n", False)
+            actor.fog = on
+        if on:
+            u = sp.GetFragmentCustomUniforms()
+            u.SetUniform3f("fogColor", [r, g, b])
+            u.SetUniformf("fogA", fa)
+            u.SetUniformf("fogB", fb)
+            u.SetUniformf("fogMax", strength)
 
     # -- primitives
     def _points(self, pd, xyz, arrays, rgb):
@@ -244,11 +259,11 @@ class Scene:
         pd.Modified()
 
     # -- render
-    def render(self, items: List[Colored], vp, fog_rgb, fog_strength: float, ss: int) -> np.ndarray:
+    def render(self, items: List[Colored], vp, shading: Shading) -> np.ndarray:
         from vtkmodules.util.numpy_support import vtk_to_numpy
         from vtkmodules.vtkCommonCore import vtkUnsignedCharArray
 
-        w, h = vp.width * ss, vp.height * ss
+        w, h = vp.width, vp.height
         if self.size != (w, h):
             self.rw.SetSize(w, h)
             self.size = (w, h)
@@ -256,7 +271,18 @@ class Scene:
             for j in range(3):
                 self.view.SetElement(i, j, float(vp.R[i, j]))
         self.view.Modified()
-        fog = (float(fog_rgb[0]), float(fog_rgb[1]), float(fog_rgb[2]), fog_strength)
+        # orthographic camera matched to the axes (view coordinates: x right, y up, z to the
+        # viewer), clipped to the drawn geometry
+        zlo, zhi = depth_range(items, vp.R[2])
+        near = 10.0
+        eye = zhi + near
+        far = near + (zhi - zlo)
+        # fog over the panel's depth range: view z = eye - near - depth01 * (far - near)
+        flo, fhi = vp.zrange
+        span = max(fhi - flo, 1e-6)
+        k = float(shading.fog_strength)
+        fog = (*(float(c) for c in shading.fog_rgb[:3]), k,
+               k * (fhi - eye + near) / span, k * (far - near) / span)
         used = {"mesh": 0, "spheres": 0, "sticks": 0}
         for it in items:
             p = it.prim
@@ -291,45 +317,19 @@ class Scene:
         for kind, pool in self.pools.items():
             for a in pool[used[kind]:]:
                 a.VisibilityOff()
-        # orthographic camera matched to the axes (view coordinates: x right, y up, z to the viewer)
         cam = self.ren.GetActiveCamera()
         cam.ParallelProjectionOn()
         xmid, ymid = 0.5 * sum(vp.xlim), 0.5 * sum(vp.ylim)
-        zmin, zmax = vp.zrange
-        margin = 12.0
-        dist = (zmax - zmin) + 4 * margin + 10.0
-        cam.SetFocalPoint(xmid, ymid, 0.0)
-        cam.SetPosition(xmid, ymid, zmax + margin + dist)
+        cam.SetFocalPoint(xmid, ymid, zlo)
+        cam.SetPosition(xmid, ymid, eye)
         cam.SetViewUp(0.0, 1.0, 0.0)
         cam.SetParallelScale(0.5 * (vp.ylim[1] - vp.ylim[0]))
-        cam.SetClippingRange(dist, dist + (zmax - zmin) + 2 * margin)
+        cam.SetClippingRange(near, far)
         self.rw.Render()
         arr = vtkUnsignedCharArray()
         self.rw.GetRGBACharPixelData(0, 0, w - 1, h - 1, 0, arr)
-        rgba = vtk_to_numpy(arr).reshape(h, w, 4)[::-1]  # VTK rows start at the bottom
-        if ss > 1:
-            rgba = _downsample(rgba, ss)
-        return np.ascontiguousarray(rgba)
+        return np.ascontiguousarray(vtk_to_numpy(arr).reshape(h, w, 4)[::-1])  # VTK rows start at the bottom
 
 
 def _rgb8(rgb) -> np.ndarray:
     return np.ascontiguousarray(np.clip(np.asarray(rgb, dtype=np.float64) * 255.0 + 0.5, 0, 255).astype(np.uint8))
-
-
-def _downsample(rgba: np.ndarray, f: int) -> np.ndarray:
-    """Average ``f`` x ``f`` pixel blocks with premultiplied alpha (strided adds: fast)."""
-    h, w = rgba.shape[0] // f, rgba.shape[1] // f
-    x = rgba[:h * f, :w * f].astype(np.float32)
-    a = x[..., 3:4]
-    pm = x[..., :3] * a
-    acc_pm = np.zeros((h, w, 3), np.float32)
-    acc_a = np.zeros((h, w, 1), np.float32)
-    for i in range(f):
-        for j in range(f):
-            acc_pm += pm[i::f, j::f]
-            acc_a += a[i::f, j::f]
-    out = np.empty((h, w, 4), np.uint8)
-    np.clip(acc_pm / np.maximum(acc_a, 1e-6) + 0.5, 0, 255, out=acc_pm)
-    out[..., :3] = acc_pm
-    out[..., 3:] = np.clip(acc_a / (f * f) + 0.5, 0, 255)
-    return out

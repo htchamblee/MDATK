@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "MDAnalysis>=2.4",
-    "numpy>=1.22",
+    "numpy>=1.25",  # fast ufunc.at (the 3D renderer)
     "scipy>=1.8",
     "matplotlib>=3.6",
 ]
@@ -30,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["PyGObject>=3.36", "pycairo>=1.16"]
 netcdf4 = ["netCDF4"]
+vtk = ["vtk>=9.1,<10"]
 test = ["pytest>=7"]
 
 [project.scripts]

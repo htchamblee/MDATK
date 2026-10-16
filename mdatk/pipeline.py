@@ -280,7 +280,10 @@ class Pipeline:
         from .render.video import render_frame
 
         self.ensure_density_fit()
-        return render_frame(dataset, self.project, pos, path)
+        try:
+            return render_frame(dataset, self.project, pos, path)
+        finally:
+            _release_gl()
 
     def write_params_log(self, outputs: RunOutputs) -> str:
         path = os.path.join(self.project.out_dir, PARAMS_LOG_NAME)

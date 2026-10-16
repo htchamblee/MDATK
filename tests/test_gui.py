@@ -182,3 +182,33 @@ def test_density_map_fit_shadow_and_drag(window, tmp_path):
     # choosing another map forgets the placement
     window.density_map_entry.set_text(path + ".other")
     assert dp.transform == []
+
+
+def test_representation_editor_and_3d_preview(window):
+    from mdatk.config import RepSpec
+
+    window._add_rep_row(RepSpec("cartoon", ["Aptamer"], sugars=True))
+    window._add_rep_row(RepSpec("licorice", ["Target"], color="element", size=0.8))
+    reps = window.collect(validate=False).visual.representations
+    assert [(r.style, r.groups, r.color) for r in reps] == [("cartoon", ["Aptamer"], "auto"),
+                                                           ("licorice", ["Target"], "element")]
+    assert reps[0].sugars and reps[1].size == pytest.approx(0.8)
+    window.refresh_canvas()
+    canvas = window.canvas
+    assert pump(lambda: canvas.structure is not None and canvas.structure.stage is not None, 30)
+    st = canvas.structure
+    assert canvas._moving_artists().count(st.stage.image) == 1  # blitted once, as in the video
+    assert st.stage.image.rgba is not None and st.stage.image.rgba[..., 3].any()
+    assert not len(st.points.get_offsets())  # every residue is in the 3D scene (others as a trace)
+    sx, sy, sw, sh = canvas.slots[canvas.structure_slot]
+    cx, cy = sx + sw / 2, sy + sh / 2
+    canvas._on_press(None, Ev(cx, cy))
+    canvas._on_motion(None, Ev(cx + 30, cy))
+    assert st.stage.quality == "fast"  # half resolution while dragging
+    canvas._on_release(None, Ev(cx + 30, cy))
+    assert pump(lambda: st.stage.quality == "high", 5)
+    window._remove_rep_row(window.rep_rows[1])
+    p = window.collect(validate=False)
+    assert [r.style for r in p.visual.representations] == ["cartoon"]
+    window.binder.load(p)
+    assert window.collect(validate=False).to_dict() == p.to_dict()

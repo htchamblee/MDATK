@@ -109,8 +109,7 @@ class MoleculeStage:
         vp = Viewport(self.panel.view_matrix, ax.get_xlim(), ax.get_ylim(), width, height,
                       (self.panel.zmin, self.panel.zmax))
         try:
-            return self.renderer.render(self._items, vp, self.panel.fog_rgb(), self.panel.fog_strength(),
-                                        quality=self.quality)
+            return self.renderer.render(self._items, vp, self.panel.shading(self._pos), quality=self.quality)
         except Exception as exc:  # noqa: BLE001 - never break a video for the 3D layer
             log.warning("3D representation not drawn: %s", exc)
             return None

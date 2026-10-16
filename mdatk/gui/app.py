@@ -743,7 +743,8 @@ class MainWindow(Gtk.ApplicationWindow):
         return W.scrolled(box)
 
     REP_STYLE_LABELS = {"cartoon": "New Cartoon (bases as slabs)", "ribbon": "Ribbon", "tube": "Tube",
-                        "licorice": "Licorice", "vdw": "VDW spheres", "surf": "Surface"}
+                        "licorice": "Licorice", "vdw": "VDW spheres", "surf": "Surface",
+                        "trace": "Trace (balls and sticks)"}
     REP_COLOR_LABELS = {"auto": "auto", "residue": "residue colours", "element": "elements",
                         "nucleotide": "nucleotides (A/G/C/U)"}
 
@@ -760,15 +761,18 @@ class MainWindow(Gtk.ApplicationWindow):
                                 "list-add-symbolic"), False, False, 0)
         row.pack_start(W.button("Apply", self.refresh_canvas, "Redraw the preview"), False, False, 0)
         f.add_wide(row)
-        f.add_row("Renderer / backbone atom", [
-            b.combo("visual.renderer", W.combo([("auto", "auto"), ("software", "built-in"),
-                                                 ("vtk", "VTK (optional)")])),
+        f.add_row("Other residues / backbone atom", [
+            b.combo("visual.rep_rest", W.combo([("trace", "as a trace"), ("hide", "hidden")])),
             b.combo("visual.backbone_atom", W.combo([("P", "P"), ("C4'", "C4'")])),
             b.check("visual.rep_hydrogens", W.check("hydrogens"))],
-            "The built-in renderer needs no extra packages; VTK (pip install vtk) is faster and smoother "
-            "where OpenGL is available. Ribbons and cartoons run through P or C4'.")
+            "Residues no representation draws are shown as a 3D trace or hidden. Ribbons, cartoons and "
+            "the trace run through P or C4'.")
+        f.add("Renderer", b.combo("visual.renderer", W.combo([("auto", "auto (built-in)"), ("software", "built-in"),
+                                                           ("vtk", "VTK (optional)")])),
+              "The built-in renderer needs no extra packages and works without a display (clusters). "
+              "VTK (pip install vtk) needs OpenGL; where it cannot render, the built-in one is used.")
         f.add_wide(W.hint("No representation: the 2D backbone trace. Each representation draws its groups "
-                          "(empty: all shown groups); later rows draw on top. Colouring 'auto' uses the "
+                          "(empty: all shown groups) and they intersect by depth. Colouring 'auto' uses the "
                           "residue colours (groups / proximity / glow) for backbones, nucleotide colours for "
                           "cartoon bases and element colours for atoms."))
         return W.frame("Representations (3D)", f)
@@ -838,7 +842,10 @@ class MainWindow(Gtk.ApplicationWindow):
                lambda v: opacity.set_value(float(v)))
         opacity.connect("value-changed", lambda *_: self._density_style_changed())
         d.add_row("Show / colour / opacity", [b.check("density.show", W.check("show")),
-                                              b.color("density.color", W.color_button()), opacity],
+                                              b.color("density.color", W.color_button()), opacity,
+                                              b.check("density.front", W.check(
+                                                  "in front", "Draw the shadow over the 3D representations "
+                                                  "instead of behind them"))],
                   "The map is drawn as a projected shadow behind the model")
         level = b.spin_float("density.level", W.spin(-5, 20, 0.1, 1))
         d.add_row("Contour level (σ) / resolution (Å)", [

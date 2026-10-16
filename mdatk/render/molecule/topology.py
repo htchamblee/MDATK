@@ -86,6 +86,9 @@ class Topology:
 
         self.control = np.array([pick(r, BACKBONE.get(backbone_atom, BACKBONE["P"]))
                                  for r in range(self.n_res)], dtype=np.int64)
+        # the trace point: the control atom, else the residue's first atom (ligands)
+        self.anchor_atom = np.array([c if c >= 0 else first.get(r, -1) for r, c in enumerate(self.control)],
+                                    dtype=np.int64)
         # direction from the backbone toward the bases (orients ribbons and cartoons)
         self.side = np.array([pick(r, ("C1'", "C4'", "CB", "O")) for r in range(self.n_res)], dtype=np.int64)
         self.c1 = np.array([pick(r, ("C1'",)) for r in range(self.n_res)], dtype=np.int64)

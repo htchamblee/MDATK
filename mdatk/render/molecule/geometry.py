@@ -19,7 +19,9 @@ Styles (``size`` scales the widths and radii):
 ``ribbon``   a flat band through the control atoms facing the bases;
 ``tube``     a round tube through the control atoms;
 ``licorice`` half-bond sticks and atom balls (radius 0.3 Å);
-``vdw``      van der Waals spheres (Bondi radii).
+``vdw``      van der Waals spheres (Bondi radii);
+``surf``     a smooth Gaussian molecular surface;
+``trace``    balls at the backbone points joined by thin sticks (the 2D trace in 3D).
 """
 
 from __future__ import annotations
@@ -159,7 +161,9 @@ def frames_along(pos: np.ndarray, tan: np.ndarray, side: Optional[np.ndarray]):
 
 
 class Backbone:
-    """Spline through the control atoms of the selected residues, swept with a profile."""
+    """Spline through the control atoms of whole backbone segments, swept with a profile
+    over the stretches owned by the selected residues (so a selection does not change the
+    shape, and one selected residue still gets its piece)."""
 
     def __init__(self, topo: Topology, res_mask: np.ndarray, kind: str, half_width: float,
                  half_height: float, n_sub: int = 8, k: int = 12):
@@ -169,35 +173,43 @@ class Backbone:
         self.kind = kind
         self.parts = []
         for seg in topo.segments:
-            seg = seg[res_mask[seg]]
-            # keep only runs of consecutive residues of the original segment
-            for run in np.split(seg, np.flatnonzero(np.diff(seg) != 1) + 1):
-                if len(run) >= 2:
-                    a, d, owner = catmull_rom(len(run), n_sub)
-                    self.parts.append((run, a, d, owner))
+            if not res_mask[seg].any():
+                continue
+            a, d, owner = catmull_rom(len(seg), n_sub)
+            keep = np.flatnonzero(res_mask[seg[owner]])
+            for run in np.split(keep, np.flatnonzero(np.diff(keep) != 1) + 1):
+                own = seg[owner[run]]
+                if run[-1] + 1 < len(owner):  # meet the next stretch without a gap
+                    run = np.append(run, run[-1] + 1)
+                    own = np.append(own, own[-1])
+                if len(run) < 2:
+                    continue
+                at = np.flatnonzero(run % n_sub == 0)
+                at = at[res_mask[seg[run[at] // n_sub]]]  # samples at the selected control atoms
+                self.parts.append((seg, a[run], d[run], own, seg[run[at] // n_sub], at))
         self.n_sub = n_sub
 
     def build(self, xyz: np.ndarray) -> "tuple[List[Mesh], Dict[int, np.ndarray]]":
         """Meshes, and the spline point at each residue's control atom (for rungs)."""
         topo = self.topo
         meshes, anchor = [], {}
-        for run, a, d, owner in self.parts:
-            p = xyz[topo.control[run]]
+        for seg, a, d, own, at_res, at in self.parts:
+            p = xyz[topo.control[seg]]
             pos, tan = a @ p, d @ p
             side = None
-            if np.all(topo.side[run] >= 0):
-                side = a @ (xyz[topo.side[run]] - p)
+            if np.all(topo.side[seg] >= 0):
+                side = a @ (xyz[topo.side[seg]] - p)
             t, n, b = frames_along(pos, tan, side)
             v = pos[:, None, :] + self.prof[None, :, 0:1] * b[:, None, :] + self.prof[None, :, 1:2] * n[:, None, :]
             nn = self.pn[None, :, 0:1] * b[:, None, :] + self.pn[None, :, 1:2] * n[:, None, :]
             ns = len(pos)
             verts = np.concatenate([v.reshape(-1, 3), pos[[0, -1]]])
             normals = np.concatenate([nn.reshape(-1, 3), -t[[0]], t[[-1]]])
-            own = np.concatenate([np.repeat(run[owner], self.k), run[[0, -1]]])
-            meshes.append(Mesh(verts, normals, sweep_faces(ns, self.k), own,
-                               np.zeros(len(own), dtype=np.int8)))
-            for i, r in enumerate(run):
-                anchor[int(r)] = pos[i * self.n_sub]
+            owner = np.concatenate([np.repeat(own, self.k), own[[0, -1]]])
+            meshes.append(Mesh(verts, normals, sweep_faces(ns, self.k), owner,
+                               np.zeros(len(owner), dtype=np.int8)))
+            for r, i in zip(at_res, at):
+                anchor[int(r)] = pos[i]
         return meshes, anchor
 
 
@@ -293,13 +305,24 @@ class CartoonStyle(Style):
         self.pur = np.flatnonzero(sel[topo.purine_res]) if len(topo.purine_res) else np.zeros(0, np.int64)
         self.pyr = np.flatnonzero(sel[topo.pyrimidine_res]) if len(topo.pyrimidine_res) else np.zeros(0, np.int64)
         self.sugars = bool(self.opts.get("sugars", False))
-        self.sug = np.flatnonzero(sel[topo.sugar_res]) if (self.sugars and len(topo.sugar_res)) else np.zeros(0, np.int64)
+        self.sug = (np.flatnonzero(sel[topo.sugar_res]) if (self.sugars and len(topo.sugar_res))
+                    else np.zeros(0, np.int64))
+        in_seg = np.zeros(topo.n_res, bool)
+        for seg in topo.segments:
+            in_seg[seg] = True
+        self.lone = np.flatnonzero(sel & ~in_seg & (topo.control >= 0))
 
     def build(self, xyz):
         topo = self.topo
         s = self.size
         meshes, anchor = self.backbone.build(xyz)
         out = DrawList(meshes=meshes)
+        joints, joint_owner, joint_r = [], [], []
+        for r in self.lone:  # no backbone neighbours: a ball at the control atom
+            anchor[int(r)] = xyz[topo.control[r]]
+            joints.append(anchor[int(r)])
+            joint_owner.append(int(r))
+            joint_r.append(0.9 * s)
         # base slabs, coloured by nucleotide (role 1)
         for rows, ring_idx in ((topo.purine_res[self.pur], topo.purine_ring[self.pur]),
                                (topo.pyrimidine_res[self.pyr], topo.pyrimidine_ring[self.pyr])):
@@ -312,7 +335,6 @@ class CartoonStyle(Style):
             out.meshes.append(Mesh(v, n, t, rows[slab], np.full(len(v), ROLE_SUGAR, np.int8)))
         # rungs: backbone spline point -> C1' (or C4' with sugar slabs) -> glycosidic atom
         a_pts, b_pts, owners = [], [], []
-        joints, joint_owner = [], []
         for rows, gly in ((topo.purine_res[self.pur], topo.purine_gly[self.pur]),
                           (topo.pyrimidine_res[self.pyr], topo.pyrimidine_gly[self.pyr])):
             for r, g in zip(rows, gly):
@@ -335,13 +357,14 @@ class CartoonStyle(Style):
                     owners += [r, r]
                     joints.append(xyz[knee])
                     joint_owner.append(r)
+                    joint_r.append(0.42 * s)
         if a_pts:
             n = len(a_pts)
             out.sticks.append(Sticks(np.array(a_pts), np.array(b_pts), np.full(n, 0.42 * s),
                                      np.array(owners, np.int64), np.full(n, -1, np.int64)))
         if joints:
             n = len(joints)
-            out.spheres.append(Spheres(np.array(joints), np.full(n, 0.42 * s), np.array(joint_owner, np.int64),
+            out.spheres.append(Spheres(np.array(joints), np.array(joint_r), np.array(joint_owner, np.int64),
                                        np.full(n, -1, np.int64)))
         return out
 
@@ -388,133 +411,63 @@ class VdwStyle(Style):
         return DrawList(spheres=[Spheres(xyz[at], self.topo.radius[at] * self.size, self.topo.row[at], at)])
 
 
-# ---------------------------------------------------------------------------
-# molecular surface: Gaussian density + marching tetrahedra
-# ---------------------------------------------------------------------------
-
-# cube corners (x, y, z offsets) and the six tetrahedra around the 0-6 diagonal
-_CORNERS = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])
-_TETS = np.array([[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]])
-
-
-def gaussian_density(xyz: np.ndarray, spacing: float, sigma: float, pad: float):
-    """Sum of unit Gaussians (an isolated atom peaks at 1) on a grid; returns grid [z, y, x], origin."""
-    from scipy import ndimage
-
-    lo = xyz.min(axis=0) - pad
-    shape = np.ceil((xyz.max(axis=0) + pad - lo) / spacing).astype(int) + 2  # x, y, z
-    g = (xyz - lo) / spacing
-    b = np.floor(g).astype(np.int64)
-    f = g - b
-    nx, ny, nz = shape
-    flat = np.zeros(nx * ny * nz)
-    for dx in (0, 1):
-        wx = f[:, 0] if dx else 1 - f[:, 0]
-        for dy in (0, 1):
-            wy = f[:, 1] if dy else 1 - f[:, 1]
-            for dz in (0, 1):
-                wz = f[:, 2] if dz else 1 - f[:, 2]
-                idx = ((b[:, 2] + dz) * ny + (b[:, 1] + dy)) * nx + (b[:, 0] + dx)
-                flat += np.bincount(idx, wx * wy * wz, minlength=flat.size)
-    s = sigma / spacing
-    grid = ndimage.gaussian_filter(flat.reshape(nz, ny, nx), s, mode="constant", truncate=3.0)
-    grid *= (2 * np.pi) ** 1.5 * s ** 3
-    return grid, lo
-
-
-def marching_tetrahedra(grid: np.ndarray, iso: float, origin: np.ndarray, spacing: float):
-    """Iso-surface of ``grid`` [z, y, x] as unshared triangles: verts (3t, 3), normals pointing
-    to lower values (outward for a density), tris (t, 3)."""
-    v = grid
-    nz, ny, nx = v.shape
-    inside = v > iso
-    # cubes whose corners are not all on one side
-    corner_in = np.stack([inside[dz:nz - 1 + dz, dy:ny - 1 + dy, dx:nx - 1 + dx]
-                          for dx, dy, dz in _CORNERS], axis=-1)
-    n_in = corner_in.sum(-1)
-    cz, cy, cx = np.nonzero((n_in > 0) & (n_in < 8))
-    if not len(cz):
-        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3), np.int64)
-    cube = np.stack([cx, cy, cz], 1)
-    pos = cube[:, None, :] + _CORNERS[None]  # (c, 8, 3) grid indices (x, y, z)
-    val = v[pos[..., 2], pos[..., 1], pos[..., 0]]  # (c, 8)
-    tp = pos[:, _TETS].reshape(-1, 4, 3)  # (c*6, 4, 3)
-    tv = val[:, _TETS].reshape(-1, 4)
-    tin = tv > iso
-    k = tin.sum(1)
-    tris = []
-
-    def cut(a_pos, a_val, b_pos, b_val):
-        t = (iso - a_val) / np.where(np.abs(b_val - a_val) > 1e-12, b_val - a_val, 1e-12)
-        return a_pos + t[:, None] * (b_pos - a_pos)
-
-    # one corner on its own (in or out): one triangle
-    for lone_in in (True, False):
-        sel = np.flatnonzero(k == (1 if lone_in else 3))
-        if len(sel):
-            flags = tin[sel] if lone_in else ~tin[sel]
-            a = np.argmax(flags, axis=1)
-            others = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])[a]
-            P, V = tp[sel].astype(np.float64), tv[sel]
-            r = np.arange(len(sel))
-            pa, va = P[r, a], V[r, a]
-            tri = np.stack([cut(pa, va, P[r, others[:, j]], V[r, others[:, j]]) for j in range(3)], 1)
-            tris.append(tri)
-    # two in, two out: a quad (two triangles)
-    sel = np.flatnonzero(k == 2)
-    if len(sel):
-        order = np.argsort(~tin[sel], axis=1, kind="stable")  # the two inside corners first
-        P, V = tp[sel].astype(np.float64), tv[sel]
-        r = np.arange(len(sel))
-        i0, i1, o0, o1 = (order[:, j] for j in range(4))
-        q = [cut(P[r, i0], V[r, i0], P[r, o0], V[r, o0]), cut(P[r, i0], V[r, i0], P[r, o1], V[r, o1]),
-             cut(P[r, i1], V[r, i1], P[r, o1], V[r, o1]), cut(P[r, i1], V[r, i1], P[r, o0], V[r, o0])]
-        tris.append(np.stack([q[0], q[1], q[2]], 1))
-        tris.append(np.stack([q[0], q[2], q[3]], 1))
-    tri = np.concatenate(tris)  # (t, 3, 3) in grid index units (x, y, z)
-    verts = tri.reshape(-1, 3)
-    # outward normals: minus the density gradient (trilinear interpolation of np.gradient)
-    from scipy import ndimage
-
-    gz, gy, gx = np.gradient(v)
-    coords = np.vstack([verts[:, 2], verts[:, 1], verts[:, 0]])
-    grad = np.stack([ndimage.map_coordinates(g, coords, order=1, mode="nearest") for g in (gx, gy, gz)], 1)
-    normals = -grad / (np.linalg.norm(grad, axis=1, keepdims=True) + 1e-12)
-    # wind every triangle so its face normal agrees with the vertex normals
-    t3 = verts.reshape(-1, 3, 3)
-    face = np.cross(t3[:, 1] - t3[:, 0], t3[:, 2] - t3[:, 0])
-    flip = (face * normals.reshape(-1, 3, 3).sum(1)).sum(1) < 0
-    ids = np.arange(len(verts)).reshape(-1, 3)
-    ids[flip] = ids[flip][:, [0, 2, 1]]
-    return origin + verts * spacing, normals, ids
-
-
 class SurfStyle(Style):
-    """Smooth molecular surface (like VMD QuickSurf): iso-surface of summed atomic Gaussians,
-    coloured by the residue of the nearest atom."""
+    """Smooth molecular surface (like VMD QuickSurf): iso-surface of summed atomic Gaussians
+    (surface nets, see :mod:`.surface`), coloured by the residue of the nearest atom."""
 
     name = "surf"
     sigma, iso = 1.4, 0.5  # an isolated atom's surface lies ~1.65 Å from its centre
+    LARGE = 5000  # atoms above which the grid coarsens to 1.5 Å
 
     def setup(self):
         self.atoms = self._atoms()
-        self.spacing = float(self.opts.get("spacing", 1.0))
+        default = 1.5 if len(self.atoms) > self.LARGE else 1.0
+        self.spacing = float(self.opts.get("spacing") or default)
 
     def build(self, xyz):
-        from scipy.spatial import cKDTree
+        from .surface import gaussian_surface
 
         at = self.atoms
         if not len(at):
             return DrawList()
-        p = xyz[at]
-        sigma = self.sigma * self.size
-        grid, lo = gaussian_density(p, self.spacing, sigma, pad=3 * sigma + self.spacing)
-        verts, normals, tris = marching_tetrahedra(grid, self.iso, lo, self.spacing)
-        if not len(verts):
+        verts, normals, tris, near = gaussian_surface(xyz[at], self.spacing, self.sigma * self.size, self.iso)
+        if not len(tris):
             return DrawList()
-        _d, near = cKDTree(p).query(verts)
         owner = self.topo.row[at[near]]
         return DrawList(meshes=[Mesh(verts, normals, tris, owner, np.zeros(len(verts), np.int8))])
 
 
-STYLES = {cls.name: cls for cls in (CartoonStyle, RibbonStyle, TubeStyle, LicoriceStyle, VdwStyle, SurfStyle)}
+class TraceStyle(Style):
+    """The 2D trace in the scene: a ball at each residue's backbone point and half-sticks
+    to its neighbours along the backbone segments (so it hides, and is hidden by, the
+    other representations by depth)."""
+
+    name = "trace"
+
+    def setup(self):
+        topo = self.topo
+        self.rows = np.flatnonzero(self.mask & (topo.anchor_atom >= 0))
+        pairs = [np.stack([seg[:-1], seg[1:]], 1) for seg in topo.segments]
+        pairs = np.concatenate(pairs) if pairs else np.zeros((0, 2), np.int64)
+        self.pairs = pairs[self.mask[pairs[:, 0]] | self.mask[pairs[:, 1]]]
+
+    def build(self, xyz):
+        topo, s = self.topo, self.size
+        out = DrawList()
+        i, j = self.pairs[:, 0], self.pairs[:, 1]
+        if len(i):
+            a, b = xyz[topo.control[i]], xyz[topo.control[j]]
+            mid = 0.5 * (a + b)
+            mi, mj = self.mask[i], self.mask[j]
+            ends = np.concatenate([a[mi], b[mj]])
+            n = len(ends)
+            out.sticks.append(Sticks(ends, np.concatenate([mid[mi], mid[mj]]), np.full(n, 0.38 * s),
+                                     np.concatenate([i[mi], j[mj]]), np.full(n, -1, np.int64)))
+        r = self.rows
+        out.spheres.append(Spheres(xyz[topo.anchor_atom[r]], np.full(len(r), 0.85 * s), r,
+                                   np.full(len(r), -1, np.int64)))
+        return out
+
+
+STYLES = {cls.name: cls for cls in (CartoonStyle, RibbonStyle, TubeStyle, LicoriceStyle, VdwStyle, SurfStyle,
+                                    TraceStyle)}

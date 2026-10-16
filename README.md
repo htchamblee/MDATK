@@ -6,9 +6,11 @@ multi-panel MP4 videos, high-resolution time charts and selected-frame PDB files
 
 It reads Amber topologies (`.parm7`) and NetCDF trajectories (`.nc`) directly, can strip and
 clean solvated trajectories with **cpptraj**, computes the analyses you select in a single
-streaming pass, caches every result, and renders a configurable grid of panels: a rotatable 2D
-backbone projection with proximity glow, time series with a moving time cursor, per-residue
-heatmaps and contact maps.
+streaming pass, caches every result, and renders a configurable grid of panels: a rotatable
+structural view with proximity glow (a 2D backbone projection, or VMD-style 3D representations:
+New Cartoon with base slabs, ribbon, tube, licorice, VDW spheres, surface), time series with a
+moving time cursor, per-residue heatmaps and contact maps. A cryo-EM / crystallographic density
+map can be fitted to the model and drawn as a projected shadow.
 
 Everything runs locally; MDATK makes no network calls.
 
@@ -27,6 +29,7 @@ ensemble. MDATK only writes these files; it never runs those programs.
 - [Script wizard and Project Planner](#script-wizard-and-project-planner)
 - [Analyses](#analyses)
 - [Structural view, colouring and glow](#structural-view-colouring-and-glow)
+- [3D representations](#3d-representations)
 - [Density maps](#density-maps)
 - [Panels, data keys and layouts](#panels-data-keys-and-layouts)
 - [Outputs](#outputs)
@@ -70,6 +73,7 @@ python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install .            # installs MDAnalysis, NumPy, SciPy, Matplotlib
 pip install '.[test]'    # optional: adds pytest for running the test suite
+pip install '.[vtk]'     # optional: VTK as an alternative 3D renderer (see 3D representations)
 ```
 
 This installs two commands: `mdatk` (CLI) and `mdatk-gui` (GUI); `python -m mdatk` works too.
@@ -353,6 +357,47 @@ topologies number residues 1…N in file order. Defaults are provided for the re
   and in the GUI.
 - The view is framed by the model's bounding sphere, so changing the orientation never zooms.
 
+## 3D representations
+
+Instead of the 2D trace, the structural view can draw residue groups as VMD-style
+representations (*Visual → Representations (3D)*, `visual.representations`). Each row is a
+style, the groups it draws (empty: every shown group), a colouring, a size factor, an opacity
+and, for cartoons, a *sugars* switch. Representations intersect correctly by depth, so a cartoon
+of the aptamer and licorice of a binding pocket can share the view.
+
+| Style | What it draws |
+|---|---|
+| `cartoon` | New Cartoon for nucleic acids: an elliptical tube along a spline through P (or C4′, `visual.backbone_atom`), a rung from the backbone through C1′ to the glycosidic N (N9 / N1; C5 for pseudouridine), and each base as a closed slab (purines as the whole fused 9-atom outline). With *sugars*, the ribose ring is a lighter slab and the rung runs backbone → C4′, C1′ → N. |
+| `ribbon` | a flat band through the backbone points, facing the bases |
+| `tube` | a round tube through the backbone points |
+| `licorice` | bonds as sticks with atom balls (r = 0.3 Å); a group next to a cartoon joins it at the backbone |
+| `vdw` | van der Waals spheres (Bondi radii) |
+| `surf` | a smooth molecular surface (sum of atomic Gaussians, like VMD QuickSurf), coloured by the nearest residue |
+| `trace` | a ball at each backbone point and sticks to its neighbours (the 2D trace, but in 3D) |
+
+- **Base positioning.** The cartoon deliberately differs from VMD where it hides base geometry:
+  the rung bends at C1′, so the glycosidic angle (*syn*/*anti*) shows; the full purine outline
+  shows inclination, propeller twist, buckle and stacking; the optional sugar slab shows the
+  pucker; the backbone keeps the analysis colours (groups / proximity / glow) while bases are
+  coloured by nucleotide (A blue, G green, C gold, U/T red). The spline is computed along whole
+  strands, so a representation of part of a strand has the same shape as the full one.
+- **Colouring.** `auto`: residue colours for backbones and carbons, nucleotide colours for cartoon
+  bases, element colours for other atoms; or `residue`, `element`, `nucleotide` throughout.
+- **Other residues.** Residues no representation draws are shown as a `trace` (default) or hidden
+  (`visual.rep_rest: hide`). Mg²⁺ ions are spheres in the scene.
+- **Look.** Lit surfaces, the same depth cue (fog toward the panel colour) as the 2D trace, ink
+  outlines at depth steps (they separate stacked bases of the same colour) and anti-aliased edges.
+  Glowing residues get a soft halo and a tint in the glow colour. Translucent representations show
+  what is behind them.
+- **Renderer.** `visual.renderer: auto` (default) uses the built-in renderer: a numpy z-buffer
+  rasteriser that needs no OpenGL, so the same video comes out of a laptop, the GUI and a
+  headless cluster node. It costs roughly 50–80 ms per 1080p frame for cartoon or licorice of a
+  ~500-atom RNA, about 150 ms for surfaces, on top of the figure itself; while you drag the
+  preview it renders at half resolution. `renderer: vtk` uses VTK (`pip install '.[vtk]'`) where it
+  can render (a display, or EGL / OSMesa libraries on a headless machine, e.g. `libegl1
+  libegl-mesa0`); this is checked once in a separate process, and where VTK cannot render, the
+  built-in renderer is used with a note in the log. VTK keeps the 2D glow halos.
+
 ## Density maps
 
 A cryo-EM or crystallographic map (MRC2014 / CCP4: `.mrc`, `.map`, `.ccp4`) can be drawn behind the
@@ -393,8 +438,10 @@ placed on it by a rigid-body fit.
 - **Appearance.**
   - Contour level `density.level`, in σ above the map mean; default 2. Lower it for faint maps.
   - Colour, opacity (0–1) and *show*.
-  - The shadow sits under the molecule, glow and labels. In the video it is part of the static
-    background (no per-frame cost). In the GUI it follows rotations, coarser while dragging.
+  - The shadow sits under the molecule, glow and labels. With 3D representations, *in front*
+    (`density.front`) draws it over them instead, since opaque cartoons hide much of it. In the
+    video it is part of the static background (no per-frame cost). In the GUI it follows
+    rotations, coarser while dragging.
 
 ```bash
 mdatk density info map.mrc                               # grid, voxel size, origin, statistics
@@ -537,7 +584,10 @@ mdatk/
                      structure (trace, proximity)
   data.py            standardised results: series, matrices, sparse residue maps; Dataset
   render/            layouts, panels, colouring/glow, orientation, theme, video (FFmpeg), charts,
-                     example data for the GUI preview
+                     example data for the GUI preview; molecule/ holds the 3D representations
+                     (topology roles, geometry per style, surface nets, scene colours, the
+                     built-in z-buffer renderer and the optional VTK one)
+  density.py, io/mrc.py   density maps: MRC / CCP4 I/O, simulated maps, rigid-body fitting
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
                      SimRNA, RNAMake, Amber, GROMACS, VMD; plan.py resolves the Project Planner
@@ -578,7 +628,10 @@ MDATK_TEST_AMBERHOME=$AMBERHOME pytest tests/test_workflow_integration.py
 
 The suite covers exact geometric criteria of every analysis on hand-built systems, cache keys
 and reuse, cpptraj script generation (with a stand-in executable, and with real cpptraj when
-available), the full pipeline including FFmpeg output, the CLI and GUI smoke tests.
+available), the full pipeline including FFmpeg output, the CLI and GUI smoke tests. For the 3D
+view it checks the rasteriser against analytic spheres and cylinders, closed meshes without
+pinholes, depth order beyond the panel's range, registration and handedness in the final figure,
+fog, glow and translucency, thread safety and a render without a display.
 
 ## Notes and limitations
 
