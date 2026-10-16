@@ -151,7 +151,7 @@ def simulate_map(xyz: np.ndarray, weights: np.ndarray, resolution: float,
     sigma = sigma_factor * resolution
     h = float(spacing) if spacing else resolution / 3.0
     pad = pad_sigmas * sigma + h
-    lo = xyz.min(axis=0) - pad
+    lo = np.floor((xyz.min(axis=0) - pad) / h) * h  # on whole voxels (CCP4 NSTART)
     n = np.ceil((xyz.max(axis=0) + pad - lo) / h).astype(int) + 1
     grid = np.zeros(tuple(n[::-1]), dtype=np.float64)  # [z, y, x]
     splat_gaussians(grid, (xyz - lo) / h, np.asarray(weights, dtype=np.float64), sigma / h,

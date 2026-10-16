@@ -420,7 +420,7 @@ class Pipeline:
         Uses cleaned files when a matching cpptraj result is cached; never runs
         cpptraj itself.
         """
-        from .analysis.structure import TraceAnalysis
+        from .analysis.structure import AtomsAnalysis, TraceAnalysis
         from .render.coloring import static_colors
 
         p = self.project
@@ -428,8 +428,8 @@ class Pipeline:
         u = load_universe(inputs.topology, inputs.trajectories, p.inputs.dt_ps)
         idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)[:1]
         ctx = AnalysisContext(u, p, inputs.topology, Reporter())
-        ana = TraceAnalysis(ctx)
-        (res,), _ = run_analyses(ctx, [ana], idx, Reporter())
+        objs = [TraceAnalysis(ctx), AtomsAnalysis(ctx)]
+        (res, atoms), _ = run_analyses(ctx, objs, idx, Reporter())
         v = p.visual
         colors = static_colors(v.color_mode, res.arrays["chain"], res.arrays["group_index"],
                                [g.color for g in p.groups], v.base_color, v.chain_palette)
@@ -437,8 +437,13 @@ class Pipeline:
                 "ions": res.arrays["ion_coords"][0].astype(float),
                 "links": res.arrays["links"], "colors": colors,
                 "chain": res.arrays["chain"], "group_index": res.arrays["group_index"],
+                "group_member": res.arrays["group_member"],
                 "resid": res.arrays["resid"],
                 "labels": res.meta.get("residue_labels", []),
+                "atoms": {"coords": atoms.arrays["coords"][0].astype(float),
+                          "names": atoms.meta["atom_names"], "elements": atoms.meta["elements"],
+                          "resnames": atoms.meta["resnames"], "row": atoms.arrays["row"],
+                          "bonds": atoms.arrays["bonds"]},
                 "cleaned": inputs.topology != p.inputs.topology}
 
 

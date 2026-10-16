@@ -149,6 +149,77 @@ def schematic_trace(project: Project, n_frames: int) -> Dict[str, np.ndarray]:
             "ions": np.zeros((0, 3))}
 
 
+def schematic_structure(project: Project) -> Dict[str, object]:
+    """Two-strand duplex with heavy atoms (the demo's nucleotide geometry) for the first two
+    residue groups: a ``trace`` part (C4' per residue) and an ``atoms`` part, so 3D
+    representations can be previewed before any real frame is loaded."""
+    from ..demo import COMPLEMENT, DYAD, _level_frame, nucleotide
+
+    names = project.visual.structure_groups or project.group_names()[:2] or ["A"]
+    group_pos = {g.name: k for k, g in enumerate(project.groups)}
+    ids_a = group_resids(project, names[0])[:40]
+    ids_b = group_resids(project, names[1])[:len(ids_a)] if len(names) > 1 else []
+    seq = ("GCAUGGCAUCGA" * 4)[:len(ids_a)]
+    names_out, elements, resnames, row, xyz, bonds = [], [], [], [], [], []
+    trace, chain, gidx, resid, links = [], [], [], [], []
+    prev_o3 = None
+    strands = [(0, names[0], ids_a, seq)]
+    if ids_b:
+        strands.append((1, names[1], ids_b, "".join(COMPLEMENT[b] for b in reversed(seq))[:len(ids_b)]))
+    for strand, gname, ids, letters in strands:
+        prev_o3 = None
+        for m, (r, base) in enumerate(zip(ids, letters)):
+            level = m if strand == 0 else len(ids_a) - 1 - m
+            rot, shift = _level_frame(level)
+            nt, nb = nucleotide(base)
+            keep = [k for k, a in enumerate(nt) if a["el"] != "H"]
+            local = {k: len(xyz) + j for j, k in enumerate(keep)}
+            rr = len(trace)
+            for k in keep:
+                a = nt[k]
+                v = a["xyz"] if strand == 0 else DYAD @ a["xyz"]
+                xyz.append(rot @ v + shift)
+                names_out.append(a["name"])
+                elements.append(a["el"])
+                resnames.append(base)
+                row.append(rr)
+            bonds += [(local[i], local[j]) for i, j in nb if i in local and j in local]
+            idx = {nt[k]["name"]: local[k] for k in keep}
+            if prev_o3 is not None and "P" in idx:
+                bonds.append((prev_o3, idx["P"]))
+            prev_o3 = idx.get("O3'")
+            trace.append(xyz[idx["C4'"]])
+            chain.append(strand)
+            gidx.append(group_pos.get(gname, -1))
+            resid.append(r)
+            if m:
+                links.append([rr - 1, rr])
+    return {"trace": {"coords": np.asarray(trace), "chain": np.asarray(chain), "group_index": np.asarray(gidx),
+                      "resid": np.asarray(resid), "links": np.asarray(links, dtype=np.int64).reshape(-1, 2),
+                      "ions": np.zeros((0, 3))},
+            "atoms": {"coords": np.asarray(xyz), "names": names_out, "elements": elements,
+                      "resnames": resnames, "row": np.asarray(row, dtype=np.int64),
+                      "bonds": np.asarray(bonds, dtype=np.int64).reshape(-1, 2)}}
+
+
+def _membership(src: Dict[str, object], n_groups: int) -> np.ndarray:
+    if "group_member" in src:
+        return np.asarray(src["group_member"], dtype=bool)
+    gi = np.asarray(src["group_index"])
+    return np.array([gi == k for k in range(n_groups)], dtype=bool).reshape(n_groups, len(gi))
+
+
+def _atoms_result(src: Dict[str, object], n_frames: int, n_res: int) -> AnalysisResult:
+    xyz = np.asarray(src["coords"], dtype=np.float32)
+    coords = np.broadcast_to(xyz[None], (n_frames,) + xyz.shape) if xyz.ndim == 2 else xyz
+    res = AnalysisResult("atoms", "example", {}, {}, {"example": True, "atom_names": list(src["names"]),
+                                                     "elements": list(src["elements"]),
+                                                     "resnames": list(src["resnames"])})
+    res.arrays.update(coords=coords, row=np.asarray(src["row"]), bonds=np.asarray(src["bonds"]),
+                      resindex=np.arange(n_res))
+    return res
+
+
 def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] = None,
                     n_frames: int = N_FRAMES) -> Dataset:
     """Dataset with placeholder values for every data key the layout uses."""
@@ -161,7 +232,15 @@ def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] =
         for key in spec.series:
             _add_key(ds, project, key, cls.data_kind)
     if any(spec.type == "structure" for spec in project.layout.panels):
-        src = preview if preview is not None else schematic_trace(project, n_frames)
+        atoms_src = None
+        if preview is not None:
+            src = preview
+            atoms_src = preview.get("atoms")
+        elif project.visual.representations:
+            schematic = schematic_structure(project)
+            src, atoms_src = schematic["trace"], schematic["atoms"]
+        else:
+            src = schematic_trace(project, n_frames)
         xyz = np.asarray(src["coords"], dtype=np.float64)
         coords = xyz if xyz.ndim == 3 else np.repeat(xyz[None], n_frames, axis=0)
         ions = np.asarray(src.get("ions", np.zeros((0, 3))), dtype=np.float64)
@@ -170,9 +249,12 @@ def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] =
         trace = AnalysisResult("trace", "example", {}, {}, {"example": True, "schematic": preview is None})
         trace.arrays.update(coords=coords, ion_coords=ions, chain=np.asarray(src["chain"]),
                             group_index=np.asarray(src["group_index"]),
+                            group_member=_membership(src, len(project.groups)),
                             is_point=np.ones(n_res, bool), links=np.asarray(src["links"]),
                             resindex=np.arange(n_res), resid=np.asarray(src["resid"]))
         ds.add(trace)
+        if atoms_src is not None:
+            ds.add(_atoms_result(atoms_src, n_frames, n_res))
         # proximity: every residue drifts in and out of contact so glow modes are visible
         k = np.arange(n_res)[:, None]
         dist = 5.0 + 4.0 * np.sin(k / 3.0 + np.arange(n_frames)[None, :] / 9.0)

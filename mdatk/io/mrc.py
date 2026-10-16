@@ -1,4 +1,4 @@
-"""Reader / writer for MRC (MRC2014) and CCP4 density maps (.mrc, .map, .ccp4).
+"""Reader / writer for MRC (MRC2014) and CCP4 density maps (.mrc, .map, .ccp4, also gzipped).
 
 The map is returned as a :class:`DensityMap` whose ``data`` array is indexed
 ``[z, y, x]`` (C order) in Cartesian axis order regardless of the file's
@@ -9,7 +9,7 @@ supported (cryo-EM maps always are).
 
 from __future__ import annotations
 
-import os
+import gzip
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -17,6 +17,7 @@ import numpy as np
 
 HEADER_BYTES = 1024
 MODES = {0: np.int8, 1: np.int16, 2: np.float32, 6: np.uint16, 12: np.float16}
+IMOD_STAMP = 1146047817
 
 
 class MapError(ValueError):
@@ -69,10 +70,15 @@ def _endian(raw: bytes) -> str:
     raise MapError("cannot determine the byte order of the map header")
 
 
-def read_map(path: str) -> DensityMap:
-    """Read an MRC / CCP4 map into Cartesian [z, y, x] order."""
-    size = os.path.getsize(path)
+def _open(path: str):
     with open(path, "rb") as fh:
+        gz = fh.read(2) == b"\x1f\x8b"
+    return gzip.open(path, "rb") if gz else open(path, "rb")
+
+
+def read_map(path: str) -> DensityMap:
+    """Read an MRC / CCP4 map (optionally gzip-compressed) into Cartesian [z, y, x] order."""
+    with _open(path) as fh:
         raw = fh.read(HEADER_BYTES)
         if len(raw) < HEADER_BYTES:
             raise MapError(f"{path}: file too short for an MRC header")
@@ -99,12 +105,16 @@ def read_map(path: str) -> DensityMap:
         if np.any(np.abs(angles - 90.0) > 0.01) and np.all(angles > 0):
             raise MapError(f"{path}: non-orthogonal cell angles {angles.tolist()} are not supported")
         dtype = np.dtype(MODES[mode]).newbyteorder(e)
+        if mode == 0 and (raw[208:212] != b"MAP " or
+                          (int(ints[38]) == IMOD_STAMP and not int(ints[39]) & 1)):
+            dtype = np.dtype(np.uint8)  # IMOD (or pre-2000) maps store unsigned bytes
         count = nc * nr * ns
-        offset = HEADER_BYTES + nsymbt
-        if offset + count * dtype.itemsize > size:
+        if nsymbt > 0:
+            fh.read(nsymbt)
+        buf = fh.read(count * dtype.itemsize)
+        if len(buf) < count * dtype.itemsize:
             raise MapError(f"{path}: file is shorter than its header says")
-        fh.seek(offset)
-        data = np.fromfile(fh, dtype=dtype, count=count)
+        data = np.frombuffer(buf, dtype=dtype, count=count)
     data = data.reshape(ns, nr, nc).astype(np.float32)  # [section, row, column]
     # file axis k (0 = column, 1 = row, 2 = section) holds Cartesian axis mapcrs[k] - 1
     axis_of = [m - 1 for m in mapcrs]  # cartesian index per file axis (c, r, s)
@@ -130,13 +140,17 @@ def read_map(path: str) -> DensityMap:
 
 
 def write_map(path: str, dmap: DensityMap) -> None:
-    """Write a float32 MRC2014 map (x fastest, origin in the ORIGIN field)."""
+    """Write a float32 MRC2014 map (x fastest).  The origin goes into ORIGIN and, when it
+    lies on whole voxels, also into NXSTART/NYSTART/NZSTART for CCP4-style readers."""
     data = np.ascontiguousarray(dmap.data, dtype="<f4")
     nz, ny, nx = data.shape
     words = np.zeros(256, dtype="<i4")
     fl = words.view("<f4")
     words[0:3] = (nx, ny, nz)
     words[3] = 2
+    start = np.asarray(dmap.origin, dtype=np.float64) / np.asarray(dmap.voxel, dtype=np.float64)
+    if np.allclose(start, np.round(start), atol=1e-4):
+        words[4:7] = np.round(start).astype(np.int32)
     words[7:10] = (nx, ny, nz)
     fl[10:13] = np.array((nx, ny, nz)) * np.asarray(dmap.voxel)
     fl[13:16] = 90.0

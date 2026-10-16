@@ -197,10 +197,29 @@ class AnalysisParams:
     proximity_search_radius: float = 8.0  # max proximity cutoff usable at render time
 
 
+REP_STYLES = ("cartoon", "ribbon", "tube", "licorice", "vdw", "surf")
+REP_COLORS = ("auto", "residue", "element", "nucleotide")
+
+
+@dataclass
+class RepSpec:
+    """One 3D representation drawn in the structural view (VMD-like)."""
+
+    style: str = "cartoon"  # see REP_STYLES
+    groups: List[str] = field(default_factory=list)  # residue groups ([] -> every structure group)
+    color: str = "auto"  # residue colours, element colours (atoms), nucleotide colours (bases)
+    size: float = 1.0  # scales widths and radii
+    opacity: float = 1.0
+    sugars: bool = False  # cartoon: draw the ribose rings (shows the pucker)
+
+
 @dataclass
 class VisualParams:
     structure_groups: List[str] = field(default_factory=list)  # [] -> all groups
     trace_atoms: str = "C4',CA"  # per-residue priority list (P, C4', C1', CA ...)
+    representations: List[RepSpec] = field(default_factory=list)  # [] -> 2D backbone trace
+    renderer: str = "auto"  # 3D renderer: "auto", "software" or "vtk"
+    backbone_atom: str = "P"  # spline control atom of ribbons / cartoons: "P" or "C4'"
     rep_hydrogens: bool = False  # include hydrogens in all-atom representations
     show_ions: bool = True
     align_frames: bool = True  # superpose each frame's trace onto the reference
@@ -563,6 +582,21 @@ class Project:
             problems.append(f"Unknown colour mode {v.color_mode!r}.")
         if v.glow_mode not in ("none", "ever", "fade", "current"):
             problems.append(f"Unknown glow mode {v.glow_mode!r}.")
+        for k, rs in enumerate(v.representations):
+            if rs.style not in REP_STYLES:
+                problems.append(f"Representation {k + 1}: unknown style {rs.style!r} "
+                                f"({', '.join(REP_STYLES)}).")
+            if rs.color not in REP_COLORS:
+                problems.append(f"Representation {k + 1}: unknown colouring {rs.color!r}.")
+            for gname in rs.groups:
+                if gname not in names:
+                    problems.append(f"Representation {k + 1}: unknown residue group {gname!r}.")
+            if rs.size <= 0 or not 0 < rs.opacity <= 1:
+                problems.append(f"Representation {k + 1}: size must be positive and opacity in (0, 1].")
+        if v.renderer not in ("auto", "software", "vtk"):
+            problems.append(f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
+        if v.backbone_atom not in ("P", "C4'"):
+            problems.append("The backbone atom of ribbons and cartoons must be P or C4'.")
         if v.proximity_cutoff > a.proximity_search_radius:
             problems.append("Proximity cutoff exceeds the proximity search radius "
                             "(raise analyses.proximity_search_radius).")

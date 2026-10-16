@@ -266,3 +266,28 @@ def test_cli_density(model, tmp_path, capsys):
     assert read_map(sim).data.max() > 0
     assert main(["density", "fit", "-p", saved, "--search", "manual", "-q"]) == 0
     assert json.loads(capsys.readouterr().out)["cc"] > 0.9
+
+
+def test_gzip_imod_bytes_and_nstart(tmp_path):
+    import gzip
+
+    cart = _blob((6, 6, 6), (2, 3, 4))
+    path = tmp_path / "g.mrc"
+    write_map(str(path), DensityMap(cart, np.array([-3.0, 1.5, 6.0]), np.array([1.5, 1.5, 1.5])))
+    head = np.frombuffer(path.read_bytes()[:64], dtype="<i4")
+    assert list(head[4:7]) == [-2, 1, 4]  # NSTART written when the origin lies on whole voxels
+    gz = tmp_path / "g.map.gz"
+    gz.write_bytes(gzip.compress(path.read_bytes()))
+    m = read_map(str(gz))
+    np.testing.assert_array_equal(m.data, cart)
+    np.testing.assert_allclose(m.origin, [-3.0, 1.5, 6.0])
+    # IMOD mode 0 maps hold unsigned bytes
+    raw = tmp_path / "imod.mrc"
+    vals = np.full((2, 2, 2), 200, dtype=np.uint8)
+    _raw_map(raw, vals.view(np.int8), (1, 2, 3), mode=0)
+    b = bytearray(raw.read_bytes())
+    b[152:160] = np.array([1146047817, 0], dtype="<i4").tobytes()
+    raw.write_bytes(bytes(b))
+    assert read_map(str(raw)).data.min() == 200
+    sim = D.simulate_map(np.array([[0.3, 0.7, -1.1]]), np.array([6.0]), 3.0)
+    assert np.allclose(sim.origin / sim.voxel, np.round(sim.origin / sim.voxel))

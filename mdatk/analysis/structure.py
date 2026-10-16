@@ -73,16 +73,24 @@ def chain_ids(residues) -> np.ndarray:
         return np.zeros(n, dtype=np.int64)
 
 
-def residue_group_index(ctx, residues) -> np.ndarray:
-    """Index of the first project group containing each residue (-1: none)."""
-    out = np.full(len(residues), -1, dtype=np.int64)
+def residue_group_membership(ctx, residues) -> np.ndarray:
+    """[n_groups, n_residues] bool: residue belongs to project group k."""
+    out = np.zeros((len(ctx.project.groups), len(residues)), dtype=bool)
     for gi, g in enumerate(ctx.project.groups):
         try:
             ag = ctx.select(f"group:{g.name}", allow_empty=True)
         except SelectionError:
             continue
-        hit = np.isin(residues.ix, np.unique(ag.resindices)) & (out < 0)
-        out[hit] = gi
+        out[gi] = np.isin(residues.ix, np.unique(ag.resindices))
+    return out
+
+
+def residue_group_index(ctx, residues) -> np.ndarray:
+    """Index of the first project group containing each residue (-1: none)."""
+    member = residue_group_membership(ctx, residues)
+    out = np.full(len(residues), -1, dtype=np.int64)
+    for gi in range(len(member) - 1, -1, -1):
+        out[member[gi]] = gi
     return out
 
 
@@ -124,7 +132,7 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
-    version = 2  # v2: residue numbers for tags
+    version = 3  # v2: residue numbers for tags; v3: group membership
 
     @classmethod
     def params_for(cls, project):
@@ -155,6 +163,7 @@ class TraceAnalysis(Analysis):
         self.ion_coords = np.zeros((self.n_frames, self.ions.n_atoms, 3), dtype=np.float32)
         self.ref = None
         self.chain = chain_ids(residues)
+        self.group_member = residue_group_membership(self.ctx, residues)
         self.group_index = residue_group_index(self.ctx, residues)
         self.links = np.zeros((0, 2), dtype=np.int64)
 
@@ -193,7 +202,7 @@ class TraceAnalysis(Analysis):
                               group_names=self.project.group_names())
         res.arrays.update(coords=self.coords, ion_coords=self.ion_coords,
                           chain=self.chain, group_index=self.group_index,
-                          is_point=self.is_point, links=self.links,
+                          group_member=self.group_member, is_point=self.is_point, links=self.links,
                           resindex=self.residues.ix.astype(np.int64),
                           resid=self.residues.resids.astype(np.int64))
         return res

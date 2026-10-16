@@ -147,6 +147,8 @@ class StructurePanel(Panel):
     def required_analyses(cls, spec, project):
         need = {"trace"}
         v = project.visual
+        if v.representations:
+            need.add("atoms")
         if v.color_mode == "proximity" or v.glow_mode != "none":
             need.add("proximity")
         return need
@@ -233,6 +235,48 @@ class StructurePanel(Panel):
                                       fontsize=self.ctx.font_size * 0.85) if v.show_time_label else None
         self._residue_tags(v, tr)
         self._legend(v, tr)
+        self.stage = None
+        self.covered = np.zeros(n_res, dtype=bool)  # residues drawn by a 3D representation
+        if v.representations:
+            self._setup_stage(ds, tr)
+
+    # -- 3D representations
+    def _setup_stage(self, ds, tr) -> None:
+        from .molecule.renderers import get_renderer
+        from .molecule.scene import build_scene
+        from .molecule.stage import MoleculeStage
+
+        v = self.ctx.project.visual
+        atoms = ds.results.get("atoms")
+        if atoms is None:
+            raise KeyError("atoms")
+        scene = build_scene(atoms, tr, v.representations, self.ctx.project.group_names(), v.backbone_atom)
+        renderer, note = get_renderer(v.renderer)
+        if renderer is None:
+            self.stage_note = note
+            return
+        xyz = np.asarray(atoms.arrays["coords"], dtype=np.float32) - self.center.astype(np.float32)
+        self.stage = MoleculeStage(self, scene, xyz, renderer)
+        for style in scene.styles:
+            if style is not None:
+                self.covered |= style.mask
+        if note:
+            log.info(note)
+
+    def residue_rgb(self, pos: int) -> np.ndarray:
+        """Residue colours of a frame without fog (the 3D renderer fogs by depth), tinted
+        toward the glow colour while a residue glows."""
+        v = self.ctx.project.visual
+        rgb = frame_colors(self.static, v.color_mode, v.base_color, v.proximity_color,
+                           self.color_i[:, pos], self.member)[:, :3].astype(np.float64)
+        glow = np.clip(self.glow[:, pos] * v.glow_strength, 0, 1)[:, None]
+        return rgb * (1 - 0.35 * glow) + self.glow_rgb[None, :] * 0.35 * glow
+
+    def fog_rgb(self) -> np.ndarray:
+        return np.array(to_rgba(self.theme.surface))[:3]
+
+    def fog_strength(self) -> float:
+        return 0.45 if self.ctx.project.visual.depth_cue else 0.0
 
     def set_rotation(self, angles) -> None:
         """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
@@ -397,7 +441,10 @@ class StructurePanel(Panel):
             style_legend(self.legend, self.theme, self.ctx.font_size)
 
     def animated_artists(self):
-        arts = [self.halo_outer, self.halo_inner, self.lines, self.points, self.ion_points]
+        arts = [self.halo_outer, self.halo_inner, self.lines, self.points]
+        if self.stage is not None:
+            arts.append(self.stage.image)
+        arts.append(self.ion_points)
         arts += self.tags
         if self.time_text is not None:
             arts.append(self.time_text)
@@ -419,11 +466,17 @@ class StructurePanel(Panel):
         ps = v.point_size
         sizes = ps * (0.55 + 0.9 * depth)
         order = np.argsort(xyz[:, 2], kind="stable")
+        if self.stage is not None:  # residues drawn in 3D leave the 2D trace
+            order = order[~self.covered[order]]
         self.points.set_offsets(xyz[order, :2])
         self.points.set_sizes(sizes[order])
         self.points.set_facecolors(colors[order])
-        if len(self.links):
-            i, j = self.links[:, 0], self.links[:, 1]
+        links = self.links
+        if self.stage is not None and len(links):
+            links = links[~(self.covered[links[:, 0]] | self.covered[links[:, 1]])]
+        self.lines.set_segments([])
+        if len(links):
+            i, j = links[:, 0], links[:, 1]
             segs = np.stack([xyz[i, :2], xyz[j, :2]], axis=1)
             seg_depth = 0.5 * (depth[i] + depth[j])
             seg_col = 0.5 * (colors[i] + colors[j])
@@ -448,8 +501,11 @@ class StructurePanel(Panel):
         else:
             self.halo_outer.set_offsets(np.zeros((0, 2)))
             self.halo_inner.set_offsets(np.zeros((0, 2)))
-        if self.ion_view.shape[1]:
+        if self.ion_view.shape[1] and self.stage is None:
             self.ion_points.set_offsets(self.ion_view[pos][:, :2])
+        if self.stage is not None:  # ions are spheres in the 3D scene
+            self.ion_points.set_offsets(np.zeros((0, 2)))
+            self.stage.update(pos)
         if self.tags:  # push each label outward, away from the projected centre
             xy = xyz[self.tag_rows, :2]
             centre = xyz[:, :2].mean(axis=0)

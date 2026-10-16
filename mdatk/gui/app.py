@@ -23,7 +23,8 @@ from ..analysis import expected_keys  # noqa: E402
 from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E402
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
-from ..config import ExternalSeries, PanelSpec, Project, ResidueGroup, RMSDTarget  # noqa: E402
+from ..config import (REP_COLORS, REP_STYLES, ExternalSeries, PanelSpec, Project,  # noqa: E402
+                      RepSpec, ResidueGroup, RMSDTarget)
 from ..progress import Cancelled  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
 from ..render.example import example_dataset  # noqa: E402
@@ -697,6 +698,7 @@ class MainWindow(Gtk.ApplicationWindow):
                             "orientation is set on the reference frame and applied to every frame "
                             "of the video."))
         box.pack_start(W.frame("Orientation", rot), False, False, 0)
+        box.pack_start(self._representation_frame(), False, False, 0)
         box.pack_start(self._density_frame(), False, False, 0)
 
         tags = W.Form()
@@ -740,11 +742,91 @@ class MainWindow(Gtk.ApplicationWindow):
         box.pack_start(W.frame("Appearance", f), False, False, 0)
         return W.scrolled(box)
 
+    REP_STYLE_LABELS = {"cartoon": "New Cartoon (bases as slabs)", "ribbon": "Ribbon", "tube": "Tube",
+                        "licorice": "Licorice", "vdw": "VDW spheres", "surf": "Surface"}
+    REP_COLOR_LABELS = {"auto": "auto", "residue": "residue colours", "element": "elements",
+                        "nucleotide": "nucleotides (A/G/C/U)"}
+
+    def _representation_frame(self):
+        b = self.binder
+        f = W.Form()
+        self.rep_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.rep_rows: List[dict] = []
+        b._add("visual.representations", self.rep_box, self._read_reps, self._set_reps)
+        f.add_wide(self.rep_box)
+        row = Gtk.Box(spacing=6)
+        row.pack_start(W.button("Add representation", lambda: self._add_rep_row(RepSpec()),
+                                "Draw residue groups as cartoon, ribbon, tube, licorice, VDW or surface",
+                                "list-add-symbolic"), False, False, 0)
+        row.pack_start(W.button("Apply", self.refresh_canvas, "Redraw the preview"), False, False, 0)
+        f.add_wide(row)
+        f.add_row("Renderer / backbone atom", [
+            b.combo("visual.renderer", W.combo([("auto", "auto"), ("software", "built-in"),
+                                                 ("vtk", "VTK (optional)")])),
+            b.combo("visual.backbone_atom", W.combo([("P", "P"), ("C4'", "C4'")])),
+            b.check("visual.rep_hydrogens", W.check("hydrogens"))],
+            "The built-in renderer needs no extra packages; VTK (pip install vtk) is faster and smoother "
+            "where OpenGL is available. Ribbons and cartoons run through P or C4'.")
+        f.add_wide(W.hint("No representation: the 2D backbone trace. Each representation draws its groups "
+                          "(empty: all shown groups); later rows draw on top. Colouring 'auto' uses the "
+                          "residue colours (groups / proximity / glow) for backbones, nucleotide colours for "
+                          "cartoon bases and element colours for atoms."))
+        return W.frame("Representations (3D)", f)
+
+    def _add_rep_row(self, spec: RepSpec) -> None:
+        grid = Gtk.Box(spacing=4)
+        style = W.combo([(k, self.REP_STYLE_LABELS.get(k, k)) for k in REP_STYLES])
+        style.set_active_id(spec.style)
+        groups = W.entry("all groups", width=12)
+        groups.set_text(", ".join(spec.groups))
+        groups.set_tooltip_text("Residue groups (comma separated); empty: every shown group")
+        color = W.combo([(k, self.REP_COLOR_LABELS.get(k, k)) for k in REP_COLORS])
+        color.set_active_id(spec.color)
+        size = W.spin(0.2, 5, 0.1, 1, "Size (scales widths and radii)")
+        size.set_value(spec.size)
+        opacity = W.spin(0.05, 1, 0.05, 2, "Opacity")
+        opacity.set_value(spec.opacity)
+        sugars = W.check("sugars", "Cartoon: draw the ribose rings")
+        sugars.set_active(spec.sugars)
+        remove = Gtk.Button.new_from_icon_name("list-remove-symbolic", Gtk.IconSize.BUTTON)
+        remove.set_tooltip_text("Remove this representation")
+        for w in (style, groups, color, size, opacity, sugars):
+            grid.pack_start(w, False, False, 0)
+        grid.pack_end(remove, False, False, 0)
+        row = {"box": grid, "style": style, "groups": groups, "color": color, "size": size,
+               "opacity": opacity, "sugars": sugars}
+        style.connect("changed", lambda *_: sugars.set_sensitive(style.get_active_id() == "cartoon"))
+        sugars.set_sensitive(spec.style == "cartoon")
+        remove.connect("clicked", lambda *_: self._remove_rep_row(row))
+        self.rep_rows.append(row)
+        self.rep_box.pack_start(grid, False, False, 0)
+        grid.show_all()
+
+    def _remove_rep_row(self, row: dict) -> None:
+        self.rep_rows.remove(row)
+        self.rep_box.remove(row["box"])
+        self.refresh_canvas()
+
+    def _read_reps(self) -> List[RepSpec]:
+        return [RepSpec(style=r["style"].get_active_id() or "cartoon",
+                        groups=[g.strip() for g in r["groups"].get_text().split(",") if g.strip()],
+                        color=r["color"].get_active_id() or "auto", size=round(r["size"].get_value(), 3),
+                        opacity=round(r["opacity"].get_value(), 3), sugars=r["sugars"].get_active())
+                for r in self.rep_rows]
+
+    def _set_reps(self, specs) -> None:
+        for r in list(self.rep_rows):
+            self.rep_box.remove(r["box"])
+        self.rep_rows = []
+        for spec in specs or []:
+            self._add_rep_row(spec)
+
     def _density_frame(self):
         b = self.binder
         d = W.Form()
         mp = W.file_chooser_button("Select a density map", patterns=[
-            ("MRC / CCP4 maps (*.mrc, *.map, *.ccp4)", ["*.mrc", "*.map", "*.ccp4", "*.MRC", "*.MAP"])])
+            ("MRC / CCP4 maps (*.mrc, *.map, *.ccp4, *.gz)",
+             ["*.mrc", "*.map", "*.ccp4", "*.MRC", "*.MAP", "*.map.gz", "*.mrc.gz"])])
         d.add("Map file", b.path_entry("density.map_path", mp), "MRC2014 / CCP4 map (.mrc, .map)")
         mp.entry.connect("changed", self._on_density_map_changed)
         self.density_map_entry = mp.entry
