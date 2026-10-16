@@ -249,12 +249,25 @@ MDATK does not offer two combinations:
 - OPC3: there are no published sets.
 
 The authors publish no Amber files, so MDATK converts their values: Rmin/2 = 2^(1/6)·σ/2,
-Rmin_ij = 2^(1/6)·σ_ij, 1 kcal = 4.184 kJ. The pair lines come after every `addLJType`, including
-NBfix19's `addLJType @%NB,NC` and *Separate HO and O2 types*, because `addLJType` resets the pair
-terms of the atoms it moves. Amber's Cl⁻ is kept; only the Mg²⁺–Cl⁻ pair takes the authors' value,
-which was fitted with their Cl⁻ model. Untick *Mg²⁺–Cl⁻ pair term* to keep the plain combination
-rule. An Amber build with these sets, converted to GROMACS, gives the published σ/ε in
-`[ nonbond_params ]` (checked by the opt-in integration test).
+Rmin_ij = 2^(1/6)·σ_ij, 1 kcal = 4.184 kJ. An Amber build with these sets, converted to GROMACS, gives
+the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration test).
+
+- **Order.** The pair lines come after every `addLJType`, including NBfix19's `addLJType @%NB,NC` and
+  *Separate HO and O2 types*, because `addLJType` resets the pair terms of the atoms it moves.
+- **CP library.** If a CP residue library retypes the phosphate oxygens (O2 → OP, OS → OR), those types
+  get the authors' O2 / OS terms. This is MDATK's choice: the authors fitted against plain OL3 oxygens.
+- **Other types.** Atom types outside the authors' table, for example from an L-RNA library, keep the
+  plain combination rule; the build step warns about this.
+- **ParmEd output.** ParmEd's messages, including skipped masks, go into the step's log.
+- **Cl⁻.** Amber's Cl⁻ is kept; only the Mg²⁺–Cl⁻ pair takes the authors' value, which was fitted with
+  their Cl⁻ model. Without that pair (*Mg²⁺–Cl⁻ pair term* unticked), Mg²⁺–Cl⁻ follows the combination
+  rule with the optimised Mg²⁺. That is not a published combination and gives far too strong Mg²⁺–Cl⁻
+  contacts, so the build step warns about it.
+
+> In the default *OL3 + CP*, `frcmod.99bsc0-chiol3-CaseP` is loaded after `leaprc.RNA.OL3`. If that
+> frcmod defines new atom types (OP / OR, as the published file does) and no CP residue library is
+> loaded, no atom uses them and the CP correction has no effect. The build step warns when it can read
+> the frcmod and finds such types.
 
 **GROMACS.** ParmEd's GROMACS writer (and acpype) keep only the diagonal Lennard-Jones terms, so the
 NBfix19 / 0BPh pairs would be lost silently. MDATK's conversion script therefore gives every LJ type

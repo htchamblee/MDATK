@@ -117,8 +117,9 @@ class MoleculeStage:
 
     def update(self, pos: int) -> None:
         """New frame (or new colours / view): re-render at the current axes size."""
+        if pos != self._pos or not self._items:  # rotations reuse the frame's geometry
+            self._items = self._items_for(pos)
         self._pos = pos
-        self._items = self._items_for(pos)
         bb = self.panel.ax.get_window_extent()
         w, h = int(round(bb.width)), int(round(bb.height))
         self.image.rgba = self._render_size(w, h) if w > 1 and h > 1 else None

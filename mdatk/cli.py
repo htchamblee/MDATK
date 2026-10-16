@@ -454,16 +454,16 @@ def cmd_density_fit(args) -> int:
 
 
 def cmd_density_simulate(args) -> int:
-    from .density import RigidTransform, atom_weights, simulate_map
+    from .density import anchored, atom_weights, simulate_map
     from .io.mrc import write_map
 
     project, pipe = _pipeline(args)
     pipe.check()
-    xyz, elements, frame = pipe.density_frame_atoms(args.frame or "ref")
+    xyz, elements, frame, reference = pipe.density_frame_atoms(args.frame or "ref")
     if args.placed:
         if len(project.density.transform) != 12:
             raise ValueError("--placed needs a stored placement (run 'mdatk density fit --save' first)")
-        xyz = RigidTransform.from_list(project.density.transform).apply(xyz)
+        xyz = anchored(project.density.transform, project.density.anchor, reference).apply(xyz)
     dmap = simulate_map(xyz, atom_weights(elements), args.resolution, args.spacing or None)
     write_map(args.output, dmap)
     print(json.dumps({"map": os.path.abspath(args.output), "frame": frame, "atoms": len(xyz),

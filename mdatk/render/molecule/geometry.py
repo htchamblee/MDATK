@@ -388,4 +388,133 @@ class VdwStyle(Style):
         return DrawList(spheres=[Spheres(xyz[at], self.topo.radius[at] * self.size, self.topo.row[at], at)])
 
 
-STYLES = {cls.name: cls for cls in (CartoonStyle, RibbonStyle, TubeStyle, LicoriceStyle, VdwStyle)}
+# ---------------------------------------------------------------------------
+# molecular surface: Gaussian density + marching tetrahedra
+# ---------------------------------------------------------------------------
+
+# cube corners (x, y, z offsets) and the six tetrahedra around the 0-6 diagonal
+_CORNERS = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]])
+_TETS = np.array([[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]])
+
+
+def gaussian_density(xyz: np.ndarray, spacing: float, sigma: float, pad: float):
+    """Sum of unit Gaussians (an isolated atom peaks at 1) on a grid; returns grid [z, y, x], origin."""
+    from scipy import ndimage
+
+    lo = xyz.min(axis=0) - pad
+    shape = np.ceil((xyz.max(axis=0) + pad - lo) / spacing).astype(int) + 2  # x, y, z
+    g = (xyz - lo) / spacing
+    b = np.floor(g).astype(np.int64)
+    f = g - b
+    nx, ny, nz = shape
+    flat = np.zeros(nx * ny * nz)
+    for dx in (0, 1):
+        wx = f[:, 0] if dx else 1 - f[:, 0]
+        for dy in (0, 1):
+            wy = f[:, 1] if dy else 1 - f[:, 1]
+            for dz in (0, 1):
+                wz = f[:, 2] if dz else 1 - f[:, 2]
+                idx = ((b[:, 2] + dz) * ny + (b[:, 1] + dy)) * nx + (b[:, 0] + dx)
+                flat += np.bincount(idx, wx * wy * wz, minlength=flat.size)
+    s = sigma / spacing
+    grid = ndimage.gaussian_filter(flat.reshape(nz, ny, nx), s, mode="constant", truncate=3.0)
+    grid *= (2 * np.pi) ** 1.5 * s ** 3
+    return grid, lo
+
+
+def marching_tetrahedra(grid: np.ndarray, iso: float, origin: np.ndarray, spacing: float):
+    """Iso-surface of ``grid`` [z, y, x] as unshared triangles: verts (3t, 3), normals pointing
+    to lower values (outward for a density), tris (t, 3)."""
+    v = grid
+    nz, ny, nx = v.shape
+    inside = v > iso
+    # cubes whose corners are not all on one side
+    corner_in = np.stack([inside[dz:nz - 1 + dz, dy:ny - 1 + dy, dx:nx - 1 + dx]
+                          for dx, dy, dz in _CORNERS], axis=-1)
+    n_in = corner_in.sum(-1)
+    cz, cy, cx = np.nonzero((n_in > 0) & (n_in < 8))
+    if not len(cz):
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3), np.int64)
+    cube = np.stack([cx, cy, cz], 1)
+    pos = cube[:, None, :] + _CORNERS[None]  # (c, 8, 3) grid indices (x, y, z)
+    val = v[pos[..., 2], pos[..., 1], pos[..., 0]]  # (c, 8)
+    tp = pos[:, _TETS].reshape(-1, 4, 3)  # (c*6, 4, 3)
+    tv = val[:, _TETS].reshape(-1, 4)
+    tin = tv > iso
+    k = tin.sum(1)
+    tris = []
+
+    def cut(a_pos, a_val, b_pos, b_val):
+        t = (iso - a_val) / np.where(np.abs(b_val - a_val) > 1e-12, b_val - a_val, 1e-12)
+        return a_pos + t[:, None] * (b_pos - a_pos)
+
+    # one corner on its own (in or out): one triangle
+    for lone_in in (True, False):
+        sel = np.flatnonzero(k == (1 if lone_in else 3))
+        if len(sel):
+            flags = tin[sel] if lone_in else ~tin[sel]
+            a = np.argmax(flags, axis=1)
+            others = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])[a]
+            P, V = tp[sel].astype(np.float64), tv[sel]
+            r = np.arange(len(sel))
+            pa, va = P[r, a], V[r, a]
+            tri = np.stack([cut(pa, va, P[r, others[:, j]], V[r, others[:, j]]) for j in range(3)], 1)
+            tris.append(tri)
+    # two in, two out: a quad (two triangles)
+    sel = np.flatnonzero(k == 2)
+    if len(sel):
+        order = np.argsort(~tin[sel], axis=1, kind="stable")  # the two inside corners first
+        P, V = tp[sel].astype(np.float64), tv[sel]
+        r = np.arange(len(sel))
+        i0, i1, o0, o1 = (order[:, j] for j in range(4))
+        q = [cut(P[r, i0], V[r, i0], P[r, o0], V[r, o0]), cut(P[r, i0], V[r, i0], P[r, o1], V[r, o1]),
+             cut(P[r, i1], V[r, i1], P[r, o1], V[r, o1]), cut(P[r, i1], V[r, i1], P[r, o0], V[r, o0])]
+        tris.append(np.stack([q[0], q[1], q[2]], 1))
+        tris.append(np.stack([q[0], q[2], q[3]], 1))
+    tri = np.concatenate(tris)  # (t, 3, 3) in grid index units (x, y, z)
+    verts = tri.reshape(-1, 3)
+    # outward normals: minus the density gradient (trilinear interpolation of np.gradient)
+    from scipy import ndimage
+
+    gz, gy, gx = np.gradient(v)
+    coords = np.vstack([verts[:, 2], verts[:, 1], verts[:, 0]])
+    grad = np.stack([ndimage.map_coordinates(g, coords, order=1, mode="nearest") for g in (gx, gy, gz)], 1)
+    normals = -grad / (np.linalg.norm(grad, axis=1, keepdims=True) + 1e-12)
+    # wind every triangle so its face normal agrees with the vertex normals
+    t3 = verts.reshape(-1, 3, 3)
+    face = np.cross(t3[:, 1] - t3[:, 0], t3[:, 2] - t3[:, 0])
+    flip = (face * normals.reshape(-1, 3, 3).sum(1)).sum(1) < 0
+    ids = np.arange(len(verts)).reshape(-1, 3)
+    ids[flip] = ids[flip][:, [0, 2, 1]]
+    return origin + verts * spacing, normals, ids
+
+
+class SurfStyle(Style):
+    """Smooth molecular surface (like VMD QuickSurf): iso-surface of summed atomic Gaussians,
+    coloured by the residue of the nearest atom."""
+
+    name = "surf"
+    sigma, iso = 1.4, 0.5  # an isolated atom's surface lies ~1.65 Å from its centre
+
+    def setup(self):
+        self.atoms = self._atoms()
+        self.spacing = float(self.opts.get("spacing", 1.0))
+
+    def build(self, xyz):
+        from scipy.spatial import cKDTree
+
+        at = self.atoms
+        if not len(at):
+            return DrawList()
+        p = xyz[at]
+        sigma = self.sigma * self.size
+        grid, lo = gaussian_density(p, self.spacing, sigma, pad=3 * sigma + self.spacing)
+        verts, normals, tris = marching_tetrahedra(grid, self.iso, lo, self.spacing)
+        if not len(verts):
+            return DrawList()
+        _d, near = cKDTree(p).query(verts)
+        owner = self.topo.row[at[near]]
+        return DrawList(meshes=[Mesh(verts, normals, tris, owner, np.zeros(len(verts), np.int8))])
+
+
+STYLES = {cls.name: cls for cls in (CartoonStyle, RibbonStyle, TubeStyle, LicoriceStyle, VdwStyle, SurfStyle)}

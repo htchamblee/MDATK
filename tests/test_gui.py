@@ -136,7 +136,7 @@ def test_density_map_fit_shadow_and_drag(window, tmp_path):
     from mdatk.io.mrc import DensityMap, write_map
     from mdatk.pipeline import Pipeline
 
-    xyz, el, _f = Pipeline(window.collect(validate=False)).density_frame_atoms("ref")
+    xyz, el, _f, _ref = Pipeline(window.collect(validate=False)).density_frame_atoms("ref")
     true = D.RigidTransform(D.quaternion_matrix([0.7, 0.1, -0.6, 0.3]), np.array([12.0, -6.0, 30.0]))
     sim = D.simulate_map(true.apply(xyz), D.atom_weights(el), 6.0, spacing=1.5)
     path = str(tmp_path / "gui_map.mrc")
@@ -164,6 +164,7 @@ def test_density_map_fit_shadow_and_drag(window, tmp_path):
     canvas._on_release(None, Ev(cx + 30, cy + 10))
     assert canvas.angles == angles and dp.transform != before
     assert "by hand" in window.density_status.get_text()
+    assert len(dp.anchor) == len(window.preview_data["coords"])  # placement anchored to the shown frame
     rotated = list(dp.transform)
     canvas._on_press(None, Ev(cx, cy, state=Gdk.ModifierType.SHIFT_MASK))
     canvas._on_motion(None, Ev(cx + 20, cy))

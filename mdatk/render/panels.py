@@ -300,11 +300,13 @@ class StructurePanel(Panel):
         if len(d.transform) != 12:
             self.density_note = "density map: not fitted yet"
             return
-        from ..density import RigidTransform, load_map_cached, map_level
+        from ..density import anchored, load_map_cached, map_level
 
         try:
             self._dmap = load_map_cached(d.map_path)
-            self._to_map = RigidTransform.from_list(d.transform)
+            # the placement follows the molecule if this reference frame differs from the
+            # one the map was placed on (other start frame, cleaned vs raw files)
+            self._to_map = anchored(d.transform, d.anchor, self.centred[0] + self.center)
         except (OSError, ValueError) as exc:
             self._dmap = None
             self.density_note = f"density map: {exc}"
@@ -332,11 +334,17 @@ class StructurePanel(Panel):
             return
         from ..density import project_density, shadow_rgba
 
-        span = 2.5 * float(max(self.data_hi - self.data_lo))
-        window = (-span / 2, span / 2, -span / 2, span / 2)
-        n = 110 if self.density_fast else 240
-        sh = project_density(self._dmap, self._to_map, self.view_matrix, self.center, self._level,
-                             window=window, max_pixels=n, max_depth=n)
+        # the visible window (after_layout widens it to the panel's aspect) plus a margin
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        mx, my = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
+        window = (x0 - mx, x1 + mx, y0 - my, y1 + my)
+        n = 100 if self.density_fast else 200
+        try:
+            sh = project_density(self._dmap, self._to_map, self.view_matrix, self.center, self._level,
+                                 window=window, max_pixels=n, max_depth=n)
+        except (ValueError, OverflowError) as exc:  # e.g. an absurd stored placement
+            log.warning("density map not drawn: %s", exc)
+            sh = None
         if sh is None:
             self.density_img.set_visible(False)
             return
@@ -396,6 +404,10 @@ class StructurePanel(Panel):
 
     def after_layout(self):
         """Equal x/y scale: grow the data window to the panel's pixel aspect ratio."""
+        self._fit_aspect()
+        self.update_density()  # the shadow covers the final window
+
+    def _fit_aspect(self):
         if not self.ok:
             return
         bbox = self.ax.get_window_extent()

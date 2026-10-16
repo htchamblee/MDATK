@@ -69,9 +69,13 @@ class RigidTransform:
         v = np.asarray(values, dtype=np.float64)
         if v.size != 12:
             raise ValueError("a rigid transform needs 12 numbers (3x3 rotation + translation)")
+        if not np.all(np.isfinite(v)):
+            raise ValueError("the transform contains non-finite numbers")
         r = v[:9].reshape(3, 3)
-        u, _s, vt = np.linalg.svd(r)  # re-orthonormalise rounded values
-        r = u @ vt
+        u, sv, vt = np.linalg.svd(r)
+        if np.any(np.abs(sv - 1.0) > 0.01):
+            raise ValueError("the rotation part of the transform is not a rotation")
+        r = u @ vt  # re-orthonormalise rounded values
         if np.linalg.det(r) < 0:
             raise ValueError("the rotation part of the transform is a reflection")
         return cls(r, v[9:].copy())
@@ -96,6 +100,30 @@ class RigidTransform:
         """This transform's rotation applied about ``centre`` followed by its translation."""
         c = np.asarray(centre, dtype=np.float64)
         return RigidTransform(self.rotation, c - self.rotation @ c + self.translation)
+
+
+def anchored(values: Sequence[float], anchor, reference: np.ndarray) -> RigidTransform:
+    """The stored placement (model -> map) expressed for the current model frame.
+
+    ``anchor`` holds the reference frame's backbone points as they were when the map was
+    placed.  When the current reference points (``reference``) differ - other start frame,
+    cleaned instead of raw files, other superposition - they are superposed onto the anchor
+    first, so the map stays on the molecule."""
+    from .spatial import kabsch
+
+    t = RigidTransform.from_list(values)
+    a = np.asarray(anchor, dtype=np.float64)
+    ref = np.asarray(reference, dtype=np.float64)
+    if a.ndim != 2 or a.shape != ref.shape or len(a) < 3:
+        return t
+    if np.allclose(a, ref, atol=1e-3):
+        return t
+    r, mc, rc = kabsch(ref, a)
+    return t.compose(RigidTransform(r, rc - r @ mc))
+
+
+def anchor_points(reference: np.ndarray) -> List[List[float]]:
+    return [[round(float(x), 3) for x in p] for p in np.asarray(reference, dtype=np.float64)]
 
 
 def rotvec_matrix(w: np.ndarray) -> np.ndarray:
@@ -654,7 +682,7 @@ def project_density(dmap: DensityMap, world_to_map: RigidTransform, view: np.nda
     view_start = np.array([start[2], start[1], start[0]])  # (u, v, w)
     idx0 = a_idx @ view_start + b_idx  # (x, y, z)
     offset = np.array([idx0[2], idx0[1], idx0[0]])
-    data = np.maximum(dmap.data - np.float32(level), 0).astype(np.float32)
+    data = _above_level(dmap, level)
     vol = ndimage.affine_transform(data, m, offset=offset, output_shape=(nw, nv, nu), order=1,
                                    mode="constant", cval=0.0, prefilter=False)
     img = vol.sum(axis=0)
@@ -663,6 +691,21 @@ def project_density(dmap: DensityMap, world_to_map: RigidTransform, view: np.nda
         return None
     return Shadow((img / peak).astype(np.float32),
                   (u0 - 0.5 * step, u0 + (nu - 0.5) * step, v0 - 0.5 * step, v0 + (nv - 0.5) * step))
+
+
+_LEVEL_CACHE: dict = {}
+
+
+def _above_level(dmap: DensityMap, level: float) -> np.ndarray:
+    """max(map - level, 0) as float32, cached per map and level."""
+    key = (id(dmap), float(level))
+    hit = _LEVEL_CACHE.get(key)
+    if hit is None or hit[0] is not dmap:
+        arr = np.maximum(dmap.data - np.float32(level), 0).astype(np.float32)
+        if len(_LEVEL_CACHE) >= 2:
+            _LEVEL_CACHE.pop(next(iter(_LEVEL_CACHE)))
+        _LEVEL_CACHE[key] = hit = (dmap, arr)
+    return hit[1]
 
 
 def shadow_rgba(shadow: Shadow, color_rgb: Sequence[float], opacity: float,

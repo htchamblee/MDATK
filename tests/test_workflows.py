@@ -332,7 +332,7 @@ def test_amber_build_optimised_mg_files():
     assert all(k < first_mg for k, ln in enumerate(lines) if ln.startswith("addLJType"))
     assert "changeLJPair :MG @%O2 2.55761105 1.10579359" in pm
     assert "changeLJPair :MG @%N\\* " in pm and "changeLJPair :MG :Cl- 5.48171" in pm
-    assert sum(ln.startswith("changeLJPair :MG @%") for ln in lines) == 27
+    assert sum(ln.startswith("changeLJPair :MG @%") for ln in lines) == 27 + 2  # + CP types OP, OR
     assert "doi:10.1021/acs.jctc.0c01281" in pm and pm.isascii()
     no_cl = generated(step("amber-build", {"mg_count": 4, "mg_model": "micro", "water": "spce",
                                            "mg_cl_pair": False}, {"structure": "/x.pdb"})[0])
@@ -836,3 +836,23 @@ def test_cli_workflow(tmp_path, capsys, demo_dry):
     assert main(["workflow", "restraints", "--top", demo_dry["topology"], "--sequence",
                  "GCAUGGCAUCGA UCGAUGCCAUGC", "--dotbracket", "(" * 12 + ")" * 12, "-o", str(out_dist)]) == 0
     assert out_dist.read_text().count("&rst") == 31
+
+
+def test_mg_pairs_cover_cp_types_and_warn(tmp_path):
+    plan, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "water": "spce"}, {"structure": "/x.pdb"})
+    pm = generated(plan)["apt1_01_parmed_20261015-1432.in"].content
+    o2 = [ln for ln in pm.splitlines() if ln.startswith("changeLJPair :MG @%O2 ")][0].split()[3:]
+    op = [ln for ln in pm.splitlines() if ln.startswith("changeLJPair :MG @%OP ")][0].split()[3:]
+    assert o2 == op and "changeLJPair :MG @%OR " in pm
+    sh = generated(plan)["apt1_01_amber-build_20261015-1432.sh"].content
+    assert "2>&1 | tee apt1_01_parmed_20261015-1432.log" in sh
+    _plan, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "extra_libs": "LRNA.lib"},
+                     {"structure": "/x.pdb"})
+    assert any("keep the plain combination rule" in m for m in messages(st, "warning"))
+    _plan, st = step("amber-build", {"mg_count": 2, "mg_model": "nano", "mg_cl_pair": False},
+                     {"structure": "/x.pdb"})
+    assert any("not a published combination" in m for m in messages(st, "warning"))
+    cp = tmp_path / "frcmod.cp"
+    cp.write_text("CP correction\nMASS\nOP 16.00\nOR 16.00\n\nNONB\n  OP   1.7493  0.2100\n  OR   1.7718  0.1700\n")
+    _plan, st = step("amber-build", {"cp_frcmod": str(cp)}, {"structure": "/x.pdb"})
+    assert any("OP, OR" in m and "no effect" in m for m in messages(st, "warning"))

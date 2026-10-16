@@ -251,7 +251,10 @@ class Pipeline:
         fit = self.project.density_active() and len(self.project.density.transform) != 12
         if fit:
             self.ensure_density_fit(rep.sub(0.0, 0.1))
-        self.last_video = render_video(dataset, self.project, path, rep.sub(0.1, 1.0) if fit else rep)
+        try:
+            self.last_video = render_video(dataset, self.project, path, rep.sub(0.1, 1.0) if fit else rep)
+        finally:
+            _release_gl()
         return self.last_video
 
     def render_charts(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> List[str]:
@@ -340,10 +343,11 @@ class Pipeline:
     def density_frame_atoms(self, frame: str = "ref", reporter: Optional[Reporter] = None):
         """Superposed atom coordinates (structural-view frame) of one trajectory frame.
 
-        Returns (xyz, elements, frame number).  "ref" is the first analysed frame;
-        any other frame is superposed onto it exactly like the video frames.
+        Returns (xyz, elements, frame number, reference backbone points).  "ref" is the
+        first analysed frame; any other frame is superposed onto it exactly like the video
+        frames.  The reference points anchor a placement made in this frame.
         """
-        from .analysis.structure import AtomsAnalysis
+        from .analysis.structure import AtomsAnalysis, TraceAnalysis
 
         p = self.project
         u = self.universe()
@@ -359,14 +363,16 @@ class Pipeline:
         frames = np.array([ref] if f == ref else [ref, f], dtype=np.int64)
         inputs = self.resolve_inputs()
         ctx = AnalysisContext(u, p, inputs.topology, reporter or Reporter())
-        (res,), _ = run_analyses(ctx, [AtomsAnalysis(ctx)], frames, Reporter())
-        return res.arrays["coords"][-1].astype(np.float64), list(res.meta["elements"]), f
+        (res, tr), _ = run_analyses(ctx, [AtomsAnalysis(ctx), TraceAnalysis(ctx)], frames, Reporter())
+        return (res.arrays["coords"][-1].astype(np.float64), list(res.meta["elements"]), f,
+                tr.arrays["coords"][0].astype(np.float64))
 
     def fit_density(self, search: Optional[str] = None, start: Optional[Sequence[float]] = None,
                     reporter: Optional[Reporter] = None):
         """Rigid-body fit of the structure into the density map; stores the placement
         in ``project.density`` and returns the :class:`~mdatk.density.FitResult`."""
-        from .density import FitError, RigidTransform, centre_transform, fit_model, load_map_cached, map_level
+        from .density import (FitError, RigidTransform, anchor_points, anchored, centre_transform, fit_model,
+                              load_map_cached, map_level)
         from .io.mrc import MapError
 
         rep = reporter or self.reporter
@@ -380,13 +386,16 @@ class Pipeline:
         search = search or d.search
         rep.log(f"Density fit ({'global search' if search == 'global' else 'local refinement'}) of "
                 f"frame {d.fit_frame or 'ref'} into {os.path.basename(d.map_path)} at {d.resolution:g} Å")
-        xyz, elements, frame = self.density_frame_atoms(d.fit_frame, rep)
+        xyz, elements, frame, reference = self.density_frame_atoms(d.fit_frame, rep)
         t0 = None
         if search != "global":
             if start is not None:
                 t0 = RigidTransform.from_list(start)
             elif len(d.transform) == 12:
-                t0 = RigidTransform.from_list(d.transform)
+                try:
+                    t0 = anchored(d.transform, d.anchor, reference)
+                except ValueError as exc:
+                    raise PipelineError(f"density map: stored placement: {exc}") from exc
             else:
                 t0 = centre_transform(dmap, map_level(dmap, d.level), xyz.mean(axis=0))
         try:
@@ -396,6 +405,7 @@ class Pipeline:
         except FitError as exc:
             raise PipelineError(f"density fit: {exc}") from exc
         d.transform = res.transform.to_list()
+        d.anchor = anchor_points(reference)
         d.fit_cc = round(float(res.cc), 4)
         d.fit_info = (f"{'global search' if search == 'global' else 'local refinement'}, frame {frame}, "
                       f"{len(xyz)} atoms, {d.resolution:g} Å: CC {res.cc:.3f}"
@@ -404,14 +414,23 @@ class Pipeline:
         return res
 
     def ensure_density_fit(self, reporter: Optional[Reporter] = None) -> None:
-        """Fit before rendering when a map is shown but not yet placed."""
+        """Fit before rendering when a map is shown but not yet placed.  The map is an
+        optional overlay: a failed fit is logged and the video is drawn without it."""
+        from .progress import Cancelled
+
         p = self.project
+        rep = reporter or self.reporter
         if p.density_active() and len(p.density.transform) != 12:
             if not p.density.auto_fit:
-                (reporter or self.reporter).log("WARNING: the density map has no placement and "
-                                                "automatic fitting is off; it is not drawn")
+                rep.log("WARNING: the density map has no placement and automatic fitting is off; "
+                        "it is not drawn")
                 return
-            self.fit_density(reporter=reporter)
+            try:
+                self.fit_density(reporter=reporter)
+            except Cancelled:
+                raise
+            except (PipelineError, OSError, ValueError) as exc:
+                rep.log(f"WARNING: density map not drawn: {exc}")
 
     # --------------------------------------------------------------- preview
     def structure_preview(self) -> Dict[str, Any]:
@@ -445,6 +464,15 @@ class Pipeline:
                           "resnames": atoms.meta["resnames"], "row": atoms.arrays["row"],
                           "bonds": atoms.arrays["bonds"]},
                 "cleaned": inputs.topology != p.inputs.topology}
+
+
+def _release_gl() -> None:
+    """Free this thread's VTK scene (OpenGL contexts belong to their thread)."""
+    import sys
+
+    mod = sys.modules.get("mdatk.render.molecule.vtk_backend")
+    if mod is not None:
+        mod.release_thread()
 
 
 def _tool_version(cmd: List[str]) -> Optional[str]:

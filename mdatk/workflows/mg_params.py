@@ -346,6 +346,11 @@ def parmed_lines(model: str, water: str, water_label: str, frcmod: str, chloride
         rmin, e = amber_pair(sigma, eps)
         mask = ty.replace("*", "\\*")  # N* is a type name, not a wildcard
         lines.append(f"changeLJPair :MG @%{mask} {rmin:.8f} {e:.8f}")
+    lines.append("# phosphate oxygens retyped by the CP correction (O2 -> OP, OS -> OR) get the O2 / OS terms;")
+    lines.append("# ParmEd skips these two lines when no atom has those types")
+    for ty, src in (("OP", "O2"), ("OR", "OS")):
+        rmin, e = amber_pair(*p.rna[src])
+        lines.append(f"changeLJPair :MG @%{ty} {rmin:.8f} {e:.8f}")
     if chloride:
         rmin, e = amber_pair(*p.mg_cl)
         lines += [f"# Mg2+-Cl- pair term (optimised with the {p.chloride} Cl- model)",

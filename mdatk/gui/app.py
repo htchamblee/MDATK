@@ -897,7 +897,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dp = self.project.density
         if path != dp.map_path:  # a placement belongs to one map
             dp.map_path = path
-            dp.transform, dp.fit_cc, dp.fit_info = [], 0.0, ""
+            dp.transform, dp.anchor, dp.fit_cc, dp.fit_info = [], [], 0.0, ""
             self._update_density_status()
 
     def _density_style_changed(self) -> None:
@@ -905,15 +905,29 @@ class MainWindow(Gtk.ApplicationWindow):
             self.refresh_canvas()
 
     def _on_map_moved(self, values) -> None:
+        from ..density import anchor_points
+
         dp = self.project.density
         dp.transform = list(values)
+        st = self.canvas.structure
+        if st is not None:  # the placement belongs to the frame shown on the canvas
+            dp.anchor = anchor_points(st.centred[0] + st.center)
         dp.fit_cc = 0.0
         dp.fit_info = "Placed by hand (not fitted) - 'Refine' fits from here."
         self._update_density_status()
 
+    def _adopt_auto_fit(self, project) -> None:
+        """Keep a placement found by an automatic fit during a render job."""
+        dp, new = self.project.density, project.density
+        if len(new.transform) == 12 and new.transform != dp.transform and new.map_path == dp.map_path:
+            self._store_density_result(new)
+            self.append_log(f"Density map placement stored: {new.fit_info}")
+            self.refresh_canvas()
+
     def _store_density_result(self, density) -> None:
         dp = self.project.density
         dp.transform, dp.fit_cc, dp.fit_info = list(density.transform), density.fit_cc, density.fit_info
+        dp.anchor = [list(p) for p in density.anchor]
         self._update_density_status()
 
     def fit_density(self, search: str) -> None:
@@ -966,7 +980,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def clear_density_fit(self) -> None:
         dp = self.project.density
-        dp.transform, dp.fit_cc, dp.fit_info = [], 0.0, ""
+        dp.transform, dp.anchor, dp.fit_cc, dp.fit_info = [], [], 0.0, ""
         self._update_density_status()
         self.refresh_canvas()
 
@@ -983,7 +997,7 @@ class MainWindow(Gtk.ApplicationWindow):
         angles = [s.get_value() for s in self.rot_scales]
         self.angle_label.set_text(format_angles(angles))
         if not self._syncing:  # (the canvas already shows rotations it reported itself)
-            self.canvas.set_rotation(angles)
+            self.canvas.set_rotation(angles, fast=True)
 
     # ----------------------------------------------------------------- layout
     def _tab_layout(self):
@@ -1516,6 +1530,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return self._pipeline(project, rep).run()
 
         def done(outputs):
+            self._adopt_auto_fit(project)
             s = outputs.summary()
             if s["video"]:
                 self.last_video = s["video"]
@@ -1612,7 +1627,11 @@ class MainWindow(Gtk.ApplicationWindow):
             path = os.path.join(tempfile.gettempdir(), f"{PROJECT_ABBREV}_still_{os.getpid()}.png")
             return pipe.render_preview(ds, min(pos, ds.n_frames - 1), path)
 
-        self.start_job("Rendering still", job, self.show_image)
+        def done(path):
+            self._adopt_auto_fit(project)
+            self.show_image(path)
+
+        self.start_job("Rendering still", job, done)
 
     def export_pdbs(self):
         try:
@@ -1646,8 +1665,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 out += pipe.render_charts(ds, rep.sub(0.85, 1.0))
             return out
 
-        self.start_job("Re-rendering from cache", job,
-                       lambda paths: self.info("Re-render finished", f"{len(paths)} file(s) written"))
+        def done(paths):
+            self._adopt_auto_fit(project)
+            self.info("Re-render finished", f"{len(paths)} file(s) written")
+
+        self.start_job("Re-rendering from cache", job, done)
 
     # ------------------------------------------------------------ job runner
     def start_job(self, title: str, job, on_success):

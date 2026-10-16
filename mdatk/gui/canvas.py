@@ -198,17 +198,49 @@ class FigureCanvas(Gtk.DrawingArea):
         self.surface = cairo.ImageSurface.create_for_data(memoryview(bgra), cairo.FORMAT_ARGB32,
                                                           w, h, stride)
 
-    def set_rotation(self, angles: Sequence[float]) -> None:
-        """Re-orient the structure panel without rebuilding the figure."""
+    def set_rotation(self, angles: Sequence[float], fast: bool = False) -> None:
+        """Re-orient the structure panel without rebuilding the figure.  With ``fast`` the
+        density shadow and 3D layer use their quick mode and one full-quality redraw
+        follows once the changes stop (slider drags)."""
         self.angles = [float(a) for a in angles]
         if self.project is not None:
             self.project.visual.rotation = list(self.angles)
         if self.structure is None:
             return
+        if fast:
+            self._set_quality(True)
+            self._schedule_settle()
         self.structure.set_rotation(self.angles)
         self.structure.update(self._pos)
         self._blit()
         self.queue_draw()
+
+    def _set_quality(self, fast: bool) -> None:
+        st = self.structure
+        if st is None:
+            return
+        st.density_fast = fast
+        if st.stage is not None:
+            st.stage.quality = "fast" if fast else "high"
+
+    def _schedule_settle(self, delay_ms: int = 250) -> None:
+        from gi.repository import GLib
+
+        if getattr(self, "_settle", None) is not None:
+            GLib.source_remove(self._settle)
+        self._settle = GLib.timeout_add(delay_ms, self._settle_now)
+
+    def _settle_now(self):
+        """Full-quality redraw after interactive changes."""
+        self._settle = None
+        st = self.structure
+        if st is not None and (st.density_fast or (st.stage is not None and st.stage.quality == "fast")):
+            self._set_quality(False)
+            st.update_density()
+            st.update(self._pos)
+            self._blit()
+            self.queue_draw()
+        return False
 
     # ---------------------------------------------------------------- input
     def slot_at(self, x: float, y: float) -> Optional[int]:
@@ -259,8 +291,7 @@ class FigureCanvas(Gtk.DrawingArea):
         if mode == "rotate":
             dx, dy = event.x - self._last[0], event.y - self._last[1]
             self._last = (event.x, event.y)
-            if self.structure is not None:
-                self.structure.density_fast = True
+            self._set_quality(True)
             self.set_rotation(drag_rotation(self.angles, dx, dy))
             if self.on_rotate:
                 self.on_rotate(list(self.angles))
@@ -283,17 +314,14 @@ class FigureCanvas(Gtk.DrawingArea):
         if mode == "move" and self._dragging and target is not None and target != slot:
             if self.on_swap:
                 self.on_swap(slot, target)
-        if self.structure is not None and self.structure.density_fast:
-            self.structure.density_fast = False  # full-quality shadow after the drag
-            self.structure.update_density()
-            self._blit()
+        self._settle_now()  # full-quality shadow and 3D layer after the drag
         self._dragging = False
         self.queue_draw()
         return True
 
     def _drag_map(self, dx: float, dy: float, rotate: bool) -> None:
         st = self.structure
-        st.density_fast = True
+        self._set_quality(True)
         if rotate:
             new = st.nudge_density(view_rotation=ry(dx * 0.5) @ rx(dy * 0.5))
         else:  # widget pixels -> Å in the panel's data coordinates (screen y points down)

@@ -145,7 +145,7 @@ def model():
     demo = build_demo(d, n_frames=3, solvent=False)
     p = Project.load(demo["preset"])
     p.output.out_dir = os.path.join(d, "out")
-    xyz, elements, _f = Pipeline(p).density_frame_atoms("ref")
+    xyz, elements, _f, _ref = Pipeline(p).density_frame_atoms("ref")
     return {"xyz": xyz, "elements": elements, "preset": demo["preset"], "dir": d}
 
 
@@ -322,3 +322,55 @@ def test_global_search_ignores_unrelated_density_and_validates_steps(model):
         D.fit_model(tiny, xyz, el, 20.0, search="global")
     except D.FitError:
         pass
+
+
+def test_placement_follows_the_molecule_and_failures_degrade(model, tmp_path):
+    from mdatk.config import PanelSpec
+    from mdatk.pipeline import Pipeline
+    from mdatk.render.panels import StructurePanel
+    from mdatk.render.video import build_figure
+
+    xyz, el = model["xyz"], model["elements"]
+    true = D.RigidTransform(D.quaternion_matrix([0.4, 0.3, -0.8, 0.2]), np.array([20.0, -15.0, 8.0]))
+    path = str(tmp_path / "t.mrc")
+    write_map(path, _target_map(xyz, el, true))
+    p = Project.load(model["preset"])
+    p.output.out_dir = str(tmp_path / "out")
+    p.layout.preset = "large_top_3"
+    p.layout.panels = [PanelSpec("structure", [], "S"), PanelSpec("timeseries", ["rmsd/Complex"], ""),
+                       PanelSpec("timeseries", ["rmsd/Complex"], ""), PanelSpec("timeseries", ["rmsd/Complex"], "")]
+    p.density.map_path, p.density.resolution = path, 6.0
+    Pipeline(p).fit_density()
+    assert len(p.density.anchor) > 3 and p.density.fit_cc > 0.9
+    # a later start frame is a different reference: the anchored placement still fits the model there
+    p.inputs.start = 2
+    pipe = Pipeline(p)
+    xyz2, el2, _f, ref2 = pipe.density_frame_atoms("ref")
+    prob = D.FitProblem(read_map(path), xyz2, D.atom_weights(el2), 6.0)
+    raw = D.RigidTransform.from_list(p.density.transform)
+    moved = D.anchored(p.density.transform, p.density.anchor, ref2)
+    assert prob.cc(moved) > 0.85 and prob.cc(moved) > prob.cc(raw) + 0.05
+    ds = pipe.analyze()
+    _fig, _c, panels = build_figure(ds, p, 1920, 1080, dpi=60)
+    st = [x for x in panels if isinstance(x, StructurePanel)][0]
+    np.testing.assert_allclose(st._to_map.to_list(), moved.to_list(), atol=1e-4)
+    # the shadow window follows the axes limits after layout (wide 16:9 panel), not a fixed square
+    st.after_layout()
+    (x0, x1), (y0, y1) = st.ax.get_xlim(), st.ax.get_ylim()
+    assert (x1 - x0) > 1.5 * (y1 - y0)
+    ext = st.density_img.get_extent()
+    pad = 0.15 * (x1 - x0)
+    assert x0 - pad <= ext[0] < ext[1] <= x1 + pad
+    # a hidden missing map does not block runs; a failed automatic fit does not stop the video
+    p.density.show = False
+    p.density.map_path = str(tmp_path / "gone.mrc")
+    assert p.density_problems() == []
+    bad = tmp_path / "bad.mrc"
+    bad.write_bytes(b"\0" * 2000)
+    p.density.show, p.density.map_path, p.density.transform, p.density.anchor = True, str(bad), [], []
+    p.output.video.width, p.output.video.height, p.output.video.dpi = 320, 180, 40
+    p.output.charts.enabled = False
+    out = Pipeline(p).run()
+    assert os.path.exists(out.video) and p.density.transform == []
+    p.density.transform = [1, 0, 0, 0, 1, 0, 0, 0, 1, float("inf"), 0, 0]
+    assert any("invalid" in m for m in p.density_problems())

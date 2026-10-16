@@ -262,6 +262,9 @@ class DensityParams:
     angular_step: float = 30.0  # degrees between sampled orientations of the global search
     auto_fit: bool = True  # fit before rendering when no placement is stored
     transform: List[float] = field(default_factory=list)  # 3x3 rotation (row-major) + translation, model -> map
+    # backbone points of the reference frame the placement was made on (the map follows the
+    # molecule when the reference changes: other start frame, cleaned vs raw files)
+    anchor: List[List[float]] = field(default_factory=list)
     fit_cc: float = 0.0  # correlation of the stored placement (0: not fitted)
     fit_info: str = ""
 
@@ -525,8 +528,8 @@ class Project:
         if not d.map_path:
             return []
         out = []
-        if not os.path.exists(d.map_path):
-            out.append(f"Density map not found: {d.map_path}")
+        if self.density_active() and not os.path.exists(d.map_path):
+            out.append(f"Density map not found: {d.map_path} (untick 'show' to render without it)")
         if d.resolution <= 0:
             out.append("Density map resolution must be positive.")
         if not 0.0 <= d.opacity <= 1.0:
@@ -535,8 +538,13 @@ class Project:
             out.append("Density search angular step must be between 5 and 45 degrees.")
         if d.search not in ("global", "manual"):
             out.append(f"Unknown density fit start {d.search!r} (global or manual).")
-        if d.transform and len(d.transform) != 12:
-            out.append("The stored density map placement needs 12 numbers.")
+        if d.transform:
+            from .density import RigidTransform
+
+            try:
+                RigidTransform.from_list(d.transform)
+            except (TypeError, ValueError) as exc:
+                out.append(f"The stored density map placement is invalid ({exc}); clear it or fit again.")
         frame = d.fit_frame.strip().lower()
         if frame not in ("", "ref") and not frame.isdigit():
             out.append(f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")

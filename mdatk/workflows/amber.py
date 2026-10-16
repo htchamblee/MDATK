@@ -319,8 +319,10 @@ class AmberBuildTool(Tool):
                             ("micro", "microMg"), ("nano", "nanoMg")],
                    requires={"water": SOLVATED}),
             Option("mg_cl_pair", "Mg²⁺-Cl⁻ pair term", "bool", True,
-                   "Also apply the authors' Mg²⁺-Cl⁻ pair term (optimised with their Cl⁻ model; Amber's "
-                   "Cl⁻ parameters are kept for everything else).",
+                   "Apply the authors' Mg²⁺-Cl⁻ pair term (optimised with their Cl⁻ model; Amber's Cl⁻ "
+                   "parameters are kept for everything else). Without it Mg²⁺-Cl⁻ follows the combination "
+                   "rule with the optimised Mg²⁺, which is not a published combination and gives much too "
+                   "strong Mg²⁺-Cl⁻ contacts.",
                    requires={"water": SOLVATED, "mg_model": ("micro", "nano")}),
         ], tooltip="Water box and ions (tleap solvateoct / solvatebox and addIonsRand)."),
         Section("parmed", "ParmEd", [
@@ -419,6 +421,13 @@ class AmberBuildTool(Tool):
                              ("rna_ff", "nbfix19", "bph0")))
         if s["rna_ff"] == "ol3cp" and not s["cp_frcmod"].strip():
             out.append(Issue("error", "OL3 + CP needs the CP frcmod file", ("cp_frcmod",)))
+        if s["rna_ff"] == "ol3cp" and not extra_lines(s["extra_libs"]):
+            new_types = _frcmod_new_types(s["cp_frcmod"].strip(), ctx)
+            if new_types:
+                out.append(Issue("warning", f"the CP frcmod defines atom types {', '.join(new_types)} that the "
+                                            "standard RNA library (RNA.lib: O2 / OS) does not use, so the CP "
+                                            "correction has no effect; add a CP residue library under 'Extra "
+                                            "residue libraries'", ("cp_frcmod", "extra_libs")))
         if s["rna_ff"] == "shaw" and s["water"] not in ("tip4pd", "none"):
             out.append(Issue("warning", "the DESRES RNA force field was parameterised with TIP4P-D "
                                         "water", ("rna_ff", "water")))
@@ -502,10 +511,23 @@ class AmberBuildTool(Tool):
                                         "and replace any Mg²⁺ pair terms set there",
                              ("parmed_extra",)))
         p = mg_params.get_set(model, water)
-        if s["mg_cl_pair"] and (s["mg_balance"] and s["mg_count"] or s["salt_pairs"]):
+        has_cl = bool(s["mg_balance"] and s["mg_count"] or s["salt_pairs"])
+        if s["mg_cl_pair"] and has_cl:
             out.append(Issue("info", f"{name} for {wlabel} was optimised with the {p.chloride} Cl⁻ model; "
                                      "the Mg²⁺-Cl⁻ pair term is applied, other Cl⁻ interactions use Amber's "
                                      "Cl⁻", ("mg_cl_pair",)))
+        if not s["mg_cl_pair"] and has_cl:
+            out.append(Issue("warning", f"without the pair term, Mg²⁺-Cl⁻ uses the combination rule with the "
+                                        f"optimised {name} parameters - not a published combination (the "
+                                        f"authors' pair: σ {p.mg_cl[0]:.3f} nm, ε {p.mg_cl[1]:.2f} kJ/mol) and "
+                                        "far too strong Mg²⁺-Cl⁻ contacts", ("mg_cl_pair",)))
+        if extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]) or s["lrna"]:
+            out.append(Issue("warning", f"the {name} pair terms cover the 27 parmBSC0χOL3 RNA atom types; atom "
+                                        "types from extra libraries or parameter files (e.g. L-RNA) keep the "
+                                        "plain combination rule with Mg²⁺. Phosphate oxygens retyped by a CP "
+                                        "library (OP, OR) get the authors' O2 / OS terms - a choice by MDATK, "
+                                        "since the authors fitted Mg²⁺ against plain OL3 phosphate oxygens",
+                             ("mg_model", "extra_libs")))
         out.append(Issue("info", f"{name} ({mg_params.CITATIONS[water]}): Mg²⁺-water uses the "
                                  "Lorentz-Berthelot rule, Mg²⁺-RNA the authors' pair terms; GROMACS "
                                  "conversion keeps them as [ nonbond_params ]", ("mg_model",)))
@@ -650,7 +672,7 @@ class AmberBuildTool(Tool):
                 files.append(GeneratedFile(n("parmed-dry", "in"), self._parmed(
                     s, f"{mods} on the dry topology", f"{pm}.parm7", wet=False), "input"))
                 sh += [f"# Edit parameters: {mods}",
-                       f"parmed -O {dry}.parm7 -i {pm}.in | tee {pm}.log",
+                       f"parmed -O {dry}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                        require_file(f"{pm}.parm7", "ParmEd"), ""]
                 dry_top = f"{pm}.parm7"
             amb = n("ambpdb", "pdb")
@@ -690,12 +712,44 @@ class AmberBuildTool(Tool):
                 s, f"{' + '.join(wet_mods)} on the solvated topology", f"{pm}.parm7", wet=True, ctx=ctx),
                 "input"))
             sh += [f"# {'Re-apply' if s['two_pass'] and lj else 'Apply'} {' + '.join(wet_mods)}",
-                   f"parmed -O {wet}.parm7 -i {pm}.in | tee {pm}.log",
+                   f"parmed -O {wet}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                    require_file(f"{pm}.parm7", "ParmEd"), ""]
             final = f"{pm}.parm7"
         sh += [f'echo "Topology: {final}  Coordinates: {wet}.rst7"', ""]
         files.append(GeneratedFile(script_name, "\n".join(sh), "run", "runs tleap / ParmEd"))
         return files
+
+
+RNA_LIB_TYPES = {"C", "C4", "C5", "CA", "CB", "CI", "CP", "CQ", "CS", "CT", "H", "H1", "H2", "H4", "H5",
+                 "HA", "HO", "N*", "N2", "NA", "NB", "NC", "O", "O2", "OH", "OS", "P"}
+
+
+def _frcmod_new_types(path: str, ctx) -> List[str]:
+    """Atom types with NONB parameters in a frcmod that RNA.lib does not use ([] if unreadable)."""
+    if not path:
+        return []
+    for cand in (path, os.path.join(ctx.folder, path) if getattr(ctx, "folder", "") else ""):
+        if cand and os.path.isfile(cand):
+            break
+    else:
+        return []
+    found, section = [], ""
+    try:
+        with open(cand, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()[1:]
+    except OSError:
+        return []
+    for line in lines:
+        head = line.strip().upper()
+        if head in ("MASS", "BOND", "ANGLE", "ANGL", "DIHE", "IMPROPER", "IMPR", "NONB", "NONBON", "HBON",
+                    "HBOND", "CMAP"):
+            section = head
+            continue
+        if section.startswith("NONB") and line.strip():
+            t = line.split()[0]
+            if t not in RNA_LIB_TYPES and t not in found:
+                found.append(t)
+    return found
 
 
 def _ranges(text: str) -> List[Tuple[int, int]]:
