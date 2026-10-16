@@ -24,12 +24,16 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from scipy import fft as sfft
 from scipy import ndimage, optimize
 
 from .io.mrc import DensityMap
 
 SIGMA_FACTOR = 1.0 / (math.pi * math.sqrt(2.0))  # ChimeraX molmap default (~0.225)
 ENVELOPE_FRACTION = 0.05  # simulated-map points scored: value >= fraction * max
+INSIDE_FULL, INSIDE_MIN = 0.5, 0.25  # envelope fraction inside the map box: full score / no score
+COARSE_RESOLUTION = 8.0  # global-search candidates are refined at no finer than this first
+MAX_ANGULAR_STEP = 45.0  # coarser global searches miss the right orientation
 
 ATOMIC_NUMBER = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "NA": 11, "MG": 12, "P": 15, "S": 16,
                  "CL": 17, "K": 19, "CA": 20, "MN": 25, "FE": 26, "CO": 27, "NI": 28, "CU": 29,
@@ -115,7 +119,9 @@ def quaternion_matrix(q: np.ndarray) -> np.ndarray:
 def rotation_samples(step_deg: float) -> np.ndarray:
     """Near-uniform rotations of SO(3) with roughly ``step_deg`` spacing
     (super-Fibonacci spirals, Alexa 2022); returns (n, 3, 3)."""
-    step = math.radians(max(float(step_deg), 3.0))
+    if not float(step_deg) >= 3.0:
+        raise FitError(f"the angular step must be at least 3 degrees (got {step_deg})")
+    step = math.radians(float(step_deg))
     n = max(24, int(math.ceil(8 * math.pi ** 2 / step ** 3)))
     phi = math.sqrt(2.0)
     psi = 1.533751168755204288118041
@@ -278,34 +284,67 @@ class FitProblem:
         z, rem = np.divmod(keep, ny * nx)
         y, x = np.divmod(rem, nx)
         self.points = sim.index_to_xyz(np.stack([x, y, z], axis=1))  # world coordinates
-        s = vals[keep]
-        self.s_centred = s - s.mean()
-        self.s_norm = float(np.sqrt(np.dot(self.s_centred, self.s_centred)))
+        self.s = vals[keep]
         self.evaluations = 0
 
     # -- scoring
     def cc(self, transform: RigidTransform, points: Optional[np.ndarray] = None,
-           s_centred: Optional[np.ndarray] = None, s_norm: Optional[float] = None) -> float:
+           s: Optional[np.ndarray] = None) -> float:
+        """Correlation about the mean over the envelope points inside the map box (points
+        outside the map are ignored, as in ChimeraX fitmap).  Poses with less than
+        INSIDE_FULL of the envelope inside are scaled down, to zero at INSIDE_MIN, so a
+        handful of points cannot win."""
         pts = self.points if points is None else points
-        e = sample_map(self.dmap, transform.apply(pts))
+        sim = self.s if s is None else s
+        e = sample_map(self.dmap, transform.apply(pts), cval=np.nan)
         self.evaluations += 1
-        if s_centred is None:
-            return pearson(e, self.s_centred, self.s_norm)
-        return pearson(e, s_centred, s_norm)
+        inside = np.isfinite(e)
+        frac = float(inside.mean()) if len(e) else 0.0
+        if frac <= INSIDE_MIN:
+            return 0.0
+        if frac < 1.0:
+            e, sim = e[inside], sim[inside]
+        sc = sim - sim.mean()
+        cc = pearson(e, sc, float(np.sqrt(np.dot(sc, sc))))
+        if frac < INSIDE_FULL:
+            cc *= (frac - INSIDE_MIN) / (INSIDE_FULL - INSIDE_MIN)
+        return cc
+
+    def at_resolution(self, resolution: float) -> "FitProblem":
+        """The same problem against a copy of the map low-pass filtered to ``resolution``."""
+        dmap = self.dmap
+        extra = self.sigma_factor * math.sqrt(max(resolution ** 2 - self.resolution ** 2, 0.0))
+        data = ndimage.gaussian_filter(dmap.data.astype(np.float32), sigma=[extra / v for v in dmap.voxel[::-1]])
+        return FitProblem(DensityMap(data, dmap.origin, dmap.voxel), self.xyz, self.weights, resolution,
+                          self.sigma_factor)
+
+    def flips(self) -> List[RigidTransform]:
+        """180° rotations about the model's principal axes through its centre (elongated
+        RNAs often fit almost as well head-to-tail)."""
+        rel = self.xyz - self.centre
+        _w, axes = np.linalg.eigh(rel.T @ rel)
+        out = []
+        for k in range(3):
+            a = axes[:, k]
+            r = 2.0 * np.outer(a, a) - np.eye(3)
+            out.append(RigidTransform(r, self.centre - r @ self.centre))
+        return out
+
+    def inside_fraction(self, transform: RigidTransform) -> float:
+        e = sample_map(self.dmap, transform.apply(self.points), cval=np.nan)
+        return float(np.isfinite(e).mean()) if len(e) else 0.0
 
     def _subset(self, n: int):
         if len(self.points) <= n:
-            return self.points, self.s_centred, self.s_norm
+            return self.points, self.s
         idx = np.linspace(0, len(self.points) - 1, n).astype(np.int64)
-        s = self.s_centred[idx] + 0.0
-        s -= s.mean()
-        return self.points[idx], s, float(np.sqrt(np.dot(s, s)))
+        return self.points[idx], self.s[idx]
 
     # -- local refinement
     def refine(self, start: RigidTransform, max_points: Optional[int] = None,
                xtol: float = 0.02, max_shift: Optional[float] = None) -> Tuple[RigidTransform, float]:
         """Maximise the correlation from ``start`` (Powell; 6 rigid-body parameters)."""
-        pts, s_c, s_n = self._subset(max_points) if max_points else (None, None, None)
+        pts, sim = self._subset(max_points) if max_points else (None, None)
         c_map = start.apply(self.centre)
         rg = self.rg
 
@@ -316,7 +355,7 @@ class FitProblem:
         def cost(p):
             if max_shift is not None and np.linalg.norm(p[3:]) > max_shift:
                 return 1.0
-            return -self.cc(make(p), pts, s_c, s_n)
+            return -self.cc(make(p), pts, sim)
 
         step = max(0.5, 0.25 * self.resolution)
         res = optimize.minimize(cost, np.zeros(6), method="Powell",
@@ -342,31 +381,53 @@ class FitProblem:
                 cands.append((score, r, centre))
             if progress is not None and (k % 16 == 0 or k == n - 1):
                 progress(0.7 * (k + 1) / n, f"global search: rotation {k + 1}/{n}")
+        if not cands:
+            raise FitError("no placement of the model fits inside the map at this resolution "
+                           "(the map is smaller than the coarse search grid)")
         cands.sort(key=lambda c: -c[0])
         chosen: List[RigidTransform] = []
         min_shift = max(2.0, 0.5 * self.resolution)
+        site_radius = max(4.0, self.resolution)
+        sites: List[Tuple[np.ndarray, int]] = []  # [centre, poses taken there]
         for score, r, centre in cands:
             t = RigidTransform(r, centre - r @ self.centre)
             if any(_pose_close(t, c, self.centre, min_shift, angular_step * 0.75) for c in chosen):
                 continue
+            # at most 3 orientations per site, so the refined poses cover several sites
+            near = [k for k, (c, _n) in enumerate(sites) if np.linalg.norm(c - centre) < site_radius]
+            if near and sites[near[0]][1] >= 3:
+                continue
+            if near:
+                sites[near[0]] = (sites[near[0]][0], sites[near[0]][1] + 1)
+            else:
+                sites.append((centre, 1))
             chosen.append(t)
             if len(chosen) >= top:
                 break
-        if len(cands) > len(chosen):
-            pass  # the remaining candidates are near-duplicates or lower ranked
+        # coarse-to-fine: candidates first meet a low-pass copy of the map (wider basins),
+        # then the best ones and their 180° flips are refined at the real resolution
+        stage = self.at_resolution(COARSE_RESOLUTION) if self.resolution < COARSE_RESOLUTION else self
         results = []
         for k, t in enumerate(chosen):
             if cancelled is not None and cancelled():
                 raise FitError("cancelled")
-            fit, cc = self.refine(t, max_points=4000, xtol=0.1)
+            fit, cc = stage.refine(t, max_points=4000, xtol=0.1)
             results.append((cc, fit))
             if progress is not None:
-                progress(0.7 + 0.25 * (k + 1) / len(chosen), f"refining pose {k + 1}/{len(chosen)}")
+                progress(0.7 + 0.2 * (k + 1) / len(chosen), f"refining pose {k + 1}/{len(chosen)}")
         results.sort(key=lambda x: -x[0])
+        tries = [fit for _cc, fit in results[:3]]
+        tries += [fit.compose(f) for _cc, fit in results[:2] for f in self.flips()]
         finals = []
-        for cc, fit in results[:3]:
+        for k, fit in enumerate(tries):
+            if cancelled is not None and cancelled():
+                raise FitError("cancelled")
+            if stage is not self:
+                fit, _cc = stage.refine(fit, max_points=4000, xtol=0.1)
             fit2, cc2 = self.refine(fit)
             finals.append((cc2, fit2))
+            if progress is not None:
+                progress(0.9 + 0.1 * (k + 1) / len(tries), "final refinement")
         finals.sort(key=lambda x: -x[0])
         if progress is not None:
             progress(1.0, "global search done")
@@ -374,7 +435,12 @@ class FitProblem:
         return FitResult(best, best_cc, "global", candidates=len(chosen),
                          evaluations=self.evaluations,
                          message=f"{n} rotations ({angular_step:g}° step), "
-                                 f"{len(chosen)} poses refined")
+                                 f"{len(chosen)} poses at {len(sites)} sites refined"
+                                 + self._inside_note(best))
+
+    def _inside_note(self, t: RigidTransform) -> str:
+        frac = self.inside_fraction(t)
+        return f"; {frac:.0%} of the model inside the map" if frac < 0.995 else ""
 
 
 def _pose_close(a: RigidTransform, b: RigidTransform, centre: np.ndarray, shift: float,
@@ -408,11 +474,14 @@ class _CoarseSearch:
         inside = np.isfinite(vals)
         mean = float(np.nanmean(vals)) if inside.any() else 0.0
         e = np.where(inside, vals - mean, 0.0)
-        self.e_ft = np.fft.rfftn(e)
-        # translations whose model centre lies inside the original map box
+        self.e_ft = _rfftn(e)
+        self.e2_ft = _rfftn(e * e)
+        self.var_floor = 1e-3 * (float(e[inside].var()) if inside.any() else 1.0)
+        # translations whose model centre lies inside the map box or up to radius/2 outside it
         idx = [np.arange(n[k]) for k in range(3)]
         cent = [lo[k] + h * idx[k] for k in range(3)]
-        ok = [(cent[k] >= dmap.origin[k]) & (cent[k] <= dmap.extent[k]) for k in range(3)]
+        slack = 0.5 * prob.radius
+        ok = [(cent[k] >= dmap.origin[k] - slack) & (cent[k] <= dmap.extent[k] + slack) for k in range(3)]
         self.valid = ok[2][:, None, None] & ok[1][None, :, None] & ok[0][None, None, :]
         # Gaussian transfer function of the model blur (sigma) on the coarse grid
         k = [np.fft.fftfreq(n[2], d=h), np.fft.fftfreq(n[1], d=h), np.fft.rfftfreq(n[0], d=h)]
@@ -422,7 +491,11 @@ class _CoarseSearch:
         self.w = prob.weights
 
     def peaks(self, r: np.ndarray, count: int = 1):
-        """Best (score, model-centre position in map coordinates) for rotation ``r``."""
+        """Best (score, model-centre position in map coordinates) for rotation ``r``.
+
+        The score is the locally normalised correlation (Roseman's FLCF): the template is
+        compared with the map under its own envelope, so dense but unrelated regions of
+        the map (other molecules) do not outscore the right site."""
         n = self.n
         g = (self.rel @ r.T) / self.h
         tmpl = np.zeros(tuple(n[::-1]))
@@ -436,8 +509,18 @@ class _CoarseSearch:
                     wz = f[:, 2] if dz else 1 - f[:, 2]
                     np.add.at(tmpl, ((base[:, 2] + dz) % n[2], (base[:, 1] + dy) % n[1],
                                      (base[:, 0] + dx) % n[0]), self.w * wx * wy * wz)
-        t_ft = np.fft.rfftn(tmpl) * self.gauss
-        corr = np.fft.irfftn(np.conj(t_ft) * self.e_ft, s=tuple(n[::-1]), axes=(0, 1, 2))
+        shape = tuple(n[::-1])
+        t = _irfftn(_rfftn(tmpl) * self.gauss, s=shape, axes=(0, 1, 2))
+        m = t > ENVELOPE_FRACTION * t.max()
+        npts = float(m.sum())
+        tz = np.where(m, t - t[m].mean(), 0.0)
+        tnorm = float(np.sqrt((tz * tz).sum()))
+        num = _irfftn(np.conj(_rfftn(tz)) * self.e_ft, s=shape, axes=(0, 1, 2))
+        m_ft = np.conj(_rfftn(m.astype(np.float64)))
+        s1 = _irfftn(m_ft * self.e_ft, s=shape, axes=(0, 1, 2))
+        s2 = _irfftn(m_ft * self.e2_ft, s=shape, axes=(0, 1, 2))
+        var = np.maximum(s2 - s1 * s1 / max(npts, 1.0), self.var_floor * npts)
+        corr = num / (np.sqrt(var) * max(tnorm, 1e-12))
         corr = np.where(self.valid, corr, -np.inf)
         out = []
         for _ in range(count):
@@ -452,6 +535,14 @@ class _CoarseSearch:
             corr[max(0, z - rad):z + rad + 1, max(0, y - rad):y + rad + 1,
                  max(0, x - rad):x + rad + 1] = -np.inf
         return out
+
+
+def _rfftn(a):
+    return sfft.rfftn(a, workers=-1)
+
+
+def _irfftn(a, s, axes=(0, 1, 2)):
+    return sfft.irfftn(a, s=s, axes=axes, workers=-1)
 
 
 def _fft_size(n: int) -> int:
@@ -506,7 +597,7 @@ def fit_model(dmap: DensityMap, xyz: np.ndarray, elements: Sequence[str], resolu
     if progress is not None:
         progress(1.0, "local fit done")
     return FitResult(fit, cc, "manual" if start is not None else "identity",
-                     evaluations=prob.evaluations, message=f"start CC {cc0:.3f}")
+                     evaluations=prob.evaluations, message=f"start CC {cc0:.3f}" + prob._inside_note(fit))
 
 
 # ---------------------------------------------------------------------------

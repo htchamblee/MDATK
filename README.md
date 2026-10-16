@@ -351,11 +351,20 @@ placed on it by a rigid-body fit.
   number, σ = 0.225 × resolution and a grid spacing of resolution / 3, as ChimeraX `molmap` does). It
   then maximises the correlation about the mean between that map and yours, using the grid points
   inside the model's envelope.
-  - *Global search*: about 550 orientations at 30° (`density.angular_step`). For each one an FFT
-    finds the best translation on a coarse grid; the 12 best distinct poses are refined, and the best
-    three are refined again on the full point set.
+  - *Global search*: about 550 orientations at 30° (`density.angular_step`, 5–45°).
+    - For each orientation, an FFT finds the best translations on a coarse grid. The score is a
+      locally normalised correlation, so other molecules in the map (protein in an RNP, for example)
+      do not attract the fit.
+    - The 12 best distinct poses, spread over several sites, are refined against a map smoothed to
+      8 Å.
+    - The best poses and their 180° flips about the model's principal axes are then refined at the
+      real resolution.
   - *Refine*: a local optimisation from the current placement.
-  - On the demo the global search takes about 5 s and recovers a known pose to within a degree.
+  - Points of the model outside the map box are ignored. A pose needs at least half of the model
+    inside the map to get its full score.
+  - A search takes 10–60 s, depending on the map size and resolution. On synthetic maps with noise,
+    with unrelated density next to the model, or with half the model outside the box, it recovers
+    the true pose to within about a degree.
 - **Frame.** The fit uses the reference frame (the first analysed frame, which the video is
   superposed on) or any trajectory frame number (`density.fit_frame`). That frame is superposed
   exactly like the video frames, so the placement applies to every frame.

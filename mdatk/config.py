@@ -531,6 +531,8 @@ class Project:
             out.append("Density map resolution must be positive.")
         if not 0.0 <= d.opacity <= 1.0:
             out.append("Density map opacity must be between 0 and 1.")
+        if not 5.0 <= d.angular_step <= 45.0:
+            out.append("Density search angular step must be between 5 and 45 degrees.")
         if d.search not in ("global", "manual"):
             out.append(f"Unknown density fit start {d.search!r} (global or manual).")
         if d.transform and len(d.transform) != 12:

@@ -291,3 +291,34 @@ def test_gzip_imod_bytes_and_nstart(tmp_path):
     assert read_map(str(raw)).data.min() == 200
     sim = D.simulate_map(np.array([[0.3, 0.7, -1.1]]), np.array([6.0]), 3.0)
     assert np.allclose(sim.origin / sim.voxel, np.round(sim.origin / sim.voxel))
+
+
+def test_global_search_ignores_unrelated_density_and_validates_steps(model):
+    """A protein-like blob next to the RNA must not attract the search (locally normalised
+    correlation); bad angular steps are rejected; tiny maps do not crash."""
+    xyz, el = model["xyz"], model["elements"]
+    rng = np.random.default_rng(5)
+    true = D.RigidTransform(D.quaternion_matrix([0.6, -0.2, 0.7, 0.3]), np.array([60.0, 50.0, 55.0]))
+    placed = true.apply(xyz)
+    blob = rng.normal(size=(2500, 3))
+    blob = blob / np.linalg.norm(blob, axis=1)[:, None] * 22.0 * rng.uniform(0, 1, (2500, 1)) ** (1 / 3)
+    blob += placed.mean(axis=0) + np.array([42.0, 0.0, 0.0])
+    pts = np.concatenate([placed, blob])
+    w = np.concatenate([D.atom_weights(el), np.full(len(blob), 6.7)])
+    sim = D.simulate_map(pts, w, 8.0, spacing=1.6)
+    data = sim.data + np.random.default_rng(1).normal(scale=0.05 * sim.data.max(), size=sim.data.shape)
+    emap = DensityMap(data.astype(np.float32), sim.origin, sim.voxel)
+    res = D.fit_model(emap, xyz, el, 8.0, search="global", angular_step=30)
+    c = xyz.mean(axis=0)
+    assert np.linalg.norm(res.transform.apply(c) - true.apply(c)) < 1.5
+    assert D.rotation_angle(res.transform.rotation @ true.rotation.T) < 5.0
+    with pytest.raises(D.FitError):
+        D.rotation_samples(0)
+    p = Project()
+    p.density.map_path, p.density.angular_step = __file__, 90.0
+    assert any("angular step" in m for m in p.density_problems())
+    tiny = DensityMap(np.random.default_rng(0).random((2, 30, 30)).astype(np.float32), np.zeros(3), np.ones(3))
+    try:
+        D.fit_model(tiny, xyz, el, 20.0, search="global")
+    except D.FitError:
+        pass

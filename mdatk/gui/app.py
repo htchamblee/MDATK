@@ -848,7 +848,7 @@ class MainWindow(Gtk.ApplicationWindow):
         d.add_row("Fit frame / start / step (°)", [
             b.entry("density.fit_frame", W.entry("ref", width=6)),
             b.combo("density.search", W.combo([("global", "global search"), ("manual", "my placement")])),
-            b.spin_float("density.angular_step", W.spin(5, 90, 1, 0))],
+            b.spin_float("density.angular_step", W.spin(5, 45, 1, 0))],
             "Frame 'ref' is the first analysed frame (the video's reference); any trajectory frame "
             "number works. The global search samples orientations every <step> degrees.")
         d.add_wide(b.check("density.auto_fit", W.check(
