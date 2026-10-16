@@ -399,6 +399,80 @@ def _print_issues(plan, quiet: bool = False) -> int:
     return n_err
 
 
+def cmd_density_info(args) -> int:
+    from .density import map_level
+    from .io.mrc import read_map
+
+    dmap = read_map(args.map)
+    st = dmap.stats()
+    info = {"map": os.path.abspath(args.map), "grid_xyz": list(dmap.shape_xyz),
+            "voxel_A": [round(float(v), 4) for v in dmap.voxel],
+            "origin_A": [round(float(v), 3) for v in dmap.origin],
+            "extent_A": [round(float(v), 3) for v in dmap.extent],
+            **{k: round(v, 6) for k, v in st.items()},
+            "level_2sigma": round(map_level(dmap, 2.0), 6)}
+    print(json.dumps(info, indent=2))
+    return 0
+
+
+def _density_overrides(project, args) -> None:
+    d = project.density
+    if args.map:
+        if os.path.abspath(args.map) != d.map_path:
+            d.transform, d.fit_cc, d.fit_info = [], 0.0, ""
+        d.map_path = os.path.abspath(args.map)
+    for name in ("resolution", "level"):
+        if getattr(args, name, None) is not None:
+            setattr(d, name, getattr(args, name))
+    if getattr(args, "frame", None) is not None:
+        d.fit_frame = str(args.frame)
+    if getattr(args, "step", None) is not None:
+        d.angular_step = args.step
+
+
+def cmd_density_fit(args) -> int:
+    project, pipe = _pipeline(args)
+    _density_overrides(project, args)
+    problems = project.density_problems()
+    if not project.density.map_path:
+        problems.append("no density map: give --map or set density.map_path in the preset")
+    if problems:
+        raise ValueError("; ".join(problems))
+    pipe.check()
+    res = pipe.fit_density(search=args.search)
+    d = project.density
+    out = {"cc": round(float(res.cc), 4), "start": res.start, "info": d.fit_info,
+           "transform": d.transform}
+    if args.save:
+        target = args.save if isinstance(args.save, str) else args.params
+        if not target:
+            raise ValueError("--save needs a path when no --params preset was given")
+        project.save(target)
+        out["saved"] = os.path.abspath(target)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_density_simulate(args) -> int:
+    from .density import RigidTransform, atom_weights, simulate_map
+    from .io.mrc import write_map
+
+    project, pipe = _pipeline(args)
+    pipe.check()
+    xyz, elements, frame = pipe.density_frame_atoms(args.frame or "ref")
+    if args.placed:
+        if len(project.density.transform) != 12:
+            raise ValueError("--placed needs a stored placement (run 'mdatk density fit --save' first)")
+        xyz = RigidTransform.from_list(project.density.transform).apply(xyz)
+    dmap = simulate_map(xyz, atom_weights(elements), args.resolution, args.spacing or None)
+    write_map(args.output, dmap)
+    print(json.dumps({"map": os.path.abspath(args.output), "frame": frame, "atoms": len(xyz),
+                      "grid_xyz": list(dmap.shape_xyz), "voxel_A": round(float(dmap.voxel[0]), 4),
+                      "frame_of_reference": "map (placed)" if args.placed else "model (superposed)"},
+                     indent=2))
+    return 0
+
+
 def cmd_workflow_tools(args) -> int:
     from .workflows import TOOLS, tools_by_category
     from .workflows.schema import kind_label
@@ -655,6 +729,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", help="image path (.png/.svg/.pdf)")
     p.add_argument("--from-cache", action="store_true")
     p.set_defaults(func=cmd_preview)
+
+    p = sub.add_parser("density", help="density maps (MRC / CCP4): header info, rigid-body fit of the "
+                                       "model, simulated maps")
+    dsub = p.add_subparsers(dest="dcommand", metavar="action")
+    d = dsub.add_parser("info", help="print a map's grid, voxel size, origin and statistics")
+    d.add_argument("map")
+    d.set_defaults(func=cmd_density_info)
+    d = dsub.add_parser("fit", help="fit the structure into the preset's (or --map) density map")
+    _common(d)
+    d.add_argument("--map", help="MRC / CCP4 map (default: density.map_path of the preset)")
+    d.add_argument("--resolution", type=float, help="map resolution in Å (simulated-map width)")
+    d.add_argument("--level", type=float, help="contour level in σ (shadow and centring)")
+    d.add_argument("--frame", help="'ref' (first analysed frame) or a trajectory frame number")
+    d.add_argument("--search", choices=("global", "manual"), help="global search, or refine the stored "
+                   "placement (default: density.search)")
+    d.add_argument("--step", type=float, help="angular step of the global search (degrees)")
+    d.add_argument("--save", nargs="?", const=True, default=False, metavar="PRESET",
+                   help="store the placement in the preset (--params, or the given path)")
+    d.set_defaults(func=cmd_density_fit)
+    d = dsub.add_parser("simulate", help="write a map simulated from one frame (molmap-style Gaussians)")
+    _common(d)
+    d.add_argument("--resolution", type=float, required=True, help="resolution in Å")
+    d.add_argument("--spacing", type=float, help="grid spacing in Å (default resolution / 3)")
+    d.add_argument("--frame", help="'ref' or a trajectory frame number")
+    d.add_argument("--placed", action="store_true", help="apply the stored placement (map frame)")
+    d.add_argument("--output", "-O", required=True, help="output .mrc")
+    d.set_defaults(func=cmd_density_simulate)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "
                                         "VMD) and the Project Planner")

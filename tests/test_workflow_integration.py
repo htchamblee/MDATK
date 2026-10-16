@@ -71,8 +71,8 @@ def test_amber_chain_runs(tmp_path):
                                                    "dotbracket": "(" * 12 + ")" * 12})
     stages = AmberMDTool().defaults()["stages"]
     for st in stages:
-        if st["kind"] == "min":
-            st["maxcyc"], st["ncyc"] = 20, 10
+        if st["kind"] == "min":  # enough minimisation that the random-seeded heating is stable
+            st["maxcyc"], st["ncyc"] = 300, 100
         else:
             st["nstlim"], st["ntpr"], st["ntwx"], st["ntwr"] = 20, 10, 10, 10
     stages[-1]["segments"] = 2
@@ -109,3 +109,80 @@ def test_amber_chain_runs(tmp_path):
         top = (root / "04_gromacs" / f"duplex_04_convert_{STAMP}.top").read_text()
         assert "[ nonbond_params ]" in top and "[ pairtypes ]" in top and "#ifdef POSRES" in top
         assert (root / "04_gromacs" / f"duplex_04_md_{STAMP}.gro").exists()
+
+
+def _nonbond_rows(top_text):
+    rows, state = [], ""
+    for line in top_text.splitlines():
+        s = line.split(";")[0].strip()
+        if s.startswith("["):
+            state = s.strip("[] ").lower()
+            continue
+        if state == "nonbond_params" and s:
+            f = s.split()
+            rows.append((f[0], f[1], float(f[3]), float(f[4])))
+    return rows
+
+
+@pytest.mark.parametrize("model,water", [("nano", "spce"), ("micro", "tip3p")])
+def test_optimised_mg_pairs_reach_gromacs(tmp_path, model, water):
+    """microMg / nanoMg: frcmod + ParmEd pair terms survive NBfix19's addLJType and
+    the GROMACS conversion carries them as [ nonbond_params ] with the authors' values."""
+    from mdatk.workflows import mg_params
+
+    env = _wrappers(tmp_path)
+    cp = tmp_path / "frcmod.cp"
+    cp.write_text("placeholder CP frcmod\nMASS\n\nBOND\n\nANGLE\n\nDIHE\n\nIMPROPER\n\nNONBON\n\n")
+    wf = WorkflowParams(project_name="mg", stamp=STAMP)
+    b = add_node(wf, "amber-build", settings={"cp_frcmod": str(cp), "buffer": 8.0, "mg_count": 2,
+                                              "water": water, "mg_model": model, "split_types": True,
+                                              "save_pdb": False})
+    b.files["structure"] = _duplex_pdb(tmp_path)
+    run_gmx = bool(os.environ.get("MDATK_TEST_GROMACS") and shutil.which("gmx"))
+    g = add_node(wf, "gromacs", settings={"gmx_version": "2023", "module": "", "gpu": False,
+                                          "separate_production": False, "maxwarn": 1})
+    for st in g.settings["stages"]:
+        st["nsteps"] = 500 if st["integrator"] == "steep" else 10
+        st["nstxout_compressed"] = st["nstenergy"] = 10
+    connect(wf, b.id, "topology", g.id, "topology")
+    connect(wf, b.id, "coordinates", g.id, "coordinates")
+    plan = Plan(wf, str(tmp_path / "plan"))
+    assert not [i for _n, i in plan.all_issues() if i.level == "error"]
+    report = plan.write()
+    root = tmp_path / "plan"
+    build = root / "01_amber-build"
+    script = report.master if run_gmx else str(next(build.glob("*_amber-build_*.sh")))
+    proc = subprocess.run(["bash", os.path.basename(script)], cwd=os.path.dirname(script), capture_output=True,
+                          text=True, env=env, timeout=1800)
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    leap_log = (build / f"mg_01_tleap_{STAMP}.log").read_text()
+    assert f"mg_01_mg_{STAMP}.frcmod" in leap_log
+    p = mg_params.get_set(model, water)
+    parm = build / f"mg_01_parmed_{STAMP}.parm7"
+    gro_dir = root / "02_gromacs"
+    if run_gmx:
+        top = (gro_dir / f"mg_02_convert_{STAMP}.top").read_text()
+    else:  # convert in-process with the embedded script's functions
+        from mdatk.workflows.scripts import amber2gmx
+        out_top = tmp_path / "conv.top"
+        assert amber2gmx.main([str(parm), str(build / f"mg_01_tleap_{STAMP}.rst7"), str(out_top),
+                               str(tmp_path / "conv.gro")]) == 0
+        top = out_top.read_text()
+    rows = _nonbond_rows(top)
+    mg_rows = [(s, e) for a, b2, s, e in rows if "Mg" in a or "Mg" in b2]
+
+    def present(pair):
+        return any(abs(s - pair[0]) <= 1e-6 * pair[0] and abs(e - pair[1]) <= 1e-6 * pair[1]
+                   for s, e in mg_rows)
+
+    for ty in ("O2", "NB", "OS", "P", "C"):
+        assert present(p.rna[ty]), (ty, p.rna[ty], sorted(mg_rows))
+    assert present(p.mg_cl)
+    # NBfix19 pairs are still there next to the Mg2+ terms
+    assert any(abs(s - 2.1 / 2 ** (1 / 6) / 10) < 1e-6 for _a, _b, s, _e in rows)
+    atomtypes = top.split("[ atomtypes ]")[1].split("[")[0]
+    mg_line = [ln for ln in atomtypes.splitlines() if ln.strip().startswith("Mg")][0].split()
+    assert float(mg_line[-2]) == pytest.approx(p.ion[0], rel=1e-5)
+    assert float(mg_line[-1]) == pytest.approx(p.ion[1], rel=1e-5)
+    if run_gmx:
+        assert (gro_dir / f"mg_02_md_{STAMP}.gro").exists()

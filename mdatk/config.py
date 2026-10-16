@@ -201,6 +201,7 @@ class AnalysisParams:
 class VisualParams:
     structure_groups: List[str] = field(default_factory=list)  # [] -> all groups
     trace_atoms: str = "C4',CA"  # per-residue priority list (P, C4', C1', CA ...)
+    rep_hydrogens: bool = False  # include hydrogens in all-atom representations
     show_ions: bool = True
     align_frames: bool = True  # superpose each frame's trace onto the reference
     rotation: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # deg X,Y,Z
@@ -224,6 +225,26 @@ class VisualParams:
     label_every: int = 0  # residue-number tags on every N-th residue (0: off)
     label_residues: str = ""  # explicit residue numbers / ranges to tag, e.g. "1, 12, 24"
     title: str = ""
+
+
+@dataclass
+class DensityParams:
+    """A density map (MRC / CCP4) drawn behind the structural view as a projected
+    "shadow", placed by a rigid-body fit of the model."""
+
+    map_path: str = ""  # .mrc / .map / .ccp4
+    show: bool = True
+    resolution: float = 5.0  # Å; width of the simulated map used for fitting
+    level: float = 2.0  # contour level in map standard deviations above the mean
+    color: str = "#2a78d6"
+    opacity: float = 0.45  # 0 (invisible) .. 1
+    fit_frame: str = "ref"  # "ref" (first analysed frame) or a trajectory frame number
+    search: str = "global"  # automatic fit: "global" search or "manual" (refine the placement)
+    angular_step: float = 30.0  # degrees between sampled orientations of the global search
+    auto_fit: bool = True  # fit before rendering when no placement is stored
+    transform: List[float] = field(default_factory=list)  # 3x3 rotation (row-major) + translation, model -> map
+    fit_cc: float = 0.0  # correlation of the stored placement (0: not fitted)
+    fit_info: str = ""
 
 
 @dataclass
@@ -375,6 +396,7 @@ class Project:
     groups: List[ResidueGroup] = field(default_factory=_default_groups)
     analyses: AnalysisParams = field(default_factory=AnalysisParams)
     visual: VisualParams = field(default_factory=VisualParams)
+    density: DensityParams = field(default_factory=DensityParams)
     layout: LayoutParams = field(default_factory=LayoutParams)
     output: OutputParams = field(default_factory=OutputParams)
     workflow: WorkflowParams = field(default_factory=WorkflowParams)
@@ -440,6 +462,7 @@ class Project:
             self.cleaning.cpptraj_path = fix(self.cleaning.cpptraj_path)
         self.output.out_dir = fix(self.output.out_dir)
         self.output.cache_dir = fix(self.output.cache_dir)
+        self.density.map_path = fix(self.density.map_path)
         self.workflow.out_dir = fix(self.workflow.out_dir)
         from .workflows import resolve_node_paths  # lazy: workflows imports this module
         for node in list(self.workflow.nodes) + list(self.workflow.scratch):
@@ -472,6 +495,31 @@ class Project:
         if self.output.cache_dir:
             return os.path.abspath(self.output.cache_dir)
         return os.path.join(self.out_dir, f"{PROJECT_ABBREV}_cache")
+
+    def density_active(self) -> bool:
+        """A density map is set and shown in a structure panel."""
+        d = self.density
+        return bool(d.map_path and d.show and any(sp.type == "structure" for sp in self.layout.panels))
+
+    def density_problems(self) -> List[str]:
+        d = self.density
+        if not d.map_path:
+            return []
+        out = []
+        if not os.path.exists(d.map_path):
+            out.append(f"Density map not found: {d.map_path}")
+        if d.resolution <= 0:
+            out.append("Density map resolution must be positive.")
+        if not 0.0 <= d.opacity <= 1.0:
+            out.append("Density map opacity must be between 0 and 1.")
+        if d.search not in ("global", "manual"):
+            out.append(f"Unknown density fit start {d.search!r} (global or manual).")
+        if d.transform and len(d.transform) != 12:
+            out.append("The stored density map placement needs 12 numbers.")
+        frame = d.fit_frame.strip().lower()
+        if frame not in ("", "ref") and not frame.isdigit():
+            out.append(f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
+        return out
 
     def validate(self) -> List[str]:
         """Return a list of human readable problems (empty when valid)."""
@@ -518,6 +566,7 @@ class Project:
         if v.proximity_cutoff > a.proximity_search_radius:
             problems.append("Proximity cutoff exceeds the proximity search radius "
                             "(raise analyses.proximity_search_radius).")
+        problems += self.density_problems()
         if self.output.video.fps <= 0:
             problems.append("Video FPS must be positive.")
         return problems

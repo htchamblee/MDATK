@@ -16,7 +16,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__
-from . import rna
+from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
                    require_file, script_header)
 from .registry import register
@@ -308,10 +308,20 @@ class AmberBuildTool(Tool):
                    minimum=0, maximum=100000,
                    requires={"water": SOLVATED}),
             Option("mg_model", "Mg²⁺ Lennard-Jones model", "radio", "126",
-                   "12-6: the parameters loaded with the water model. 12-6-4 (Li & Merz): loads "
-                   "frcmod.ions234lm_1264_<water> and adds the C4 terms with ParmEd add12_6_4.",
-                   choices=[("126", "12-6 (default)"), ("1264", "12-6-4 (Li & Merz)")],
+                   "12-6: the Li & Merz parameters loaded with the water model. 12-6-4 (Li & Merz): "
+                   "loads frcmod.ions234lm_1264_<water> and adds the C4 terms with ParmEd add12_6_4 "
+                   "(Amber only; GROMACS cannot represent C4). microMg / nanoMg (Grotz, Cruz-León & "
+                   "Schwierz): optimised 12-6 Mg²⁺ with explicit Mg²⁺-RNA pair terms tuned to phosphate "
+                   "binding - written as a frcmod plus ParmEd changeLJPair lines, and carried into "
+                   "GROMACS as [ nonbond_params ]. microMg keeps the experimental (µs) water exchange; "
+                   "nanoMg exchanges water faster for better sampling of ion binding.",
+                   choices=[("126", "12-6 (default)"), ("1264", "12-6-4 (Li & Merz)"),
+                            ("micro", "microMg"), ("nano", "nanoMg")],
                    requires={"water": SOLVATED}),
+            Option("mg_cl_pair", "Mg²⁺-Cl⁻ pair term", "bool", True,
+                   "Also apply the authors' Mg²⁺-Cl⁻ pair term (optimised with their Cl⁻ model; Amber's "
+                   "Cl⁻ parameters are kept for everything else).",
+                   requires={"water": SOLVATED, "mg_model": ("micro", "nano")}),
         ], tooltip="Water box and ions (tleap solvateoct / solvatebox and addIonsRand)."),
         Section("parmed", "ParmEd", [
             Option("nbfix19", "NBfix19 (gHBfix19 as LJ pairs)", "bool", True,
@@ -373,8 +383,15 @@ class AmberBuildTool(Tool):
     def _lj_mods(s) -> bool:
         return bool(s["nbfix19"] or s["bph0"] or extra_lines(s["parmed_extra"]))
 
+    @staticmethod
+    def _mg_pairs(s) -> bool:
+        """microMg / nanoMg: frcmod for the ion + ParmEd pair terms (solvated builds only)."""
+        return (s["water"] != "none" and s["mg_model"] in mg_params.MODELS
+                and (s["mg_model"], s["water"]) in mg_params.MG_SETS)
+
     def _wet_parmed(self, s) -> bool:
-        return bool(self._lj_mods(s) or s["hmr"] or (self._solvated(s) and s["mg_model"] == "1264"))
+        return bool(self._lj_mods(s) or s["hmr"] or self._mg_pairs(s)
+                    or (self._solvated(s) and s["mg_model"] == "1264"))
 
     def _final_topology(self, s, ctx) -> str:
         return ctx.name("parmed" if self._wet_parmed(s) else "tleap", "parm7")
@@ -387,6 +404,8 @@ class AmberBuildTool(Tool):
                 if on]
         if mods:
             parts.append("+".join(mods))
+        if self._solvated(s) and s["mg_model"] != "126":
+            parts.append(mg_params.MODELS.get(s["mg_model"], "12-6-4 Mg"))
         if s["two_pass"]:
             parts.append("two-pass" + (" L-RNA" if s["lrna"] else ""))
         return ", ".join(parts)
@@ -415,6 +434,8 @@ class AmberBuildTool(Tool):
                 out.append(Issue("warning", "12-6-4 is selected but no Mg²⁺ is added; it only matters "
                                             "when the input already contains MG ions",
                                  ("mg_model", "mg_count")))
+            if s["mg_model"] in mg_params.MODELS:
+                out += self._check_mg_pairs(s)
             if s["buffer"] < 10.0:
                 out.append(Issue("warning", "a buffer below 10 Å can let periodic images of the RNA "
                                             "interact", ("buffer",)))
@@ -454,6 +475,42 @@ class AmberBuildTool(Tool):
                                      "types first' if that is not intended", ("split_types",)))
         return out
 
+    def _check_mg_pairs(self, s) -> List[Issue]:
+        out: List[Issue] = []
+        model, water = s["mg_model"], s["water"]
+        name, wlabel = mg_params.MODELS[model], WATERS[water][0]
+        if (model, water) in mg_params.UNAVAILABLE:
+            out.append(Issue("error", f"{name} is not available for {wlabel}: "
+                                      f"{mg_params.UNAVAILABLE[(model, water)]}", ("mg_model", "water")))
+            return out
+        if (model, water) not in mg_params.MG_SETS:
+            have = sorted({WATERS[w][0] for m, w in mg_params.MG_SETS if m == model})
+            out.append(Issue("error", f"no published {name} parameters for {wlabel} (available: "
+                                      f"{', '.join(have)})", ("mg_model", "water")))
+            return out
+        if s["mg_count"] == 0:
+            out.append(Issue("warning", f"{name} is selected but no Mg²⁺ is added; it only matters when "
+                                        "the input already contains MG ions", ("mg_model", "mg_count")))
+        if s["rna_ff"] not in ("ol3", "ol3cp"):
+            out.append(Issue("warning", f"the {name} Mg²⁺-RNA pair terms were fitted with parmBSC0χOL3 "
+                                        "atom types; RNA atom types of this force field that are not "
+                                        "in that set keep the plain combination rule", ("mg_model", "rna_ff")))
+        mg_extra = [ln for ln in extra_lines(s["parmed_extra"])
+                    if re.search(r":MG\b|Mg2\+", ln, re.IGNORECASE)]
+        if mg_extra:
+            out.append(Issue("warning", f"the {name} pair terms are applied after the extra ParmEd commands "
+                                        "and replace any Mg²⁺ pair terms set there",
+                             ("parmed_extra",)))
+        p = mg_params.get_set(model, water)
+        if s["mg_cl_pair"] and (s["mg_balance"] and s["mg_count"] or s["salt_pairs"]):
+            out.append(Issue("info", f"{name} for {wlabel} was optimised with the {p.chloride} Cl⁻ model; "
+                                     "the Mg²⁺-Cl⁻ pair term is applied, other Cl⁻ interactions use Amber's "
+                                     "Cl⁻", ("mg_cl_pair",)))
+        out.append(Issue("info", f"{name} ({mg_params.CITATIONS[water]}): Mg²⁺-water uses the "
+                                 "Lorentz-Berthelot rule, Mg²⁺-RNA the authors' pair terms; GROMACS "
+                                 "conversion keeps them as [ nonbond_params ]", ("mg_model",)))
+        return out
+
     def output_values(self, s, ctx):
         nres = None
         path = ctx.existing("structure")
@@ -461,6 +518,7 @@ class AmberBuildTool(Tool):
             nres = count_solute_residues(path)
         data = {"nbfix": bool(s["nbfix19"] or s["bph0"]), "hmr": bool(s["hmr"]),
                 "c4": bool(self._solvated(s) and s["mg_model"] == "1264"),
+                "mg_pairs": mg_params.MODELS[s["mg_model"]] if self._mg_pairs(s) else "",
                 "box": self._solvated(s), "solute_residues": nres,
                 "forcefield": s["rna_ff"], "water": s["water"],
                 "four_site_water": s["water"] in FOUR_SITE_WATERS}
@@ -471,7 +529,7 @@ class AmberBuildTool(Tool):
         if s["two_pass"]:
             dry_top = "parmed-dry" if self._lj_mods(s) else "tleap-dry"
             out["dry_topology"] = PortValue([ctx.own(dry_top, "parm7")], "parm7",
-                                            dict(data, box=False, c4=False, hmr=False))
+                                            dict(data, box=False, c4=False, hmr=False, mg_pairs=""))
             out["dry_pdb"] = PortValue([ctx.own("lrna" if s["lrna"] else "ambpdb", "pdb")], "pdb",
                                        dict(data, box=False))
         return out
@@ -489,6 +547,8 @@ class AmberBuildTool(Tool):
         lines += [f"loadamberparams {f.strip()}" for f in extra_lines(s["extra_frcmod"])]
         if solvated and s["mg_model"] == "1264" and WATERS[s["water"]][4]:
             lines.append(f"loadamberparams {WATERS[s['water']][4]}")
+        if solvated and self._mg_pairs(s):
+            lines.append(f"loadamberparams {self._mg_frcmod(ctx)}")
         lines += [f"loadOff {f.strip()}" for f in extra_lines(s["extra_libs"])]
         lines += extra_lines(s["leap_before_load"])
         lines.append(f'mol = loadpdb "{pdb_in}"')
@@ -522,7 +582,11 @@ class AmberBuildTool(Tool):
         lines.append("quit")
         return "\n".join(lines) + "\n"
 
-    def _parmed(self, s, title, out_parm, wet) -> str:
+    @staticmethod
+    def _mg_frcmod(ctx) -> str:
+        return ctx.name("mg", "frcmod")
+
+    def _parmed(self, s, title, out_parm, wet, ctx=None) -> str:
         lines = ["#", f"# {title}", f"# ParmEd input written by {PROJECT_ABBREV} {__version__}"]
         if s["nbfix19"] and s["split_types"]:
             lines += ["#", "# Give HO and O2 their own Lennard-Jones types so the pair changes below do not also",
@@ -543,6 +607,9 @@ class AmberBuildTool(Tool):
         extra = extra_lines(s["parmed_extra"])
         if extra:
             lines += ["#", "# Extra commands"] + extra
+        if wet and self._mg_pairs(s):
+            lines += mg_params.parmed_lines(s["mg_model"], s["water"], WATERS[s["water"]][0],
+                                            self._mg_frcmod(ctx), s["mg_cl_pair"])
         lines += ["#", f"outparm {out_parm}"]
         return "\n".join(lines) + "\n"
 
@@ -601,6 +668,11 @@ class AmberBuildTool(Tool):
                     src = dst
                 sh += [require_file(out_pdb, "to_lrna.sh"), ""]
                 pdb_in = out_pdb
+        if self._mg_pairs(s):
+            name = mg_params.MODELS[s["mg_model"]]
+            files.append(GeneratedFile(self._mg_frcmod(ctx), mg_params.frcmod_text(
+                s["mg_model"], s["water"], WATERS[s["water"]][0]), "input",
+                f"{name} Mg2+ Lennard-Jones parameters (replace Li & Merz 12-6)"))
         wet = n("tleap")
         what = "Solvate and add ions" if self._solvated(s) else "Build the topology"
         files.append(GeneratedFile(n("tleap", "leap"), self._leap(
@@ -611,10 +683,12 @@ class AmberBuildTool(Tool):
         final = f"{wet}.parm7"
         if self._wet_parmed(s):
             pm = n("parmed")
-            wet_mods = [m for m in (mods, "12-6-4" if self._solvated(s) and s["mg_model"] == "1264" else "",
-                                    "HMR" if s["hmr"] else "") if m]
+            mg = ("12-6-4" if self._solvated(s) and s["mg_model"] == "1264" else
+                  mg_params.MODELS[s["mg_model"]] + " pairs" if self._mg_pairs(s) else "")
+            wet_mods = [m for m in (mods, mg, "HMR" if s["hmr"] else "") if m]
             files.append(GeneratedFile(n("parmed", "in"), self._parmed(
-                s, f"{' + '.join(wet_mods)} on the solvated topology", f"{pm}.parm7", wet=True), "input"))
+                s, f"{' + '.join(wet_mods)} on the solvated topology", f"{pm}.parm7", wet=True, ctx=ctx),
+                "input"))
             sh += [f"# {'Re-apply' if s['two_pass'] and lj else 'Apply'} {' + '.join(wet_mods)}",
                    f"parmed -O {wet}.parm7 -i {pm}.in | tee {pm}.log",
                    require_file(f"{pm}.parm7", "ParmEd"), ""]

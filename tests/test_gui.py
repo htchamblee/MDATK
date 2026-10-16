@@ -127,3 +127,57 @@ def test_real_frame_preview_and_render(window, tmp_path):
     assert [m[0] for m in window.messages] == ["info"], window.messages
     videos = glob.glob(str(tmp_path / "gui_out" / "MDATK_video_*.mp4"))
     assert len(videos) == 1 and window.last_video == videos[0]
+
+
+def test_density_map_fit_shadow_and_drag(window, tmp_path):
+    import numpy as np
+
+    from mdatk import density as D
+    from mdatk.io.mrc import DensityMap, write_map
+    from mdatk.pipeline import Pipeline
+
+    xyz, el, _f = Pipeline(window.collect(validate=False)).density_frame_atoms("ref")
+    true = D.RigidTransform(D.quaternion_matrix([0.7, 0.1, -0.6, 0.3]), np.array([12.0, -6.0, 30.0]))
+    sim = D.simulate_map(true.apply(xyz), D.atom_weights(el), 6.0, spacing=1.5)
+    path = str(tmp_path / "gui_map.mrc")
+    write_map(path, DensityMap(np.pad(sim.data, 10), sim.origin - 15.0, sim.voxel))
+    window.density_map_entry.set_text(path)
+    window.project.density.resolution = 6.0
+    window.binder.load(window.project)
+    assert "Not placed" in window.density_status.get_text()
+    window.fit_density("global")
+    assert pump(lambda: window.worker is None)
+    assert not [m for m in window.messages if m[0] == "error"], window.messages
+    dp = window.project.density
+    assert len(dp.transform) == 12 and dp.fit_cc > 0.9 and "CC" in window.density_status.get_text()
+    assert window.preview_data is not None
+    assert pump(lambda: window.canvas.structure is not None and window.canvas.structure.has_density(), 30)
+    canvas = window.canvas
+    # map mode: dragging moves the map, not the view
+    window.map_toggle.set_active(True)
+    angles = list(canvas.angles)
+    sx, sy, sw, sh = canvas.slots[canvas.structure_slot]
+    cx, cy = sx + sw / 2, sy + sh / 2
+    before = list(dp.transform)
+    canvas._on_press(None, Ev(cx, cy))
+    canvas._on_motion(None, Ev(cx + 30, cy + 10))
+    canvas._on_release(None, Ev(cx + 30, cy + 10))
+    assert canvas.angles == angles and dp.transform != before
+    assert "by hand" in window.density_status.get_text()
+    rotated = list(dp.transform)
+    canvas._on_press(None, Ev(cx, cy, state=Gdk.ModifierType.SHIFT_MASK))
+    canvas._on_motion(None, Ev(cx + 20, cy))
+    canvas._on_release(None, Ev(cx + 20, cy))
+    assert D.rotation_angle(np.array(dp.transform[:9]).reshape(3, 3) @
+                            np.array(rotated[:9]).reshape(3, 3).T) == pytest.approx(10.0, abs=0.5)
+    window.map_toggle.set_active(False)
+    window.fit_density("manual")
+    assert pump(lambda: window.worker is None)
+    assert dp.fit_cc > 0.9 and "local refinement" in dp.fit_info
+    window.clear_density_fit()
+    assert dp.transform == [] and "Not placed" in window.density_status.get_text()
+    window.centre_density()
+    assert len(dp.transform) == 12 and "Centred" in window.density_status.get_text()
+    # choosing another map forgets the placement
+    window.density_map_entry.set_text(path + ".other")
+    assert dp.transform == []

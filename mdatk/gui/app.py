@@ -87,7 +87,7 @@ class MainWindow(Gtk.ApplicationWindow):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(outer)
         self.canvas = FigureCanvas(on_rotate=self._on_canvas_rotate, on_swap=self._on_canvas_swap,
-                                   on_activate=self._on_canvas_activate)
+                                   on_activate=self._on_canvas_activate, on_map_move=self._on_map_moved)
         builders = {"input": self._tab_input, "groups": self._tab_groups,
                     "analyses": self._tab_analyses, "structure": self._tab_visual,
                     "layout": self._tab_layout, "outputs": self._tab_outputs}
@@ -697,6 +697,7 @@ class MainWindow(Gtk.ApplicationWindow):
                             "orientation is set on the reference frame and applied to every frame "
                             "of the video."))
         box.pack_start(W.frame("Orientation", rot), False, False, 0)
+        box.pack_start(self._density_frame(), False, False, 0)
 
         tags = W.Form()
         tags.add("Label every N-th residue", b.spin_int("visual.label_every", W.spin(0, 10000)),
@@ -738,6 +739,154 @@ class MainWindow(Gtk.ApplicationWindow):
                              b.entry("visual.title", W.entry("figure title (optional)", width=20))])
         box.pack_start(W.frame("Appearance", f), False, False, 0)
         return W.scrolled(box)
+
+    def _density_frame(self):
+        b = self.binder
+        d = W.Form()
+        mp = W.file_chooser_button("Select a density map", patterns=[
+            ("MRC / CCP4 maps (*.mrc, *.map, *.ccp4)", ["*.mrc", "*.map", "*.ccp4", "*.MRC", "*.MAP"])])
+        d.add("Map file", b.path_entry("density.map_path", mp), "MRC2014 / CCP4 map (.mrc, .map)")
+        mp.entry.connect("changed", self._on_density_map_changed)
+        self.density_map_entry = mp.entry
+        opacity = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
+        opacity.set_digits(2)
+        opacity.set_value_pos(Gtk.PositionType.RIGHT)
+        opacity.set_size_request(140, -1)
+        b._add("density.opacity", opacity, lambda: round(opacity.get_value(), 3),
+               lambda v: opacity.set_value(float(v)))
+        opacity.connect("value-changed", lambda *_: self._density_style_changed())
+        d.add_row("Show / colour / opacity", [b.check("density.show", W.check("show")),
+                                              b.color("density.color", W.color_button()), opacity],
+                  "The map is drawn as a projected shadow behind the model")
+        level = b.spin_float("density.level", W.spin(-5, 20, 0.1, 1))
+        d.add_row("Contour level (σ) / resolution (Å)", [
+            level, b.spin_float("density.resolution", W.spin(0.5, 50, 0.1, 1))],
+            "Density below mean + level × σ casts no shadow; the resolution sets the width of "
+            "the simulated map used for fitting")
+        d.add_row("Fit frame / start / step (°)", [
+            b.entry("density.fit_frame", W.entry("ref", width=6)),
+            b.combo("density.search", W.combo([("global", "global search"), ("manual", "my placement")])),
+            b.spin_float("density.angular_step", W.spin(5, 90, 1, 0))],
+            "Frame 'ref' is the first analysed frame (the video's reference); any trajectory frame "
+            "number works. The global search samples orientations every <step> degrees.")
+        d.add_wide(b.check("density.auto_fit", W.check(
+            "Fit automatically before rendering when the map has no placement yet")))
+        row = Gtk.Box(spacing=6)
+        for text, cb, tip in (
+                ("Global search", lambda: self.fit_density("global"),
+                 "Exhaustive orientation search + local refinement (maximises the correlation with a "
+                 "map simulated from the model)"),
+                ("Refine", lambda: self.fit_density("manual"),
+                 "Local refinement from the current placement"),
+                ("Centre on model", self.centre_density, "Place the map's density centre on the model "
+                 "without rotating it (a starting point for moving it by hand)"),
+                ("Clear", self.clear_density_fit, "Forget the placement")):
+            btn = W.button(text, cb, tip)
+            if text in ("Global search", "Refine"):
+                self.busy_widgets.append(btn)
+            row.pack_start(btn, False, False, 0)
+        d.add_wide(row)
+        self.map_toggle = Gtk.ToggleButton(label="Move the map with the mouse")
+        self.map_toggle.set_tooltip_text("Drag in the structure panel to move the map; Shift + drag rotates "
+                                         "it about its centre. Then 'Refine' to fit from there.")
+        self.map_toggle.connect("toggled", lambda t: setattr(self.canvas, "map_mode", t.get_active()))
+        d.add_wide(self.map_toggle)
+        self.density_status = W.label("", wrap=True)
+        self.density_status.set_selectable(True)
+        d.add_wide(self.density_status)
+        d.add_wide(W.hint("The map is shown on the real model: use 'Load real frame' (toolbar) or a fit, "
+                          "which loads it. The placement is stored in the preset."))
+        return W.frame("Density map", d)
+
+    def _update_density_status(self) -> None:
+        dp = self.project.density
+        if not dp.map_path:
+            text = "No map selected."
+        elif len(dp.transform) == 12:
+            text = dp.fit_info or "Placed (not fitted)."
+        else:
+            text = "Not placed yet: run a global search, or centre it and move it by hand."
+        self.density_status.set_text(text)
+
+    def _on_density_map_changed(self, entry) -> None:
+        if self._loading:
+            return
+        path = entry.get_text().strip()
+        dp = self.project.density
+        if path != dp.map_path:  # a placement belongs to one map
+            dp.map_path = path
+            dp.transform, dp.fit_cc, dp.fit_info = [], 0.0, ""
+            self._update_density_status()
+
+    def _density_style_changed(self) -> None:
+        if not self._loading:
+            self.refresh_canvas()
+
+    def _on_map_moved(self, values) -> None:
+        dp = self.project.density
+        dp.transform = list(values)
+        dp.fit_cc = 0.0
+        dp.fit_info = "Placed by hand (not fitted) - 'Refine' fits from here."
+        self._update_density_status()
+
+    def _store_density_result(self, density) -> None:
+        dp = self.project.density
+        dp.transform, dp.fit_cc, dp.fit_info = list(density.transform), density.fit_cc, density.fit_info
+        self._update_density_status()
+
+    def fit_density(self, search: str) -> None:
+        try:
+            project = self.collect()
+        except ValueError as exc:
+            self.error("Please fix these parameters first", str(exc))
+            return
+        if not project.density.map_path:
+            self.error("No density map", "Choose an MRC / CCP4 map first.")
+            return
+        def job(rep):
+            pipe = self._pipeline(project, rep)
+            pipe.fit_density(search=search)
+            # the fit may have run cpptraj: show the model from the same (cleaned) files
+            return project.density, pipe.structure_preview()
+
+        def done(result):
+            density, preview = result
+            self._store_density_result(density)
+            if preview is not None:
+                self.preview_data = preview
+            self.refresh_canvas()
+
+        self.start_job("Fitting the density map", job, done)
+
+    def centre_density(self) -> None:
+        from ..density import centre_transform, load_map_cached, map_level
+
+        try:
+            project = self.collect(validate=False)
+        except ValueError as exc:
+            self.error("Invalid parameters", str(exc))
+            return
+        st = self.canvas.structure
+        if self.preview_data is None or st is None:
+            self.info("Load the real reference frame first", "Use 'Load real frame' in the Layout section, "
+                      "then centre the map on the model.")
+            return
+        try:
+            dmap = load_map_cached(project.density.map_path)
+        except (OSError, ValueError) as exc:
+            self.error("Cannot read the density map", str(exc))
+            return
+        t = centre_transform(dmap, map_level(dmap, project.density.level), st.center)
+        self._on_map_moved(t.to_list())
+        self.project.density.fit_info = "Centred on the model (not fitted)."
+        self._update_density_status()
+        self.refresh_canvas()
+
+    def clear_density_fit(self) -> None:
+        dp = self.project.density
+        dp.transform, dp.fit_cc, dp.fit_info = [], 0.0, ""
+        self._update_density_status()
+        self.refresh_canvas()
 
     def _set_rotation(self, angles):
         self._syncing = True
@@ -1069,6 +1218,7 @@ class MainWindow(Gtk.ApplicationWindow):
         finally:
             self._loading = False
         self._on_scale()
+        self._update_density_status()
         self.header.set_subtitle(path or "unsaved parameters")
         self._prefill_conda()
         self.refresh_canvas()

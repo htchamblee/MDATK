@@ -272,6 +272,104 @@ def test_amber_build_warnings():
     assert any("HO the same Lennard-Jones type as water HW" in m for m in messages(st, "info"))
 
 
+
+# parmBSC0chiOL3 RNA atom types as listed in the authors' ff_Mg*.itp files (sigma nm, epsilon kJ/mol)
+OL3_LJ = {"C": (0.339967, 0.359824), "C4": (0.339967, 0.359824), "C5": (0.339967, 0.359824),
+          "CA": (0.339967, 0.359824), "CB": (0.339967, 0.359824), "CI": (0.339967, 0.45773),
+          "CP": (0.339967, 0.359824), "CQ": (0.339967, 0.359824), "CS": (0.339967, 0.359824),
+          "CT": (0.339967, 0.45773), "H": (0.106908, 0.0656888), "H1": (0.247135, 0.0656888),
+          "H2": (0.229317, 0.0656888), "H4": (0.251055, 0.06276), "H5": (0.242146, 0.06276),
+          "HA": (0.259964, 0.06276), "HO": (0.0, 0.0), "N*": (0.325, 0.71128), "N2": (0.325, 0.71128),
+          "NA": (0.325, 0.71128), "NB": (0.325, 0.71128), "NC": (0.325, 0.71128), "O": (0.295992, 0.87864),
+          "O2": (0.295992, 0.87864), "OH": (0.306647, 0.880314), "OS": (0.300001, 0.71128),
+          "P": (0.374177, 0.8368)}
+
+
+def test_mg_parameter_table_is_internally_consistent():
+    """Each set scales the Lorentz-Berthelot pair of every RNA type by one (lambda_sigma, lambda_eps):
+    a transcription error in any of the copied numbers would break that."""
+    from mdatk.workflows import mg_params
+
+    assert set(mg_params.MG_SETS) == {(m, w) for m in ("micro", "nano")
+                                      for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd")} - {
+        ("micro", "tip4pd")}
+    assert ("micro", "tip4pd") in mg_params.UNAVAILABLE
+    for key, p in mg_params.MG_SETS.items():
+        assert set(p.rna) == set(OL3_LJ), key
+        lam_s, lam_e = set(), set()
+        for ty, (sig, eps) in p.rna.items():
+            s0, e0 = OL3_LJ[ty]
+            lam_s.add(round(sig / ((p.ion[0] + s0) / 2), 4))
+            if e0:
+                lam_e.add(round(eps / (p.ion[1] * e0) ** 0.5, 4))
+            else:
+                assert eps == 0.0
+        assert len(lam_s) == 1 and len(lam_e) == 1, (key, lam_s, lam_e)
+        assert 1.09 < lam_s.pop() < 1.16 and 0.2 < lam_e.pop() < 0.5, key
+    # published scalings quoted in the papers
+    p = mg_params.get_set("micro", "tip3p")
+    assert p.rna["O2"][0] / ((p.ion[0] + 0.295992) / 2) == pytest.approx(1.1375, abs=1e-4)
+    assert mg_params.MG_SETS[("micro", "opc")] == mg_params.MG_SETS[("micro", "spce")].__class__(
+        **{**mg_params.MG_SETS[("micro", "spce")].__dict__, "source": mg_params.MG_SETS[("micro", "opc")].source})
+    assert p.rmin_half == pytest.approx(0.572085, abs=1e-6) and p.eps_kcal == pytest.approx(56.35856, abs=1e-5)
+
+
+def test_amber_build_optimised_mg_files():
+    plan, st = step("amber-build", {"mg_count": 4, "mg_model": "nano", "water": "tip3p", "split_types": True,
+                                    "parmed_extra": "addLJType @%P"}, {"structure": "/x.pdb"})
+    assert not messages(st, "error"), messages(st)
+    assert st.outputs["topology"].data["mg_pairs"] == "nanoMg" and not st.outputs["topology"].data["c4"]
+    files = generated(plan)
+    frc = files["apt1_01_mg_20261015-1432.frcmod"].content
+    assert "NONB\n  Mg2+     0.57545262  93.16414946\n" in frc and frc.isascii()
+    leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
+    assert leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod") < leap.index(
+        'mol = loadpdb "apt1_01_prep_20261015-1432.pdb"')
+    assert leap.index("source leaprc.water.tip3p") < leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod")
+    pm = files["apt1_01_parmed_20261015-1432.in"].content
+    lines = pm.splitlines()
+    first_mg = next(k for k, ln in enumerate(lines) if ln.startswith("changeLJPair :MG"))
+    assert all(k < first_mg for k, ln in enumerate(lines) if ln.startswith("addLJType"))
+    assert "changeLJPair :MG @%O2 2.55761105 1.10579359" in pm
+    assert "changeLJPair :MG @%N\\* " in pm and "changeLJPair :MG :Cl- 5.48171" in pm
+    assert sum(ln.startswith("changeLJPair :MG @%") for ln in lines) == 27
+    assert "doi:10.1021/acs.jctc.0c01281" in pm and pm.isascii()
+    no_cl = generated(step("amber-build", {"mg_count": 4, "mg_model": "micro", "water": "spce",
+                                           "mg_cl_pair": False}, {"structure": "/x.pdb"})[0])
+    assert ":Cl-" not in no_cl["apt1_01_parmed_20261015-1432.in"].content
+    # the plain 12-6 default writes no frcmod and no Mg pair terms
+    plain = generated(step("amber-build", {"mg_count": 4}, {"structure": "/x.pdb"})[0])
+    assert not any(n.endswith(".frcmod") for n in plain)
+    assert ":MG" not in plain["apt1_01_parmed_20261015-1432.in"].content
+
+
+@pytest.mark.parametrize("settings, level, expected", [
+    ({"mg_model": "micro", "water": "tip4pd", "mg_count": 2}, "error", "microMg is not available for TIP4P-D"),
+    ({"mg_model": "nano", "water": "opc3", "mg_count": 2}, "error", "no published nanoMg parameters for OPC3"),
+    ({"mg_model": "nano", "mg_count": 0}, "warning", "no Mg²⁺ is added"),
+    ({"mg_model": "micro", "mg_count": 2, "rna_ff": "ljbb", "nbfix19": False, "bph0": False}, "warning",
+     "fitted with parmBSC0χOL3"),
+    ({"mg_model": "micro", "mg_count": 2, "parmed_extra": "changeLJPair :MG @%O2 2.5 1.0"}, "warning",
+     "applied after the extra ParmEd commands"),
+    ({"mg_model": "micro", "mg_count": 2}, "info", "Smith-Dang"),
+])
+def test_amber_build_optimised_mg_checks(settings, level, expected):
+    _plan, st = step("amber-build", settings, {"structure": "/x.pdb"})
+    assert any(expected in m for m in messages(st, level)), messages(st)
+
+
+def test_gromacs_keeps_optimised_mg_pairs():
+    wf, b, _r, _m = amber_plan(build={"water": "tip3p", "mg_model": "micro", "mg_count": 2})
+    g = add_node(wf, "gromacs", settings={"convert": "acpype"})
+    connect(wf, b.id, "topology", g.id, "topology")
+    connect(wf, b.id, "coordinates", g.id, "coordinates")
+    plan = Plan(wf)
+    assert any("acpype drops the microMg" in m for m in messages(plan.steps[g.id], "error"))
+    g.settings["convert"] = "parmed"
+    plan = Plan(wf)
+    assert not messages(plan.steps[g.id], "error")
+    assert any("microMg Mg²⁺-RNA pair terms are written" in m for m in messages(plan.steps[g.id], "info"))
+
 def test_amber_md_checks():
     wf, b, r, m = amber_plan(md={"stages": [{"name": "min", "kind": "min"},
                                              {"name": "go", "kind": "md", "restart": "continue",

@@ -204,6 +204,13 @@ class GromacsTool(Tool):
         if data.get("nbfix") and s["convert"] == "parmed":
             out.append(Issue("info", "NBfix19 / 0BPh pairs are written as [ nonbond_params ] and 1-4 "
                                      "[ pairtypes ] by the conversion script", ("convert",)))
+        if data.get("mg_pairs") and s["convert"] == "acpype":
+            out.append(Issue("error" if not s["allow_nbfix_loss"] else "warning",
+                             f"acpype drops the {data['mg_pairs']} Mg²⁺ pair terms (they are off-diagonal "
+                             "Lennard-Jones pairs); convert with ParmEd", ("convert", "allow_nbfix_loss")))
+        if data.get("mg_pairs") and s["convert"] == "parmed":
+            out.append(Issue("info", f"the {data['mg_pairs']} Mg²⁺-RNA pair terms are written as "
+                                     "[ nonbond_params ] by the conversion script", ("convert",)))
         if data.get("box") is False:
             out.append(Issue("error", "the topology has no periodic box", ("input:topology",)))
         for k, st in enumerate(stages):

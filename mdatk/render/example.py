@@ -167,7 +167,7 @@ def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] =
         ions = np.asarray(src.get("ions", np.zeros((0, 3))), dtype=np.float64)
         ions = ions if ions.ndim == 3 else np.repeat(ions.reshape(1, -1, 3), n_frames, axis=0)
         n_res = coords.shape[1]
-        trace = AnalysisResult("trace", "example", {}, {}, {"example": True})
+        trace = AnalysisResult("trace", "example", {}, {}, {"example": True, "schematic": preview is None})
         trace.arrays.update(coords=coords, ion_coords=ions, chain=np.asarray(src["chain"]),
                             group_index=np.asarray(src["group_index"]),
                             is_point=np.ones(n_res, bool), links=np.asarray(src["links"]),

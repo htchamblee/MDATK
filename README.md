@@ -27,6 +27,7 @@ ensemble. MDATK only writes these files; it never runs those programs.
 - [Script wizard and Project Planner](#script-wizard-and-project-planner)
 - [Analyses](#analyses)
 - [Structural view, colouring and glow](#structural-view-colouring-and-glow)
+- [Density maps](#density-maps)
 - [Panels, data keys and layouts](#panels-data-keys-and-layouts)
 - [Outputs](#outputs)
 - [Caching and reproducibility](#caching-and-reproducibility)
@@ -203,8 +204,8 @@ whose atom types their masks assume), SPC/E water in a 15 Å truncated octahedro
 optional Mg²⁺ balanced with Cl⁻, and the stages min1 (solute restrained) → min2 → heat (Langevin from
 0 K) → NPT equilibration → NPT equilibration without positional restraints → production; the mdin files
 match the hand-written reference files line for line. Other choices: RNA force fields OL3, LJbb,
-ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D; 12-6-4 Mg²⁺ (loads the
-matching `frcmod.ions…_1264_<water>` and runs ParmEd `add12_6_4`); hydrogen mass repartitioning;
+ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D; four Mg²⁺ models (see
+below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
 a separate production script for the cluster; resuming (finished stages are skipped); a dry PDB and a
@@ -222,11 +223,45 @@ the same input, the version is recorded in the scripts. The *Environment* sectio
 > `addLJType @%O2`) restricts the pairs to the intended atoms. It is off by default so the reference
 > protocol is reproduced unchanged.
 
+**Mg²⁺ models.** *Mg²⁺ Lennard-Jones model* in the build step:
+
+| Model | What MDATK writes | GROMACS |
+|---|---|---|
+| 12-6 (default) | nothing extra: the Li & Merz 12-6 parameters loaded with the water model | yes |
+| 12-6-4 (Li & Merz) | loads `frcmod.ions…_1264_<water>` and runs ParmEd `add12_6_4 :MG` | no (C4 terms) |
+| microMg / nanoMg (Grotz, Cruz-León & Schwierz) | a frcmod with the optimised Mg²⁺ Lennard-Jones terms, and ParmEd `changeLJPair` lines with the authors' Mg²⁺–RNA pair terms for all 27 parmBSC0χOL3 atom types, plus their Mg²⁺–Cl⁻ pair | yes, as `[ nonbond_params ]` |
+
+microMg and nanoMg are plain 12-6 models, so they work in GROMACS. microMg keeps the experimental
+(µs) water exchange. nanoMg exchanges water on the nanosecond scale, which helps sample ion binding.
+Their Mg²⁺–RNA pair terms (scaled combination rules, the same scaling for every RNA atom type)
+reproduce binding to phosphate oxygens. Mg²⁺–water uses the Lorentz-Berthelot rule. The numbers come
+from the authors' GROMACS parameter files and are cited in `mdatk/workflows/mg_params.py` with commit
+links:
+
+- TIP3P: JCTC 17, 2530 (2021), doi:10.1021/acs.jctc.0c01281
+- SPC/E, TIP3P-FB, TIP4P-Ew, TIP4P-D: JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791
+- OPC (the SPC/E values, shown to transfer): J. Chem. Phys. 156, 114501 (2022), doi:10.1063/5.0087292
+
+MDATK does not offer two combinations:
+
+- microMg with TIP4P-D: the authors' parameter file and paper disagree on the Mg²⁺–RNA σ (0.2598 nm
+  vs 0.2197 nm for Mg–O2).
+- OPC3: there are no published sets.
+
+The authors publish no Amber files, so MDATK converts their values: Rmin/2 = 2^(1/6)·σ/2,
+Rmin_ij = 2^(1/6)·σ_ij, 1 kcal = 4.184 kJ. The pair lines come after every `addLJType`, including
+NBfix19's `addLJType @%NB,NC` and *Separate HO and O2 types*, because `addLJType` resets the pair
+terms of the atoms it moves. Amber's Cl⁻ is kept; only the Mg²⁺–Cl⁻ pair takes the authors' value,
+which was fitted with their Cl⁻ model. Untick *Mg²⁺–Cl⁻ pair term* to keep the plain combination
+rule. An Amber build with these sets, converted to GROMACS, gives the published σ/ε in
+`[ nonbond_params ]` (checked by the opt-in integration test).
+
 **GROMACS.** ParmEd's GROMACS writer (and acpype) keep only the diagonal Lennard-Jones terms, so the
 NBfix19 / 0BPh pairs would be lost silently. MDATK's conversion script therefore gives every LJ type
 its own name and adds the modified pairs from the Amber tables as `[ nonbond_params ]` (and, for 1-4
-interactions, `[ pairtypes ]` scaled by fudgeLJ); converting such a topology with acpype is an error,
-and 12-6-4 topologies cannot be converted. Checks cover grompp warnings that stop a run with
+interactions, `[ pairtypes ]` scaled by fudgeLJ); the microMg / nanoMg pair terms are carried over the
+same way. Converting such a topology with acpype is an error, and 12-6-4 topologies cannot be
+converted. Checks cover grompp warnings that stop a run with
 `-maxwarn 0` (Berendsen coupling, Parrinello-Rahman with new velocities), `-update gpu` restrictions
 (no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
 (GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
@@ -249,7 +284,8 @@ mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
 
 The Amber chain was run end to end with AmberTools 26: tleap, ParmEd 4.3.1, ambpdb and cpptraj, with
 sander standing in for pmemd. The restraints, segments, a 4 fs HMR step and the dry trajectory were
-included. The GROMACS output was run through ParmEd conversion, grompp and mdrun with GROMACS 2023.3.
+included. The GROMACS output was run through ParmEd conversion, grompp and mdrun with GROMACS 2023.3,
+including microMg (TIP3P) and nanoMg (SPC/E) builds with NBfix19.
 For Rosetta, SimRNA, RNAMake, VMD and x3dna-dssr, the flags were checked against each program's
 source or documentation. The scripts were tested with stand-in executables. Review the generated
 scripts before running them on your machines.
@@ -303,6 +339,47 @@ topologies number residues 1…N in file order. Defaults are provided for the re
   (`visual.label_residues`, e.g. `1, 12, 24, 40-45`), placed just outside the trace, in the video
   and in the GUI.
 - The view is framed by the model's bounding sphere, so changing the orientation never zooms.
+
+## Density maps
+
+A cryo-EM or crystallographic map (MRC2014 / CCP4: `.mrc`, `.map`, `.ccp4`) can be drawn behind the
+structural view as a projected **shadow**: the density above the contour level, summed along the
+viewing direction, in one colour with adjustable opacity. The model stays where it is and the map is
+placed on it by a rigid-body fit.
+
+- **Fit.** MDATK simulates a map from the model (one Gaussian per heavy atom, weighted by atomic
+  number, σ = 0.225 × resolution and a grid spacing of resolution / 3, as ChimeraX `molmap` does). It
+  then maximises the correlation about the mean between that map and yours, using the grid points
+  inside the model's envelope.
+  - *Global search*: about 550 orientations at 30° (`density.angular_step`). For each one an FFT
+    finds the best translation on a coarse grid; the 12 best distinct poses are refined, and the best
+    three are refined again on the full point set.
+  - *Refine*: a local optimisation from the current placement.
+  - On the demo the global search takes about 5 s and recovers a known pose to within a degree.
+- **Frame.** The fit uses the reference frame (the first analysed frame, which the video is
+  superposed on) or any trajectory frame number (`density.fit_frame`). That frame is superposed
+  exactly like the video frames, so the placement applies to every frame.
+- **Manual start.**
+  1. Choose *Centre on model*, which puts the density centre on the model.
+  2. Toggle *Move the map with the mouse* and drag the shadow in the structure panel; Shift + drag
+     rotates it about its centre.
+  3. Choose *Refine*.
+- **Automatic fitting.** With *Fit automatically before rendering* (`density.auto_fit`), a render
+  without a stored placement runs the global search first. The placement (`density.transform`: a 3×3
+  rotation and a translation from model to map), its correlation and a summary are stored in the
+  preset.
+- **Appearance.**
+  - Contour level `density.level`, in σ above the map mean; default 2. Lower it for faint maps.
+  - Colour, opacity (0–1) and *show*.
+  - The shadow sits under the molecule, glow and labels. In the video it is part of the static
+    background (no per-frame cost). In the GUI it follows rotations, coarser while dragging.
+
+```bash
+mdatk density info map.mrc                               # grid, voxel size, origin, statistics
+mdatk density fit -p run.json --map map.mrc --resolution 4.5 --save   # store the placement
+mdatk density fit -p run.json --search manual --frame 250             # refine on another frame
+mdatk density simulate -p run.json --resolution 6 -O model_6A.mrc [--placed]
+```
 
 ## Panels, data keys and layouts
 
@@ -385,6 +462,8 @@ mdatk render    -p PRESET [--no-video|--no-charts|--no-pdb] [--force] [--from-ca
 mdatk charts    -p PRESET [--series k1,k2] [--formats png,svg,pdf] [--dpi N] [--from-cache]
 mdatk export-pdb -p PRESET [--frame-list "0, last"] [--times "1ns"] [--selection "Aptamer"]
 mdatk preview   -p PRESET --frame N [--output still.png] [--from-cache]
+mdatk density info MAP | fit -p PRESET [--map M] [--resolution R] [--search global|manual] [--save]
+mdatk density simulate -p PRESET --resolution R -O OUT.mrc [--frame F] [--placed]
 mdatk workflow tools|generate|template|check|write|restraints   (see Script wizard and Project Planner)
 ```
 

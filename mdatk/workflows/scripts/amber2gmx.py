@@ -104,7 +104,7 @@ def insert_pair_sections(top_text, pairs, names):
                     break
             break
     nb = ["[ nonbond_params ]",
-          "; off-diagonal Lennard-Jones pairs of the Amber topology (e.g. NBfix19 / 0BPh)",
+          "; off-diagonal Lennard-Jones pairs of the Amber topology (e.g. NBfix19 / 0BPh, Mg2+ pair terms)",
           ";  i          j        func  sigma (nm)        epsilon (kJ/mol)"]
     pt = ["[ pairtypes ]",
           f"; 1-4 interactions of the same pairs (epsilon x fudgeLJ {fudge_lj:g})",

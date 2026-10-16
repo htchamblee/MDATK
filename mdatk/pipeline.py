@@ -246,8 +246,12 @@ class Pipeline:
     def render_video(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> str:
         from .render.video import render_video
 
+        rep = reporter or self.reporter
         path = self.output_path(stamped(self.project.output.video.filename, self.stamp()))
-        self.last_video = render_video(dataset, self.project, path, reporter or self.reporter)
+        fit = self.project.density_active() and len(self.project.density.transform) != 12
+        if fit:
+            self.ensure_density_fit(rep.sub(0.0, 0.1))
+        self.last_video = render_video(dataset, self.project, path, rep.sub(0.1, 1.0) if fit else rep)
         return self.last_video
 
     def render_charts(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> List[str]:
@@ -272,6 +276,7 @@ class Pipeline:
     def render_preview(self, dataset: Dataset, pos: int, path: str) -> str:
         from .render.video import render_frame
 
+        self.ensure_density_fit()
         return render_frame(dataset, self.project, pos, path)
 
     def write_params_log(self, outputs: RunOutputs) -> str:
@@ -330,6 +335,83 @@ class Pipeline:
         rep.progress(1.0, "done")
         rep.log(f"Finished in {(_dt.datetime.now() - start).total_seconds():.1f} s")
         return outputs
+
+    # --------------------------------------------------------------- density
+    def density_frame_atoms(self, frame: str = "ref", reporter: Optional[Reporter] = None):
+        """Superposed atom coordinates (structural-view frame) of one trajectory frame.
+
+        Returns (xyz, elements, frame number).  "ref" is the first analysed frame;
+        any other frame is superposed onto it exactly like the video frames.
+        """
+        from .analysis.structure import AtomsAnalysis
+
+        p = self.project
+        u = self.universe()
+        idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
+        if not len(idx):
+            raise PipelineError("no frames selected")
+        ref = int(idx[0])
+        spec = (frame or "ref").strip().lower()
+        f = ref if spec in ("", "ref") else int(spec)
+        if not 0 <= f < u.trajectory.n_frames:
+            raise PipelineError(f"density fit frame {f} is outside the trajectory "
+                                f"(0-{u.trajectory.n_frames - 1})")
+        frames = np.array([ref] if f == ref else [ref, f], dtype=np.int64)
+        inputs = self.resolve_inputs()
+        ctx = AnalysisContext(u, p, inputs.topology, reporter or Reporter())
+        (res,), _ = run_analyses(ctx, [AtomsAnalysis(ctx)], frames, Reporter())
+        return res.arrays["coords"][-1].astype(np.float64), list(res.meta["elements"]), f
+
+    def fit_density(self, search: Optional[str] = None, start: Optional[Sequence[float]] = None,
+                    reporter: Optional[Reporter] = None):
+        """Rigid-body fit of the structure into the density map; stores the placement
+        in ``project.density`` and returns the :class:`~mdatk.density.FitResult`."""
+        from .density import FitError, RigidTransform, centre_transform, fit_model, load_map_cached, map_level
+        from .io.mrc import MapError
+
+        rep = reporter or self.reporter
+        d = self.project.density
+        if not d.map_path:
+            raise PipelineError("no density map selected")
+        try:
+            dmap = load_map_cached(d.map_path)
+        except (OSError, MapError) as exc:
+            raise PipelineError(f"density map: {exc}") from exc
+        search = search or d.search
+        rep.log(f"Density fit ({'global search' if search == 'global' else 'local refinement'}) of "
+                f"frame {d.fit_frame or 'ref'} into {os.path.basename(d.map_path)} at {d.resolution:g} Å")
+        xyz, elements, frame = self.density_frame_atoms(d.fit_frame, rep)
+        t0 = None
+        if search != "global":
+            if start is not None:
+                t0 = RigidTransform.from_list(start)
+            elif len(d.transform) == 12:
+                t0 = RigidTransform.from_list(d.transform)
+            else:
+                t0 = centre_transform(dmap, map_level(dmap, d.level), xyz.mean(axis=0))
+        try:
+            res = fit_model(dmap, xyz, elements, d.resolution, start=t0, search=search,
+                            angular_step=d.angular_step, progress=lambda f, m: rep.progress(f, m),
+                            cancelled=rep.check_cancel)
+        except FitError as exc:
+            raise PipelineError(f"density fit: {exc}") from exc
+        d.transform = res.transform.to_list()
+        d.fit_cc = round(float(res.cc), 4)
+        d.fit_info = (f"{'global search' if search == 'global' else 'local refinement'}, frame {frame}, "
+                      f"{len(xyz)} atoms, {d.resolution:g} Å: CC {res.cc:.3f}"
+                      + (f" ({res.message})" if res.message else ""))
+        rep.log(f"Density fit: {d.fit_info}")
+        return res
+
+    def ensure_density_fit(self, reporter: Optional[Reporter] = None) -> None:
+        """Fit before rendering when a map is shown but not yet placed."""
+        p = self.project
+        if p.density_active() and len(p.density.transform) != 12:
+            if not p.density.auto_fit:
+                (reporter or self.reporter).log("WARNING: the density map has no placement and "
+                                                "automatic fitting is off; it is not drawn")
+                return
+            self.fit_density(reporter=reporter)
 
     # --------------------------------------------------------------- preview
     def structure_preview(self) -> Dict[str, Any]:

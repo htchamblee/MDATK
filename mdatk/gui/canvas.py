@@ -4,7 +4,8 @@ Renders the actual multi-panel figure (the same panel code as the video) at
 the window size, preserving the video's aspect ratio and type scale.
 
 * Drag inside the structure panel to rotate the model (only the moving
-  artists are redrawn, so rotation is smooth).
+  artists are redrawn, so rotation is smooth).  In map mode the drag moves
+  the density map instead (Shift + drag rotates it about its centre).
 * Drag any other panel - or the structure panel by its title strip, or any
   panel with Shift held - onto another slot to swap the two panels.  Panels
   snap to the slots of the selected grid preset.
@@ -28,6 +29,7 @@ from ..config import Project  # noqa: E402
 from ..data import Dataset  # noqa: E402
 from ..render import layout as layouts  # noqa: E402
 from ..render.orientation import drag as drag_rotation  # noqa: E402
+from ..render.orientation import rx, ry  # noqa: E402
 from ..render.panels import StructurePanel  # noqa: E402
 from ..render.theme import get_theme  # noqa: E402
 from ..render.video import build_figure  # noqa: E402
@@ -47,7 +49,8 @@ def _rgb(hex_color: str):
 class FigureCanvas(Gtk.DrawingArea):
     def __init__(self, on_rotate: Optional[Callable[[List[float]], None]] = None,
                  on_swap: Optional[Callable[[int, int], None]] = None,
-                 on_activate: Optional[Callable[[int], None]] = None):
+                 on_activate: Optional[Callable[[int], None]] = None,
+                 on_map_move: Optional[Callable[[List[float]], None]] = None):
         super().__init__()
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -63,6 +66,8 @@ class FigureCanvas(Gtk.DrawingArea):
         self.on_rotate = on_rotate
         self.on_swap = on_swap
         self.on_activate = on_activate
+        self.on_map_move = on_map_move
+        self.map_mode = False  # drags in the structure panel move the density map
         self.project: Optional[Project] = None
         self.dataset: Optional[Dataset] = None
         self.watermark = ""
@@ -126,7 +131,7 @@ class FigureCanvas(Gtk.DrawingArea):
             p.update(self._pos)
             if isinstance(p, StructurePanel) and p.ok and self.structure is None:
                 self.structure, self.structure_slot = p, k
-        animated = self.structure.animated_artists() if self.structure is not None else []
+        animated = self._moving_artists()
         for a in animated:
             a.set_animated(True)
         canvas.draw()
@@ -166,13 +171,20 @@ class FigureCanvas(Gtk.DrawingArea):
             out.append(rect)
         self.slots = out
 
+    def _moving_artists(self) -> list:
+        """Artists redrawn on every blit: the density shadow (changes with the view)
+        below the structure panel's animated artists."""
+        if self.structure is None:
+            return []
+        return self.structure.rotation_artists() + self.structure.animated_artists()
+
     def _blit(self) -> None:
         canvas = self._canvas
         if canvas is None:
             return
         if self.structure is not None and self._background is not None:
             canvas.restore_region(self._background)
-            for a in self.structure.animated_artists():
+            for a in self._moving_artists():
                 self._fig.draw_artist(a)
         buf = np.asarray(canvas.buffer_rgba())
         h, w = buf.shape[:2]
@@ -218,7 +230,11 @@ class FigureCanvas(Gtk.DrawingArea):
         sx, sy, sw, sh = self.slots[slot]
         in_title = event.y < sy + TITLE_STRIP * sh
         shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
-        mode = "rotate" if (slot == self.structure_slot and not in_title and not shift) else "move"
+        in_structure = slot == self.structure_slot and not in_title
+        if in_structure and self.map_mode and self.structure is not None and self.structure.has_density():
+            mode = "map-rotate" if shift else "map"
+        else:
+            mode = "rotate" if (in_structure and not shift) else "move"
         self._press = (event.x, event.y, slot, mode)
         self._last = (event.x, event.y)
         self._dragging = False
@@ -233,7 +249,7 @@ class FigureCanvas(Gtk.DrawingArea):
                 if slot is not None:
                     sx, sy, sw, sh = self.slots[slot]
                     rotating = slot == self.structure_slot and event.y >= sy + TITLE_STRIP * sh
-                    name = "grab" if rotating else "move"
+                    name = ("all-scroll" if self.map_mode else "grab") if rotating else "move"
                 win.set_cursor(Gdk.Cursor.new_from_name(win.get_display(), name))
             return False
         x0, y0, slot, mode = self._press
@@ -243,9 +259,15 @@ class FigureCanvas(Gtk.DrawingArea):
         if mode == "rotate":
             dx, dy = event.x - self._last[0], event.y - self._last[1]
             self._last = (event.x, event.y)
+            if self.structure is not None:
+                self.structure.density_fast = True
             self.set_rotation(drag_rotation(self.angles, dx, dy))
             if self.on_rotate:
                 self.on_rotate(list(self.angles))
+        elif mode in ("map", "map-rotate"):
+            dx, dy = event.x - self._last[0], event.y - self._last[1]
+            self._last = (event.x, event.y)
+            self._drag_map(dx, dy, mode == "map-rotate")
         else:
             self._drag_target = self.slot_at(event.x, event.y)
             self._drag_pos = (event.x, event.y)
@@ -261,9 +283,28 @@ class FigureCanvas(Gtk.DrawingArea):
         if mode == "move" and self._dragging and target is not None and target != slot:
             if self.on_swap:
                 self.on_swap(slot, target)
+        if self.structure is not None and self.structure.density_fast:
+            self.structure.density_fast = False  # full-quality shadow after the drag
+            self.structure.update_density()
+            self._blit()
         self._dragging = False
         self.queue_draw()
         return True
+
+    def _drag_map(self, dx: float, dy: float, rotate: bool) -> None:
+        st = self.structure
+        st.density_fast = True
+        if rotate:
+            new = st.nudge_density(view_rotation=ry(dx * 0.5) @ rx(dy * 0.5))
+        else:  # widget pixels -> Å in the panel's data coordinates (screen y points down)
+            bbox = st.ax.get_window_extent()
+            (x0, x1), (y0, y1) = st.ax.get_xlim(), st.ax.get_ylim()
+            new = st.nudge_density(shift=(dx * (x1 - x0) / max(bbox.width, 1.0),
+                                          -dy * (y1 - y0) / max(bbox.height, 1.0)))
+        self._blit()
+        self.queue_draw()
+        if new is not None and self.on_map_move:
+            self.on_map_move(new)
 
     # ----------------------------------------------------------------- draw
     def _on_draw(self, _w, cr):

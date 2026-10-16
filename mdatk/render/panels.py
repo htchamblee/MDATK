@@ -160,6 +160,7 @@ class StructurePanel(Panel):
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
         center = coords[0].mean(axis=0)
+        self.center = center
         # centred coordinates; the view is a rotation of these (see set_rotation)
         self.centred = coords - center
         self.ions_centred = ions - center if ions.size else np.zeros((len(coords), 0, 3))
@@ -182,6 +183,10 @@ class StructurePanel(Panel):
         for spine in self.ax.spines.values():
             spine.set_visible(False)
         self.zmin, self.zmax = -radius, radius
+        self.density_img = None
+        self.density_fast = False  # coarser shadow while the GUI drags the model or the map
+        self.density_note = ""
+        self._setup_density(tr)
         self.set_rotation(v.rotation)
         self.auto_title = "Structure"
 
@@ -232,8 +237,98 @@ class StructurePanel(Panel):
     def set_rotation(self, angles) -> None:
         """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
         r = euler_to_matrix(angles)
+        self.view_matrix = r
         self.view = self.centred @ r.T
         self.ion_view = self.ions_centred @ r.T
+        self.update_density()
+
+    # -- density map shadow
+    def _setup_density(self, tr) -> None:
+        """Load the density map when a placement is known (drawn by update_density)."""
+        self._dmap = self._to_map = None
+        project = self.ctx.project
+        d = project.density
+        if not project.density_active():
+            return
+        if tr.meta.get("schematic"):
+            self.density_note = "density map: load the real reference frame to see it"
+            return
+        if len(d.transform) != 12:
+            self.density_note = "density map: not fitted yet"
+            return
+        from ..density import RigidTransform, load_map_cached, map_level
+
+        try:
+            self._dmap = load_map_cached(d.map_path)
+            self._to_map = RigidTransform.from_list(d.transform)
+        except (OSError, ValueError) as exc:
+            self._dmap = None
+            self.density_note = f"density map: {exc}"
+            log.warning("density map not drawn: %s", exc)
+            return
+        self._level = map_level(self._dmap, d.level)
+        self._density_rgb = np.array(to_rgba(d.color))[:3]
+        self.density_img = self.ax.imshow(np.zeros((2, 2, 4), np.float32), extent=(0, 1, 0, 1),
+                                          origin="lower", interpolation="bilinear", zorder=0.5,
+                                          aspect="auto")
+        self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
+        self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
+
+    def set_density_transform(self, values) -> None:
+        """New map placement (12 numbers, model -> map); used while dragging the map."""
+        from ..density import RigidTransform
+
+        if self._dmap is None:
+            return
+        self._to_map = RigidTransform.from_list(values)
+        self.update_density()
+
+    def update_density(self) -> None:
+        if self.density_img is None or self._dmap is None:
+            return
+        from ..density import project_density, shadow_rgba
+
+        span = 2.5 * float(max(self.data_hi - self.data_lo))
+        window = (-span / 2, span / 2, -span / 2, span / 2)
+        n = 110 if self.density_fast else 240
+        sh = project_density(self._dmap, self._to_map, self.view_matrix, self.center, self._level,
+                             window=window, max_pixels=n, max_depth=n)
+        if sh is None:
+            self.density_img.set_visible(False)
+            return
+        d = self.ctx.project.density
+        self.density_img.set_data(shadow_rgba(sh, self._density_rgb, d.opacity))
+        self.density_img.set_extent(sh.extent)
+        self.density_img.set_visible(True)
+
+    def has_density(self) -> bool:
+        return self._dmap is not None and self.density_img is not None
+
+    def nudge_density(self, shift=(0.0, 0.0), view_rotation=None):
+        """Move the drawn map by ``shift`` (Å along the screen x/y axes) or rotate it
+        about its density centre by ``view_rotation`` (3x3, screen axes).  Returns the
+        new placement (12 numbers, model -> map) or None without a map."""
+        from ..density import RigidTransform, density_centroid
+
+        if not self.has_density():
+            return None
+        v = self.view_matrix
+        t = self._to_map
+        if view_rotation is not None:
+            if getattr(self, "_density_centre", None) is None:
+                self._density_centre = density_centroid(self._dmap, self._level)
+            c = t.inverse().apply(self._density_centre[None, :])[0]  # map centre, model frame
+            q = v.T @ np.asarray(view_rotation, dtype=np.float64) @ v
+            move = RigidTransform(q, c - q @ c)
+        else:
+            move = RigidTransform(np.eye(3), v.T @ np.array([shift[0], shift[1], 0.0]))
+        self._to_map = t.compose(move.inverse())
+        self.update_density()
+        return self._to_map.to_list()
+
+    def rotation_artists(self) -> list:
+        """Static artists that still change when the view rotates (interactive previews)."""
+        return [self.density_img] if self.density_img is not None else []
 
     def _residue_tags(self, v, tr):
         """Residue-number labels: every N-th residue and/or an explicit list."""
