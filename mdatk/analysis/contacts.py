@@ -15,6 +15,15 @@ from .common import labels, per_row_counts, residue_rows, without
 class ContactAnalysis(Analysis):
     name = "contacts"
     label = "Pairwise contacts"
+    group_slots = 2
+    OUTPUT_LABELS = {
+        "atom_pairs": "{a}\u2013{b} heavy-atom contacts",
+        "residue_pairs": "{a}\u2013{b} residue contacts",
+        "q_native": "{a}\u2013{b} fraction of native contacts (Q)",
+        "per_residue_a": "{a} residue contacts with {b}",
+        "per_residue_b": "{b} residue contacts with {a}",
+        "map": "{a}\u2013{b} contact map",
+    }
 
     @classmethod
     def enabled(cls, project):

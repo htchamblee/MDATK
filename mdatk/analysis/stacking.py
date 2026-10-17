@@ -65,6 +65,13 @@ def ring_geometry(positions: np.ndarray):
 class StackingAnalysis(Analysis):
     name = "stacking"
     label = "π–π stacking"
+    group_slots = 2
+    OUTPUT_LABELS = {
+        "count": "π–π stacked pairs",
+        "inter": "{a}–{b} stacked pairs",
+        "intra": "Intra-group stacked pairs",
+        "map": "Stacking map",
+    }
 
     @classmethod
     def enabled(cls, project):

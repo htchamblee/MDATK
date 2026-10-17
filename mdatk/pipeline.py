@@ -21,8 +21,9 @@ import numpy as np
 
 from . import PROJECT_ABBREV, PROJECT_TITLE, __version__
 from .analysis import ANALYSES, AnalysisContext, run_analyses
+from .analysis.base import analysis_class, instance_project, parse_instance, split_key
 from .cleaning import CleanResult, clean, cleaning_key
-from .cleaning.cpptraj import MARKER, find_cpptraj
+from .cleaning.cpptraj import MARKER, cpptraj_command
 from .config import Project, file_fingerprint
 from .data import Dataset
 from .io.cache import CacheStore, write_json
@@ -34,6 +35,15 @@ from .progress import Reporter
 log = logging.getLogger(__name__)
 
 PARAMS_LOG_NAME = f"{PROJECT_ABBREV}_params_log.json"
+STAMP_FORMAT = "%Y-%m-%d_%H%M%S"
+
+
+def stamped(name: str, stamp: str) -> str:
+    """``MDATK_video.mp4`` -> ``MDATK_video_2026-10-15_143205.mp4``."""
+    if not stamp:
+        return name
+    root, ext = os.path.splitext(name)
+    return f"{root}_{stamp}{ext}"
 
 
 class PipelineError(RuntimeError):
@@ -69,6 +79,20 @@ class Pipeline:
         self._inputs: Optional[ResolvedInputs] = None
         self._universe = None
         self.analysis_keys: Dict[str, str] = {}
+        self._stamp: Optional[str] = None
+        self.last_video: Optional[str] = None
+
+    # ------------------------------------------------------------ file names
+    def stamp(self) -> str:
+        """Timestamp shared by all outputs of one run ('' when disabled)."""
+        if not self.project.output.timestamp_files:
+            return ""
+        if self._stamp is None:
+            self._stamp = _dt.datetime.now().strftime(STAMP_FORMAT)
+        return self._stamp
+
+    def new_stamp(self) -> None:
+        self._stamp = None
 
     # ---------------------------------------------------------------- inputs
     def check(self) -> None:
@@ -135,13 +159,18 @@ class Pipeline:
         if video:
             names |= panel_requirements(p)
         if charts:
-            names |= {k.split("/", 1)[0] for k in p.output.charts.series if "/" in k}
+            names |= {split_key(k)[0] for k in p.output.charts.series if "/" in k}
         names.discard("external")
-        unknown = sorted(n for n in names if n not in ANALYSES)
-        if unknown:  # the affected panels / charts report "No data"
-            self.reporter.log(f"WARNING: unknown data source(s) {', '.join(unknown)} "
-                              f"(known: {', '.join(ANALYSES)})")
-        return [n for n in ANALYSES if n in names]
+        usable = []
+        for inst in names:
+            try:  # the affected panels / charts report "No data"
+                instance_project(p, inst)
+            except (KeyError, ValueError) as exc:
+                self.reporter.log(f"WARNING: skipping data source {inst!r}: {exc}")
+                continue
+            usable.append(inst)
+        order = list(ANALYSES)
+        return sorted(usable, key=lambda i: (order.index(parse_instance(i)[0]), i))
 
     def analyze(self, names: Optional[Sequence[str]] = None, force: bool = False,
                 reporter: Optional[Reporter] = None) -> Optional[Dataset]:
@@ -150,7 +179,8 @@ class Pipeline:
         names = list(self.required_analyses() if names is None else names)
         inputs = self.resolve_inputs(rep.sub(0.0, 0.02))
         fp = self.input_fingerprint(inputs)
-        keys = {n: ANALYSES[n].cache_key(p, fp) for n in names}
+        projects = {n: instance_project(p, n) for n in names}
+        keys = {n: analysis_class(n).cache_key(projects[n], fp) for n in names}
         self.analysis_keys = dict(keys)
         results = {}
         frames = time_ps = None
@@ -162,14 +192,14 @@ class Pipeline:
                 res, fr, tm = loaded
                 results[n] = res
                 frames, time_ps = fr, tm
-                rep.log(f"{ANALYSES[n].label}: loaded from cache ({n}-{keys[n]})")
+                rep.log(f"{analysis_class(n).label}: loaded from cache ({n}-{keys[n]})")
         missing = [n for n in names if n not in results]
         if missing:
             u = self.universe()
             idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
-            ctx = AnalysisContext(u, p, inputs.topology, rep)
-            objs = [ANALYSES[n](ctx) for n in missing]
-            new, times = run_analyses(ctx, objs, idx, rep.sub(0.02, 1.0))
+            objs = [analysis_class(n)(AnalysisContext(u, projects[n], inputs.topology, rep), n)
+                    for n in missing]
+            new, times = run_analyses(objs[0].ctx, objs, idx, rep.sub(0.02, 1.0))
             for res in new:
                 res.key = keys[res.name]
                 self.cache.save_result(res, idx, times)
@@ -199,9 +229,9 @@ class Pipeline:
 
     def apply_display_overrides(self, dataset: Dataset) -> None:
         """Parameters that change presentation but not the cached numbers."""
-        energy = dataset.results.get("energy")
-        if energy is not None and "total" in energy.outputs.get("series", {}):
-            energy.outputs["series"]["total"]["target"] = self.project.analyses.energy.target_value
+        for name, res in dataset.results.items():
+            if parse_instance(name)[0] == "energy" and "total" in res.outputs.get("series", {}):
+                res.outputs["series"]["total"]["target"] = self.project.analyses.energy.target_value
 
     def load_cached_dataset(self) -> Dataset:
         """Dataset of the most recent run, straight from the cache manifest."""
@@ -216,13 +246,22 @@ class Pipeline:
     def render_video(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> str:
         from .render.video import render_video
 
-        path = self.output_path(self.project.output.video.filename)
-        return render_video(dataset, self.project, path, reporter or self.reporter)
+        rep = reporter or self.reporter
+        path = self.output_path(stamped(self.project.output.video.filename, self.stamp()))
+        fit = self.project.density_active() and len(self.project.density.transform) != 12
+        if fit:
+            self.ensure_density_fit(rep.sub(0.0, 0.1))
+        try:
+            self.last_video = render_video(dataset, self.project, path, rep.sub(0.1, 1.0) if fit else rep)
+        finally:
+            _release_gl()
+        return self.last_video
 
     def render_charts(self, dataset: Dataset, reporter: Optional[Reporter] = None) -> List[str]:
         from .render.charts import render_charts
 
-        return render_charts(dataset, self.project, self.project.out_dir, reporter or self.reporter)
+        return render_charts(dataset, self.project, self.project.out_dir, reporter or self.reporter,
+                             self.stamp())
 
     def export_pdbs(self, reporter: Optional[Reporter] = None) -> List[str]:
         rep = reporter or self.reporter
@@ -235,12 +274,16 @@ class Pipeline:
         atoms = resolve_export_selection(u, pp.selection, p.groups)
         rep.log(f"Exporting {len(frames)} frame(s) ({atoms.n_atoms} atoms) as PDB")
         return export_frames(u, frames, atoms, p.out_dir, pp.prefix,
-                             progress=lambda f, m: rep.progress(f, m))
+                             progress=lambda f, m: rep.progress(f, m), stamp=self.stamp())
 
     def render_preview(self, dataset: Dataset, pos: int, path: str) -> str:
         from .render.video import render_frame
 
-        return render_frame(dataset, self.project, pos, path)
+        self.ensure_density_fit()
+        try:
+            return render_frame(dataset, self.project, pos, path)
+        finally:
+            _release_gl()
 
     def write_params_log(self, outputs: RunOutputs) -> str:
         path = os.path.join(self.project.out_dir, PARAMS_LOG_NAME)
@@ -260,6 +303,7 @@ class Pipeline:
             },
             "cache_dir": self.project.cache_dir,
             "analysis_keys": self.analysis_keys,
+            "timestamp": self._stamp,
             "outputs": outputs.summary(),
             "parameters": self.project.to_dict(),
         })
@@ -277,6 +321,7 @@ class Pipeline:
         os.makedirs(p.out_dir, exist_ok=True)
         outputs = RunOutputs()
         start = _dt.datetime.now()
+        self.new_stamp()
         rep.log(f"{PROJECT_TITLE} {__version__} - output directory {p.out_dir}")
         self.resolve_inputs(rep.sub(0.0, 0.15))
         names = self.required_analyses(video, charts)
@@ -297,6 +342,99 @@ class Pipeline:
         rep.log(f"Finished in {(_dt.datetime.now() - start).total_seconds():.1f} s")
         return outputs
 
+    # --------------------------------------------------------------- density
+    def density_frame_atoms(self, frame: str = "ref", reporter: Optional[Reporter] = None):
+        """Superposed atom coordinates (structural-view frame) of one trajectory frame.
+
+        Returns (xyz, elements, frame number, reference backbone points).  "ref" is the
+        first analysed frame; any other frame is superposed onto it exactly like the video
+        frames.  The reference points anchor a placement made in this frame.
+        """
+        from .analysis.structure import AtomsAnalysis, TraceAnalysis
+
+        p = self.project
+        u = self.universe()
+        idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
+        if not len(idx):
+            raise PipelineError("no frames selected")
+        ref = int(idx[0])
+        spec = (frame or "ref").strip().lower()
+        f = ref if spec in ("", "ref") else int(spec)
+        if not 0 <= f < u.trajectory.n_frames:
+            raise PipelineError(f"density fit frame {f} is outside the trajectory "
+                                f"(0-{u.trajectory.n_frames - 1})")
+        frames = np.array([ref] if f == ref else [ref, f], dtype=np.int64)
+        inputs = self.resolve_inputs()
+        ctx = AnalysisContext(u, p, inputs.topology, reporter or Reporter())
+        (res, tr), _ = run_analyses(ctx, [AtomsAnalysis(ctx), TraceAnalysis(ctx)], frames, Reporter())
+        return (res.arrays["coords"][-1].astype(np.float64), list(res.meta["elements"]), f,
+                tr.arrays["coords"][0].astype(np.float64))
+
+    def fit_density(self, search: Optional[str] = None, start: Optional[Sequence[float]] = None,
+                    reporter: Optional[Reporter] = None):
+        """Rigid-body fit of the structure into the density map; stores the placement
+        in ``project.density`` and returns the :class:`~mdatk.density.FitResult`."""
+        from .density import (FitError, RigidTransform, anchor_points, anchored, centre_transform, fit_model,
+                              load_map_cached, map_level)
+        from .io.mrc import MapError
+
+        rep = reporter or self.reporter
+        d = self.project.density
+        if not d.map_path:
+            raise PipelineError("no density map selected")
+        try:
+            dmap = load_map_cached(d.map_path)
+        except (OSError, MapError) as exc:
+            raise PipelineError(f"density map: {exc}") from exc
+        search = search or d.search
+        rep.log(f"Density fit ({'global search' if search == 'global' else 'local refinement'}) of "
+                f"frame {d.fit_frame or 'ref'} into {os.path.basename(d.map_path)} at {d.resolution:g} Å")
+        xyz, elements, frame, reference = self.density_frame_atoms(d.fit_frame, rep)
+        t0 = None
+        if search != "global":
+            if start is not None:
+                t0 = RigidTransform.from_list(start)
+            elif len(d.transform) == 12:
+                try:
+                    t0 = anchored(d.transform, d.anchor, reference)
+                except ValueError as exc:
+                    raise PipelineError(f"density map: stored placement: {exc}") from exc
+            else:
+                t0 = centre_transform(dmap, map_level(dmap, d.level), xyz.mean(axis=0))
+        try:
+            res = fit_model(dmap, xyz, elements, d.resolution, start=t0, search=search,
+                            angular_step=d.angular_step, progress=lambda f, m: rep.progress(f, m),
+                            cancelled=rep.check_cancel)
+        except FitError as exc:
+            raise PipelineError(f"density fit: {exc}") from exc
+        d.transform = res.transform.to_list()
+        d.anchor = anchor_points(reference)
+        d.fit_cc = round(float(res.cc), 4)
+        d.fit_info = (f"{'global search' if search == 'global' else 'local refinement'}, frame {frame}, "
+                      f"{len(xyz)} atoms, {d.resolution:g} Å: CC {res.cc:.3f}"
+                      + (f" ({res.message})" if res.message else ""))
+        rep.log(f"Density fit: {d.fit_info}")
+        return res
+
+    def ensure_density_fit(self, reporter: Optional[Reporter] = None) -> None:
+        """Fit before rendering when a map is shown but not yet placed.  The map is an
+        optional overlay: a failed fit is logged and the video is drawn without it."""
+        from .progress import Cancelled
+
+        p = self.project
+        rep = reporter or self.reporter
+        if p.density_active() and len(p.density.transform) != 12:
+            if not p.density.auto_fit:
+                rep.log("WARNING: the density map has no placement and automatic fitting is off; "
+                        "it is not drawn")
+                return
+            try:
+                self.fit_density(reporter=reporter)
+            except Cancelled:
+                raise
+            except (PipelineError, OSError, ValueError) as exc:
+                rep.log(f"WARNING: density map not drawn: {exc}")
+
     # --------------------------------------------------------------- preview
     def structure_preview(self) -> Dict[str, Any]:
         """Backbone trace of the first selected frame (for the orientation preview).
@@ -304,7 +442,7 @@ class Pipeline:
         Uses cleaned files when a matching cpptraj result is cached; never runs
         cpptraj itself.
         """
-        from .analysis.structure import TraceAnalysis
+        from .analysis.structure import AtomsAnalysis, TraceAnalysis
         from .render.coloring import static_colors
 
         p = self.project
@@ -312,8 +450,8 @@ class Pipeline:
         u = load_universe(inputs.topology, inputs.trajectories, p.inputs.dt_ps)
         idx = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)[:1]
         ctx = AnalysisContext(u, p, inputs.topology, Reporter())
-        ana = TraceAnalysis(ctx)
-        (res,), _ = run_analyses(ctx, [ana], idx, Reporter())
+        objs = [TraceAnalysis(ctx), AtomsAnalysis(ctx)]
+        (res, atoms), _ = run_analyses(ctx, objs, idx, Reporter())
         v = p.visual
         colors = static_colors(v.color_mode, res.arrays["chain"], res.arrays["group_index"],
                                [g.color for g in p.groups], v.base_color, v.chain_palette)
@@ -321,8 +459,23 @@ class Pipeline:
                 "ions": res.arrays["ion_coords"][0].astype(float),
                 "links": res.arrays["links"], "colors": colors,
                 "chain": res.arrays["chain"], "group_index": res.arrays["group_index"],
+                "group_member": res.arrays["group_member"],
+                "resid": res.arrays["resid"],
                 "labels": res.meta.get("residue_labels", []),
+                "atoms": {"coords": atoms.arrays["coords"][0].astype(float),
+                          "names": atoms.meta["atom_names"], "elements": atoms.meta["elements"],
+                          "resnames": atoms.meta["resnames"], "row": atoms.arrays["row"],
+                          "bonds": atoms.arrays["bonds"]},
                 "cleaned": inputs.topology != p.inputs.topology}
+
+
+def _release_gl() -> None:
+    """Free this thread's VTK scene (OpenGL contexts belong to their thread)."""
+    import sys
+
+    mod = sys.modules.get("mdatk.render.molecule.vtk_backend")
+    if mod is not None:
+        mod.release_thread()
 
 
 def _tool_version(cmd: List[str]) -> Optional[str]:
@@ -348,8 +501,7 @@ def environment_info(project: Optional[Project] = None) -> Dict[str, Any]:
     info["ffmpeg"] = _tool_version([ffmpeg, "-version"])
     if project and project.cleaning.enabled:
         try:
-            exe = find_cpptraj(project.cleaning.cpptraj_path)
-            info["cpptraj"] = {"path": exe}
+            info["cpptraj"] = {"command": " ".join(cpptraj_command(project.cleaning))}
         except Exception as exc:  # noqa: BLE001 - informational only
             info["cpptraj"] = {"error": str(exc)}
     return info

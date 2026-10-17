@@ -20,6 +20,25 @@ def _out_key(label: str, k: int) -> str:
 class RMSDAnalysis(Analysis):
     name = "rmsd"
     label = "RMSD"
+    group_slots = 1
+
+    @classmethod
+    def with_groups(cls, project, groups):
+        from ..config import RMSDTarget
+
+        g = groups[0]
+        project.analyses.rmsd.targets = [
+            RMSDTarget("Heavy", f"group:{g} and not name H*"),
+            RMSDTarget("Backbone", f"group:{g} and name C4'"),
+        ]
+        return project
+
+    @classmethod
+    def output_label(cls, project, out):
+        for k, t in enumerate(project.analyses.rmsd.targets):
+            if _out_key(t.label, k) == out:
+                return f"RMSD {t.label}"
+        return f"RMSD {out}"
 
     @classmethod
     def enabled(cls, project):
@@ -52,7 +71,10 @@ class RMSDAnalysis(Analysis):
         self.superposition = p.superposition
         self.targets = []
         for k, t in enumerate(p.targets):
-            mob = self.ctx.select(t.selection)
+            mob = self.ctx.select(t.selection, allow_empty=True)
+            if mob.n_atoms == 0:
+                self.ctx.warn(f"RMSD target {t.label!r}: {t.selection!r} matched no atoms; "
+                              "its series will be empty (NaN)")
             fit = self.ctx.select(t.fit_selection) if t.fit_selection.strip() else None
             w = mob.masses.astype(np.float64) if p.mass_weighted else None
             wf = (fit.masses.astype(np.float64) if fit is not None else w) if p.mass_weighted else None
@@ -62,10 +84,12 @@ class RMSDAnalysis(Analysis):
         for t in self.targets:
             t["ref"] = t["mob"].positions.astype(np.float64).copy()
             t["ref_fit"] = t["fit"].positions.astype(np.float64).copy() if t["fit"] is not None else None
-        self.values = np.zeros((len(self.targets), self.n_frames), dtype=np.float64)
+        self.values = np.full((len(self.targets), self.n_frames), np.nan, dtype=np.float64)
 
     def process(self, k, ts):
         for n, t in enumerate(self.targets):
+            if t["mob"].n_atoms == 0:
+                continue
             x = t["mob"].positions.astype(np.float64)
             ref = t["ref"]
             if not self.superposition:
@@ -82,9 +106,13 @@ class RMSDAnalysis(Analysis):
             self.values[n, k] = np.sqrt(np.average(sq, weights=w)) if w is not None else np.sqrt(sq.mean())
 
     def finalize(self):
+        from .base import parse_instance
+
         res = self.new_result(reference_frame_index=self.ref_pos)
+        _, groups = parse_instance(self.instance)
+        suffix = f" ({groups[0]})" if groups else ""
         for n, t in enumerate(self.targets):
             arr = f"rmsd_{n}"
             res.arrays[arr] = self.values[n]
-            res.add_series(t["out"], arr, f"RMSD {t['label']}", "Å")
+            res.add_series(t["out"], arr, f"RMSD {t['label']}{suffix}", "Å")
         return res

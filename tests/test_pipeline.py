@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -50,8 +51,13 @@ def test_full_run_and_cache_reuse(demo_dry, tmp_path):
     n, w, h = frame_count(out.video)
     assert (n, w, h) == (24, 320, 180)
     assert len(out.charts) == 4 and all(os.path.exists(c) for c in out.charts)
+    stamp = json.load(open(out.params_log))["timestamp"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d_\d{6}", stamp)
+    assert os.path.basename(out.video) == f"MDATK_video_{stamp}.mp4"
+    assert all(c.endswith((f"_{stamp}.png", f"_{stamp}.svg")) for c in out.charts)
     assert [os.path.basename(x) for x in out.pdbs] == [
-        "MDATK_frame_00000.pdb", "MDATK_frame_00012.pdb", "MDATK_frame_00023.pdb"]
+        f"MDATK_frame_{f:05d}_{stamp}.pdb" for f in (0, 12, 23)]
+    assert os.path.exists(os.path.join(p.out_dir, "MDATK_params_log.json"))  # fixed name
     assert out.pdbs and "ATOM" in open(out.pdbs[0]).read()
     log = json.load(open(out.params_log))
     assert log["parameters"]["analyses"]["contacts"]["cutoff"] == p.analyses.contacts.cutoff

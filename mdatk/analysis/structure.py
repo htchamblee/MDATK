@@ -19,7 +19,7 @@ from typing import List
 
 import numpy as np
 
-from ..selections import SelectionError, heavy, resolve_selection, split_csv
+from ..selections import SelectionError, atom_elements, heavy, resolve_selection, split_csv
 from ..spatial import kabsch, pairs_within
 from .base import Analysis, register
 from .common import labels
@@ -73,17 +73,58 @@ def chain_ids(residues) -> np.ndarray:
         return np.zeros(n, dtype=np.int64)
 
 
-def residue_group_index(ctx, residues) -> np.ndarray:
-    """Index of the first project group containing each residue (-1: none)."""
-    out = np.full(len(residues), -1, dtype=np.int64)
+def residue_group_membership(ctx, residues) -> np.ndarray:
+    """[n_groups, n_residues] bool: residue belongs to project group k."""
+    out = np.zeros((len(ctx.project.groups), len(residues)), dtype=bool)
     for gi, g in enumerate(ctx.project.groups):
         try:
             ag = ctx.select(f"group:{g.name}", allow_empty=True)
         except SelectionError:
             continue
-        hit = np.isin(residues.ix, np.unique(ag.resindices)) & (out < 0)
-        out[hit] = gi
+        out[gi] = np.isin(residues.ix, np.unique(ag.resindices))
     return out
+
+
+def residue_group_index(ctx, residues) -> np.ndarray:
+    """Index of the first project group containing each residue (-1: none)."""
+    member = residue_group_membership(ctx, residues)
+    out = np.full(len(residues), -1, dtype=np.int64)
+    for gi in range(len(member) - 1, -1, -1):
+        out[member[gi]] = gi
+    return out
+
+
+class TracePoints:
+    """One point per residue: the first atom of ``trace_atoms`` present, else the
+    heavy-atom centroid.  Shared by the trace and atoms analyses so both superpose
+    frames identically."""
+
+    def __init__(self, ctx, residues, trace_atoms: str):
+        priority = split_csv(trace_atoms) or ["C4'", "CA"]
+        point_atoms, centroid_rows, centroid_atoms = [], [], []
+        for row, res in enumerate(residues):
+            names = {a.name: a.ix for a in res.atoms}
+            chosen = next((names[n] for n in priority if n in names), None)
+            if chosen is None:
+                hv = heavy(res.atoms)
+                centroid_rows.append(row)
+                centroid_atoms.append(hv.ix if hv.n_atoms else res.atoms.ix)
+                point_atoms.append(-1)
+            else:
+                point_atoms.append(chosen)
+        self.n = len(residues)
+        self.point_atoms = np.array(point_atoms, dtype=np.int64)
+        self.is_point = self.point_atoms >= 0
+        self.points = ctx.u.atoms[self.point_atoms[self.is_point]]
+        self.centroid_rows = np.array(centroid_rows, dtype=np.int64)
+        self.centroid_groups = [ctx.u.atoms[ix] for ix in centroid_atoms]
+
+    def positions(self) -> np.ndarray:
+        xyz = np.zeros((self.n, 3))
+        xyz[self.is_point] = self.points.positions
+        for row, ag in zip(self.centroid_rows, self.centroid_groups):
+            xyz[row] = ag.positions.mean(axis=0)
+        return xyz
 
 
 @register
@@ -91,6 +132,7 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
+    version = 3  # v2: residue numbers for tags; v3: group membership
 
     @classmethod
     def params_for(cls, project):
@@ -110,26 +152,9 @@ class TraceAnalysis(Analysis):
         residues, _ = structure_residues(self.ctx)
         if len(residues) == 0:
             raise SelectionError("structural view: no residues selected")
-        priority = split_csv(project.visual.trace_atoms) or ["C4'", "CA"]
-        point_atoms = []
-        centroid_rows = []
-        centroid_atoms = []
-        for row, res in enumerate(residues):
-            names = {a.name: a.ix for a in res.atoms}
-            chosen = next((names[n] for n in priority if n in names), None)
-            if chosen is None:
-                hv = heavy(res.atoms)
-                centroid_rows.append(row)
-                centroid_atoms.append(hv.ix if hv.n_atoms else res.atoms.ix)
-                point_atoms.append(-1)
-            else:
-                point_atoms.append(chosen)
         self.residues = residues
-        self.point_atoms = np.array(point_atoms, dtype=np.int64)
-        self.is_point = self.point_atoms >= 0
-        self.points = self.ctx.u.atoms[self.point_atoms[self.is_point]]
-        self.centroid_rows = np.array(centroid_rows, dtype=np.int64)
-        self.centroid_groups = [self.ctx.u.atoms[ix] for ix in centroid_atoms]
+        self.tracer = TracePoints(self.ctx, residues, project.visual.trace_atoms)
+        self.is_point = self.tracer.is_point
         self.ions = (self.ctx.select(project.analyses.mg.mg_selection, allow_empty=True)
                      if project.visual.show_ions else self.ctx.u.atoms[[]])
         self.align = project.visual.align_frames
@@ -138,15 +163,13 @@ class TraceAnalysis(Analysis):
         self.ion_coords = np.zeros((self.n_frames, self.ions.n_atoms, 3), dtype=np.float32)
         self.ref = None
         self.chain = chain_ids(residues)
+        self.group_member = residue_group_membership(self.ctx, residues)
         self.group_index = residue_group_index(self.ctx, residues)
         self.links = np.zeros((0, 2), dtype=np.int64)
 
     def process(self, k, ts):
         n_res = len(self.residues)
-        xyz = np.zeros((n_res, 3))
-        xyz[self.is_point] = self.points.positions
-        for row, ag in zip(self.centroid_rows, self.centroid_groups):
-            xyz[row] = ag.positions.mean(axis=0)
+        xyz = self.tracer.positions()
         ions = self.ions.positions.astype(np.float64) if self.ions.n_atoms else np.zeros((0, 3))
         if self.ref is None:
             self.ref = xyz.copy()
@@ -179,8 +202,9 @@ class TraceAnalysis(Analysis):
                               group_names=self.project.group_names())
         res.arrays.update(coords=self.coords, ion_coords=self.ion_coords,
                           chain=self.chain, group_index=self.group_index,
-                          is_point=self.is_point, links=self.links,
-                          resindex=self.residues.ix.astype(np.int64))
+                          group_member=self.group_member, is_point=self.is_point, links=self.links,
+                          resindex=self.residues.ix.astype(np.int64),
+                          resid=self.residues.resids.astype(np.int64))
         return res
 
 
@@ -239,3 +263,101 @@ class ProximityAnalysis(Analysis):
         res.add_matrix("min_distance", "min_distance", "residue_labels",
                        "Distance to proximity set", "value", unit="Å")
         return res
+
+
+@register
+class AtomsAnalysis(Analysis):
+    """Per-atom coordinates of the structural-view residues for 3D representations
+    and density fitting, superposed exactly like the ``trace`` analysis (same trace
+    points, same reference frame), plus the topology needed to draw them."""
+
+    name = "atoms"
+    label = "Atomic coordinates (structure view)"
+    internal = True
+    version = 2  # 2: elements guessed per residue (protein CA is carbon, not calcium)
+
+    @classmethod
+    def params_for(cls, project):
+        v = project.visual
+        return {"groups": structure_groups(project), "trace_atoms": v.trace_atoms,
+                "align": v.align_frames, "hydrogens": v.rep_hydrogens,
+                "ions": project.analyses.mg.mg_selection, "group_order": project.group_names()}
+
+    @classmethod
+    def selection_texts(cls, project):
+        return structure_groups(project) + [project.analyses.mg.mg_selection]
+
+    def setup(self, frame_indices):
+        super().setup(frame_indices)
+        residues, atoms = structure_residues(self.ctx)
+        if len(residues) == 0:
+            raise SelectionError("structural view: no residues selected")
+        if not self.project.visual.rep_hydrogens:
+            atoms = heavy(atoms)
+        atoms = atoms[np.argsort(atoms.ix, kind="stable")]
+        self.residues = residues
+        self.atoms = atoms
+        self.tracer = TracePoints(self.ctx, residues, self.project.visual.trace_atoms)
+        self.align = self.project.visual.align_frames
+        self.ref = None
+        self.coords = np.zeros((self.n_frames, atoms.n_atoms, 3), dtype=np.float32)
+        self.row = np.searchsorted(residues.ix, atoms.resindices).astype(np.int64)
+        self.bonds = atom_bonds(atoms)
+
+    def process(self, k, ts):
+        xyz = self.atoms.positions.astype(np.float64)
+        pts = self.tracer.positions()
+        if self.ref is None:
+            self.ref = pts
+        elif self.align and len(pts) >= 3:
+            r, mc, rc = kabsch(pts, self.ref)
+            xyz = (xyz - mc) @ r.T + rc
+        self.coords[k] = xyz
+
+    def finalize(self):
+        a = self.atoms
+        elements = [str(e) for e in atom_elements(a)]  # topology value, else guessed per residue
+        res = self.new_result(atom_names=[str(n) for n in a.names], elements=elements,
+                              resnames=[str(r) for r in a.resnames])
+        res.arrays.update(coords=self.coords, row=self.row, bonds=self.bonds,
+                          resid=a.resids.astype(np.int64), atom_index=a.ix.astype(np.int64),
+                          resindex=self.residues.ix.astype(np.int64))
+        return res
+
+
+def guess_element(name: str) -> str:
+    name = name.strip().lstrip("0123456789")
+    for two in ("MG", "NA", "CL", "ZN", "CA"):
+        if name.upper().startswith(two) and len(name) == len(two):
+            return two.capitalize()
+    return name[:1].upper() if name else "X"
+
+
+def atom_bonds(atoms, max_len: float = 1.95) -> np.ndarray:
+    """Bonds among ``atoms`` as local index pairs: from the topology when it has
+    bonds, otherwise guessed from first-frame distances within each residue and
+    between consecutive residues (O3'-P)."""
+    index = {int(ix): k for k, ix in enumerate(atoms.ix)}
+    pairs = []
+    try:
+        for b in atoms.bonds:
+            i, j = (int(x) for x in b.indices)
+            if i in index and j in index:
+                pairs.append((index[i], index[j]))
+    except Exception:  # topology without bonds
+        pairs = []
+    if pairs:
+        out = np.array(sorted({(min(p), max(p)) for p in pairs}), dtype=np.int64)
+        return out.reshape(-1, 2)
+    xyz = atoms.positions.astype(np.float64)
+    if len(xyz) < 2:
+        return np.zeros((0, 2), dtype=np.int64)
+    i, j, d = pairs_within(xyz, xyz, max_len, None)
+    keep = i < j
+    i, j = i[keep], j[keep]
+    resi = atoms.resindices
+    near = np.abs(resi[i] - resi[j]) <= 1
+    h = np.array([guess_element(str(n)) == "H" for n in atoms.names])
+    hh = h[i] & h[j]
+    ok = near & ~hh & ((d[keep] <= 1.25) | ~(h[i] | h[j]))
+    return np.stack([i[ok], j[ok]], axis=1).astype(np.int64)

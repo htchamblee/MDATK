@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from ..config import Project
 from ..data import Dataset
 from ..progress import Reporter
-from .panels import _running_mean, thin_ticks
+from .panels import _running_mean, integer_axis, thin_ticks
 from .theme import LIGHT, get_theme, style_axes, style_legend
 
 log = logging.getLogger(__name__)
@@ -65,7 +65,8 @@ def _format_title(template: str, label: str, key: str) -> str:
     return template.replace("{label}", label).replace("{key}", key)
 
 
-def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: str) -> List[str]:
+def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: str,
+                        stamp: str = "") -> List[str]:
     cp = project.output.charts
     s = dataset.series(key)
     t = dataset.time(project.inputs.time_unit)
@@ -98,10 +99,12 @@ def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: s
                 style_legend(leg, theme, 11)
         ax.set_xlabel(cp.xlabel or dataset.time_label(project.inputs.time_unit))
         ax.set_ylabel(cp.ylabel or s.axis_label)
+        if s.unit == "count":
+            integer_axis(ax.yaxis)
         ax.set_title(_format_title(cp.title, s.label, key), loc="left")
         if len(t) > 1:
             ax.set_xlim(t[0], t[-1])
-        base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}")
+        base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}" + (f"_{stamp}" if stamp else ""))
         for fmt in cp.formats or ["png"]:
             path = f"{base}.{fmt.lower().lstrip('.')}"
             fig.savefig(path, dpi=cp.dpi, facecolor=fig.get_facecolor())
@@ -109,7 +112,8 @@ def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: s
     return paths
 
 
-def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: str) -> List[str]:
+def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: str,
+                        stamp: str = "") -> List[str]:
     cp = project.output.charts
     m = dataset.matrix(key)
     t = dataset.time(project.inputs.time_unit)
@@ -139,12 +143,14 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
                            vmin=0, vmax=max(float(values.max()) if values.count() else 1.0, 1e-9))
             cb = fig.colorbar(im, ax=ax)
             cb.set_label(m.unit or "count")
+            if m.kind == "count":
+                integer_axis(cb.ax.yaxis)
         idx = thin_ticks(len(m.row_labels), 40)
         ax.set_yticks(idx, [m.row_labels[i] for i in idx], fontsize=8)
         ax.set_xlabel(cp.xlabel or dataset.time_label(project.inputs.time_unit))
         ax.set_ylabel("Residue")
         ax.set_title(_format_title(cp.title, m.label, key), loc="left")
-        base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}")
+        base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}" + (f"_{stamp}" if stamp else ""))
         for fmt in cp.formats or ["png"]:
             path = f"{base}.{fmt.lower().lstrip('.')}"
             fig.savefig(path, dpi=cp.dpi, facecolor=fig.get_facecolor())
@@ -153,7 +159,7 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
 
 
 def render_charts(dataset: Dataset, project: Project, out_dir: str,
-                  reporter: Optional[Reporter] = None) -> List[str]:
+                  reporter: Optional[Reporter] = None, stamp: str = "") -> List[str]:
     reporter = reporter or Reporter()
     os.makedirs(out_dir, exist_ok=True)
     keys = chart_keys(dataset, project)
@@ -164,9 +170,9 @@ def render_charts(dataset: Dataset, project: Project, out_dir: str,
     for n, (kind, key) in enumerate(jobs):
         reporter.check_cancel()
         if kind == "series":
-            paths += render_series_chart(dataset, project, key, out_dir)
+            paths += render_series_chart(dataset, project, key, out_dir, stamp)
         else:
-            paths += render_matrix_chart(dataset, project, key, out_dir)
+            paths += render_matrix_chart(dataset, project, key, out_dir, stamp)
         reporter.progress((n + 1) / max(1, len(jobs)), f"Chart {key}")
     reporter.log(f"Wrote {len(paths)} chart file(s) to {out_dir}")
     return paths

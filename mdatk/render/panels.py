@@ -15,6 +15,7 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 
 from ..config import PanelSpec, Project
 from ..data import Dataset
@@ -50,6 +51,11 @@ class RenderContext:
         return f"t = {self.time[pos]:.3f} {self.time_unit.replace('us', chr(0xb5) + 's')}  (frame {frame})"
 
 
+def integer_axis(axis) -> None:
+    """Whole-number ticks only (for counts)."""
+    axis.set_major_locator(MaxNLocator(integer=True))
+
+
 def thin_ticks(n: int, max_ticks: int = 20) -> np.ndarray:
     step = max(1, int(np.ceil(n / max_ticks)))
     return np.arange(0, n, step)
@@ -81,12 +87,14 @@ class Panel:
         style_axes(self.ax, self.theme, font_size=ctx.font_size)
         self.options = dict(spec.options or {})
         self.ok = True
+        self.auto_title = ""
         try:
             self.setup()
         except KeyError as exc:
             self.show_message(f"No data: {exc.args[0] if exc.args else exc}")
-        if spec.title:
-            self.ax.set_title(spec.title, color=self.theme.ink, fontsize=ctx.font_size, loc="left")
+        title = spec.title or self.auto_title  # default: the label of the data shown
+        if title:
+            self.ax.set_title(title, color=self.theme.ink, fontsize=ctx.font_size, loc="left")
 
     def setup(self) -> None:
         pass
@@ -139,6 +147,8 @@ class StructurePanel(Panel):
     def required_analyses(cls, spec, project):
         need = {"trace"}
         v = project.visual
+        if v.representations:
+            need.add("atoms")
         if v.color_mode == "proximity" or v.glow_mode != "none":
             need.add("proximity")
         return need
@@ -152,17 +162,21 @@ class StructurePanel(Panel):
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
         center = coords[0].mean(axis=0)
-        r = euler_to_matrix(v.rotation)
-        self.view = (coords - center) @ r.T
-        self.ion_view = (ions - center) @ r.T if ions.size else np.zeros((len(coords), 0, 3))
+        self.center = center
+        # centred coordinates; the view is a rotation of these (see set_rotation)
+        self.centred = coords - center
+        self.ions_centred = ions - center if ions.size else np.zeros((len(coords), 0, 3))
         self.links = np.asarray(tr.arrays["links"], dtype=np.int64).reshape(-1, 2)
         n_res = coords.shape[1]
-        allxy = self.view[..., :2].reshape(-1, 2)
-        if self.ion_view.size:
-            allxy = np.vstack([allxy, self.ion_view[..., :2].reshape(-1, 2)])
-        lo, hi = allxy.min(axis=0), allxy.max(axis=0)
-        pad = 0.08 * max(hi - lo) + 2.0
-        self.data_lo, self.data_hi = lo - pad, hi + pad
+        # Frame the model by its bounding sphere so any orientation fits without zooming.
+        radius = float(np.linalg.norm(self.centred, axis=-1).max())
+        if self.ions_centred.size:
+            radius = max(radius, float(np.linalg.norm(self.ions_centred, axis=-1).max()))
+        radius = max(radius, 1.0)
+        self.radius = radius
+        pad = 0.06 * radius + 2.0
+        self.data_lo = np.array([-radius - pad, -radius - pad])
+        self.data_hi = np.array([radius + pad, radius + pad])
         self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
         self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
         self.ax.set_xticks([])
@@ -170,8 +184,13 @@ class StructurePanel(Panel):
         self.ax.grid(False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
-        z = self.view[..., 2]
-        self.zmin, self.zmax = float(z.min()), float(z.max())
+        self.zmin, self.zmax = -radius, radius
+        self.density_img = None
+        self.density_fast = False  # coarser shadow while the GUI drags the model or the map
+        self.density_note = ""
+        self._setup_density(tr)
+        self.set_rotation(v.rotation)
+        self.auto_title = "Structure"
 
         project = self.ctx.project
         group_colors = [g.color for g in project.groups]
@@ -214,10 +233,193 @@ class StructurePanel(Panel):
         self.time_text = self.ax.text(0.01, 0.99, "", transform=self.ax.transAxes, va="top",
                                       ha="left", color=self.theme.ink2,
                                       fontsize=self.ctx.font_size * 0.85) if v.show_time_label else None
+        self._residue_tags(v, tr)
         self._legend(v, tr)
+        self.stage = None
+        self.stage_note = ""
+        self.covered = np.zeros(n_res, dtype=bool)  # residues the 2D trace leaves to the 3D scene
+        if v.representations:
+            self._setup_stage(ds, tr)
+
+    # -- 3D representations
+    def _setup_stage(self, ds, tr) -> None:
+        from .molecule.renderers import get_renderer
+        from .molecule.scene import build_scene
+        from .molecule.stage import MoleculeStage
+
+        v = self.ctx.project.visual
+        atoms = ds.results.get("atoms")
+        if atoms is None:
+            raise KeyError("atoms")
+        scene = build_scene(atoms, tr, v.representations, self.ctx.project.group_names(), v.backbone_atom,
+                            v.rep_rest)
+        if scene is None:
+            return
+        renderer, note = get_renderer(v.renderer)
+        if note:
+            self.stage_note = note
+            log.warning("3D representations: %s", note)
+        xyz = np.asarray(atoms.arrays["coords"], dtype=np.float32) - self.center.astype(np.float32)
+        self.stage = MoleculeStage(self, scene, xyz, renderer)
+        self.covered[:] = True  # the scene draws every residue (or hides it): no 2D trace
+
+    def residue_rgb(self, pos: int) -> np.ndarray:
+        """Residue colours of a frame without fog (the 3D renderer fogs by depth); renderers
+        that do not draw the glow themselves get them tinted toward the glow colour."""
+        v = self.ctx.project.visual
+        rgb = frame_colors(self.static, v.color_mode, v.base_color, v.proximity_color,
+                           self.color_i[:, pos], self.member)[:, :3].astype(np.float64)
+        if self.stage is not None and getattr(self.stage.renderer, "draws_glow", False):
+            return rgb
+        glow = np.clip(self.glow[:, pos] * v.glow_strength, 0, 1)[:, None]
+        return rgb * (1 - 0.35 * glow) + self.glow_rgb[None, :] * 0.35 * glow
+
+    def shading(self, pos: int):
+        """Depth cue and glow of a frame for the 3D renderer."""
+        from .molecule.scene import Shading
+
+        v = self.ctx.project.visual
+        return Shading(self.fog_rgb(), self.fog_strength(),
+                       np.clip(self.glow[:, pos] * v.glow_strength, 0, 1).astype(np.float32), self.glow_rgb)
+
+    def fog_rgb(self) -> np.ndarray:
+        return np.array(to_rgba(self.theme.surface))[:3]
+
+    def fog_strength(self) -> float:
+        return 0.45 if self.ctx.project.visual.depth_cue else 0.0
+
+    def set_rotation(self, angles) -> None:
+        """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
+        r = euler_to_matrix(angles)
+        self.view_matrix = r
+        self.view = self.centred @ r.T
+        self.ion_view = self.ions_centred @ r.T
+        self.update_density()
+
+    # -- density map shadow
+    def _setup_density(self, tr) -> None:
+        """Load the density map when a placement is known (drawn by update_density)."""
+        self._dmap = self._to_map = None
+        project = self.ctx.project
+        d = project.density
+        if not project.density_active():
+            return
+        if tr.meta.get("schematic"):
+            self.density_note = "density map: load the real reference frame to see it"
+            return
+        if len(d.transform) != 12:
+            self.density_note = "density map: not fitted yet"
+            return
+        from ..density import anchored, load_map_cached, map_level
+
+        try:
+            self._dmap = load_map_cached(d.map_path)
+            # the placement follows the molecule if this reference frame differs from the
+            # one the map was placed on (other start frame, cleaned vs raw files)
+            self._to_map = anchored(d.transform, d.anchor, self.centred[0] + self.center)
+        except (OSError, ValueError) as exc:
+            self._dmap = None
+            self.density_note = f"density map: {exc}"
+            log.warning("density map not drawn: %s", exc)
+            return
+        self._level = map_level(self._dmap, d.level)
+        self._density_rgb = np.array(to_rgba(d.color))[:3]
+        self.density_img = self.ax.imshow(np.zeros((2, 2, 4), np.float32), extent=(0, 1, 0, 1),
+                                          origin="lower", interpolation="bilinear",
+                                          zorder=3.5 if d.front else 0.5, aspect="auto")
+        self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
+        self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
+
+    def set_density_transform(self, values) -> None:
+        """New map placement (12 numbers, model -> map); used while dragging the map."""
+        from ..density import RigidTransform
+
+        if self._dmap is None:
+            return
+        self._to_map = RigidTransform.from_list(values)
+        self.update_density()
+
+    def update_density(self) -> None:
+        if self.density_img is None or self._dmap is None:
+            return
+        from ..density import project_density, shadow_rgba
+
+        # the visible window (after_layout widens it to the panel's aspect) plus a margin
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        mx, my = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
+        window = (x0 - mx, x1 + mx, y0 - my, y1 + my)
+        n = 100 if self.density_fast else 200
+        try:
+            sh = project_density(self._dmap, self._to_map, self.view_matrix, self.center, self._level,
+                                 window=window, max_pixels=n, max_depth=n)
+        except (ValueError, OverflowError) as exc:  # e.g. an absurd stored placement
+            log.warning("density map not drawn: %s", exc)
+            sh = None
+        if sh is None:
+            self.density_img.set_visible(False)
+            return
+        d = self.ctx.project.density
+        self.density_img.set_data(shadow_rgba(sh, self._density_rgb, d.opacity))
+        self.density_img.set_extent(sh.extent)
+        self.density_img.set_visible(True)
+
+    def has_density(self) -> bool:
+        return self._dmap is not None and self.density_img is not None
+
+    def nudge_density(self, shift=(0.0, 0.0), view_rotation=None):
+        """Move the drawn map by ``shift`` (Å along the screen x/y axes) or rotate it
+        about its density centre by ``view_rotation`` (3x3, screen axes).  Returns the
+        new placement (12 numbers, model -> map) or None without a map."""
+        from ..density import RigidTransform, density_centroid
+
+        if not self.has_density():
+            return None
+        v = self.view_matrix
+        t = self._to_map
+        if view_rotation is not None:
+            if getattr(self, "_density_centre", None) is None:
+                self._density_centre = density_centroid(self._dmap, self._level)
+            c = t.inverse().apply(self._density_centre[None, :])[0]  # map centre, model frame
+            q = v.T @ np.asarray(view_rotation, dtype=np.float64) @ v
+            move = RigidTransform(q, c - q @ c)
+        else:
+            move = RigidTransform(np.eye(3), v.T @ np.array([shift[0], shift[1], 0.0]))
+        self._to_map = t.compose(move.inverse())
+        self.update_density()
+        return self._to_map.to_list()
+
+    def rotation_artists(self) -> list:
+        """Static artists that still change when the view rotates (interactive previews)."""
+        if self.density_img is None or self.ctx.project.density.front:  # front: already animated
+            return []
+        return [self.density_img]
+
+    def _residue_tags(self, v, tr):
+        """Residue-number labels: every N-th residue and/or an explicit list."""
+        resid = np.asarray(tr.arrays["resid"]) if "resid" in tr.arrays else None
+        self.tag_rows = np.zeros(0, dtype=np.int64)
+        self.tags = []
+        if resid is None or not (v.label_every > 0 or v.label_residues.strip()):
+            return
+        wanted = np.zeros(len(resid), bool)
+        if v.label_every > 0:
+            wanted |= (resid % int(v.label_every)) == 0
+        if v.label_residues.strip():
+            from ..selections import parse_residue_ranges
+
+            for _chain, a, b in parse_residue_ranges(v.label_residues):
+                wanted |= (resid >= a) & (resid <= b)
+        self.tag_rows = np.flatnonzero(wanted)
+        self.tags = [self.ax.text(0, 0, str(int(resid[k])), ha="center", va="center",
+                                  color=self.theme.ink2, fontsize=self.ctx.font_size * 0.7,
+                                  zorder=6, clip_on=True) for k in self.tag_rows]
 
     def after_layout(self):
         """Equal x/y scale: grow the data window to the panel's pixel aspect ratio."""
+        self._fit_aspect()
+        self.update_density()  # the shadow covers the final window
+
+    def _fit_aspect(self):
         if not self.ok:
             return
         bbox = self.ax.get_window_extent()
@@ -263,7 +465,13 @@ class StructurePanel(Panel):
             style_legend(self.legend, self.theme, self.ctx.font_size)
 
     def animated_artists(self):
-        arts = [self.halo_outer, self.halo_inner, self.lines, self.points, self.ion_points]
+        arts = [self.halo_outer, self.halo_inner, self.lines]
+        if self.stage is not None:
+            arts.append(self.stage.image)
+        if self.density_img is not None and self.ctx.project.density.front:
+            arts.append(self.density_img)  # over the moving layers in videos too (zorder 3.5)
+        arts += [self.points, self.ion_points]
+        arts += self.tags
         if self.time_text is not None:
             arts.append(self.time_text)
         if self.legend is not None:  # keep the legend above moving residues
@@ -273,6 +481,10 @@ class StructurePanel(Panel):
     def draw_frame(self, pos):
         v = self.ctx.project.visual
         xyz = self.view[pos]
+        if self.stage is not None:
+            self.stage.update(pos)
+        # the 3D scene draws the residues, ions and glow; if it fails, the 2D trace does
+        three_d = self.stage is not None and not self.stage.failed
         span = max(self.zmax - self.zmin, 1e-6)
         depth = (xyz[:, 2] - self.zmin) / span if v.depth_cue else np.ones(len(xyz))
         colors = frame_colors(self.static, v.color_mode, v.base_color, v.proximity_color,
@@ -284,11 +496,17 @@ class StructurePanel(Panel):
         ps = v.point_size
         sizes = ps * (0.55 + 0.9 * depth)
         order = np.argsort(xyz[:, 2], kind="stable")
+        if three_d:  # residues drawn in 3D leave the 2D trace
+            order = order[~self.covered[order]]
         self.points.set_offsets(xyz[order, :2])
         self.points.set_sizes(sizes[order])
         self.points.set_facecolors(colors[order])
-        if len(self.links):
-            i, j = self.links[:, 0], self.links[:, 1]
+        links = self.links
+        if three_d and len(links):
+            links = links[~(self.covered[links[:, 0]] | self.covered[links[:, 1]])]
+        self.lines.set_segments([])
+        if len(links):
+            i, j = links[:, 0], links[:, 1]
             segs = np.stack([xyz[i, :2], xyz[j, :2]], axis=1)
             seg_depth = 0.5 * (depth[i] + depth[j])
             seg_col = 0.5 * (colors[i] + colors[j])
@@ -297,6 +515,8 @@ class StructurePanel(Panel):
             self.lines.set_color(seg_col[so])
             self.lines.set_linewidths(v.line_width * (0.5 + 0.9 * seg_depth[so]))
         intensity = self.glow[:, pos] * v.glow_strength
+        if three_d and getattr(self.stage.renderer, "draws_glow", False):
+            intensity = np.zeros(0)  # the renderer draws the glow around the 3D residues
         sel = np.flatnonzero(intensity > 0.01)
         if len(sel):
             rgba_o = np.zeros((len(sel), 4))
@@ -313,8 +533,19 @@ class StructurePanel(Panel):
         else:
             self.halo_outer.set_offsets(np.zeros((0, 2)))
             self.halo_inner.set_offsets(np.zeros((0, 2)))
-        if self.ion_view.shape[1]:
+        if three_d:  # ions are spheres in the 3D scene
+            self.ion_points.set_offsets(np.zeros((0, 2)))
+        elif self.ion_view.shape[1]:
             self.ion_points.set_offsets(self.ion_view[pos][:, :2])
+        if self.tags:  # push each label outward, away from the projected centre
+            xy = xyz[self.tag_rows, :2]
+            centre = xyz[:, :2].mean(axis=0)
+            out = xy - centre
+            norm = np.linalg.norm(out, axis=1, keepdims=True)
+            out = np.where(norm > 1e-6, out / np.maximum(norm, 1e-6), np.array([[0.0, 1.0]]))
+            pos_xy = xy + out * (0.07 * self.radius + 1.5)
+            for text, (x, y) in zip(self.tags, pos_xy):
+                text.set_position((x, y))
         if self.time_text is not None:
             self.time_text.set_text(self.ctx.format_time(pos))
 
@@ -375,6 +606,9 @@ class TimeSeriesPanel(Panel):
             self.ax.set_ylim(*self.options["ylim"])
         self.ax.set_xlabel(self.ctx.time_label)
         units = {s.unit for s in self.series}
+        if units == {"count"}:
+            integer_axis(self.ax.yaxis)
+        self.auto_title = self.series[0].label if len(self.series) == 1 else ""
         if len(self.series) == 1:
             self.ax.set_ylabel(self.series[0].axis_label)
         elif len(units) == 1 and next(iter(units)) not in ("", "count"):
@@ -424,6 +658,11 @@ class DualAxisPanel(Panel):
                               mec=self.theme.surface, mew=1.5, zorder=5)
         self.ax.set_ylabel(s1.axis_label)
         ax2.set_ylabel(s2.axis_label)
+        if s1.unit == "count":
+            integer_axis(self.ax.yaxis)
+        if s2.unit == "count":
+            integer_axis(ax2.yaxis)
+        self.auto_title = f"{s1.label} / {s2.label}"
         self.ax.set_xlabel(self.ctx.time_label)
         self.ax.set_xlim(t[0], t[-1] if len(t) > 1 else t[0] + 1)
         self.cursor = self.ax.axvline(t[0], color=self.theme.ink, lw=1.0, alpha=0.7)
@@ -465,6 +704,7 @@ class HeatmapPanel(Panel):
         m = ds.matrix(self.spec.series[0])
         if m.values.size == 0:
             raise KeyError(f"{m.key} is empty")
+        self.auto_title = m.label
         t = self.ctx.time
         dt = (t[1] - t[0]) if len(t) > 1 else 1.0
         values = np.ma.masked_invalid(np.asarray(m.values, dtype=np.float64))
@@ -484,6 +724,8 @@ class HeatmapPanel(Panel):
                                 vmax=max(vmax, 1e-9))
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02)
             cb.set_label(m.unit or "count", color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
+            if m.kind == "count":
+                integer_axis(cb.ax.yaxis)
         cb.outline.set_edgecolor(self.theme.grid)
         cb.ax.tick_params(colors=self.theme.muted, labelcolor=self.theme.ink2,
                           labelsize=self.ctx.font_size * 0.75)
@@ -533,6 +775,9 @@ class ContactMapPanel(Panel):
                                  vmin=0.0, vmax=vmax, origin="upper")
         cb = self.fig.colorbar(self.im, ax=self.ax, fraction=0.04, pad=0.02)
         cb.set_label(label, color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
+        if label == "count":
+            integer_axis(cb.ax.yaxis)
+        self.auto_title = self.pm.label
         cb.outline.set_edgecolor(self.theme.grid)
         cb.ax.tick_params(colors=self.theme.muted, labelcolor=self.theme.ink2,
                           labelsize=self.ctx.font_size * 0.75)

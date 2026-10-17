@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 import pytest
 
@@ -19,6 +20,14 @@ def test_apply_override():
     assert p.layout.panels[0].type == "timeseries"
     apply_override(p, "inputs.stop=null")
     assert p.inputs.stop is None
+    apply_override(p, 'layout.panels.0={"type": "heatmap", "series": ["mg/occupancy"]}')
+    assert p.layout.panels[0].type == "heatmap" and p.layout.panels[0].series == ["mg/occupancy"]
+    apply_override(p, "visual.title=true")  # strings stay strings
+    assert p.visual.title == "true"
+    with pytest.raises(ValueError, match="no list element"):
+        apply_override(p, "groups.9.residues=1")
+    with pytest.raises(ValueError):
+        apply_override(p, "analyses.contacts.cutoff=far")
     with pytest.raises(ValueError):
         apply_override(p, "analyses.nope=1")
     with pytest.raises(ValueError):
@@ -49,7 +58,8 @@ def test_cli_demo_render_and_tools(tmp_path, capsys):
     capsys.readouterr()
     assert main(["export-pdb", "--frame-list", "1", "--times", "", "--selection", "Target"] + args) == 0
     pdbs = json.loads(capsys.readouterr().out)["pdbs"]
-    assert [os.path.basename(x) for x in pdbs] == ["MDATK_frame_00001.pdb"]
+    assert len(pdbs) == 1
+    assert re.fullmatch(r"MDATK_frame_00001_\d{4}-\d\d-\d\d_\d{6}\.pdb", os.path.basename(pdbs[0]))
     text = open(pdbs[0]).read()
     assert text.count("ATOM") > 100 and " U  " not in text.split("ATOM", 1)[0]
     init = tmp_path / "init.json"

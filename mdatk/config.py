@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import typing
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -79,6 +80,8 @@ class CleaningParams:
 
     enabled: bool = False
     cpptraj_path: str = "cpptraj"
+    conda_env: str = ""  # e.g. "AmberTools26" or a prefix path; run as `conda run -n <env> cpptraj`
+    conda_exe: str = ""  # conda / mamba / micromamba executable ("" = auto-detect)
     solvent_mask: str = ":WAT,HOH,TIP3,SOL,T3P,T4P,SPC"
     ion_mask: str = ":Na+,Cl-,K+,NA,CL,K,Na,Cl,SOD,CLA,POT"  # Mg2+ is kept
     extra_strip_mask: str = ""
@@ -104,10 +107,15 @@ class RMSDTarget:
     fit_selection: str = ""  # "" -> same as selection
 
 
+def _default_rmsd_targets() -> List[RMSDTarget]:
+    return [RMSDTarget(),
+            RMSDTarget("Backbone", "(group:Aptamer or group:Target) and name C4'")]
+
+
 @dataclass
 class RMSDParams:
     enabled: bool = True
-    targets: List[RMSDTarget] = field(default_factory=lambda: [RMSDTarget()])
+    targets: List[RMSDTarget] = field(default_factory=_default_rmsd_targets)
     reference_frame: int = 0  # index into the analysed frames
     superposition: bool = True
     mass_weighted: bool = False
@@ -189,10 +197,32 @@ class AnalysisParams:
     proximity_search_radius: float = 8.0  # max proximity cutoff usable at render time
 
 
+REP_STYLES = ("cartoon", "ribbon", "tube", "licorice", "vdw", "surf", "trace")
+REP_REST = ("trace", "hide")
+REP_COLORS = ("auto", "residue", "element", "nucleotide")
+
+
+@dataclass
+class RepSpec:
+    """One 3D representation drawn in the structural view (VMD-like)."""
+
+    style: str = "cartoon"  # see REP_STYLES
+    groups: List[str] = field(default_factory=list)  # residue groups ([] -> every structure group)
+    color: str = "auto"  # residue colours, element colours (atoms), nucleotide colours (bases)
+    size: float = 1.0  # scales widths and radii
+    opacity: float = 1.0
+    sugars: bool = False  # cartoon: draw the ribose rings (shows the pucker)
+
+
 @dataclass
 class VisualParams:
     structure_groups: List[str] = field(default_factory=list)  # [] -> all groups
     trace_atoms: str = "C4',CA"  # per-residue priority list (P, C4', C1', CA ...)
+    representations: List[RepSpec] = field(default_factory=list)  # [] -> 2D backbone trace
+    renderer: str = "auto"  # 3D renderer: "auto" / "software" (built-in) or "vtk" (optional)
+    rep_rest: str = "trace"  # residues no representation draws: "trace" (3D trace) or "hide"
+    backbone_atom: str = "P"  # spline control atom of ribbons / cartoons: "P" or "C4'"
+    rep_hydrogens: bool = False  # include hydrogens in all-atom representations
     show_ions: bool = True
     align_frames: bool = True  # superpose each frame's trace onto the reference
     rotation: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # deg X,Y,Z
@@ -213,7 +243,33 @@ class VisualParams:
     theme: str = "light"  # "light" or "dark"
     font_size: float = 11.0
     show_time_label: bool = True
+    label_every: int = 0  # residue-number tags on every N-th residue (0: off)
+    label_residues: str = ""  # explicit residue numbers / ranges to tag, e.g. "1, 12, 24"
     title: str = ""
+
+
+@dataclass
+class DensityParams:
+    """A density map (MRC / CCP4) drawn behind the structural view as a projected
+    "shadow", placed by a rigid-body fit of the model."""
+
+    map_path: str = ""  # .mrc / .map / .ccp4
+    show: bool = True
+    resolution: float = 5.0  # Å; width of the simulated map used for fitting
+    level: float = 2.0  # contour level in map standard deviations above the mean
+    color: str = "#2a78d6"
+    opacity: float = 0.45  # 0 (invisible) .. 1
+    front: bool = False  # draw the shadow in front of 3D representations (else behind them)
+    fit_frame: str = "ref"  # "ref" (first analysed frame) or a trajectory frame number
+    search: str = "global"  # automatic fit: "global" search or "manual" (refine the placement)
+    angular_step: float = 30.0  # degrees between sampled orientations of the global search
+    auto_fit: bool = True  # fit before rendering when no placement is stored
+    transform: List[float] = field(default_factory=list)  # 3x3 rotation (row-major) + translation, model -> map
+    # backbone points of the reference frame the placement was made on (the map follows the
+    # molecule when the reference changes: other start frame, cleaned vs raw files)
+    anchor: List[List[float]] = field(default_factory=list)
+    fit_cc: float = 0.0  # correlation of the stored placement (0: not fitted)
+    fit_info: str = ""
 
 
 @dataclass
@@ -297,6 +353,55 @@ class OutputParams:
     charts: ChartParams = field(default_factory=ChartParams)
     pdb: PDBParams = field(default_factory=PDBParams)
     write_params_log: bool = True
+    timestamp_files: bool = True  # e.g. MDATK_video_2026-10-15_143205.mp4 (cache/log keep fixed names)
+
+
+@dataclass
+class PlanNode:
+    """One box of the Project Planner (a step that writes files for one program).
+
+    ``tool`` names a generator in :mod:`mdatk.workflows`; ``settings`` holds its
+    options (see ``mdatk workflow tools``) and ``files`` hand-picked input files
+    for ports that no connection feeds (``{port: path}``).
+    """
+
+    id: str = ""
+    tool: str = "note"
+    step: int = 1
+    title: str = ""  # "" -> the tool's label
+    x: float = 40.0
+    y: float = 40.0
+    settings: Dict[str, Any] = field(default_factory=dict)
+    files: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PlanEdge:
+    """A connection: output ``output`` of node ``source`` feeds input ``input`` of ``target``."""
+
+    source: str = ""
+    output: str = ""
+    target: str = ""
+    input: str = ""
+
+
+@dataclass
+class WorkflowParams:
+    """Project Planner and script-wizard settings (saved with the preset).
+
+    Generated files are named ``<project>_<step>_<tool>_<stamp>.<ext>``, e.g.
+    ``apt1_03_tleap_20261015-1432.parm7``.  ``stamp`` is fixed the first time
+    files are written so later re-generations keep matching names.
+    """
+
+    project_name: str = "project"
+    stamp: str = ""
+    use_stamp: bool = True
+    out_dir: str = ""  # "" -> <output.out_dir>/<project_name>_workflow
+    step_folders: bool = True  # one sub-folder per step, e.g. 03_amber-build/
+    nodes: List[PlanNode] = field(default_factory=list)
+    edges: List[PlanEdge] = field(default_factory=list)
+    scratch: List[PlanNode] = field(default_factory=list)  # stand-alone wizard settings per tool
 
 
 def _default_groups() -> List[ResidueGroup]:
@@ -316,8 +421,10 @@ class Project:
     groups: List[ResidueGroup] = field(default_factory=_default_groups)
     analyses: AnalysisParams = field(default_factory=AnalysisParams)
     visual: VisualParams = field(default_factory=VisualParams)
+    density: DensityParams = field(default_factory=DensityParams)
     layout: LayoutParams = field(default_factory=LayoutParams)
     output: OutputParams = field(default_factory=OutputParams)
+    workflow: WorkflowParams = field(default_factory=WorkflowParams)
 
     # ------------------------------------------------------------------ I/O
     def to_dict(self) -> Dict[str, Any]:
@@ -380,6 +487,11 @@ class Project:
             self.cleaning.cpptraj_path = fix(self.cleaning.cpptraj_path)
         self.output.out_dir = fix(self.output.out_dir)
         self.output.cache_dir = fix(self.output.cache_dir)
+        self.density.map_path = fix(self.density.map_path)
+        self.workflow.out_dir = fix(self.workflow.out_dir)
+        from .workflows import resolve_node_paths  # lazy: workflows imports this module
+        for node in list(self.workflow.nodes) + list(self.workflow.scratch):
+            resolve_node_paths(node, fix)
 
     def group(self, name: str) -> ResidueGroup:
         for g in self.groups:
@@ -396,10 +508,50 @@ class Project:
         return os.path.abspath(self.output.out_dir or f"{PROJECT_ABBREV}_output")
 
     @property
+    def workflow_dir(self) -> str:
+        """Folder that receives Project Planner / wizard files."""
+        if self.workflow.out_dir:
+            return os.path.abspath(self.workflow.out_dir)
+        from .workflows.naming import sanitize_project
+        return os.path.join(self.out_dir, f"{sanitize_project(self.workflow.project_name)}_workflow")
+
+    @property
     def cache_dir(self) -> str:
         if self.output.cache_dir:
             return os.path.abspath(self.output.cache_dir)
         return os.path.join(self.out_dir, f"{PROJECT_ABBREV}_cache")
+
+    def density_active(self) -> bool:
+        """A density map is set and shown in a structure panel."""
+        d = self.density
+        return bool(d.map_path and d.show and any(sp.type == "structure" for sp in self.layout.panels))
+
+    def density_problems(self) -> List[str]:
+        d = self.density
+        if not d.map_path:
+            return []
+        out = []
+        if self.density_active() and not os.path.exists(d.map_path):
+            out.append(f"Density map not found: {d.map_path} (untick 'show' to render without it)")
+        if d.resolution <= 0:
+            out.append("Density map resolution must be positive.")
+        if not 0.0 <= d.opacity <= 1.0:
+            out.append("Density map opacity must be between 0 and 1.")
+        if not 5.0 <= d.angular_step <= 45.0:
+            out.append("Density search angular step must be between 5 and 45 degrees.")
+        if d.search not in ("global", "manual"):
+            out.append(f"Unknown density fit start {d.search!r} (global or manual).")
+        if d.transform:
+            from .density import RigidTransform
+
+            try:
+                RigidTransform.from_list(d.transform)
+            except (TypeError, ValueError) as exc:
+                out.append(f"The stored density map placement is invalid ({exc}); clear it or fit again.")
+        frame = d.fit_frame.strip().lower()
+        if frame not in ("", "ref") and not frame.isdigit():
+            out.append(f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
+        return out
 
     def validate(self) -> List[str]:
         """Return a list of human readable problems (empty when valid)."""
@@ -421,8 +573,9 @@ class Project:
         for g in self.groups:
             if not g.name.strip():
                 problems.append("Residue groups need a name.")
-            elif any(c.isspace() for c in g.name):
-                problems.append(f"Group name {g.name!r} must not contain spaces.")
+            elif not re.fullmatch(r"[A-Za-z0-9_.\-]+", g.name):
+                problems.append(f"Group name {g.name!r} may only contain letters, digits, "
+                                "'_', '.' and '-' (no spaces).")
             if not (g.residues.strip() or g.selection.strip()):
                 problems.append(f"Group {g.name!r} has neither residues nor a selection.")
         a = self.analyses
@@ -442,9 +595,28 @@ class Project:
             problems.append(f"Unknown colour mode {v.color_mode!r}.")
         if v.glow_mode not in ("none", "ever", "fade", "current"):
             problems.append(f"Unknown glow mode {v.glow_mode!r}.")
+        for k, rs in enumerate(v.representations):
+            if rs.style not in REP_STYLES:
+                problems.append(f"Representation {k + 1}: unknown style {rs.style!r} "
+                                f"({', '.join(REP_STYLES)}).")
+            if rs.color not in REP_COLORS:
+                problems.append(f"Representation {k + 1}: unknown colouring {rs.color!r}.")
+            for gname in rs.groups:
+                if gname not in names:
+                    problems.append(f"Representation {k + 1}: unknown residue group {gname!r}.")
+            if rs.size <= 0 or not 0 < rs.opacity <= 1:
+                problems.append(f"Representation {k + 1}: size must be positive and opacity in (0, 1].")
+        if v.renderer not in ("auto", "software", "vtk"):
+            problems.append(f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
+        if v.rep_rest not in REP_REST:
+            problems.append(f"Unknown setting for residues without a representation {v.rep_rest!r} "
+                            "(trace or hide).")
+        if v.backbone_atom not in ("P", "C4'"):
+            problems.append("The backbone atom of ribbons and cartoons must be P or C4'.")
         if v.proximity_cutoff > a.proximity_search_radius:
             problems.append("Proximity cutoff exceeds the proximity search radius "
                             "(raise analyses.proximity_search_radius).")
+        problems += self.density_problems()
         if self.output.video.fps <= 0:
             problems.append("Video FPS must be positive.")
         return problems

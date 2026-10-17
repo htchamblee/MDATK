@@ -48,7 +48,8 @@ def frames_from_specs(universe, frames_text: str, times_text: str, time_unit: st
 
 
 def export_frames(universe, frames: Sequence[int], atoms, out_dir: str, prefix: str,
-                  progress: Optional[Callable[[float, str], None]] = None) -> List[str]:
+                  progress: Optional[Callable[[float, str], None]] = None,
+                  stamp: str = "") -> List[str]:
     """Write one PDB per frame; returns the written paths."""
     if not frames:
         raise SelectionError("no frames selected for PDB export")
@@ -57,7 +58,8 @@ def export_frames(universe, frames: Sequence[int], atoms, out_dir: str, prefix: 
     paths = []
     for k, f in enumerate(frames):
         universe.trajectory[int(f)]
-        path = os.path.join(out_dir, f"{prefix}_{int(f):0{width}d}.pdb")
+        suffix = f"_{stamp}" if stamp else ""
+        path = os.path.join(out_dir, f"{prefix}_{int(f):0{width}d}{suffix}.pdb")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             atoms.write(path)

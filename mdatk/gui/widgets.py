@@ -59,7 +59,7 @@ def spin(lo: float, hi: float, step: float = 1.0, digits: int = 0, tooltip: str 
     return w
 
 
-def entry(placeholder: str = "", tooltip: str = "", width: int = 28) -> Gtk.Entry:
+def entry(placeholder: str = "", tooltip: str = "", width: int = 20) -> Gtk.Entry:
     w = Gtk.Entry()
     w.set_width_chars(width)
     w.set_hexpand(True)
@@ -198,7 +198,7 @@ def file_chooser_button(title: str, action=Gtk.FileChooserAction.OPEN,
                         patterns: Sequence[Tuple[str, Sequence[str]]] = ()) -> Gtk.Box:
     """Entry + browse button (more flexible than Gtk.FileChooserButton)."""
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-    ent = entry(width=40)
+    ent = entry(width=22)
     btn = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
     btn.set_tooltip_text(f"Browse: {title}")
 
@@ -314,10 +314,12 @@ class Binder:
         for b in self.bindings:
             b.set(get_path(project, b.path))
 
-    def store(self, project) -> List[str]:
+    def store(self, project, skip: Sequence[str] = ()) -> List[str]:
         """Write widget values into ``project``; returns a list of error messages."""
         errors = []
         for b in self.bindings:
+            if b.path in skip:
+                continue
             try:
                 set_path(project, b.path, b.get())
             except (ValueError, TypeError) as exc:

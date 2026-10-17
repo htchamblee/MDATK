@@ -28,6 +28,16 @@ OCCUPANCY_CLASSES = ["none", "outer sphere", "inner sphere"]
 class MgAnalysis(Analysis):
     name = "mg"
     label = "Mg coordination"
+    group_slots = 2
+    OUTPUT_LABELS = {
+        "contacts": "Mg\u2013O inner-sphere contacts",
+        "outer_contacts": "Mg\u2013O outer-sphere contacts",
+        "bridges": "O\u2013Mg\u2013O bridges",
+        "inter_bridges": "{a}\u2013Mg\u2013{b} bridges",
+        "bridging_ions": "Bridging Mg ions ({a}\u2013{b})",
+        "inner_residues": "Residues with inner-sphere Mg",
+        "occupancy": "Mg occupancy",
+    }
 
     @classmethod
     def enabled(cls, project):
