@@ -19,7 +19,7 @@ from typing import List
 
 import numpy as np
 
-from ..selections import SelectionError, heavy, resolve_selection, split_csv
+from ..selections import SelectionError, atom_elements, heavy, resolve_selection, split_csv
 from ..spatial import kabsch, pairs_within
 from .base import Analysis, register
 from .common import labels
@@ -274,7 +274,7 @@ class AtomsAnalysis(Analysis):
     name = "atoms"
     label = "Atomic coordinates (structure view)"
     internal = True
-    version = 1
+    version = 2  # 2: elements guessed per residue (protein CA is carbon, not calcium)
 
     @classmethod
     def params_for(cls, project):
@@ -316,10 +316,7 @@ class AtomsAnalysis(Analysis):
 
     def finalize(self):
         a = self.atoms
-        try:
-            elements = [str(e) for e in a.elements]
-        except Exception:
-            elements = [guess_element(n) for n in a.names]
+        elements = [str(e) for e in atom_elements(a)]  # topology value, else guessed per residue
         res = self.new_result(atom_names=[str(n) for n in a.names], elements=elements,
                               resnames=[str(r) for r in a.resnames])
         res.arrays.update(coords=self.coords, row=self.row, bonds=self.bonds,

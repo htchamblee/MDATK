@@ -326,3 +326,171 @@ def test_sphere_culling_leaves_the_image_unchanged(monkeypatch):
         monkeypatch.setattr(SW, "CULL_MIN", 10 ** 9)
         assert np.array_equal(culled, r.render(items, view, PLAIN))
         monkeypatch.setattr(SW, "CULL_MIN", 64)
+
+
+def test_many_items_render():
+    """Scattered selections make one backbone piece per run: no limit on the item count."""
+    rng = np.random.default_rng(2)
+    items = [spheres(rng.uniform(-8, 8, 3), 0.8, rng.uniform(0.2, 0.9, 3)) for _ in range(80)]
+    img = SoftwareRenderer().render(items, vp(size=120), PLAIN)
+    cam = _Cam(vp(size=120), items)
+    assert len(resolved(items, vp(size=120))[1][0]) > 0 and img[..., 3].any() and cam.W == 120
+
+
+def test_translucent_surfaces_resolve_front_most_once():
+    # order independent, and the half-stick inside a ball adds no second layer
+    front, back = spheres([0, 0, 2.0], 3.0, (1, 0, 0)), spheres([0, 0, -2.0], 3.0, (0, 0, 1))
+    for it in (front, back):
+        it.opacity = 0.5
+    r = SoftwareRenderer()
+    a, b = r.render([front, back], vp(), PLAIN), r.render([back, front], vp(), PLAIN)
+    c = a.shape[0] // 2
+    assert np.array_equal(a, b) and a[c, c, 0] > 150 and a[c, c, 2] < 30 and a[c, c, 3] == 128
+    stick = Sticks(np.array([[-5.0, 0, 0]]), np.array([[5.0, 0, 0]]), np.array([0.6]), np.array([0]), np.array([-1]))
+    ball = spheres([[-5.0, 0, 0], [5.0, 0, 0]], 0.6, (0.2, 0.4, 0.9), owner=[0, 0])
+    items = [Colored(stick, np.array([[0.2, 0.4, 0.9]]), 0.5), ball]
+    ball.opacity = 0.5
+    img = r.render(items, vp(), PLAIN)
+    row = img[c, :, 3]
+    assert set(np.unique(row[row > 0])) <= {127, 128}  # one layer everywhere
+
+
+def test_translucent_glowing_residue_keeps_its_halo():
+    item = spheres([0, 0, 0], 2.0, (0.3, 0.3, 0.8), owner=[0])
+    item.opacity = 0.6
+    img = SoftwareRenderer().render([item], vp(), Shading(WHITE, 0.0, np.ones(1, np.float32), np.array([1.0, 0.7, 0])))
+    cam = _Cam(vp(), [item])
+    assert img[cam.H // 2, int(round((10 + 3.2) * cam.s)), 3] > 60
+
+
+def test_sliver_behind_a_surface_stays_hidden():
+    plane = Mesh(np.array([[-9, -9, 0.0], [9, -9, 0.0], [9, 9, 0.0], [-9, 9, 0.0]]), np.tile([0, 0, 1.0], (4, 1)),
+                 np.array([[0, 1, 2], [0, 2, 3]]), np.zeros(4, np.int64), np.zeros(4, np.int8))
+    rng = np.random.default_rng(0)
+    for _ in range(40):
+        y0 = rng.uniform(-5, 5)  # nearly edge-on: projected altitude ~1e-4 px
+        sl = Mesh(np.array([[-6, y0, -0.5], [6, y0, -0.5], [0, y0 + 2e-5, -3.0]]), np.tile([0, 0, 1.0], (3, 1)),
+                  np.array([[0, 1, 2]]), np.zeros(3, np.int64), np.zeros(3, np.int8))
+        img = SoftwareRenderer().render([Colored(plane, np.tile([0, 0, 1.0], (4, 1))),
+                                         Colored(sl, np.tile([1, 0, 0.0], (3, 1)))], vp(size=200), PLAIN)
+        assert not ((img[..., 0] > 150) & (img[..., 2] < 100)).any()
+
+
+def test_non_finite_atoms_do_not_break_depth_or_surfaces():
+    from mdatk.render.molecule.scene import depth_range
+
+    rng = np.random.default_rng(1)
+    xyz = rng.normal(scale=4, size=(60, 3))
+    clean = [spheres(xyz, 1.5)]
+    bad = xyz.copy()
+    bad[0] = np.nan
+    assert depth_range([spheres(bad, 1.5)], np.array([0, 0, 1.0])) == pytest.approx(depth_range(
+        [spheres(xyz[1:], 1.5)], np.array([0, 0, 1.0])))
+    assert SoftwareRenderer().render([spheres(bad, 1.5)], vp(lim=14), PLAIN)[..., 3].any()
+    del clean
+
+
+def test_vector_output_places_the_3d_layer_on_the_axes(tmp_path):
+    import re
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from mdatk.render.molecule.stage import PixelImage
+
+    fig, ax = plt.subplots(figsize=(4, 3), dpi=120)
+    ax.set_xlim(-10, 10)
+    ax.set_ylim(-10, 10)
+    items = [spheres([0, 0, 0], 6.0)]
+    img = PixelImage(ax, lambda w, h: SoftwareRenderer().render(
+        items, Viewport(np.eye(3), ax.get_xlim(), ax.get_ylim(), w, h, (-10, 10)), PLAIN))
+    ax.add_artist(img)
+    path = tmp_path / "v.svg"
+    fig.savefig(path)
+    svg = path.read_text()
+    m = re.search(r'<image[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"', svg)
+    bb = ax.get_window_extent(fig.canvas.get_renderer())
+    pt = 72 / 120  # display pixels -> points
+    assert float(m.group(1)) == pytest.approx(bb.width * pt, rel=0.02)
+    assert float(m.group(2)) == pytest.approx(bb.height * pt, rel=0.02)
+    plt.close(fig)
+
+
+def test_colour_boundary_between_residues_is_straight():
+    # a strip of quads: residue 0 on the left ring, residue 1 on the right ring
+    x = np.repeat([-6.0, 0.0, 6.0], 2)
+    y = np.tile([-4.0, 4.0], 3)
+    verts = np.stack([x, y, np.zeros(6)], 1)
+    tris = np.array([[0, 2, 3], [0, 3, 1], [2, 4, 5], [2, 5, 3]])
+    owner = np.array([0, 0, 1, 1, 1, 1])
+    owner[2:4] = [0, 0]  # middle ring belongs to residue 0: the switch is half-way to the right ring
+    rgb = np.where(owner[:, None] == 0, [[1.0, 0, 0]], [[0, 0, 1.0]])
+    m = Mesh(verts, np.tile([0, 0, 1.0], (6, 1)), tris, owner, np.zeros(6, np.int8))
+    img = SoftwareRenderer().render([Colored(m, rgb)], vp(size=200), PLAIN)
+    red = img[..., 0] > img[..., 2]
+    rows = range(70, 130)
+    edges = [np.flatnonzero(~red[r, 100:])[0] + 100 for r in rows]
+    assert max(edges) - min(edges) <= 1  # a vertical seam, not a diagonal staircase
+
+
+def test_glow_helpers_for_other_backends():
+    from mdatk.render.molecule.software import glow_underlay, over, tinted
+
+    items = [spheres([[-4, 0, 0], [4, 0, 0]], 1.5, (0.2, 0.2, 0.8), owner=[0, 1])]
+    sh = Shading(WHITE, 0.0, np.array([1.0, 0.0], np.float32), np.array([1.0, 0.7, 0.0]))
+    t = tinted(items, sh)[0].rgb
+    assert t[0, 0] > 0.2 and np.allclose(t[1], [0.2, 0.2, 0.8])
+    halo = glow_underlay(items, vp(), sh)
+    cam = _Cam(vp(), items)
+    left, right = int(round(6 - 3.0) * cam.s / 1), int(round((14 + 3.0) * cam.s))
+    assert halo[cam.H // 2, left, 3] > 0 and halo[cam.H // 2, right, 3] == 0
+    assert glow_underlay(items, vp(), PLAIN) is None
+    comp = over(np.zeros_like(halo), halo)  # a transparent image over the halo leaves the halo
+    vis = halo[..., 3] > 0
+    assert np.array_equal(comp[..., 3], halo[..., 3]) and np.abs(comp[vis].astype(int) - halo[vis]).max() <= 1
+
+
+def test_failed_3d_render_falls_back_to_the_2d_trace(demo_dry, tmp_path, monkeypatch):
+    from mdatk.config import Project, RepSpec
+    from mdatk.pipeline import Pipeline
+    from mdatk.render.molecule import software
+    from mdatk.render.video import build_figure
+
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir = str(tmp_path)
+    p.visual.representations = [RepSpec("cartoon")]
+    ds = Pipeline(p).analyze()
+
+    def boom(*a, **k):
+        raise RuntimeError("no luck")
+
+    monkeypatch.setattr(software.SoftwareRenderer, "render", boom)
+    fig, canvas, panels = build_figure(ds, p, 640, 360, 80)
+    st = next(x for x in panels if getattr(x, "stage", None) is not None)
+    st.draw_frame(2)
+    st.draw_frame(3)
+    assert st.stage.failed and len(st.points.get_offsets()) == len(st.view[0])
+
+
+def test_front_density_shadow_is_animated_above_the_3d_layer(demo_dry, tmp_path):
+    from mdatk.config import Project, RepSpec
+    from mdatk.pipeline import Pipeline
+    from mdatk.render.video import build_figure
+
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir = str(tmp_path)
+    p.visual.representations = [RepSpec("cartoon")]
+    ds = Pipeline(p).analyze()
+    fig, canvas, panels = build_figure(ds, p, 640, 360, 80)
+    st = next(x for x in panels if getattr(x, "stage", None) is not None)
+    import matplotlib.image
+
+    st.density_img = st.ax.imshow(np.zeros((2, 2, 4)), zorder=3.5)  # stand-in for a fitted map
+    p.density.front = True
+    arts = st.animated_artists()
+    assert arts.index(st.density_img) > arts.index(st.stage.image) and st.rotation_artists() == []
+    p.density.front = False
+    assert st.density_img not in st.animated_artists() and st.rotation_artists() == [st.density_img]
+    assert isinstance(st.density_img, matplotlib.image.AxesImage)

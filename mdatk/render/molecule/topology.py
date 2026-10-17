@@ -39,17 +39,34 @@ def normalise_name(name: str) -> str:
     return _ALIASES.get(n, n)
 
 
+_CHARMM = {"ADE": "A", "GUA": "G", "CYT": "C", "URA": "U", "URI": "U", "THY": "T"}
+
+
 def base_letter(resname: str) -> str:
     """A/G/C/U/T for standard and common Amber / CHARMM residue names, else '?'."""
     r = str(resname).strip().upper()
     if r in ("PSU", "PU"):
         return "U"
+    if r[:3] in _CHARMM and len(r) <= 4:
+        return _CHARMM[r[:3]]
     for prefix in ("RA", "RG", "RC", "RU", "DA", "DG", "DC", "DT", "LA", "LG", "LC", "LU"):
         if r.startswith(prefix) and len(r) <= 4:
             return prefix[1]
     for k in ("A", "G", "C", "U", "T"):
         if r == k or (r.startswith(k) and r[1:] in ("3", "5", "N")):
             return k
+    return "?"
+
+
+def _letter_from_atoms(atoms: Dict[str, int]) -> str:
+    if all(n in atoms for n in PURINE_RING):
+        return "G" if "O6" in atoms else "A" if "N6" in atoms else "?"
+    if all(n in atoms for n in PYRIMIDINE_RING):
+        if "N4" in atoms:
+            return "C"
+        if "C7" in atoms or "C5M" in atoms:
+            return "T"
+        return "U" if "O4" in atoms else "?"
     return "?"
 
 
@@ -76,6 +93,9 @@ class Topology:
             first.setdefault(int(r), i)
         self.resname = [str(resnames[first[r]]) if r in first else "?" for r in range(self.n_res)]
         self.letter = [base_letter(x) for x in self.resname]
+        for r in range(self.n_res):  # unknown names: tell the base by its exocyclic atoms
+            if self.letter[r] == "?":
+                self.letter[r] = _letter_from_atoms(table[r])
         self.radius = np.array([VDW_RADIUS.get(e, 1.7) for e in self.elements], dtype=np.float64)
         self.element_rgb = np.array([ELEMENT_RGB.get(e, (0.6, 0.4, 0.7)) for e in self.elements])
         self.is_carbon = np.array([e == "C" for e in self.elements])

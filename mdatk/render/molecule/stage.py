@@ -19,8 +19,9 @@ log = logging.getLogger(__name__)
 class PixelImage(Artist):
     """An RGBA image (row 0 at the top) drawn at the axes' pixel box without resampling.
 
-    When the axes' pixel size differs from the image (another dpi, a resize), the
-    ``rerender`` callback is asked for a matching image first."""
+    When the axes' pixel size differs from the image (another dpi, a resize, a vector
+    backend's image magnification), the ``rerender`` callback is asked for a matching
+    image first."""
 
     def __init__(self, ax, rerender: Callable[[int, int], Optional[np.ndarray]]):
         super().__init__()
@@ -37,7 +38,8 @@ class PixelImage(Artist):
         if not self.get_visible():
             return
         bb = self.ax.get_window_extent(renderer)
-        w, h = int(round(bb.width)), int(round(bb.height))
+        mag = renderer.get_image_magnification() if hasattr(renderer, "get_image_magnification") else 1.0
+        w, h = int(round(bb.width * mag)), int(round(bb.height * mag))  # PDF / SVG: points -> pixels
         if w < 2 or h < 2:
             return
         if self.rgba is None or self.rgba.shape[:2] != (h, w):
@@ -88,6 +90,7 @@ class MoleculeStage:
         self._pos = None
         self._items: List[Colored] = []
         self.quality = "high"  # "fast" while the GUI drags
+        self.failed = False  # the last render failed: the panel shows the 2D trace instead
 
     def _items_for(self, pos: int) -> List[Colored]:
         p = self.panel
@@ -109,15 +112,23 @@ class MoleculeStage:
         vp = Viewport(self.panel.view_matrix, ax.get_xlim(), ax.get_ylim(), width, height,
                       (self.panel.zmin, self.panel.zmax))
         try:
-            return self.renderer.render(self._items, vp, self.panel.shading(self._pos), quality=self.quality)
+            img = self.renderer.render(self._items, vp, self.panel.shading(self._pos), quality=self.quality)
+            self.failed = False
+            return img
         except Exception as exc:  # noqa: BLE001 - never break a video for the 3D layer
-            log.warning("3D representation not drawn: %s", exc)
+            if not self.failed:
+                log.warning("3D representation not drawn (2D trace shown instead): %s", exc)
+            self.failed = True
             return None
 
     def update(self, pos: int) -> None:
         """New frame (or new colours / view): re-render at the current axes size."""
         if pos != self._pos or not self._items:  # rotations reuse the frame's geometry
-            self._items = self._items_for(pos)
+            try:
+                self._items = self._items_for(pos)
+            except Exception as exc:  # noqa: BLE001 - never break a video for the 3D layer
+                log.warning("3D representation not drawn: %s", exc)
+                self._items = []
         self._pos = pos
         bb = self.panel.ax.get_window_extent()
         w, h = int(round(bb.width)), int(round(bb.height))

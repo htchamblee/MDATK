@@ -6,6 +6,7 @@ plus per-primitive RGBA colours, which a renderer turns into pixels.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
@@ -14,6 +15,8 @@ import numpy as np
 from ...config import RepSpec
 from .geometry import ROLE_NUCLEOTIDE, ROLE_SUGAR, STYLES, DrawList, Mesh, Spheres, Sticks
 from .topology import NUCLEOTIDE_RGB, Topology
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,7 +52,9 @@ def depth_range(items: Sequence[Colored], axis: np.ndarray) -> "tuple[float, flo
         for q in pts:
             if len(q):
                 z = np.asarray(q, np.float64) @ axis
-                lo, hi = min(lo, float(z.min()) - rad), max(hi, float(z.max()) + rad)
+                z = z[np.isfinite(z)]  # non-finite points are skipped by the renderers
+                if len(z):
+                    lo, hi = min(lo, float(z.min()) - rad), max(hi, float(z.max()) + rad)
     if not np.isfinite(lo):
         return -1.0, 1.0
     return lo - 1.0, hi + 1.0
@@ -74,24 +79,52 @@ def residue_masks(specs: Sequence[RepSpec], member: np.ndarray, group_names: Seq
 class MoleculeScene:
     def __init__(self, topo: Topology, specs: Sequence[RepSpec], masks: Sequence[np.ndarray]):
         self.topo = topo
-        self.specs = list(specs)
+        self.specs: List[RepSpec] = []
         self.styles = []
-        for spec, mask in zip(self.specs, masks):
-            cls = STYLES.get(spec.style)
-            if cls is None or not mask.any():
-                self.styles.append(None)
-                continue
-            self.styles.append(cls(topo, mask, size=spec.size, sugars=spec.sugars))
+        for spec, mask in zip(specs, masks):
+            self.add(spec, mask)
         letters = topo.letter
         self.nuc_rgb = np.array([NUCLEOTIDE_RGB.get(x, NUCLEOTIDE_RGB["?"]) for x in letters])
+        self._failed: set = set()
+
+    def add(self, spec: RepSpec, mask: np.ndarray) -> None:
+        cls = STYLES.get(spec.style)
+        self.specs.append(spec)
+        self.styles.append(cls(self.topo, mask, size=spec.size, sugars=spec.sugars)
+                           if cls is not None and mask.any() else None)
+
+    def drawn(self) -> np.ndarray:
+        """Residues that some representation actually draws."""
+        out = np.zeros(self.topo.n_res, bool)
+        for style in self.styles:
+            if style is not None:
+                out |= style.drawn()
+        return out
+
+    def fill_rest(self) -> None:
+        """Draw the residues no representation draws: the chain as a trace, ligands (no
+        backbone atom) as licorice."""
+        topo = self.topo
+        rest = ~self.drawn() & np.isin(np.arange(topo.n_res), topo.row)  # residues with atoms
+        backbone = topo.control >= 0
+        for style, color, mask in (("trace", "residue", rest & backbone), ("licorice", "auto", rest & ~backbone)):
+            if mask.any():
+                self.add(RepSpec(style=style, color=color), mask)
 
     def frame(self, xyz: np.ndarray, residue_rgb: np.ndarray) -> List[Colored]:
-        """Primitives of one frame with colours; ``residue_rgb`` is (n_res, 3)."""
+        """Primitives of one frame with colours; ``residue_rgb`` is (n_res, 3).  A style that
+        fails on a frame (e.g. a blown-up structure) is left out of that frame."""
         out: List[Colored] = []
-        for spec, style in zip(self.specs, self.styles):
+        for k, (spec, style) in enumerate(zip(self.specs, self.styles)):
             if style is None:
                 continue
-            dl: DrawList = style.build(xyz)
+            try:
+                dl: DrawList = style.build(xyz)
+            except (ValueError, MemoryError, IndexError, FloatingPointError) as exc:
+                if k not in self._failed:
+                    self._failed.add(k)
+                    log.warning("3D representation %d (%s) not drawn on some frames: %s", k + 1, spec.style, exc)
+                continue
             for m in dl.meshes:
                 out.append(Colored(m, self._mesh_rgb(m, spec, residue_rgb), spec.opacity))
             for p in dl.sticks + dl.spheres:
@@ -102,6 +135,8 @@ class MoleculeScene:
         rgb = res_rgb[m.owner]
         if spec.color == "nucleotide":
             return self.nuc_rgb[m.owner]
+        if spec.color == "element" and m.atom is not None:  # surfaces: nearest atom's element
+            return self.topo.element_rgb[m.atom]
         if spec.color in ("auto", "element"):
             base = m.role == ROLE_NUCLEOTIDE
             rgb = np.where(base[:, None], self.nuc_rgb[m.owner], rgb)
@@ -134,7 +169,7 @@ class MoleculeScene:
 def build_scene(atoms_result, trace_result, specs: Sequence[RepSpec], group_names: Sequence[str],
                 backbone_atom: str = "P", rest: str = "trace") -> Optional[MoleculeScene]:
     """Scene from the cached ``atoms`` and ``trace`` results (None without atoms).  Residues
-    no representation draws get a ``trace`` representation unless ``rest`` is "hide"."""
+    no representation draws get a ``trace`` (ligands: ``licorice``) unless ``rest`` is "hide"."""
     if atoms_result is None or not specs:
         return None
     a, tr = atoms_result, trace_result
@@ -147,16 +182,11 @@ def build_scene(atoms_result, trace_result, specs: Sequence[RepSpec], group_name
     if member is None:
         gi = np.asarray(tr.arrays["group_index"])
         member = np.array([gi == k for k in range(len(group_names))], dtype=bool).reshape(-1, n_res)
-    specs = list(specs)
     masks = residue_masks(specs, np.asarray(member, dtype=bool), list(group_names), n_res)
-    drawn = np.zeros(n_res, bool)
-    for spec, mask in zip(specs, masks):
-        if spec.style in STYLES:
-            drawn |= mask
-    if rest == "trace" and not drawn.all():
-        specs.append(RepSpec(style="trace", color="residue"))
-        masks.append(~drawn)
-    return MoleculeScene(topo, specs, masks)
+    scene = MoleculeScene(topo, specs, masks)
+    if rest == "trace":
+        scene.fill_rest()
+    return scene
 
 
 __all__ = ["Colored", "Shading", "MoleculeScene", "depth_range", "build_scene", "residue_masks", "Mesh",

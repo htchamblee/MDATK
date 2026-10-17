@@ -41,6 +41,7 @@ class Mesh:
     tris: np.ndarray  # (t, 3)
     owner: np.ndarray  # (n,) residue row per vertex
     role: np.ndarray  # (n,) colour role per vertex: 0 residue, 1 nucleotide, 2 sugar tint
+    atom: Optional[np.ndarray] = None  # (n,) nearest atom per vertex (surfaces: element colours)
 
 
 @dataclass
@@ -160,22 +161,49 @@ def frames_along(pos: np.ndarray, tan: np.ndarray, side: Optional[np.ndarray]):
     return t, n, np.cross(t, n)
 
 
+def catmull_rom_banded(m: int, n_sub: int):
+    """:func:`catmull_rom` in banded form: per sample the 4 indices into the control points
+    extended by the two phantom end points (``extend_controls``), position and derivative
+    weights, and the owning control point.  Memory is linear in the number of residues."""
+    t = np.arange(n_sub) / n_sub
+    basis = 0.5 * np.array([[0, 2, 0, 0], [-1, 0, 1, 0], [2, -5, 4, -1], [-1, 3, -3, 1]], dtype=np.float64)
+    w = np.stack([np.ones_like(t), t, t * t, t ** 3], 1) @ basis
+    dw = np.stack([np.zeros_like(t), np.ones_like(t), 2 * t, 3 * t * t], 1) @ basis
+    i = np.repeat(np.arange(m - 1), n_sub)
+    idx = np.concatenate([i[:, None] + np.arange(4)[None], [[m - 1, m, m + 1, m + 1]]])
+    W = np.concatenate([np.tile(w, (m - 1, 1)), [[0.0, 1.0, 0.0, 0.0]]])
+    D = np.concatenate([np.tile(dw, (m - 1, 1)), [[-0.5, 0.0, 0.5, 0.0]]])
+    owner = np.append(np.where(np.tile(t, m - 1) < 0.5, i, i + 1), m - 1)
+    return idx, W, D, owner
+
+
+def extend_controls(p: np.ndarray) -> np.ndarray:
+    """Control points with the phantom ends p[-1] = 2 p0 - p1 and p[m] = 2 p[m-1] - p[m-2]."""
+    return np.concatenate([2 * p[:1] - p[1:2], p, 2 * p[-1:] - p[-2:-1]])
+
+
 class Backbone:
     """Spline through the control atoms of whole backbone segments, swept with a profile
     over the stretches owned by the selected residues (so a selection does not change the
-    shape, and one selected residue still gets its piece)."""
+    shape, and one selected residue still gets its piece).  Segments without bases
+    (proteins) get a round tube of radius ``round_radius`` when given."""
 
     def __init__(self, topo: Topology, res_mask: np.ndarray, kind: str, half_width: float,
-                 half_height: float, n_sub: int = 8, k: int = 12):
+                 half_height: float, n_sub: int = 8, k: int = 12, round_radius: Optional[float] = None):
         self.topo = topo
-        self.prof, self.pn = profile(kind, half_width, half_height, k)
-        self.k = len(self.prof)
+        self.profiles = {False: profile(kind, half_width, half_height, k)}
+        if round_radius is not None:
+            self.profiles[True] = profile("ellipse", round_radius, round_radius, k)
         self.kind = kind
         self.parts = []
+        self.drawn = np.zeros(topo.n_res, bool)
+        has_base = np.zeros(topo.n_res, bool)
+        has_base[topo.nucleic] = True
         for seg in topo.segments:
             if not res_mask[seg].any():
                 continue
-            a, d, owner = catmull_rom(len(seg), n_sub)
+            rnd = round_radius is not None and not has_base[seg].any()
+            idx, w, d, owner = catmull_rom_banded(len(seg), n_sub)
             keep = np.flatnonzero(res_mask[seg[owner]])
             for run in np.split(keep, np.flatnonzero(np.diff(keep) != 1) + 1):
                 own = seg[owner[run]]
@@ -186,28 +214,31 @@ class Backbone:
                     continue
                 at = np.flatnonzero(run % n_sub == 0)
                 at = at[res_mask[seg[run[at] // n_sub]]]  # samples at the selected control atoms
-                self.parts.append((seg, a[run], d[run], own, seg[run[at] // n_sub], at))
+                self.parts.append((seg, idx[run], w[run], d[run], own, seg[run[at] // n_sub], at, rnd))
+                self.drawn[own] = True
         self.n_sub = n_sub
 
     def build(self, xyz: np.ndarray) -> "tuple[List[Mesh], Dict[int, np.ndarray]]":
         """Meshes, and the spline point at each residue's control atom (for rungs)."""
         topo = self.topo
         meshes, anchor = [], {}
-        for seg, a, d, own, at_res, at in self.parts:
-            p = xyz[topo.control[seg]]
-            pos, tan = a @ p, d @ p
+        for seg, idx, w, d, own, at_res, at, rnd in self.parts:
+            p = xyz[topo.control[seg]].astype(np.float64)
+            ext = extend_controls(p)[idx]  # (samples, 4, 3)
+            pos, tan = np.einsum("sk,skc->sc", w, ext), np.einsum("sk,skc->sc", d, ext)
             side = None
-            if np.all(topo.side[seg] >= 0):
-                side = a @ (xyz[topo.side[seg]] - p)
+            if not rnd and np.all(topo.side[seg] >= 0):
+                side = np.einsum("sk,skc->sc", w, extend_controls(xyz[topo.side[seg]] - p)[idx])
             t, n, b = frames_along(pos, tan, side)
-            v = pos[:, None, :] + self.prof[None, :, 0:1] * b[:, None, :] + self.prof[None, :, 1:2] * n[:, None, :]
-            nn = self.pn[None, :, 0:1] * b[:, None, :] + self.pn[None, :, 1:2] * n[:, None, :]
+            prof, pn = self.profiles[rnd]
+            k = len(prof)
+            v = pos[:, None, :] + prof[None, :, 0:1] * b[:, None, :] + prof[None, :, 1:2] * n[:, None, :]
+            nn = pn[None, :, 0:1] * b[:, None, :] + pn[None, :, 1:2] * n[:, None, :]
             ns = len(pos)
             verts = np.concatenate([v.reshape(-1, 3), pos[[0, -1]]])
             normals = np.concatenate([nn.reshape(-1, 3), -t[[0]], t[[-1]]])
-            owner = np.concatenate([np.repeat(own, self.k), own[[0, -1]]])
-            meshes.append(Mesh(verts, normals, sweep_faces(ns, self.k), owner,
-                               np.zeros(len(owner), dtype=np.int8)))
+            owner = np.concatenate([np.repeat(own, k), own[[0, -1]]])
+            meshes.append(Mesh(verts, normals, sweep_faces(ns, k), owner, np.zeros(len(owner), dtype=np.int8)))
             for r, i in zip(at_res, at):
                 anchor[int(r)] = pos[i]
         return meshes, anchor
@@ -267,6 +298,13 @@ class Style:
     def build(self, xyz: np.ndarray) -> DrawList:  # pragma: no cover - abstract
         raise NotImplementedError
 
+    def drawn(self) -> np.ndarray:
+        """Residues this style actually draws (others of the mask produce no geometry)."""
+        out = np.zeros(self.topo.n_res, bool)
+        rows = self.topo.row[self._atoms()]
+        out[rows[(rows >= 0) & (rows < self.topo.n_res)]] = True
+        return out & self.mask
+
     def _atoms(self) -> np.ndarray:
         """Atoms of the selected residues (hydrogens only when the analysis kept them)."""
         return np.flatnonzero(self.mask[self.topo.row])
@@ -279,11 +317,14 @@ class TubeStyle(Style):
     def setup(self):
         s = self.size
         self.backbone = Backbone(self.topo, self.mask, self.kind, self.half_width * s, self.half_height * s,
-                                 n_sub=int(self.opts.get("samples", 8)))
+                                 n_sub=int(self.opts.get("samples", 8)), round_radius=0.45 * s)
 
     def build(self, xyz):
         meshes, _anchor = self.backbone.build(xyz)
         return DrawList(meshes=meshes)
+
+    def drawn(self):
+        return self.backbone.drawn & self.mask
 
 
 class RibbonStyle(TubeStyle):
@@ -300,7 +341,7 @@ class CartoonStyle(Style):
         s = self.size
         topo = self.topo
         self.backbone = Backbone(topo, self.mask, "ellipse", 1.6 * s, 0.45 * s,
-                                 n_sub=int(self.opts.get("samples", 8)))
+                                 n_sub=int(self.opts.get("samples", 8)), round_radius=0.6 * s)
         sel = self.mask
         self.pur = np.flatnonzero(sel[topo.purine_res]) if len(topo.purine_res) else np.zeros(0, np.int64)
         self.pyr = np.flatnonzero(sel[topo.pyrimidine_res]) if len(topo.pyrimidine_res) else np.zeros(0, np.int64)
@@ -311,6 +352,14 @@ class CartoonStyle(Style):
         for seg in topo.segments:
             in_seg[seg] = True
         self.lone = np.flatnonzero(sel & ~in_seg & (topo.control >= 0))
+
+    def drawn(self):
+        out = self.backbone.drawn.copy()
+        out[self.lone] = True
+        for rows in (self.topo.purine_res[self.pur], self.topo.pyrimidine_res[self.pyr],
+                     self.topo.sugar_res[self.sug]):
+            out[rows] = True
+        return out & self.mask
 
     def build(self, xyz):
         topo = self.topo
@@ -342,22 +391,26 @@ class CartoonStyle(Style):
                 knee = topo.c4[r] if self.sugars else topo.c1[r]
                 if r not in anchor or knee < 0:
                     continue
+                # sticks are open cylinders: a ball closes every rung end and bend
                 if self.sugars:
                     a_pts += [anchor[r]]
                     b_pts += [xyz[knee]]
                     owners += [r]
+                    ends = [xyz[knee]]
                     c1 = topo.c1[r]
                     if c1 >= 0:
                         a_pts.append(xyz[c1])
                         b_pts.append(xyz[g])
                         owners.append(r)
+                        ends += [xyz[c1], xyz[g]]
                 else:
                     a_pts += [anchor[r], xyz[knee]]
                     b_pts += [xyz[knee], xyz[g]]
                     owners += [r, r]
-                    joints.append(xyz[knee])
-                    joint_owner.append(r)
-                    joint_r.append(0.42 * s)
+                    ends = [xyz[knee], xyz[g]]
+                joints += ends
+                joint_owner += [r] * len(ends)
+                joint_r += [0.42 * s] * len(ends)
         if a_pts:
             n = len(a_pts)
             out.sticks.append(Sticks(np.array(a_pts), np.array(b_pts), np.full(n, 0.42 * s),
@@ -389,8 +442,12 @@ class LicoriceStyle(Style):
         i, j = self.bonds[:, 0], self.bonds[:, 1]
         mid = 0.5 * (xyz[i] + xyz[j])
         keep_i, keep_j = self.sel[i], self.sel[j]
+        # half-bonds inside the selection; a bond leaving it runs to the neighbouring atom, so
+        # licorice meets a neighbouring style (e.g. the cartoon at P on either side)
+        end_i = np.where(keep_j[:, None], mid, xyz[j])
+        end_j = np.where(keep_i[:, None], mid, xyz[i])
         a = np.concatenate([xyz[i][keep_i], xyz[j][keep_j]])
-        b = np.concatenate([mid[keep_i], mid[keep_j]])
+        b = np.concatenate([end_i[keep_i], end_j[keep_j]])
         atom = np.concatenate([i[keep_i], j[keep_j]])
         out = DrawList()
         if len(a):
@@ -428,13 +485,14 @@ class SurfStyle(Style):
         from .surface import gaussian_surface
 
         at = self.atoms
+        at = at[np.isfinite(xyz[at]).all(1)]  # a blown-up frame must not break the video
         if not len(at):
             return DrawList()
         verts, normals, tris, near = gaussian_surface(xyz[at], self.spacing, self.sigma * self.size, self.iso)
         if not len(tris):
             return DrawList()
-        owner = self.topo.row[at[near]]
-        return DrawList(meshes=[Mesh(verts, normals, tris, owner, np.zeros(len(verts), np.int8))])
+        return DrawList(meshes=[Mesh(verts, normals, tris, self.topo.row[at[near]], np.zeros(len(verts), np.int8),
+                                     at[near])])
 
 
 class TraceStyle(Style):
@@ -450,6 +508,11 @@ class TraceStyle(Style):
         pairs = [np.stack([seg[:-1], seg[1:]], 1) for seg in topo.segments]
         pairs = np.concatenate(pairs) if pairs else np.zeros((0, 2), np.int64)
         self.pairs = pairs[self.mask[pairs[:, 0]] | self.mask[pairs[:, 1]]]
+
+    def drawn(self):
+        out = np.zeros(self.topo.n_res, bool)
+        out[self.rows] = True
+        return out
 
     def build(self, xyz):
         topo, s = self.topo, self.size

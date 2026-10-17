@@ -6,7 +6,7 @@ Primitives are rasterised exactly in an orthographic view matched to the panel's
 * spheres as per-pixel impostors (one sprite per radius and sub-pixel phase),
 * sticks by analytic ray / cylinder intersection.
 
-Every fragment carries a 64-bit key (quantised depth | pass | primitive), so one
+Every fragment carries a 64-bit key (quantised depth | fragment number), so one
 ``np.maximum.at`` keeps the front-most fragment per pixel; only those pixels are
 shaded (ambient + Lambert + Phong highlight from a camera light).  A compositor then
 applies the depth cue (fog toward the panel colour, as for the 2D trace), the glow
@@ -31,8 +31,7 @@ LIGHT = np.array([-0.35, 0.55, 0.76])
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
 AMBIENT, DIFFUSE, SPECULAR = 0.36, 0.64, 0.22
 ZBITS = 31  # quantised depth bits
-IDBITS = 27  # fragment index bits per pass
-MAX_PASSES = 32  # 5 pass bits: ZBITS + 5 + IDBITS = 63
+IDBITS = 32  # fragment number bits (ZBITS + IDBITS = 63: the key stays a positive int64)
 CULL_MIN = 64  # spheres per list from which hidden ones are culled
 INK = np.array([0.12, 0.12, 0.12], np.float32)
 # glow: halo radius / disc (Å), halo opacity, tint toward the glow colour
@@ -54,9 +53,10 @@ def shade(nrm: np.ndarray, rgb: np.ndarray) -> np.ndarray:
     return out
 
 
-def _spans(G, y0, y1, W):
+def _spans(G, y0, y1, W, xlo=None, xhi=None):
     """Fragments (prim, x, y) of convex regions given as half-planes a*x + b*y + c >= 0
-    (G: (P, K, 3)), rows y0..y1 per primitive, tested at pixel centres."""
+    (G: (P, K, 3)), rows y0..y1 per primitive, tested at pixel centres; columns limited to
+    xlo..xhi per primitive when given."""
     nrow = (y1 - y0 + 1).astype(np.int64)
     prim = np.repeat(np.arange(len(G), dtype=np.int64), nrow)
     start = np.cumsum(nrow) - nrow
@@ -81,6 +81,9 @@ def _spans(G, y0, y1, W):
             hi[np.flatnonzero(flat)[e < 0]] = -big
     x0 = np.maximum(np.ceil(lo - 0.5), 0).astype(np.int64)
     x1 = np.minimum(np.floor(hi - 0.5), W - 1).astype(np.int64)
+    if xlo is not None:  # widened edges of a sliver meet far outside it: keep to its box
+        x0 = np.maximum(x0, xlo[prim])
+        x1 = np.minimum(x1, xhi[prim])
     cnt = np.maximum(x1 - x0 + 1, 0)
     rows = np.flatnonzero(cnt)
     cnt = cnt[rows]
@@ -179,20 +182,23 @@ class _ZPass:
     def __init__(self, cam: _Cam):
         self.cam = cam
         self.zbuf = _buffer(cam.W * cam.H)
-        self.passes: list = []
+        self.passes: list = []  # (attributes, first fragment number, opacity)
+        self.n_frag = 0
+        self.opacity = 1.0  # of the primitives submitted next
+        self.alpha = None  # per covered pixel, after resolve()
 
     def _submit(self, pix, z, attrs):
         cam = self.cam
+        n = len(pix)
+        if not n:
+            return
+        if self.n_frag + n >= (1 << IDBITS):
+            raise RuntimeError("scene too large for the built-in renderer")
         zq = (np.clip((z - cam.zmin) / (cam.zmax - cam.zmin), 0, 1) * ((1 << ZBITS) - 1)).astype(np.int64)
-        step = (1 << IDBITS) - 1
-        for offset in range(0, len(pix), step):  # one pass per 2**27 fragments
-            pid = len(self.passes)
-            if pid >= MAX_PASSES:
-                raise RuntimeError("scene too large for the built-in renderer")
-            n = min(step, len(pix) - offset)
-            key = (zq[offset:offset + n] << (IDBITS + 5)) | (np.int64(pid) << IDBITS) | np.arange(n, dtype=np.int64)
-            np.maximum.at(self.zbuf, pix[offset:offset + n], key)
-            self.passes.append((attrs, offset))
+        key = (zq << IDBITS) | np.arange(self.n_frag, self.n_frag + n, dtype=np.int64)
+        np.maximum.at(self.zbuf, pix, key)
+        self.passes.append((attrs, self.n_frag, float(self.opacity)))
+        self.n_frag += n
 
     # -- primitives
     def mesh(self, m: Mesh, rgb):
@@ -223,14 +229,18 @@ class _ZPass:
         G[:, 1] = np.stack([a1, b1, c1], 1)
         G[:, 2] = np.stack([-a0 - a1, -b0 - b1, 1 - c0 - c1], 1)
         G[:, :, 2] += 0.02 * np.hypot(G[:, :, 0], G[:, :, 1])  # slightly conservative: no cracks
-        prim, px, py = _spans(G, by0[sel].astype(np.int64), by1[sel].astype(np.int64), cam.W)
+        prim, px, py = _spans(G, by0[sel].astype(np.int64), by1[sel].astype(np.int64), cam.W,
+                              bx0[sel].astype(np.int64), bx1[sel].astype(np.int64))
         fx, fy = px + 0.5, py + 0.5
         l0 = (a0[prim] * fx + b0[prim] * fy + c0[prim]).astype(np.float32)
         l1 = (a1[prim] * fx + b1[prim] * fy + c1[prim]).astype(np.float32)
         z0, z1, z2 = (Z[t[:, k]].astype(np.float64) for k in range(3))  # depth is plane-linear too
         za, zb = a0 * (z0 - z2) + a1 * (z1 - z2), b0 * (z0 - z2) + b1 * (z1 - z2)
         zc = z2 + c0 * (z0 - z2) + c1 * (z1 - z2)
-        z = (za[prim] * fx + zb[prim] * fy + zc[prim]).astype(np.float32)
+        z = za[prim] * fx + zb[prim] * fy + zc[prim]
+        # pixel centres just outside a sliver's edges extrapolate far: stay within the triangle
+        z = np.clip(z, np.minimum(np.minimum(z0, z1), z2)[prim], np.maximum(np.maximum(z0, z1), z2)[prim])
+        z = z.astype(np.float32)
         cols = tuple(np.ascontiguousarray(t[:, k]) for k in range(3))
         nrm = tuple(np.ascontiguousarray(Nv[:, k]) for k in range(3))
         self._submit(py * cam.W + px, z, ("mesh", nrm, cols, prim, l0, l1, z, np.asarray(rgb, np.float32),
@@ -328,31 +338,45 @@ class _ZPass:
 
     # -- resolve
     def resolve(self):
-        """(pixel indices, lit rgb, depth, owner residue) of the covered pixels."""
+        """(pixel indices, lit rgb, depth, owner residue) of the covered pixels; ``alpha``
+        then holds each pixel's opacity."""
         win = np.flatnonzero(self.zbuf >= 0)
-        key = self.zbuf[win]
-        pid = (key >> IDBITS) & 31
-        idx = key & ((1 << IDBITS) - 1)
+        num = self.zbuf[win] & ((1 << IDBITS) - 1)
         rgb = np.zeros((len(win), 3), np.float32)
         nrm = np.zeros((len(win), 3), np.float32)
         depth = np.zeros(len(win), np.float32)
         owner = np.full(len(win), -1, np.int64)
-        for p, (attrs, offset) in enumerate(self.passes):
-            sel = np.flatnonzero(pid == p)
+        alpha = np.ones(len(win), np.float32)
+        starts = np.array([p[1] for p in self.passes], np.int64)
+        pid = np.searchsorted(starts, num, side="right") - 1
+        order = np.argsort(pid, kind="stable")
+        bounds = np.searchsorted(pid[order], np.arange(len(self.passes) + 1))
+        for p, (attrs, start, opacity) in enumerate(self.passes):
+            sel = order[bounds[p]:bounds[p + 1]]
             if not len(sel):
                 continue
-            k = idx[sel] + offset
+            k = num[sel] - start
             kind = attrs[0]
             if kind == "mesh":
                 _, (nx, ny, nz), (t0, t1, t2), prim, l0, l1, z, col, own = attrs
                 pk = prim[k]
                 v0, v1, v2 = t0[pk], t1[pk], t2[pk]
-                a, b = l0[k], l1[k]
+                a, b = np.clip(l0[k], 0, 1), np.clip(l1[k], 0, 1)
+                s = np.maximum(a + b, 1)
+                a, b = a / s, b / s
                 c = 1 - a - b
                 n = np.stack([nx[v0] * a + nx[v1] * b + nx[v2] * c, ny[v0] * a + ny[v1] * b + ny[v2] * c,
                               nz[v0] * a + nz[v1] * b + nz[v2] * c], 1)
-                # the nearest vertex's colour: crisp colour boundaries
-                vert = np.where(a >= b, np.where(a >= c, v0, v2), np.where(b >= c, v1, v2))
+                # colour of the residue with the largest share of the barycentric weight:
+                # crisp, straight boundaries between residues (no zig-zag along diagonals)
+                o0, o1, o2 = own[v0], own[v1], own[v2]
+                w0 = a + b * (o1 == o0) + c * (o2 == o0)
+                w1 = b + a * (o0 == o1) + c * (o2 == o1)
+                w2 = c + a * (o0 == o2) + b * (o1 == o2)
+                best = np.where(w0 >= w1, np.where(w0 >= w2, o0, o2), np.where(w1 >= w2, o1, o2))
+                # within that residue, the nearest vertex (per-atom colours, e.g. surfaces)
+                s0, s1, s2 = (np.where(o == best, x, -1) for o, x in ((o0, a), (o1, b), (o2, c)))
+                vert = np.where(s0 >= s1, np.where(s0 >= s2, v0, v2), np.where(s1 >= s2, v1, v2))
                 rgb[sel] = col[vert]
                 owner[sel] = own[vert]
             elif kind == "spheres":
@@ -367,6 +391,8 @@ class _ZPass:
                 owner[sel] = own[prim[k]]
             nrm[sel] = n
             depth[sel] = z[k]
+            alpha[sel] = opacity
+        self.alpha = alpha
         return win, np.clip(shade(nrm, rgb), 0, 1), depth, owner
 
 
@@ -385,9 +411,18 @@ class SoftwareRenderer:
         opaque = [it for it in items if it.opacity >= 0.999]
         glass = [it for it in items if it.opacity < 0.999]
         pix, rgb, depth, owner = self._draw(cam, opaque).resolve()
-        out = composite(cam, pix, rgb, depth, owner, shading, outline=0.0 if fast else 0.5, aa=not fast)
-        if glass:
-            self._glass(cam, glass, out, pix, depth, shading)
+        front = None
+        if glass:  # the front-most translucent surface in front of the opaque one, per pixel
+            zg = self._draw(cam, glass)
+            gpix, grgb, gdepth, gown = zg.resolve()
+            opaque_z = np.full(cam.W * cam.H, -np.inf, np.float32)
+            opaque_z[pix] = depth
+            keep = gdepth > opaque_z[gpix] + 1e-3
+            front = (gpix[keep], grgb[keep], gdepth[keep], gown[keep], zg.alpha[keep])
+        out = composite(cam, pix, rgb, depth, owner, shading, outline=0.0 if fast else 0.5, aa=not fast,
+                        halo_extra=None if front is None else (front[0], front[3]))
+        if front is not None and len(front[0]):
+            _blend(cam, out, front, shading)
         if fast:  # back to the requested size
             out = np.repeat(np.repeat(out, 2, 0), 2, 1)
             full = np.zeros((vp.height, vp.width, 4), np.uint8)
@@ -400,7 +435,9 @@ class SoftwareRenderer:
     def _draw(cam: _Cam, items: List[Colored]) -> _ZPass:
         zp = _ZPass(cam)
         for it in items:
-            p = it.prim
+            p, rgb = _finite(it.prim, it.rgb)
+            zp.opacity = it.opacity
+            it = Colored(p, rgb, it.opacity)
             if isinstance(p, Mesh) and len(p.tris):
                 zp.mesh(p, it.rgb)
             elif isinstance(p, Spheres) and len(p.xyz):
@@ -409,26 +446,94 @@ class SoftwareRenderer:
                 zp.sticks(p, it.rgb)
         return zp
 
-    def _glass(self, cam, items, out, opaque_pix, opaque_depth, shading):
-        """Translucent representations: the front-most translucent surface in front of the
-        opaque one, blended with each representation's opacity."""
-        front = np.full(cam.W * cam.H, -np.inf, np.float32)
-        front[opaque_pix] = opaque_depth
-        flat = out.reshape(-1, 4)
-        for it in items:  # one pass per representation (opacity differs)
-            pix, rgb, depth, owner = self._draw(cam, [it]).resolve()
-            keep = depth > front[pix] + 1e-3
-            pix, rgb, depth, owner = pix[keep], rgb[keep], depth[keep], owner[keep]
-            if not len(pix):
-                continue
-            rgb = _tint(_fog(cam, rgb, depth, shading), owner, shading)
-            a = np.float32(it.opacity)
-            dst_a = flat[pix, 3:4].astype(np.float32) / 255.0
-            dst = flat[pix, :3].astype(np.float32) / 255.0
-            out_a = a + dst_a * (1 - a)
-            col = (rgb * a + dst * dst_a * (1 - a)) / np.maximum(out_a, 1e-6)
-            flat[pix, :3] = np.clip(col * 255 + 0.5, 0, 255).astype(np.uint8)
-            flat[pix, 3:4] = np.clip(out_a * 255 + 0.5, 0, 255).astype(np.uint8)
+
+def _finite(p, rgb):
+    """The primitive without non-finite coordinates (a blown-up frame draws what it can)."""
+    if isinstance(p, Mesh):
+        bad = ~np.isfinite(p.verts).all(1) | ~np.isfinite(p.normals).all(1)
+        if bad.any():
+            p = Mesh(p.verts, np.nan_to_num(p.normals), p.tris[~bad[p.tris].any(1)], p.owner, p.role, p.atom)
+        return p, rgb
+    if isinstance(p, Spheres):
+        ok = np.isfinite(p.xyz).all(1) & np.isfinite(p.radius)
+        if not ok.all():
+            p, rgb = Spheres(p.xyz[ok], p.radius[ok], p.owner[ok], p.atom[ok]), np.asarray(rgb)[ok]
+        return p, rgb
+    ok = np.isfinite(p.a).all(1) & np.isfinite(p.b).all(1) & np.isfinite(p.radius)
+    if not ok.all():
+        p, rgb = Sticks(p.a[ok], p.b[ok], p.radius[ok], p.owner[ok], p.atom[ok]), np.asarray(rgb)[ok]
+    return p, rgb
+
+
+def _owner_glow(owner, shading: Shading) -> np.ndarray:
+    g = shading.glow
+    if g is None or not len(g):
+        return np.zeros(len(owner), np.float32)
+    owner = np.asarray(owner)
+    ok = (owner >= 0) & (owner < len(g))
+    return np.where(ok, np.asarray(g, np.float32)[np.where(ok, owner, 0)], 0)
+
+
+def tinted(items: List[Colored], shading: Shading) -> List[Colored]:
+    """Items with glowing residues tinted toward the glow colour (for other backends)."""
+    out = []
+    for it in items:
+        owner = it.prim.owner
+        if _owner_glow(owner, shading).max(initial=0) <= 0.01:
+            out.append(it)
+            continue
+        out.append(Colored(it.prim, _tint(np.asarray(it.rgb, np.float32), np.asarray(owner), shading), it.opacity))
+    return out
+
+
+def glow_underlay(items: List[Colored], vp, shading: Shading) -> "np.ndarray | None":
+    """The glow halo alone as straight-alpha RGBA (row 0 at the top), for backends that draw
+    the molecule themselves; None when nothing glows."""
+    glowing = []
+    for it in items:
+        p = it.prim
+        if isinstance(p, Mesh):
+            hot = _owner_glow(p.owner, shading) > 0.01
+            if hot.any():
+                glowing.append(Colored(Mesh(p.verts, p.normals, p.tris[hot[p.tris].any(1)], p.owner, p.role, p.atom),
+                                       it.rgb, it.opacity))
+        else:
+            hot = _owner_glow(p.owner, shading) > 0.01
+            if hot.any():
+                sub = (Spheres(p.xyz[hot], p.radius[hot], p.owner[hot], p.atom[hot]) if isinstance(p, Spheres)
+                       else Sticks(p.a[hot], p.b[hot], p.radius[hot], p.owner[hot], p.atom[hot]))
+                glowing.append(Colored(sub, np.asarray(it.rgb)[hot], it.opacity))
+    if not glowing:
+        return None
+    cam = _Cam(vp, items)
+    pix, _rgb, _depth, owner = SoftwareRenderer._draw(cam, glowing).resolve()
+    out = np.zeros((cam.H, cam.W, 4), np.uint8)
+    if len(pix):
+        _glow_halo(out, cam, pix, _glow_of(owner, shading), shading)
+    return out
+
+
+def over(top: np.ndarray, under: np.ndarray) -> np.ndarray:
+    """Straight-alpha ``top`` over ``under`` (same shape, uint8 RGBA)."""
+    ta = top[..., 3:4].astype(np.float32) / 255
+    ua = under[..., 3:4].astype(np.float32) / 255
+    a = ta + ua * (1 - ta)
+    rgb = (top[..., :3] * ta + under[..., :3] * ua * (1 - ta)) / np.maximum(a, 1e-6)
+    return np.concatenate([np.clip(rgb + 0.5, 0, 255), np.clip(a * 255 + 0.5, 0, 255)], -1).astype(np.uint8)
+
+
+def _blend(cam, out, front, shading: Shading) -> None:
+    """Translucent pixels (straight alpha) over the opaque image."""
+    pix, rgb, depth, owner, a = front
+    rgb = _tint(_fog(cam, rgb, depth, shading), owner, shading)
+    flat = out.reshape(-1, 4)
+    a = a[:, None]
+    dst_a = flat[pix, 3:4].astype(np.float32) / 255.0
+    dst = flat[pix, :3].astype(np.float32) / 255.0
+    out_a = a + dst_a * (1 - a)
+    col = (rgb * a + dst * dst_a * (1 - a)) / np.maximum(out_a, 1e-6)
+    flat[pix, :3] = np.clip(col * 255 + 0.5, 0, 255).astype(np.uint8)
+    flat[pix, 3:4] = np.clip(out_a * 255 + 0.5, 0, 255).astype(np.uint8)
 
 
 def _fog(cam, rgb, depth, shading: Shading):
@@ -490,16 +595,17 @@ def _upsample(low: np.ndarray, f: int, h: int, w: int) -> np.ndarray:
     return along0(along0(low.astype(np.float32)).T).T[:h, :w]
 
 
-def _glow_halo(out, cam, pix, gi, shading: Shading, box):
+def _glow_halo(out, cam, pix, gi, shading: Shading):
     """A soft halo of the glow colour around glowing pixels (under the molecule)."""
     W, H = cam.W, cam.H
-    y0, y1, x0, x1 = box
+    py, px = pix // W, pix % W
+    y0, y1 = max(int(py.min()) - 2, 0), min(int(py.max()) + 3, H)
+    x0, x1 = max(int(px.min()) - 2, 0), min(int(px.max()) + 3, W)
     f = 4
     pad = int(np.ceil(2.5 * GLOW_RADIUS * cam.s))
     gy0, gx0 = (max(y0 - pad, 0) // f) * f, (max(x0 - pad, 0) // f) * f
     gy1, gx1 = min(y1 + pad, H), min(x1 + pad, W)
     hh, ww = -(-(gy1 - gy0) // f), -(-(gx1 - gx0) // f)
-    py, px = pix // W, pix % W
     low = np.zeros(hh * ww, np.float32)
     np.maximum.at(low, ((py - gy0) // f) * ww + (px - gx0) // f, gi)
     sig = GLOW_RADIUS * cam.s / f
@@ -512,11 +618,19 @@ def _glow_halo(out, cam, pix, gi, shading: Shading, box):
 
 
 def composite(cam, pix, rgb, depth, owner, shading: Shading, outline=0.5, outline_depth=1.6,
-              aa=True) -> np.ndarray:
+              aa=True, halo_extra=None) -> np.ndarray:
     """Covered pixels -> straight-alpha RGBA: fog, glow (tint + halo), ink outlines at depth
-    jumps and silhouettes, alpha anti-aliasing of the edges."""
+    jumps and silhouettes, alpha anti-aliasing of the edges.  ``halo_extra`` (pixels, owners)
+    adds glowing pixels drawn later (translucent surfaces) to the halo."""
     W, H = cam.W, cam.H
     out = np.zeros((H, W, 4), np.uint8)
+    gi = _glow_of(owner, shading)
+    hpix, hgi = pix, gi
+    if halo_extra is not None and len(halo_extra[0]):
+        hpix = np.concatenate([pix, halo_extra[0]])
+        hgi = np.concatenate([gi, _glow_of(halo_extra[1], shading)])
+    if hgi.max(initial=0) > 0.01:
+        _glow_halo(out, cam, hpix, hgi, shading)
     if not len(pix):
         return out
     rgb = _fog(cam, rgb, depth, shading)
@@ -524,9 +638,7 @@ def composite(cam, pix, rgb, depth, owner, shading: Shading, outline=0.5, outlin
     py, px = pix // W, pix % W
     y0, y1 = max(int(py.min()) - 2, 0), min(int(py.max()) + 3, H)
     x0, x1 = max(int(px.min()) - 2, 0), min(int(px.max()) + 3, W)
-    gi = _glow_of(owner, shading)
     if gi.max(initial=0) > 0.01:
-        _glow_halo(out, cam, pix, gi, shading, (y0, y1, x0, x1))
         rgb = _tint(rgb, owner, shading)
     if outline > 0:
         h, w = y1 - y0, x1 - x0

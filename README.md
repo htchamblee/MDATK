@@ -370,7 +370,7 @@ of the aptamer and licorice of a binding pocket can share the view.
 | `cartoon` | New Cartoon for nucleic acids: an elliptical tube along a spline through P (or C4′, `visual.backbone_atom`), a rung from the backbone through C1′ to the glycosidic N (N9 / N1; C5 for pseudouridine), and each base as a closed slab (purines as the whole fused 9-atom outline). With *sugars*, the ribose ring is a lighter slab and the rung runs backbone → C4′, C1′ → N. |
 | `ribbon` | a flat band through the backbone points, facing the bases |
 | `tube` | a round tube through the backbone points |
-| `licorice` | bonds as sticks with atom balls (r = 0.3 Å); a group next to a cartoon joins it at the backbone |
+| `licorice` | bonds as sticks with atom balls (r = 0.3 Å); bonds leaving the group run to the neighbouring atom, so it reaches a neighbouring cartoon |
 | `vdw` | van der Waals spheres (Bondi radii) |
 | `surf` | a smooth molecular surface (sum of atomic Gaussians, like VMD QuickSurf), coloured by the nearest residue |
 | `trace` | a ball at each backbone point and sticks to its neighbours (the 2D trace, but in 3D) |
@@ -379,16 +379,20 @@ of the aptamer and licorice of a binding pocket can share the view.
   the rung bends at C1′, so the glycosidic angle (*syn*/*anti*) shows; the full purine outline
   shows inclination, propeller twist, buckle and stacking; the optional sugar slab shows the
   pucker; the backbone keeps the analysis colours (groups / proximity / glow) while bases are
-  coloured by nucleotide (A blue, G green, C gold, U/T red). The spline is computed along whole
-  strands, so a representation of part of a strand has the same shape as the full one.
-- **Colouring.** `auto`: residue colours for backbones and carbons, nucleotide colours for cartoon
-  bases, element colours for other atoms; or `residue`, `element`, `nucleotide` throughout.
-- **Other residues.** Residues no representation draws are shown as a `trace` (default) or hidden
-  (`visual.rep_rest: hide`). Mg²⁺ ions are spheres in the scene.
+  coloured by nucleotide (A blue, G green, C gold, U/T red; Amber, CHARMM and other names, or the
+  base's own atoms for unknown names). The spline is computed along whole strands, so a
+  representation of part of a strand has the same shape as the full one.
+- **Colouring.** `auto`: residue colours for backbones, carbons and surfaces, nucleotide colours
+  for cartoon bases, element colours for other atoms; or `residue`, `element` (surfaces by the
+  nearest atom), `nucleotide` throughout.
+- **Other residues.** Residues no representation draws (including those a style cannot draw, such
+  as a small-molecule target under a cartoon) are shown as a `trace`, ligands without a backbone
+  atom as `licorice` (default), or hidden (`visual.rep_rest: hide`). Mg²⁺ ions are spheres in the
+  scene.
 - **Look.** Lit surfaces, the same depth cue (fog toward the panel colour) as the 2D trace, ink
   outlines at depth steps (they separate stacked bases of the same colour) and anti-aliased edges.
   Glowing residues get a soft halo and a tint in the glow colour. Translucent representations show
-  what is behind them.
+  what is behind them (the front-most translucent surface over the opaque ones).
 - **Renderer.** `visual.renderer: auto` (default) uses the built-in renderer: a numpy z-buffer
   rasteriser that needs no OpenGL, so the same video comes out of a laptop, the GUI and a
   headless cluster node. It costs roughly 50–80 ms per 1080p frame for cartoon or licorice of a
@@ -396,7 +400,8 @@ of the aptamer and licorice of a binding pocket can share the view.
   preview it renders at half resolution. `renderer: vtk` uses VTK (`pip install '.[vtk]'`) where it
   can render (a display, or EGL / OSMesa libraries on a headless machine, e.g. `libegl1
   libegl-mesa0`); this is checked once in a separate process, and where VTK cannot render, the
-  built-in renderer is used with a note in the log. VTK keeps the 2D glow halos.
+  built-in renderer is used with a note in the log. With VTK the glow is drawn the same way;
+  translucent representations use VTK's own blending (all layers show).
 
 ## Density maps
 
@@ -649,9 +654,9 @@ fog, glow and translucency, thread safety and a render without a display.
 - The script wizard and planner only write files. Generated scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
-- 3D representations are made for nucleic acids. Protein residues get a tube through CA in
-  cartoons (no helix / sheet detection), and licorice, VDW, surface and trace work for any
-  residue. Surfaces are rebuilt every frame (tens of ms for a few thousand atoms; the grid
+- 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
+  cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
+  any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame (tens of ms for a few thousand atoms; the grid
   coarsens to 1.5 Å above 5 000 atoms).
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary

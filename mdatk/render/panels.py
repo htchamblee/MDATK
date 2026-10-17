@@ -390,7 +390,9 @@ class StructurePanel(Panel):
 
     def rotation_artists(self) -> list:
         """Static artists that still change when the view rotates (interactive previews)."""
-        return [self.density_img] if self.density_img is not None else []
+        if self.density_img is None or self.ctx.project.density.front:  # front: already animated
+            return []
+        return [self.density_img]
 
     def _residue_tags(self, v, tr):
         """Residue-number labels: every N-th residue and/or an explicit list."""
@@ -463,10 +465,12 @@ class StructurePanel(Panel):
             style_legend(self.legend, self.theme, self.ctx.font_size)
 
     def animated_artists(self):
-        arts = [self.halo_outer, self.halo_inner, self.lines, self.points]
+        arts = [self.halo_outer, self.halo_inner, self.lines]
         if self.stage is not None:
             arts.append(self.stage.image)
-        arts.append(self.ion_points)
+        if self.density_img is not None and self.ctx.project.density.front:
+            arts.append(self.density_img)  # over the moving layers in videos too (zorder 3.5)
+        arts += [self.points, self.ion_points]
         arts += self.tags
         if self.time_text is not None:
             arts.append(self.time_text)
@@ -477,6 +481,10 @@ class StructurePanel(Panel):
     def draw_frame(self, pos):
         v = self.ctx.project.visual
         xyz = self.view[pos]
+        if self.stage is not None:
+            self.stage.update(pos)
+        # the 3D scene draws the residues, ions and glow; if it fails, the 2D trace does
+        three_d = self.stage is not None and not self.stage.failed
         span = max(self.zmax - self.zmin, 1e-6)
         depth = (xyz[:, 2] - self.zmin) / span if v.depth_cue else np.ones(len(xyz))
         colors = frame_colors(self.static, v.color_mode, v.base_color, v.proximity_color,
@@ -488,13 +496,13 @@ class StructurePanel(Panel):
         ps = v.point_size
         sizes = ps * (0.55 + 0.9 * depth)
         order = np.argsort(xyz[:, 2], kind="stable")
-        if self.stage is not None:  # residues drawn in 3D leave the 2D trace
+        if three_d:  # residues drawn in 3D leave the 2D trace
             order = order[~self.covered[order]]
         self.points.set_offsets(xyz[order, :2])
         self.points.set_sizes(sizes[order])
         self.points.set_facecolors(colors[order])
         links = self.links
-        if self.stage is not None and len(links):
+        if three_d and len(links):
             links = links[~(self.covered[links[:, 0]] | self.covered[links[:, 1]])]
         self.lines.set_segments([])
         if len(links):
@@ -507,7 +515,7 @@ class StructurePanel(Panel):
             self.lines.set_color(seg_col[so])
             self.lines.set_linewidths(v.line_width * (0.5 + 0.9 * seg_depth[so]))
         intensity = self.glow[:, pos] * v.glow_strength
-        if self.stage is not None and getattr(self.stage.renderer, "draws_glow", False):
+        if three_d and getattr(self.stage.renderer, "draws_glow", False):
             intensity = np.zeros(0)  # the renderer draws the glow around the 3D residues
         sel = np.flatnonzero(intensity > 0.01)
         if len(sel):
@@ -525,11 +533,10 @@ class StructurePanel(Panel):
         else:
             self.halo_outer.set_offsets(np.zeros((0, 2)))
             self.halo_inner.set_offsets(np.zeros((0, 2)))
-        if self.ion_view.shape[1] and self.stage is None:
-            self.ion_points.set_offsets(self.ion_view[pos][:, :2])
-        if self.stage is not None:  # ions are spheres in the 3D scene
+        if three_d:  # ions are spheres in the 3D scene
             self.ion_points.set_offsets(np.zeros((0, 2)))
-            self.stage.update(pos)
+        elif self.ion_view.shape[1]:
+            self.ion_points.set_offsets(self.ion_view[pos][:, :2])
         if self.tags:  # push each label outward, away from the projected centre
             xy = xyz[self.tag_rows, :2]
             centre = xyz[:, :2].mean(axis=0)

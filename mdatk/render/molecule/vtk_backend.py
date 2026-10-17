@@ -1,8 +1,9 @@
 """Optional VTK renderer for the 3D representations (``pip install vtk``).
 
 Used only when ``renderer: vtk`` is chosen; the built-in software renderer is the
-default.  VTK renders offscreen into an RGBA image with a transparent background, so
-the density shadow and the glow halos drawn by matplotlib show around the molecule.
+default.  VTK renders offscreen into an RGBA image with a transparent background (the
+density shadow shows around the molecule); the glow tint and halo are added in numpy,
+exactly as the built-in renderer draws them.
 
 * Only ``vtkmodules`` is used (no pyvista).  Spheres and sticks are GPU
   impostors; meshes are ordinary polydata.
@@ -105,7 +106,7 @@ def release_thread() -> None:
 
 class VtkRenderer:
     name = "vtk"
-    draws_glow = False  # the panel keeps its glow halos and tints glowing residues
+    draws_glow = True  # the same tint and halo as the built-in renderer (computed in numpy)
 
     def render(self, items: List[Colored], viewport, shading: Shading, quality: str = "high") -> np.ndarray:
         tid, me = threading.get_ident(), threading.current_thread()
@@ -113,7 +114,12 @@ class VtkRenderer:
             entry = _SCENES.get(tid)
             if entry is None or entry[0] is not me:  # thread ids are reused: never share a context
                 entry = _SCENES[tid] = (me, Scene())
-        rgba = entry[1].render(items, viewport, shading)
+        from .software import glow_underlay, over, tinted
+
+        rgba = entry[1].render(tinted(items, shading), viewport, shading)
+        halo = glow_underlay(items, viewport, shading)
+        if halo is not None and halo.shape == rgba.shape:
+            rgba = over(rgba, halo)
         if quality != "fast":
             from scipy import ndimage
 

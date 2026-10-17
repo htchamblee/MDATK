@@ -104,3 +104,90 @@ def test_styles_build_outward_meshes_for_selected_residues(demo_atoms, style):
     if style in ("vdw", "licorice"):
         n_atoms = int((topo.row < 12).sum())
         assert len(dl.spheres[0].xyz) == n_atoms
+
+
+def test_banded_spline_matches_dense():
+    from mdatk.render.molecule.geometry import catmull_rom_banded, extend_controls
+
+    p = np.random.default_rng(4).normal(size=(7, 3))
+    a, d, owner = catmull_rom(7, 8)
+    idx, w, dw, owner2 = catmull_rom_banded(7, 8)
+    ext = extend_controls(p)[idx]
+    np.testing.assert_allclose(np.einsum("sk,skc->sc", w, ext), a @ p, atol=1e-12)
+    np.testing.assert_allclose(np.einsum("sk,skc->sc", dw, ext), d @ p, atol=1e-12)
+    assert np.array_equal(owner, owner2)
+
+
+def test_charmm_names_and_bases_told_by_their_atoms():
+    from mdatk.render.molecule.topology import PURINE_RING, PYRIMIDINE_RING
+
+    assert [base_letter(r) for r in ("ADE", "GUA", "CYT", "URA", "THY", "URI")] == ["A", "G", "C", "U", "T", "U"]
+    names, res = [], []
+    for r, extra in enumerate([("O6",), ("N6",), ("N4",), ("O4",), ("O4", "C7")]):
+        ring = PURINE_RING if r < 2 else PYRIMIDINE_RING
+        for n in ring + extra:
+            names.append(n)
+            res.append(r)
+    n = len(names)
+    topo = Topology(names, ["C"] * n, ["XXX"] * n, np.array(res), 5, np.zeros((0, 2)), np.zeros((n, 3)),
+                    np.zeros(5, int), np.arange(5))
+    assert topo.letter == ["G", "A", "C", "U", "T"]
+
+
+def test_undrawable_residues_fall_back(demo_atoms):
+    """Residues no representation actually draws get the trace; residues without a backbone
+    atom (ligands, which backbone styles cannot draw) get licorice."""
+    from mdatk.config import RepSpec
+    from mdatk.render.molecule.scene import MoleculeScene
+
+    topo, xyz = demo_atoms
+    mask = np.zeros(topo.n_res, bool)
+    mask[[0, 2, 3]] = True  # residue 0: its stretch exists; all three are drawn
+    sc = MoleculeScene(topo, [RepSpec("tube")], [mask])
+    assert sc.drawn()[[0, 2, 3]].all() and not sc.drawn()[1]
+    sc.fill_rest()
+    assert [s.style for s in sc.specs] == ["tube", "trace"] and sc.styles[1].mask[1] and not sc.styles[1].mask[0]
+    saved = topo.control
+    topo.control = topo.control.copy()
+    topo.control[5] = -1  # pretend residue 5 has no backbone atom
+    try:
+        sc = MoleculeScene(topo, [RepSpec("cartoon")], [np.arange(topo.n_res) < 3])
+        sc.fill_rest()
+        lic = [st for sp, st in zip(sc.specs, sc.styles) if sp.style == "licorice"]
+        assert lic and lic[0].mask[5] and lic[0].mask.sum() == 1
+    finally:
+        topo.control = saved
+
+
+def test_protein_segments_get_a_round_tube():
+    from mdatk.render.molecule.geometry import Backbone
+
+    class T:
+        n_res = 6
+        segments = [np.arange(6)]
+        nucleic = np.zeros(0, np.int64)
+        control = np.arange(6)
+        side = np.arange(6) + 6
+
+    xyz = np.zeros((12, 3))
+    xyz[:6, 0] = np.arange(6) * 3.8
+    xyz[6:, 1] = np.array([1, -1, 1, -1, 1, -1]) * 1.5  # side atoms alternate (CB on a strand)
+    xyz[6:, 0] = xyz[:6, 0]
+    meshes, _ = Backbone(T(), np.ones(6, bool), "ellipse", 1.6, 0.45, round_radius=0.6).build(xyz)
+    v = meshes[0].verts[:-2].reshape(-1, 12, 3)
+    centre = v.mean(1, keepdims=True)
+    np.testing.assert_allclose(np.linalg.norm(v - centre, axis=2), 0.6, atol=1e-6)
+
+
+def test_cartoon_rungs_are_closed_by_balls(demo_atoms):
+    topo, xyz = demo_atoms
+    mask = np.zeros(topo.n_res, bool)
+    mask[:4] = True
+    for sugars, per_res in ((False, 2), (True, 3)):
+        dl = STYLES["cartoon"](topo, mask, sugars=sugars).build(xyz[0])
+        balls = dl.spheres[0].xyz
+        ends = np.concatenate([dl.sticks[0].a, dl.sticks[0].b])
+        assert len(balls) == 4 * per_res
+        # every stick end except the backbone anchor sits in a ball
+        d = np.linalg.norm(ends[:, None] - balls[None], axis=2).min(1)
+        assert (d < 1e-9).sum() >= len(ends) - 4
