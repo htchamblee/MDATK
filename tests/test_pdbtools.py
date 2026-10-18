@@ -187,7 +187,13 @@ def test_convert_names_all_schemes_and_round_trip():
     assert any("5'-terminal residues carry P/OP1/OP2" in n for n in amber.notes)
     ccd = pt.clean(amber.text, scheme="ccd")
     assert [n for _, _, n in names(ccd.structure)] == [
-        "G", "C", "A", "U", "0G5", "0C", "0A", "0U3", "0A", "U", "DG", "PSU"]
+        "G", "C", "A", "U", "0G", "0C", "0A", "0U3", "0A", "U", "DG", "PSU"]  # 5' phosphates: 0G, not 0G5
+    assert any("keep the CCD component names" in n and "B:5" in n for n in ccd.notes)
+    assert not any("missing TER?" in n for n in ccd.notes)  # LG5 with its phosphate is still a 5' end
+    # a 5'-OH end gets the variant
+    no_p = "\n".join(ln for ln in text.splitlines()
+                     if not (ln[17:20].strip() == "0G" and ln[12:16].strip() in ("P", "OP1", "OP2", "OP3"))) + "\n"
+    assert [n for _, _, n in names(pt.clean(no_p, scheme="ccd").structure)][4] == "0G5"
     rosetta = pt.clean(ccd.text, scheme="rosetta")
     assert [n for _, _, n in names(rosetta.structure)] == [
         "G", "C", "A", "U", "0G", "0C", "0A", "0U", "0A", "U", "DG", "PSU"]
@@ -217,7 +223,7 @@ def test_to_lrna_renames_only_ranges_and_keeps_terminals():
                                   ("B", 1, "LG5"), ("B", 2, "LC3")]
     assert any("forced L although the sugar geometry is D" in n for n in r.notes)
     r = pt.to_lrna(text, [("B", 1, 2)], scheme="ccd")
-    assert [n for _, _, n in names(r.structure)][-2:] == ["0G5", "0C3"]
+    assert [n for _, _, n in names(r.structure)][-2:] == ["0G", "0C3"]  # the 5' end keeps its phosphate
     assert [n for _, _, n in names(r.structure)][:4] == ["G5", "C", "A", "U3"]
 
 
@@ -473,7 +479,7 @@ def test_clean_end_to_end_from_path(tmp_path):
     ref.write_text(make_pdb(REFERENCE))
     r = pt.clean(str(path), chain_reference=str(ref), scheme="ccd", renumber=True, per_chain=True,
                  seqres=True, make_fasta=True)
-    assert names(r.structure)[:6] == [("A", 1, "G"), ("A", 2, "C"), ("A", 3, "U"), ("B", 1, "0G5"),
+    assert names(r.structure)[:6] == [("A", 1, "G"), ("A", 2, "C"), ("A", 3, "U"), ("B", 1, "0G"),
                                       ("B", 2, "0A"), ("B", 3, "0C3")]
     assert r.fasta.startswith(">solvated_A chain A | RNA | 3 residues\nGCU\n>solvated_B chain B | L-RNA")
     out = r.text.splitlines()

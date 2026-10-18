@@ -33,6 +33,12 @@ structure view. The structure view can be **zoomed and centred** on a residue or
 in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
 file as REMARK 950 records.
 
+Since 0.0.3c MDATK **builds starting structures** (ideal A-form helices of either chirality, base
+mutations with compensatory partners, rigid-body fits into a map), writes **restraint dictionaries**
+for the L-RNA terminal residues Coot and Phenix do not know (acedrg / phenix.elbow from built-in L
+SMILES, renamed to the model's atom names), and adds planner steps for **real-space refinement** with
+Phenix 1.21 / 2.x and Coot 0.9 / 1.x (batch). microMg is now available with TIP4P-D as well.
+
 ---
 
 ## Contents
@@ -49,6 +55,8 @@ file as REMARK 950 records.
 - [Outputs](#outputs)
 - [Caching and reproducibility](#caching-and-reproducibility)
 - [PDB clean-up](#pdb-clean-up)
+- [Structure builder](#structure-builder)
+- [Restraint dictionaries and real-space refinement](#restraint-dictionaries-and-real-space-refinement)
 - [Citations](#citations)
 - [Command line reference](#command-line-reference)
 - [Project files](#project-files)
@@ -196,7 +204,8 @@ started.
   dragging from an output port (right edge) to an input port (left edge); only compatible files
   connect, and loops are refused. Double-click a box to edit it in the wizard. *Templates* insert
   pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
-  VMD; Amber protocol; Amber → GROMACS). *Write all files* writes every step, a master script that
+  VMD; Amber protocol; Amber → GROMACS; ideal helix → Amber build → restraints → MD; model + map →
+  restraint dictionaries → Phenix RSR → Coot RSR). *Write all files* writes every step, a master script that
   runs the steps in order, and a Markdown summary of the plan. *Use for analysis* (on an MDATK
   analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
   the project file (`workflow` section), so one file holds the plan and the analysis settings.
@@ -227,6 +236,10 @@ anywhere. Each script's header cites what that step uses (see [Citations](#citat
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
 | **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours, bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
+| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build`: ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see Structure builder |
+| **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see Restraint dictionaries |
+| **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see Real-space refinement |
+| **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see Real-space refinement |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
 **Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
@@ -307,11 +320,12 @@ links:
   0.2197 nm / 7.6257 kJ/mol, which MDATK uses.
 - OPC (the SPC/E values, shown to transfer): J. Chem. Phys. 156, 114501 (2022), doi:10.1063/5.0087292
 
-MDATK does not offer two combinations:
-
-- microMg with TIP4P-D: the authors' parameter file and paper disagree on the Mg²⁺–RNA σ (0.2598 nm
-  vs 0.2197 nm for Mg–O2).
-- OPC3: there are no published sets.
+Where a paper's table and the parameter file differ, the file is right: N. Schwierz confirmed that
+the files on GitHub match the published scaling factors and the tables carry transcription errors.
+For TIP4P-D microMg, σ(Mg–OP) is 0.2598 nm (λσ = 1.3255; Table 1 prints 0.2197 nm, and nanoMg is
+affected likewise); for TIP3P nanoMg σ(Mg–OP) is 0.2279 nm (not 0.2277); for OPC microMg σ(Mg–Cl)
+is 0.4318 nm (not 0.4316). MDATK uses the file values throughout, so every water model above has
+both microMg and nanoMg. OPC3 has no published set.
 
 The authors publish no Amber files, so MDATK converts their values: Rmin/2 = 2^(1/6)·σ/2,
 Rmin_ij = 2^(1/6)·σ_ij, 1 kcal = 4.184 kJ. An Amber build with these sets, converted to GROMACS, gives
@@ -628,7 +642,8 @@ files with fixed-column output that keeps coordinates, occupancies and B-factors
   `C:45-73` force L. A warning lists L-named residues with D geometry and vice versa.
 - **Residue names**: `amber` (D: A C G U, A5/A3 …; L: LA LC LG LU, LA5/LA3 … as in Dudek & Trylska's
   library; a single-residue L segment gets the 5′ unit), `ccd` for Coot / Phenix (L: 0A 0C 0G 0U and
-  0A5/0A3 … - these terminal variants are not CCD entries), `rosetta` (L: 0A …, no terminal variants,
+  0A5/0A3 … - these terminal variants are not CCD entries; a 5′ end that keeps its phosphate is named
+  after the component itself, e.g. 0G), `rosetta` (L: 0A …, no terminal variants,
   every polymer residue as ATOM because Rosetta ignores HETATM residues) and `pdb` (non-standard
   residues as HETATM). Any of these, plus common aliases (RA, G5, ADE …), is recognised on input;
   DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
@@ -678,6 +693,135 @@ mdatk pdb annotate model.pdb -o annotated.pdb --engine builtin --no-stacking
 `--no-pairs`, `--no-stacking` and `--no-dotbracket` leave record types out; `-p PROJECT` logs the
 step (with the Barnaba citation when it was used).
 
+## Structure builder
+
+*Workflow → Structure builder…*, `mdatk build` and the planner step *Structure builder (MDATK)* make
+starting structures without external programs.
+
+**Ideal helices.** An A-form RNA duplex (Watson-Crick complement, or an explicit partner 5'→3' of the
+same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fiber
+monomer (the `$ARNA` table of AmberTools' `dat/leap/parm/nucgen.dat`, embedded in MDATK): C3'-endo
+sugars, χ ≈ −166°, 11 bp per turn (twist 32.7°, rise 2.81 Å), Watson-Crick pairs with C1'–C1' 10.9 Å and
+O3'–P 1.59 Å. The **L** helix is the exact mirror image (left-handed, L-nucleotides) with L names from
+the PDB clean-up schemes: by default A/C/G/U and 0A/0C/0G/0U (all ATOM, no terminal variants), or
+`--scheme amber` (LA5 … LU3), `ccd`, `rosetta`, `pdb`. Chains start with a 5'-OH unless
+`--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by default). G·U pairs get an
+approximate wobble geometry (bases turned in their plane about C1'); other mismatches keep the
+Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre at the origin.
+
+**Mutations.** `A:5G, B:20C`: the new base is superposed on the old glycosidic frame (C1', N9/N1 and the
+two ring atoms bonded to it: purine N9/C4/C8 ↔ pyrimidine N1/C2/C6); sugar and backbone atoms stay as
+they are, the residue keeps its name scheme, chirality and terminal variant (LG5 → LC5, 0G → 0C,
+G5 → C5) and record type. Hydrogens of the old base are dropped (the new base has heavy atoms only).
+With *compensatory* mutations (default) every mutated base that is Watson-Crick / G·U paired in the
+input (builtin pair detection) gets its partner changed to the complement unless the partner is mutated
+explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed.
+
+**Rigid-body fit.** The density-map fit of `mdatk density fit` (global search: rotations × FFT
+translations, then local refinement; or local refinement of the model as placed) applied to a PDB
+file: only the coordinates change (ANISOU records are rotated), every other line is copied. An ideal
+self-complementary duplex is two-fold symmetric, so the fit may swap its strands.
+
+```bash
+mdatk build helix --seq GGCAUCGAUGCC -o helix.pdb                      # D duplex, A/C/G/U
+mdatk build helix --seq GGCAU --chirality L --scheme amber --hydrogens -o lhelix.pdb
+mdatk build helix --seq GGCAU --partner AAGCU -o wobble.pdb            # G·U + A·A mismatch
+mdatk build helix --seq GGACU --partner none --chains C --start 45 -o strand.pdb
+mdatk build mutate lhelix.pdb "A:2C, B:3G" [--no-compensatory] [--wobble] -o mutant.pdb
+mdatk build fit model.pdb map.mrc --resolution 4 [--search local] [--step 30] -o fitted.pdb
+```
+
+Add `-p project.mdatk.toml` to log the step (the fit logs its correlation). The planner step writes a
+short script calling `python3 -m mdatk build …` (MDATK must be importable by that Python); its inputs
+are the model (mutate, fit) and the map (fit), its output the PDB.
+
+## Restraint dictionaries and real-space refinement
+
+MDATK writes the scripts; acedrg, Phenix and Coot run on your machine. These command lines were
+written from the programs' documentation and checked with stand-in executables only (none of the three
+is installed where MDATK was tested), so check the first run - every version-dependent detail sits in
+one table at the top of `mdatk/workflows/dictstep.py` and `mdatk/workflows/refine.py`.
+
+### Restraint dictionaries for L-RNA (Coot / Phenix)
+
+Coot and Phenix need an mmCIF restraint dictionary for every residue name they do not know, with atom names
+identical to the model's. The CCD has the L-ribonucleotides 0A, 0C, 0G and 0U, but not the terminal variants
+0A5/0A3, 0C5/0C3, 0G5/0G3 and 0U5/0U3 that `mdatk pdb clean --scheme ccd` writes at L-RNA chain ends.
+acedrg (CCP4) and phenix.elbow (Phenix) build restraints from a SMILES string but invent their own atom names;
+MDATK supplies the SMILES and renames the result:
+
+* `mdatk dict list` - the twelve codes with the isomeric SMILES given to the programs (all four sugar centres
+  L; `--json` for scripts). `mdatk dict smiles 0G5` prints one.
+* `mdatk dict finish work_0G5/ --code 0G5 -o 0G5.cif` - finds the dictionary acedrg / eLBOW wrote (a file,
+  a folder or a glob), maps every atom to the CCD names by graph matching (element + bonds; hydrogens by
+  their heavy atom: H5'/H5'', H61/H62 ... from the generated coordinates), checks the sugar chirality and sets
+  `_chem_comp.id`, name and `group` (`RNA` by default so the residue is linked into the chain;
+  `--group non-polymer` for a free ligand). `--project` records the step in the project log.
+* `mdatk dict pubchem CID` - the only command that uses the network: fetches the isomeric SMILES of a PubChem
+  compound and reports which code it matches (wrong stereochemistry or compound is refused).
+* Planner step **Restraint dictionaries · acedrg / eLBOW** (Refinement): program acedrg or phenix.elbow
+  (Phenix 1.21 / 2.x, sourcing `phenix_env.sh`; or a CCP4 setup script), the codes (by default the 5'/3'
+  variants the connected model needs - detected from the sugar geometry, so Amber or cpptraj names work - or
+  all eight), custom `code = SMILES` lines and, off by default, "Fetch SMILES from PubChem when writing
+  (network)" with `code = CID` lines. The step writes one `.smi` file per code, runs the program in
+  `work_<code>/`, then a copy of `dictionaries.py` (`python3 ..._dictionaries_....py finish ...`) writes
+  `<project>_<step>_<code>_<time>.cif`; the output port carries these dictionaries.
+
+Conventions: `<code>5` = no 5'-phosphate, HO5' on O5' (a 5' end that keeps its phosphate is named
+after the CCD component itself, `0G` etc., by `mdatk pdb clean --scheme ccd`, so it needs no extra
+dictionary); `<code>3` = P, OP1, OP2 without the leaving OP3 and a
+free 3'-OH (generated from the 5'-monophosphate; `finish` deletes OP3 and every restraint that uses it); the
+parents keep OP3 and HO3' as leaving atoms of the polymer link, as in the CCD.
+
+Note on the CCD files of 0A/0C/0G/0U (monomer-library form): their SMILES / InChI descriptors and ideal
+coordinates describe the **D** enantiomer (CIP R,R,S,R at C1'/C2'/C3'/C4'; InChI .../m1/s1 like natural AMP);
+only their `_chem_comp_chir` restraints are L. Do not feed those descriptors to acedrg / eLBOW - MDATK's table
+has L SMILES (S,S,R,S). `mdatk dict finish` on such a file warns about the D coordinates.
+
+### Real-space refinement (Phenix / Coot)
+
+Two planner steps (category *Refinement*) refine a model against a cryo-EM map (MRC / CCP4). Both take the
+model (PDB), the map and, optionally, restraint dictionaries (mmCIF, e.g. from the *Restraint dictionaries*
+step) and produce the refined model (PDB) and a log. MDATK only writes the scripts; Phenix and Coot are not
+run when the files are written.
+
+**Phenix · real-space refinement** (`phenix-rsr`) writes a script running `phenix.real_space_refine` from
+Phenix 1.21 or 2.x (the script sources `phenix_env.sh` of the installation folder you give, or uses the
+conda / module lines of *Environment*): resolution (required), macro cycles, the run strategy as check
+boxes (global minimisation, rigid body, local grid search, morphing, simulated annealing, ADP), nproc, an
+optional random seed, the output prefix and extra parameters appended verbatim. *Nucleic-acid
+secondary-structure restraints* switch on Phenix's automatic base-pair / stacking search. *Explicit base
+pairs* are written to a parameter file (`…_basepairs_….eff`) from a connected or typed dot-bracket
+(positions mapped to the nucleotides of the model in file order, or numbered continuously / per chain when
+the model does not exist yet) or from the REMARK 950 annotation of the model (`mdatk pdb annotate`;
+Watson-Crick and G·U pairs, optionally the STACK records as stacking restraints). Phenix names its output
+`<prefix>_real_space_refined_NNN.pdb`; the script copies the newest one to the step's own
+`…_refined_….pdb` (and the mmCIF to `…_refined_….cif`).
+
+**Coot · real-space refinement (batch)** (`coot-rsr`) runs Coot 0.9 or 1.x without graphics
+(`coot --no-graphics [--no-guano] --script …py`). The generated Python script works in both Coot
+generations: every Coot function is looked up by name (the `coot` module first, then the global functions
+of 0.9), and it is Python 2.7 compatible. Each chain - or only the residue ranges you give, e.g.
+`A:1-20, B` - is refined in overlapping windows of N residues (`refine_zone` + accept), for a number of
+cycles, with Coot's default map weight, `auto_weight_for_refinement` or a fixed `set_matrix` weight, and
+optional torsion restraints. When the model exists while the files are written the windows are listed in
+the script; otherwise the script finds the chains and residues in the model when it runs. To refine
+interactively, open the model and map in Coot yourself.
+
+Checks: a missing model / map / resolution, a resolution outside 1–20 Å, map files that do not exist,
+L-RNA 5'/3' variants (0A5, 0G3 …) without restraint dictionaries (the CCD defines only 0A/0C/0G/0U),
+dictionaries that miss a code of the model, Amber-style names (LA/LA5, A5/A3) and L sugars with D names
+(cpptraj output) that Phenix and Coot would not recognise or would restrain as D - convert those with
+`mdatk pdb clean --scheme ccd` first.
+
+```bash
+mdatk workflow generate phenix-rsr -i model=model_ccd.pdb -i map=emd_1234.map \
+    -i dictionaries="0G5.cif;0C3.cif" --set resolution=3.4 --set phenix_version=1.21 \
+    --set run_simulated_annealing=true -o refine
+mdatk workflow generate coot-rsr -i model=model_ccd.pdb -i map=emd_1234.map --set coot_version=0.9 \
+    --set residues="A:1-40" --set zone_size=8 -o refine
+```
+
 ## Citations
 
 MDATK cites only what a project uses. Each planner step reports the programs, force fields,
@@ -711,6 +855,8 @@ mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search glo
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
 mdatk workflow tools|generate|template|check|write|run|restraints   (see Script wizard and Project Planner)
 mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
+mdatk build helix|mutate|fit       (see Structure builder)
+mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 ```
 
 Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
@@ -845,6 +991,15 @@ fog, glow and translucency, thread safety and a render without a display.
 - The builtin base-pair engine knows canonical Watson–Crick and G–U wobble pairs only; use
   Barnaba for non-canonical pairs and stacking. The arc diagram keeps one fixed layout (residues
   in file order), so pseudoknots appear as crossing arcs.
+- The refinement and dictionary steps were not run against real Phenix, Coot or acedrg / eLBOW
+  installations (only stand-in executables); the Phenix parameter scopes for explicit base pairs,
+  the Coot function names that differ between 0.9 and 1.x, and the output file names of acedrg / eLBOW
+  are assumptions listed in the version tables of `mdatk/workflows/refine.py` and
+  `mdatk/workflows/dictstep.py`.
+- The CCD files of 0A / 0C / 0G / 0U describe the D enantiomer in their SMILES, InChI and ideal
+  coordinates; only their chirality restraints are L. MDATK's dictionary step uses its own L SMILES.
+- Ideal helices are starting models: hydrogens, OP3 and G·U wobble placements are idealised, and a
+  self-complementary duplex fitted into a map may come out with its strands swapped.
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.

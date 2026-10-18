@@ -218,6 +218,8 @@ FILE_KINDS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "fasta": ("Sequence (FASTA)", (".fasta", ".fa")),
     "secstruct": ("Secondary structure (dot-bracket)", (".secstruct", ".ss", ".dbn")),
     "map": ("Density map (MRC/CCP4)", (".mrc", ".map", ".ccp4")),
+    "cif": ("Restraint dictionary (mmCIF)", (".cif",)),
+    "smiles": ("SMILES", (".smi",)),
     "silent": ("Rosetta silent file", (".out",)),
     "parm7": ("Amber topology", (".parm7", ".prmtop")),
     "rst7": ("Amber coordinates / restart", (".rst7", ".ncrst", ".inpcrd", ".crd")),

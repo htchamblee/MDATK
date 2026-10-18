@@ -26,10 +26,13 @@ for the pairs) at the commits named in ``source``:
 * OPC (the SPC/E values, shown to transfer): Grotz & Schwierz, J. Chem. Phys.
   156, 114501 (2022), doi:10.1063/5.0087292
 
-microMg with TIP4P-D is left out on purpose: the Mg²⁺-RNA sigma in the
-parameter file (0.2598 nm for Mg-O2) disagrees with the paper's table
-(0.2197 nm), so the intended value is unclear.  The authors publish no Amber
-files; MDATK converts the values (Rmin/2 = 2^(1/6) sigma / 2, Rmin_ij = 2^(1/6)
+Where the papers' tables and the parameter files differ, the files are right: N. Schwierz
+confirmed (personal communication to the MDATK author, 2026) that the files match the published
+scaling factors and the tables carry transcription errors - TIP4P-D microMg sigma(Mg-OP) is
+0.2598 nm (lambda_sigma = 1.3255; Table 1 prints 0.2197 nm, similarly for nanoMg), TIP3P nanoMg
+sigma(Mg-OP) 0.2279 nm (not 0.2277) and OPC microMg sigma(Mg-Cl) 0.4318 nm (not 0.4316).
+
+The authors publish no Amber files; MDATK converts the values (Rmin/2 = 2^(1/6) sigma / 2, Rmin_ij = 2^(1/6)
 sigma_ij, 1 kcal = 4.184 kJ) into a frcmod for the ion and ParmEd changeLJPair
 lines for the pairs.
 """
@@ -56,11 +59,8 @@ CITATIONS = {
 RESOURCES = {(m, w): ("mg_micro_tip3p" if m == "micro" else "mg_nano_tip3p") if w == "tip3p"
              else "mg_opc" if w == "opc" else "mg_tip4p_family"
              for m in MODELS for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd", "tip4p2005")}
-UNAVAILABLE = {
-    ("micro", "tip4pd"): "the authors' microMg / TIP4P-D Mg²⁺-RNA term differs between the parameter "
-                         "file (Mg-O2 sigma 0.2598 nm) and the paper (0.2197 nm); use nanoMg or another "
-                         "water model",
-}
+# (model, water) combinations without a published set, with the reason shown to the user
+UNAVAILABLE: Dict[Tuple[str, str], str] = {}
 
 
 @dataclass(frozen=True)
@@ -298,6 +298,27 @@ MG_SETS: Dict[Tuple[str, str], MgSet] = {
             "P": (0.2681199419, 5.97953557506),
         },
         source="https://github.com/bio-phys/optimizedMgFFs/blob/1df53e9c94fc14a97864ac35c6951085bb60d1c0/ff_Mg_tip4pew.itp"),
+    ("micro", "tip4pd"): MgSet(
+        ion=(0.096035, 621.504072),
+        chloride="co-optimised with Mg2+ (CXY)", chloride_lj=(0.509112, 0.035496),
+        mg_cl=(0.481091, 0.469690),
+        rna={
+            "C": (0.2889603255, 4.88109435372), "C4": (0.2889603255, 4.88109435372),
+            "C5": (0.2889603255, 4.88109435372), "CA": (0.2889603255, 4.88109435372),
+            "CB": (0.2889603255, 4.88109435372), "CI": (0.2889603255, 5.50524724152),
+            "CP": (0.2889603255, 4.88109435372), "CQ": (0.2889603255, 4.88109435372),
+            "CS": (0.2889603255, 4.88109435372), "CT": (0.2889603255, 5.50524724152),
+            "H": (0.13450047325, 2.08553654022), "H1": (0.2274359175, 2.08553654022),
+            "H2": (0.215627038, 2.08553654022), "H4": (0.2300338975, 2.03851356969),
+            "H5": (0.22412945775, 2.03851356969), "HA": (0.23593833725, 2.03851356969),
+            "HO": (0.06364719625, 0.0), "N*": (0.27904094625, 6.86265928801),
+            "N2": (0.27904094625, 6.86265928801), "NA": (0.27904094625, 6.86265928801),
+            "NB": (0.27904094625, 6.86265928801), "NC": (0.27904094625, 6.86265928801),
+            "O": (0.25981589425, 7.62741935607), "O2": (0.25981589425, 7.62741935607),
+            "OH": (0.2668774955, 7.63468184366), "OS": (0.262472859, 6.86265928801),
+            "P": (0.311633003, 7.443599106),
+        },
+        source="https://github.com/bio-phys/optimizedMgFFs/blob/1df53e9c94fc14a97864ac35c6951085bb60d1c0/ff_Mg_tip4pd.itp"),
     ("nano", "tip4pd"): MgSet(
         ion=(0.097035, 680.009868),
         chloride="co-optimised with Mg2+ (CXY)", chloride_lj=(0.509112, 0.035496),

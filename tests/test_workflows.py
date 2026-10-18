@@ -295,9 +295,12 @@ def test_mg_parameter_table_is_internally_consistent():
     from mdatk.workflows import mg_params
 
     assert set(mg_params.MG_SETS) == {(m, w) for m in ("micro", "nano")
-                                      for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd", "tip4p2005")} - {
-        ("micro", "tip4pd")}
-    assert ("micro", "tip4pd") in mg_params.UNAVAILABLE
+                                      for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd", "tip4p2005")}
+    assert not mg_params.UNAVAILABLE
+    # the values confirmed by the authors (the papers' tables differ)
+    assert round(mg_params.MG_SETS[("micro", "tip4pd")].rna["O2"][0], 4) == 0.2598
+    assert round(mg_params.MG_SETS[("nano", "tip3p")].rna["O2"][0], 4) == 0.2279
+    assert round(mg_params.MG_SETS[("micro", "opc")].mg_cl[0], 4) == 0.4318
     for key, p in mg_params.MG_SETS.items():
         assert set(p.rna) == set(OL3_LJ), key
         lam_s, lam_e = set(), set()
@@ -309,8 +312,10 @@ def test_mg_parameter_table_is_internally_consistent():
             else:
                 assert eps == 0.0
         assert len(lam_s) == 1 and len(lam_e) == 1, (key, lam_s, lam_e)
-        assert 1.09 < lam_s.pop() < 1.16 and 0.2 < lam_e.pop() < 0.5, key
-    # published scalings quoted in the papers
+        assert 1.09 < lam_s.pop() < 1.33 and 0.2 < lam_e.pop() < 0.5, key  # 1.3255: TIP4P-D microMg
+    # published scalings quoted in the papers (TIP4P-D microMg: lambda_sigma 1.3255, confirmed by N. Schwierz)
+    p = mg_params.get_set("micro", "tip4pd")
+    assert p.rna["O2"][0] / ((p.ion[0] + 0.295992) / 2) == pytest.approx(1.3255, abs=1e-4)
     p = mg_params.get_set("micro", "tip3p")
     assert p.rna["O2"][0] / ((p.ion[0] + 0.295992) / 2) == pytest.approx(1.1375, abs=1e-4)
     assert mg_params.MG_SETS[("micro", "opc")] == mg_params.MG_SETS[("micro", "spce")].__class__(
@@ -356,7 +361,6 @@ def test_amber_build_optimised_mg_files():
 
 
 @pytest.mark.parametrize("settings, level, expected", [
-    ({"mg_model": "micro", "water": "tip4pd", "mg_count": 2}, "error", "microMg is not available for TIP4P-D"),
     ({"mg_model": "nano", "water": "opc3", "mg_count": 2}, "error", "no published nanoMg parameters for OPC3"),
     ({"mg_model": "nano", "mg_count": 0}, "warning", "no Mg²⁺ is added"),
     ({"mg_model": "micro", "mg_count": 2, "rna_ff": "ljbb", "nbfix19": False, "bph0": False}, "warning",
@@ -928,3 +932,34 @@ def test_amber_1264_with_cp_library_and_two_pass_ranges():
     assert "--no-detect" in dry and "--l-ranges" not in dry
     md = TOOLS["amber-md"]
     assert "cpptraj" not in md.resources(md.normalise({"dry_pdb": False, "dry_traj": False}))
+
+
+def test_builder_and_cryoem_templates_write_valid_plans(tmp_path):
+    from mdatk.builder import build_helix
+    from mdatk.density import simulate_map
+    from mdatk.io.mrc import write_map
+    from mdatk import pdbtools
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    helix, build, restraints, md = apply_template(wf, "builder-amber")
+    helix.settings.update(sequence="GGCAUC")  # the restraints get the duplex pairs from the builder
+    pdb = tmp_path / "model.pdb"
+    pdb.write_text(build_helix("GGCAUC", chirality="L", scheme="ccd"))
+    s = pdbtools.read_pdb(str(pdb))
+    xyz = [a.xyz for r in s.residues() for a in r.atoms]
+    import numpy as np
+    mp = tmp_path / "map.mrc"
+    write_map(str(mp), simulate_map(np.array(xyz), np.ones(len(xyz)), 6.0))
+    model, emap, dicts, phenix, coot = apply_template(wf, "cryoem-refine")
+    model.settings["path"], emap.settings["path"] = str(pdb), str(mp)
+    phenix.settings["resolution"] = 6.0
+    plan = Plan(wf, str(tmp_path / "plan"))
+    errors = [(plan.steps[n].label, i.message) for n, i in plan.all_issues() if i.level == "error"]
+    assert errors == []
+    report = plan.write()
+    scripts = [p for p in report.written if p.endswith(".sh")]
+    assert len(scripts) >= 7
+    dist = [p for p in report.written if p.endswith(".dist")] or [p for p in report.written if "restraint" in p]
+    assert dist and any(p.endswith(".secstruct") for p in report.written)
+    for path in scripts:
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        assert proc.returncode == 0, (path, proc.stderr)

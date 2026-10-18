@@ -101,6 +101,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.planner = None  # Project Planner window (created on demand)
         self.wizard = None  # stand-alone script wizard window
         self.pdb_tools = None  # PDB clean-up window
+        self.builder = None  # structure builder window
 
         self._build_header()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -160,7 +161,10 @@ class MainWindow(Gtk.ApplicationWindow):
                               ("Script wizard…", self.open_wizard,
                                "Write control files and scripts for one program (Ctrl+Shift+W)"),
                               ("PDB clean-up…", self.open_pdb_tools,
-                               "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files")):
+                               "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files"),
+                              ("Structure builder…", self.open_builder,
+                               "Ideal A-form helices (D / L), base mutations and rigid-body fits into a "
+                               "density map")):
             item = Gtk.MenuItem(label=text)
             item.set_tooltip_text(tip)
             item.connect("activate", lambda _w, c=cb: c())
@@ -1632,6 +1636,14 @@ class MainWindow(Gtk.ApplicationWindow):
             self.pdb_tools.connect("destroy", lambda *_: setattr(self, "pdb_tools", None))
         self.pdb_tools.show_all()
         self.pdb_tools.present()
+
+    def open_builder(self):
+        from .builderdialog import BuilderWindow
+        if self.builder is None:
+            self.builder = BuilderWindow(self)
+            self.builder.connect("destroy", lambda *_: setattr(self, "builder", None))
+        self.builder.show_all()
+        self.builder.present()
 
     def _citation_keys(self):
         from ..citations import grouped, keys_for, project_resources

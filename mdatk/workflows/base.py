@@ -7,6 +7,7 @@ import datetime as _dt
 import logging
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -60,6 +61,7 @@ class StepContext:
         self.title = title
         self.node_id = node_id
         self.groups = list(groups or [])
+        self.preview = False  # True while the wizard previews the files: no network or slow work
 
     # ------------------------------------------------------------- naming
     def name(self, tag: str, ext: str = "") -> str:
@@ -323,5 +325,11 @@ def extra_lines(text: str) -> List[str]:
 
 
 def extra_flags(text: str) -> List[str]:
-    """Extra command-line flags typed in a free-text box (one or more per line)."""
-    return [line.strip() for line in (text or "").splitlines() if line.strip() and not line.strip().startswith("#")]
+    """Extra command-line flags typed in a free-text box (one or more per line; '#' starts a comment,
+    also after a flag - a comment left in a continued command line would swallow its backslash)."""
+    out = []
+    for line in (text or "").splitlines():
+        line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0].strip()
+        if line:
+            out.append(line)
+    return out

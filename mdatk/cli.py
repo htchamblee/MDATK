@@ -10,6 +10,8 @@ Every GUI action is available here, driven by the same TOML project file::
     mdatk workflow write -p plan.mdatk.toml
     mdatk workflow run -p plan.mdatk.toml --step 3
     mdatk pdb clean model.pdb -o model_amber.pdb --scheme amber --chain-reference start.pdb
+    mdatk build helix --seq GGCAU --chirality L -o helix.pdb
+    mdatk dict finish acedrg_out/ --code 0A5 -o 0A5.cif
 """
 
 from __future__ import annotations
@@ -524,6 +526,49 @@ def _pdb_annotate(args, name: str) -> int:
     return 0
 
 
+def cmd_build(args) -> int:
+    from . import builder
+    from .projectfile import logged
+    if args.build_command == "helix":
+        title = f"Ideal A-form {args.chirality}-RNA helix {args.seq.strip()}"
+    elif args.build_command == "mutate":
+        title = f"Mutation of {os.path.basename(args.input)}: {args.mutations.strip()}"
+    else:
+        title = f"Rigid-body fit of {os.path.basename(args.input)} into {os.path.basename(args.map)}"
+    with logged(_project_file(args), f"build {args.build_command}", title) as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["build"] else ""
+        res = builder.run(args)
+        for note in res.notes:
+            print(f"build: {note}", file=sys.stderr)
+        entry.files = [args.output]
+        entry.summary = "\n".join(res.notes)
+        if args.build_command == "helix":
+            from .citations import keys_for
+            entry.citations = keys_for(["arnott-arna"])  # the A-RNA fiber monomer
+    if res.cc is not None:
+        print(json.dumps({"output": os.path.abspath(args.output), "cc": round(res.cc, 4)}, indent=2))
+    return 0
+
+
+def cmd_dict(args) -> int:
+    from . import dictionaries
+    from .projectfile import logged
+    try:
+        if args.dict_command != "finish":  # list / smiles / pubchem write no files
+            return dictionaries.run(args)[0]
+        with logged(_project_file(args), "dict finish", f"Restraint dictionary {args.code}") as entry:
+            entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["dict"] else ""
+            code, result = dictionaries.run(args)
+            entry.files = list(result.get("files", []))
+            entry.summary = "\n".join(result.get("notes", []))
+            from .citations import keys_for
+            entry.citations = keys_for(["ccd"])
+        return code
+    except dictionaries.DictionaryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_workflow_tools(args) -> int:
     from .workflows import TOOLS, tools_by_category
     from .workflows.schema import kind_label
@@ -861,6 +906,27 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--project", "-p", "--params", dest="params",
                    help="project file whose step log records the annotation")
     c.set_defaults(func=cmd_pdb)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .builder import add_commands as build_commands
+    p = sub.add_parser("build", help="starting structures: ideal A-form helices (D / L), base mutations, "
+                                     "rigid-body fit into a density map")
+    bsub = p.add_subparsers(dest="build_command", metavar="action")
+    for c in build_commands(bsub):
+        c.add_argument("--project", "-p", "--params", dest="params",
+                       help="project file whose step log records the step")
+        c.set_defaults(func=cmd_build)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .dictionaries import add_commands as dict_commands
+    p = sub.add_parser("dict", help="restraint dictionaries for L-RNA residues: SMILES for acedrg / eLBOW, "
+                                    "renaming to the CCD atom names, PubChem lookup (network, on request)")
+    dsub = p.add_subparsers(dest="dict_command", metavar="action")
+    for c in dict_commands(dsub):
+        if c.prog.endswith(" finish"):
+            c.add_argument("--project", "-p", "--params", dest="params",
+                           help="project file whose step log records the step")
+        c.set_defaults(func=cmd_dict)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "

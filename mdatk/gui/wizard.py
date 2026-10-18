@@ -749,6 +749,7 @@ class WizardWindow(Gtk.Window):
         self.files = []
         if step is not None and step.ok and step.ctx is not None:
             try:
+                step.ctx.preview = True  # e.g. no PubChem requests on every change
                 self.files = generate_step(step)
             except Exception as exc:  # pragma: no cover - shown to the user
                 issues.append(Issue("error", f"cannot generate the files: {exc}"))

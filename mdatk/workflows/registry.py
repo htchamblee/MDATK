@@ -8,7 +8,8 @@ from .base import Tool
 
 TOOLS: Dict[str, Tool] = {}
 
-CATEGORIES = ("Planning", "Structure prediction", "Amber", "GROMACS", "Visualisation", "Analysis")
+CATEGORIES = ("Planning", "Structure building", "Structure prediction", "Refinement", "Amber", "GROMACS",
+              "Visualisation", "Analysis")
 
 
 def register(cls):

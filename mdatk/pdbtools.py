@@ -649,18 +649,22 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
         raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     ranges = parse_ranges(only)
     changes = Counter()
-    term_mismatch, phosphate, single_l = [], [], []
+    term_mismatch, phosphate, single_l, kept_phosphate = [], [], [], []
     for seg in structure.segments:
         terms = _terminals(seg)
         for res in seg:
             nt = _nucleotide(res)
             if nt is None or nt.sugar != "rna" or (ranges and not _in_ranges(res, ranges)):
                 continue
-            term = terms[id(res)] if terminals else ""
+            term = seg_term = terms[id(res)] if terminals else ""
             chir = res.chirality or nt.chirality
+            if scheme == "ccd" and chir == "L" and term in ("5", "N") and any(a.name == "P" for a in res.atoms):
+                # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself
+                term = ""  # (a single residue with a 5'-phosphate and a 3'-OH is the component, too)
+                kept_phosphate.append(res.label)
             new = scheme_name(nt.base, chir, term, scheme)
-            single_l_unit = term == "N" and chir == "L" and nt.terminal == "5"  # LA5 stands in for LAN
-            if terminals and nt.terminal and nt.terminal != term and not single_l_unit:
+            single_l_unit = seg_term == "N" and chir == "L" and nt.terminal == "5"  # LA5 stands in for LAN
+            if terminals and nt.terminal and nt.terminal != seg_term and not single_l_unit:
                 term_mismatch.append(res.label)  # the old name shows the misplaced terminal
             if new != res.name:
                 changes[(res.name, new)] += 1
@@ -681,6 +685,9 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     if phosphate:
         notes.append("WARNING: 5'-terminal residues carry P/OP1/OP2, which the Amber 5' units do not have "
                      "(tleap cannot type them; remove the phosphate or cap the end): " + _listing(phosphate))
+    if kept_phosphate:
+        notes.append("5'-terminal L residues with a 5'-phosphate keep the CCD component names (0A ..., which "
+                     "include P/OP1/OP2/OP3; the 5' variants 0A5 ... have a 5'-OH): " + _listing(kept_phosphate))
     if single_l:
         notes.append("nucleic12_LRNA.lib has no unit for a single-residue L segment; wrote the 5' unit "
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
