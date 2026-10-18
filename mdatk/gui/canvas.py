@@ -50,23 +50,27 @@ class FigureCanvas(Gtk.DrawingArea):
     def __init__(self, on_rotate: Optional[Callable[[List[float]], None]] = None,
                  on_swap: Optional[Callable[[int, int], None]] = None,
                  on_activate: Optional[Callable[[int], None]] = None,
-                 on_map_move: Optional[Callable[[List[float]], None]] = None):
+                 on_map_move: Optional[Callable[[List[float]], None]] = None,
+                 on_zoom: Optional[Callable[[float], None]] = None):
         super().__init__()
         self.set_hexpand(True)
         self.set_vexpand(True)
         self.set_size_request(480, 300)
         self.set_can_focus(True)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK
-                        | Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+                        | Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
+                        | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
         self.connect("draw", self._on_draw)
         self.connect("button-press-event", self._on_press)
         self.connect("button-release-event", self._on_release)
         self.connect("motion-notify-event", self._on_motion)
+        self.connect("scroll-event", self._on_scroll)
         self.connect("size-allocate", lambda *_: self.schedule_render())
         self.on_rotate = on_rotate
         self.on_swap = on_swap
         self.on_activate = on_activate
         self.on_map_move = on_map_move
+        self.on_zoom = on_zoom
         self.map_mode = False  # drags in the structure panel move the density map
         self.project: Optional[Project] = None
         self.dataset: Optional[Dataset] = None
@@ -151,12 +155,14 @@ class FigureCanvas(Gtk.DrawingArea):
         empty slots fall back to an even split of the grid.
         """
         rows, cols, slots = layouts.preset(self.project.layout.preset)
+        heights = layouts.height_ratios(self.project.layout.preset)
+        edges = np.concatenate([[0.0], np.cumsum(heights)]) / sum(heights)  # row tops as figure fractions
         ox, oy = self.offset
         renderer = self._canvas.get_renderer()
         out: List[Rect] = []
         for k, (r0, r1, c0, c1) in enumerate(slots):
-            rect = (ox + cw * c0 / cols, oy + ch * r0 / rows,
-                    cw * (c1 - c0) / cols, ch * (r1 - r0) / rows)
+            rect = (ox + cw * c0 / cols, oy + ch * edges[r0],
+                    cw * (c1 - c0) / cols, ch * (edges[r1] - edges[r0]))
             if k < len(panels):
                 axes = [a for a in fig.axes if a is panels[k].ax or
                         a.get_subplotspec() is not None and a.get_subplotspec() == panels[k].ax.get_subplotspec()]
@@ -271,6 +277,22 @@ class FigureCanvas(Gtk.DrawingArea):
         self._press = (event.x, event.y, slot, mode)
         self._last = (event.x, event.y)
         self._dragging = False
+        return True
+
+    def _on_scroll(self, _w, event):
+        """Mouse wheel over the structure panel zooms the view (stored as visual.zoom)."""
+        if self.on_zoom is None or self.slot_at(event.x, event.y) != self.structure_slot:
+            return False
+        if event.direction == Gdk.ScrollDirection.UP:
+            steps = 1.0
+        elif event.direction == Gdk.ScrollDirection.DOWN:
+            steps = -1.0
+        elif event.direction == Gdk.ScrollDirection.SMOOTH:
+            steps = -float(event.get_scroll_deltas()[2])
+        else:
+            return False
+        if steps:
+            self.on_zoom(1.15 ** steps)
         return True
 
     def _on_motion(self, _w, event):

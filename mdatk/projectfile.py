@@ -177,6 +177,12 @@ _PANEL_OPTION_DOCS = {
     "vmin": "Heatmap: lower end of the colour scale.",
     "vmax": "Heatmap: upper end of the colour scale (0 = the data maximum).",
     "max_ticks": "Heatmap: at most this many residue labels on the axis.",
+    "residues": "Sequence / secondary structure: residues shown, e.g. 'A:1-20, B:5-30' (empty: all residues "
+                "of the structure view).",
+    "per_row": "Sequence: residues per row (0: as many as fit).",
+    "source": "Secondary structure: 'dynamic' (pairs re-detected every n frames), 'first' (the first frame's "
+              "pairs) or 'dotbracket' (the 'dotbracket' option).",
+    "dotbracket": "Secondary structure: dot-bracket of the shown residues ('&' or a space between chains).",
 }
 
 

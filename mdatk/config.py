@@ -180,6 +180,17 @@ class StackingParams:
 
 
 @dataclass
+class BasePairParams:
+    # Base pairs of the residues in the structure view, for the secondary-structure panel and
+    # PDB annotation; computed whenever a panel needs them.
+    engine: str = "builtin"  # Engine: "builtin" (canonical pairs from H-bond geometry) or "barnaba" (optional)
+    stride: int = 10  # Re-detect the pairs every n-th analysed frame (pairs hold in between)
+    cutoff: float = 3.5  # Builtin: maximum donor-acceptor distance of a base-pair H-bond (Å)
+    wobble: bool = True  # Builtin: also count G-U wobble pairs
+    noncanonical: bool = False  # Barnaba: also keep non-canonical (non Watson-Crick) pairs
+
+
+@dataclass
 class EnergyParams:
     enabled: bool = True  # Non-bonded interaction energy between two groups
     group_a: str = "Aptamer"  # First residue group
@@ -201,6 +212,7 @@ class AnalysisParams:
     mg: MgParams = field(default_factory=MgParams)  # Mg2+ coordination, bridges and occupancy
     stacking: StackingParams = field(default_factory=StackingParams)  # Base stacking
     energy: EnergyParams = field(default_factory=EnergyParams)  # Non-bonded interaction energy
+    basepairs: BasePairParams = field(default_factory=BasePairParams)  # Base pairs (secondary structure)
     use_pbc: bool = False  # Minimum-image distances (cleaned, imaged systems rarely need it)
     proximity_search_radius: float = 8.0  # Largest proximity cutoff usable later without re-analysing (Å)
 
@@ -238,6 +250,11 @@ class VisualParams:
     align_frames: bool = True  # Superpose each frame's trace onto the reference frame
     # View rotation in degrees about X, Y and Z (R = Rz Ry Rx)
     rotation: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    zoom: float = 1.0  # Magnification of the structure view (1: the whole model fits; 2: twice as large)
+    # View centre: "" (centre of the model), "origin" (0, 0, 0 of the coordinates) or a residue,
+    # e.g. "12" or "B:12"
+    center_on: str = ""
+    center_follow: bool = False  # Keep the centre residue in the middle in every frame (not only the first)
     color_mode: str = "groups"  # Residue colouring: "chain", "groups" or "proximity"
     base_color: str = "#b5b3ad"  # Colour of residues no group or proximity colour applies to
     chain_palette: str = "tab10"  # Matplotlib palette for chain colouring
@@ -640,6 +657,15 @@ class Project:
                 problems.append(f"Representation {k + 1}: size must be positive and opacity in (0, 1].")
         if v.renderer not in ("auto", "software", "vtk"):
             problems.append(f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
+        if not 0.05 <= v.zoom <= 50:
+            problems.append("Structure zoom must be between 0.05 and 50.")
+        bp = a.basepairs
+        if bp.engine not in ("builtin", "barnaba"):
+            problems.append(f"Unknown base-pair engine {bp.engine!r} (builtin or barnaba).")
+        if bp.stride < 1:
+            problems.append("Base-pair stride must be at least 1.")
+        if not 2.0 <= bp.cutoff <= 5.0:
+            problems.append("Base-pair H-bond cutoff must be between 2.0 and 5.0 Å.")
         if v.rep_rest not in REP_REST:
             problems.append(f"Unknown setting for residues without a representation {v.rep_rest!r} "
                             "(trace or hide).")

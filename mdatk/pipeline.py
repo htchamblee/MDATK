@@ -480,6 +480,7 @@ class Pipeline:
                 "chain": res.arrays["chain"], "group_index": res.arrays["group_index"],
                 "group_member": res.arrays["group_member"],
                 "resid": res.arrays["resid"],
+                "resname": res.arrays["resname"], "chain_name": res.arrays["chain_name"],
                 "labels": res.meta.get("residue_labels", []),
                 "atoms": {"coords": atoms.arrays["coords"][0].astype(float),
                           "names": atoms.meta["atom_names"], "elements": atoms.meta["elements"],

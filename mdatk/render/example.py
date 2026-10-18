@@ -129,10 +129,13 @@ def _add_key(ds: Dataset, project: Project, key: str, kind: str) -> None:
 def schematic_trace(project: Project, n_frames: int) -> Dict[str, np.ndarray]:
     """Two-strand helical trace built from the first two residue groups."""
     names = project.visual.structure_groups or project.group_names()[:2] or ["A"]
-    coords, chain, gidx, resid, links = [], [], [], [], []
+    coords, chain, gidx, resid, links, letters = [], [], [], [], [], []
     group_pos = {g.name: k for k, g in enumerate(project.groups)}
     for s, name in enumerate(names[:2]):
         ids = group_resids(project, name)
+        seq = ("GCAUGGCAUCGA" * 10)[:len(ids)]
+        if s:  # the complementary strand, read 5' -> 3'
+            seq = "".join({"G": "C", "C": "G", "A": "U", "U": "A"}[b] for b in reversed(seq))
         for k, r in enumerate(ids):
             level = k if s == 0 else len(ids) - 1 - k
             ang = np.radians(level * 32.7 + (0 if s == 0 else 150))
@@ -140,10 +143,12 @@ def schematic_trace(project: Project, n_frames: int) -> Dict[str, np.ndarray]:
             chain.append(s)
             gidx.append(group_pos.get(name, -1))
             resid.append(r)
+            letters.append(seq[k])
             if k:
                 links.append([len(coords) - 2, len(coords) - 1])
     xyz = np.asarray(coords, dtype=np.float64)
     return {"coords": np.repeat(xyz[None], n_frames, axis=0), "chain": np.asarray(chain),
+            "resname": np.asarray(letters, dtype="U8"),
             "group_index": np.asarray(gidx), "resid": np.asarray(resid),
             "links": np.asarray(links, dtype=np.int64).reshape(-1, 2),
             "ions": np.zeros((0, 3))}
@@ -161,7 +166,7 @@ def schematic_structure(project: Project) -> Dict[str, object]:
     ids_b = group_resids(project, names[1])[:len(ids_a)] if len(names) > 1 else []
     seq = ("GCAUGGCAUCGA" * 4)[:len(ids_a)]
     names_out, elements, resnames, row, xyz, bonds = [], [], [], [], [], []
-    trace, chain, gidx, resid, links = [], [], [], [], []
+    trace, chain, gidx, resid, links, letters_out = [], [], [], [], [], []
     prev_o3 = None
     strands = [(0, names[0], ids_a, seq)]
     if ids_b:
@@ -189,12 +194,14 @@ def schematic_structure(project: Project) -> Dict[str, object]:
                 bonds.append((prev_o3, idx["P"]))
             prev_o3 = idx.get("O3'")
             trace.append(xyz[idx["C4'"]])
+            letters_out.append(base)
             chain.append(strand)
             gidx.append(group_pos.get(gname, -1))
             resid.append(r)
             if m:
                 links.append([rr - 1, rr])
     return {"trace": {"coords": np.asarray(trace), "chain": np.asarray(chain), "group_index": np.asarray(gidx),
+                      "resname": np.asarray(letters_out, dtype="U8"),
                       "resid": np.asarray(resid), "links": np.asarray(links, dtype=np.int64).reshape(-1, 2),
                       "ions": np.zeros((0, 3))},
             "atoms": {"coords": np.asarray(xyz), "names": names_out, "elements": elements,
@@ -220,6 +227,53 @@ def _atoms_result(src: Dict[str, object], n_frames: int, n_res: int) -> Analysis
     return res
 
 
+def _example_basepairs(chain: np.ndarray, n_frames: int) -> AnalysisResult:
+    """Duplex pairs between the first and the last strand (residue k with its partner), the frayed end
+    opening and closing every few frames, so arc diagrams can be previewed."""
+    a = np.flatnonzero(chain == chain[0]) if len(chain) else np.zeros(0, dtype=np.int64)
+    b = np.flatnonzero(chain != chain[0])[::-1] if len(chain) else np.zeros(0, dtype=np.int64)
+    m = min(len(a), len(b))
+    builder = CSRBuilder()
+    for f in range(n_frames):
+        open_end = 2 if (f // 6) % 2 else 0
+        i, j = a[:m - open_end], b[:m - open_end]
+        builder.add(i, j, np.ones(len(i)))
+    res = AnalysisResult("basepairs", "example", {}, {}, {"example": True})
+    res.arrays.update(builder.arrays("map"))
+    labels = [str(k) for k in range(len(chain))]
+    res.meta["map_r"] = labels
+    res.meta["map_c"] = labels
+    res.add_pairmap("map", "map", "map_r", "map_c", "Base pairs")
+    return res
+
+
+def _frame_basepairs(project: Project, src, atoms_src, n_frames: int) -> Optional[AnalysisResult]:
+    """Builtin base pairs of a real preview frame (the same in every example frame)."""
+    from ..secstruct import PairDetector
+
+    n_res = len(src["resname"])
+    index: List[Dict[str, int]] = [{} for _ in range(n_res)]
+    for k, (name, row) in enumerate(zip(atoms_src["names"], np.asarray(atoms_src["row"]))):
+        if 0 <= int(row) < n_res:
+            index[int(row)].setdefault(str(name).replace("*", "'"), k)
+    bp = project.analyses.basepairs
+    try:
+        found = PairDetector([str(r) for r in src["resname"]], index, cutoff=bp.cutoff,
+                             wobble=bp.wobble).detect(np.asarray(atoms_src["coords"], dtype=np.float64))
+    except (ValueError, IndexError):
+        return None
+    builder = CSRBuilder()
+    for _ in range(n_frames):
+        builder.add(found[:, 0], found[:, 1], found[:, 2])
+    res = AnalysisResult("basepairs", "example", {}, {}, {"example": True})
+    res.arrays.update(builder.arrays("map"))
+    labels = [str(k) for k in range(n_res)]
+    res.meta["map_r"] = labels
+    res.meta["map_c"] = labels
+    res.add_pairmap("map", "map", "map_r", "map_c", "Base pairs")
+    return res
+
+
 def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] = None,
                     n_frames: int = N_FRAMES) -> Dataset:
     """Dataset with placeholder values for every data key the layout uses."""
@@ -231,7 +285,7 @@ def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] =
             continue
         for key in spec.series:
             _add_key(ds, project, key, cls.data_kind)
-    if any(spec.type == "structure" for spec in project.layout.panels):
+    if any(spec.type in ("structure", "sequence", "secondary") for spec in project.layout.panels):
         atoms_src = None
         if preview is not None:
             src = preview
@@ -252,7 +306,17 @@ def example_dataset(project: Project, preview: Optional[Dict[str, np.ndarray]] =
                             group_member=_membership(src, len(project.groups)),
                             is_point=np.ones(n_res, bool), links=np.asarray(src["links"]),
                             resindex=np.arange(n_res), resid=np.asarray(src["resid"]))
+        chain = np.asarray(src["chain"], dtype=np.int64)
+        if "resname" in src:
+            trace.arrays["resname"] = np.asarray(src["resname"])
+            trace.arrays["chain_name"] = (np.asarray(src["chain_name"]) if "chain_name" in src else
+                                          np.array([chr(ord("A") + int(c) % 26) for c in chain]))
+        trace.meta["residue_labels"] = list(src.get("labels", []))
         ds.add(trace)
+        pairs = None
+        if preview is not None and atoms_src is not None and "resname" in src:
+            pairs = _frame_basepairs(project, src, atoms_src, n_frames)
+        ds.add(pairs if pairs is not None else _example_basepairs(chain, n_frames))
         if atoms_src is not None:
             ds.add(_atoms_result(atoms_src, n_frames, n_res))
         # proximity: every residue drifts in and out of contact so glow modes are visible

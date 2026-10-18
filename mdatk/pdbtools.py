@@ -1002,6 +1002,11 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
     """
     s = read_pdb(source)
     notes = list(s.notes)
+    stale = [line for line in s.header if line.startswith("REMARK 950")]
+    if stale:  # base-pair annotation of the old names / numbers (mdatk.annotate)
+        s.header = [line for line in s.header if not line.startswith("REMARK 950")]
+        notes.append(f"Dropped {len(stale)} REMARK 950 base-pair annotation lines (they name the input "
+                     "residues); annotate the cleaned file again if needed")
     if chain_reference is not None or chain_ids is not None or assign_chains:
         notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
     if detect_l or l_ranges:

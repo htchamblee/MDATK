@@ -129,6 +129,10 @@ def test_real_frame_preview_and_render(window, tmp_path):
     window.load_preview()
     assert pump(lambda: window.worker is None)
     assert window.preview_data is not None and len(window.preview_data["resid"]) == 24
+    from mdatk.render.example import example_dataset
+    from mdatk.render.residues import chain_names, resnames
+    trace = example_dataset(window.project, window.preview_data).results["trace"]
+    assert "".join(resnames(trace)) == "GCAUGGCAUCGAUCGAUGCCAUGC" and len(set(chain_names(trace))) == 2
     assert pump(lambda: "reference frame" in window.canvas.watermark, 10)
     window.render()
     assert pump(lambda: window.worker is None)
@@ -242,6 +246,16 @@ def test_pdb_tools_window_checks_and_cleans(window, tmp_path):
     dlg.run_clean()
     names = [r.name for r in pdbtools.read_pdb(dlg.output.entry.get_text()).residues()]
     assert names == ["G5", "C3", "LG5", "LU3"]
+    assert "REMARK 950" not in open(dlg.output.entry.get_text()).read()
+    assert not dlg.ann_engine.get_sensitive()
+    dlg.annotate.set_active(True)
+    dlg.ann_engine.set_active_id("builtin")
+    dlg.ann_stacking.set_active(False)
+    assert dlg.ann_engine.get_sensitive()
+    dlg.run_clean()
+    text = open(dlg.output.entry.get_text()).read()
+    assert "REMARK 950 ENGINE builtin" in text and "REMARK 950 DBN" in text
+    assert [r.name for r in pdbtools.read_pdb(text).residues()] == names
     dlg.destroy()
     assert window.pdb_tools is None
 
@@ -249,3 +263,16 @@ def test_pdb_tools_window_checks_and_cleans(window, tmp_path):
 def test_citation_text_lists_project_resources(window):
     text = window.citation_text()
     assert isinstance(text, str) and text
+
+
+def test_slot_defaults_for_residue_panels_and_wheel_zoom(window):
+    row = window.slot_rows[1]
+    row["opts"].set_text("")
+    row["type"].set_active_id("secondary")
+    pump(lambda: False, 0.2)
+    assert '"source": "dynamic"' in row["opts"].get_text()
+    assert window._read_slots()[1].series == []  # residue panels take no data keys
+    z0 = window.zoom_spin.get_value()
+    window._on_canvas_zoom(1.15)
+    assert window.zoom_spin.get_value() == pytest.approx(z0 * 1.15)
+    assert window.collect(validate=False).visual.zoom == pytest.approx(z0 * 1.15)

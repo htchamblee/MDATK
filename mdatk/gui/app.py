@@ -62,6 +62,13 @@ PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
 RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
 
 
+# option templates filled in when a slot switches to these panel types (edit them in Options)
+SLOT_DEFAULT_OPTIONS = {
+    "sequence": {"residues": ""},
+    "secondary": {"source": "dynamic", "residues": "", "dotbracket": ""},
+}
+
+
 class GuiLogHandler(logging.Handler):
     def __init__(self, window: "MainWindow"):
         super().__init__(level=logging.WARNING)
@@ -99,7 +106,8 @@ class MainWindow(Gtk.ApplicationWindow):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(outer)
         self.canvas = FigureCanvas(on_rotate=self._on_canvas_rotate, on_swap=self._on_canvas_swap,
-                                   on_activate=self._on_canvas_activate, on_map_move=self._on_map_moved)
+                                   on_activate=self._on_canvas_activate, on_map_move=self._on_map_moved,
+                                   on_zoom=self._on_canvas_zoom)
         builders = {"input": self._tab_input, "groups": self._tab_groups,
                     "analyses": self._tab_analyses, "structure": self._tab_visual,
                     "layout": self._tab_layout, "outputs": self._tab_outputs}
@@ -337,6 +345,9 @@ class MainWindow(Gtk.ApplicationWindow):
         finally:
             self._syncing = False
         self.angle_label.set_text(format_angles(angles))
+
+    def _on_canvas_zoom(self, factor: float) -> None:
+        self.zoom_spin.set_value(min(50.0, max(0.05, self.zoom_spin.get_value() * factor)))
 
     def _on_canvas_swap(self, i: int, j: int) -> None:
         specs = self._read_slots()
@@ -707,6 +718,21 @@ class MainWindow(Gtk.ApplicationWindow):
             "Lateral centroid offset and RMS deviation of the ring atoms from their plane")
         box.pack_start(W.frame("π–π stacking", s), False, False, 0)
 
+        bp = W.Form()
+        bp.add_wide(W.hint("Used by the secondary-structure panel (and PDB annotation): pairs of the "
+                           "structure-view residues, re-detected every n frames."))
+        bp.add("Engine", b.combo("analyses.basepairs.engine", W.combo([
+            ("builtin", "built-in (canonical pairs from H-bond geometry)"),
+            ("barnaba", "Barnaba (optional; Leontis-Westhof classes)")])))
+        bp.add_row("Every n frames / cutoff (Å)", [
+            b.spin_int("analyses.basepairs.stride", W.spin(1, 100000)),
+            b.spin_float("analyses.basepairs.cutoff", W.spin(2.0, 5.0, 0.05, 2))],
+            "Pairs are re-detected every n-th analysed frame; the cutoff is the built-in engine's "
+            "largest donor-acceptor distance")
+        bp.add_wide(b.check("analyses.basepairs.wobble", W.check("Built-in: count G-U wobble pairs")))
+        bp.add_wide(b.check("analyses.basepairs.noncanonical", W.check("Barnaba: keep non-canonical pairs")))
+        box.pack_start(W.frame("Base pairs (secondary structure)", bp), False, False, 0)
+
         e = W.Form()
         e.add_wide(b.check("analyses.energy.enabled", W.check(
             "Compute intermolecular interaction energy and net force")))
@@ -743,13 +769,26 @@ class MainWindow(Gtk.ApplicationWindow):
         self.angle_label = W.label("")
         self.angle_label.set_selectable(True)
         rot.add_wide(self.angle_label)
+        self.zoom_spin = b.spin_float("visual.zoom", W.spin(0.05, 50, 0.1, 2))
+        self.zoom_spin.connect("value-changed", lambda *_: None if self._loading else self.refresh_canvas())
+        rot.add("Zoom", self.zoom_spin, "1 fits the whole model; 2 shows it twice as large (mouse wheel over "
+                                       "the structure panel)")
+        self.center_entry = center = b.entry("visual.center_on", W.entry("model centre; 12, B:12 or origin"))
+        center.connect("activate", lambda *_: self.refresh_canvas())
+        center.connect("focus-out-event", lambda *_: self.refresh_canvas() or False)
+        rot.add("Centre on", center, "Residue (number, or chain:number) or 'origin' (0, 0, 0 of the "
+                                     "coordinates) in the middle of the view; empty: the model centre")
+        follow = b.check("visual.center_follow", W.check("Follow the centre residue in every frame"))
+        follow.connect("toggled", lambda *_: None if self._loading else self.refresh_canvas())
+        rot.add_wide(follow)
         row = Gtk.Box(spacing=6)
         row.pack_start(W.button("Reset orientation", lambda: self._set_rotation([0, 0, 0])),
                        False, False, 0)
+        row.pack_start(W.button("Reset zoom and centre", self._reset_view), False, False, 0)
         rot.add_wide(row)
-        rot.add_wide(W.hint("Drag the structure panel in the figure to rotate the model. The "
-                            "orientation is set on the reference frame and applied to every frame "
-                            "of the video."))
+        rot.add_wide(W.hint("Drag the structure panel in the figure to rotate the model, use the mouse "
+                            "wheel over it to zoom. Orientation, zoom and centre are set on the reference "
+                            "frame and applied to every frame of the video."))
         box.pack_start(W.frame("Orientation", rot), False, False, 0)
         box.pack_start(self._representation_frame(), False, False, 0)
         box.pack_start(self._density_frame(), False, False, 0)
@@ -1051,6 +1090,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self._syncing = False
         self._on_scale()
 
+    def _reset_view(self):
+        self.zoom_spin.set_value(1.0)
+        self.center_entry.set_text("")
+        self.refresh_canvas()
+
     def _on_scale(self, *_):
         angles = [s.get_value() for s in self.rot_scales]
         self.angle_label.set_text(format_angles(angles))
@@ -1099,8 +1143,8 @@ class MainWindow(Gtk.ApplicationWindow):
             return self.project
 
     def _data_choices(self, panel_type: str, project: Project) -> List[str]:
-        if panel_type == "structure" or panel_type not in PANEL_TYPES:
-            return []
+        if panel_type not in PANEL_TYPES or PANEL_TYPES[panel_type].max_series == 0:
+            return []  # structure, sequence and secondary structure use the structure-view residues
         return expected_keys(project).get(PANEL_TYPES[panel_type].data_kind, [])
 
     def _slot_editor(self, k: int, spec: PanelSpec, preset: str, project: Project) -> dict:
@@ -1213,6 +1257,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_slot_type(self, row):
         project = self._project_for_choices()
+        ptype = row["type"].get_active_id() or ""
+        if ptype in SLOT_DEFAULT_OPTIONS and not row["opts"].get_text().strip():
+            row["opts"].set_text(json.dumps(SLOT_DEFAULT_OPTIONS[ptype]))
         self._fill_data(row, row["type"].get_active_id() or "timeseries", project)
         self._on_slot_data(row, new_type=True)
 
@@ -1260,7 +1307,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 raise ValueError(f"panel options {text!r}: {exc}") from exc
             ptype = row["type"].get_active_id() or "timeseries"
             keys = []
-            if ptype != "structure":
+            if PANEL_TYPES.get(ptype) is None or PANEL_TYPES[ptype].max_series > 0:
                 project = project or self._project_for_choices()
                 primary = self._primary_key(row, project)
                 keys = ([primary] if primary else []) + [

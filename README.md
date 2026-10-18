@@ -26,6 +26,13 @@ planner workflow, notes and a log of every step that ran; MDATK repairs and rena
 numbering, SEQRES); and every script, run log and the *About* dialog **cite** the programs, force
 fields and parameter sets the project actually uses (BibTeX export).
 
+Since 0.0.3b MDATK finds **base pairs** in every *n*-th frame (builtin canonical-pair detection or
+the optional [Barnaba](https://github.com/srnas/barnaba)) and shows them in a **secondary-structure
+arc panel**; a **sequence panel** spans the width of the video; both glow and colour with the
+structure view. The structure view can be **zoomed and centred** on a residue or the origin, saved
+in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
+file as REMARK 950 records.
+
 ---
 
 ## Contents
@@ -83,6 +90,7 @@ python3 -m venv --system-site-packages .venv
 pip install .            # installs MDAnalysis, NumPy, SciPy, Matplotlib (+ tomli on Python < 3.11)
 pip install '.[test]'    # optional: adds pytest for running the test suite
 pip install '.[vtk]'     # optional: VTK as an alternative 3D renderer (see 3D representations)
+pip install '.[barnaba]' # optional: Barnaba for Leontis-Westhof base-pair classes and stacking
 ```
 
 This installs two commands: `mdatk` (CLI) and `mdatk-gui` (GUI); `python -m mdatk` works too.
@@ -385,6 +393,25 @@ ligands — superposed onto the reference frame) and **proximity** (per residue 
 to the proximity set, stored up to the *proximity search radius* so the render-time cutoff can be
 changed without recomputation).
 
+A third internal analysis, **basepairs**, feeds the secondary-structure panel (it runs only when a
+`secondary` panel needs it). Every *stride*-th frame (10) it finds the base pairs; the frames in
+between reuse the last result. Two engines are available (*Analyses → Base pairs*):
+
+- **builtin** (default, no extra dependency): canonical pairs from donor–acceptor distances
+  ≤ *cutoff* (3.5 Å). G–C needs 2 of its 3 Watson–Crick H-bonds, A–U / A–T both; G–U wobble
+  pairs (both H-bonds) are optional. The C1′ atoms must be 8.5–12.5 Å apart (about 10.5 Å in a
+  real pair), which keeps stacked neighbours such as a 5′-GpC-3′ step out. Each base pairs at most
+  once (the pair with the shortest summed distance wins; near-ties go to the C1′–C1′ distance closer
+  to 10.5 Å). It works for L-RNA too, because it uses
+  distances only.
+- **barnaba** (optional, `pip install barnaba`): Leontis–Westhof classes of all pairs, including
+  non-canonical ones (*Non-canonical pairs* draws them too). Barnaba's classification assumes
+  D-nucleotide geometry; for L-RNA the edges and cis/trans may be mirrored, so the builtin engine
+  is the safer choice there.
+
+The result is a sparse residue × residue map per frame (1 = Watson–Crick, 2 = wobble, 3 = other),
+cached like the other analyses.
+
 ### Residue groups and selections
 
 Groups are named residue ranges such as `1-40, 45, 50-60` (chain/segment qualified: `A:1-40`)
@@ -402,6 +429,11 @@ topologies number residues 1…N in file order. Defaults are provided for the re
   sliders. The angles (degrees and radians) are stored in the project (`visual.rotation`,
   `R = Rz·Ry·Rx` about the reference-frame centroid) and applied to every frame. Frames are
   superposed onto the reference frame first (*superpose frames*), so the model does not drift.
+- **Zoom and centre** (`visual.zoom`, `visual.center_on`, `visual.center_follow`): the mouse wheel
+  over the structure panel (or *Zoom* on the Structure page) magnifies the view; *Centre on* puts a
+  residue (`12`, `B:12`) or the coordinate origin (`origin`) in the middle instead of the model's
+  centre, and *Follow the centre residue* keeps it there in every frame. All three are saved in the
+  project and used in the video, e.g. to stay on one interface.
 - **Colouring modes**: `chain` (chainID, segment or bonded fragment), `groups` (group colours) and
   `proximity` (residues within the cutoff of the proximity set blend from the base colour to the
   proximity colour; set members keep their group colour).
@@ -541,11 +573,16 @@ Panel types (`mdatk list` prints them):
 | `timeseries` | one or more series vs time, moving cursor and value markers, optional target line | `progressive` (reveal over time), `smooth` (frames), `target`, `ylim` |
 | `dual_axis` | two series on independent left/right axes | — |
 | `heatmap` | residues × time (counts, values or occupancy classes) with cursor | `vmin`, `vmax`, `max_ticks` |
-| `contact_map` | residue × residue map: `instant` (evolves with the movie), `frame` (fixed) or `frequency` (fraction of frames) | `mode`, `frame`, `max_ticks` |
+| `contact_map` | residue × residue map: `instant` (evolves with the movie), `frame` (fixed) or `frequency` (fraction of frames); `transpose` puts the first group along x | `mode`, `frame`, `max_ticks`, `transpose` |
+| `sequence` | one-letter sequence of the structure-view residues (chains separated, chain letters shown) in the structure panel's colours, proximity glow and number tags; wraps into rows, and more than two rows log a warning to choose a smaller range | `residues` (e.g. `A:1-20, B:5-30`), `per_row` |
+| `secondary` | arc diagram on a fixed layout: residues along a line (same colours, glow and tags), base pairs within a chain as arcs above it, pairs between chains as transparent yellow arcs below it | `source`: `dynamic` (pairs re-detected every *n* frames by the base-pair analysis), `first` (first frame) or `dotbracket` (with `dotbracket`, `&` or a space between chains); `residues` |
 
 Layout presets: `single`; `large_plus_2`, `large_plus_3`, `large_plus_4` (one large panel and 2–4
 small ones on the right); `large_top_2`, `large_top_3` (small panels below); `equal_2` …
-`equal_6` (2–6 equal panels). Panels fill the slots in order; the first slot is the large one.
+`equal_6` (2–6 equal panels); `single_strip`, `large_plus_2_strip`, `large_plus_3_strip`,
+`large_top_3_strip`, `equal_4_strip` add a thin full-width strip at the bottom (their last slot) for
+a sequence or secondary-structure panel. Panels fill the slots in order; the first slot is the
+large one.
 The pipeline computes exactly the analyses that the chosen panels and charts need.
 
 ## Outputs
@@ -613,6 +650,34 @@ mdatk pdb to-lrna in.pdb A:45-73 -o out.pdb [--no-terminal-names]   # the to_lrn
 Add `-p project.mdatk.toml` to record the clean-up in the project's step log. The same module is
 copied into Amber build steps, so generated scripts need only `python3`.
 
+### Base-pair annotation
+
+`mdatk pdb annotate` (and *Annotation* in the PDB clean-up window, applied after the clean-up)
+writes the base pairs of a PDB file into its header as REMARK 950 records. Pairs come from the
+first model; every other line (all models, atom serials, CONECT) is copied unchanged, an earlier
+annotation is replaced and a MASTER record is dropped. `mdatk pdb clean` drops the records (they name
+the input's residues), so annotate after cleaning; the clean-up window does this when *Annotation* is on. Strands are TER segments, so files with blank chain ids (Amber, cpptraj)
+still get a `&` between strands:
+
+```text
+REMARK 950 MDATK BASE-PAIR ANNOTATION
+REMARK 950 ENGINE barnaba 0.1.9
+REMARK 950 PAIRS 20 (WATSON-CRICK 18, WOBBLE 2, OTHER 0)
+REMARK 950 PAIR  A   1 G   B  24 C   WCc        Leontis-Westhof class (builtin: WCc / GUc)
+REMARK 950 STACK A   1 G   A   2 C   >>         stacking (Barnaba only)
+REMARK 950 CHAINS A,B                           one block per group of paired chains
+REMARK 950 SEQ   GCAUGGCUAGCU&AGCUAGCCAUGC
+REMARK 950 DBN   ((((((((((((&))))))))))))      Watson-Crick and wobble pairs
+```
+
+```bash
+mdatk pdb annotate model.pdb -o annotated.pdb                   # Barnaba if installed, else builtin
+mdatk pdb annotate model.pdb -o annotated.pdb --engine builtin --no-stacking
+```
+
+`--no-pairs`, `--no-stacking` and `--no-dotbracket` leave record types out; `-p PROJECT` logs the
+step (with the Barnaba citation when it was used).
+
 ## Citations
 
 MDATK cites only what a project uses. Each planner step reports the programs, force fields,
@@ -645,7 +710,7 @@ mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
 mdatk workflow tools|generate|template|check|write|run|restraints   (see Script wizard and Project Planner)
-mdatk pdb check|clean|to-lrna      (see PDB clean-up)
+mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
 ```
 
 Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
@@ -777,6 +842,9 @@ fog, glow and translucency, thread safety and a render without a display.
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame (tens of ms for a few thousand atoms; the grid
   coarsens to 1.5 Å above 5 000 atoms).
+- The builtin base-pair engine knows canonical Watson–Crick and G–U wobble pairs only; use
+  Barnaba for non-canonical pairs and stacking. The arc diagram keeps one fixed layout (residues
+  in file order), so pseudoknots appear as crossing arcs.
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.

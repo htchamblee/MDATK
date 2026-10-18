@@ -2,7 +2,9 @@
 
 Each preset maps to a grid of ``rows x cols`` cells and a list of slots
 ``(row0, row1, col0, col1)`` (end exclusive) filled in order by the panels of
-:class:`mdatk.config.LayoutParams`.
+:class:`mdatk.config.LayoutParams`.  The ``*_strip`` presets add a thin
+full-width row at the bottom (their last slot) for a sequence or
+secondary-structure panel; :data:`HEIGHT_RATIOS` gives their row heights.
 """
 
 from __future__ import annotations
@@ -24,6 +26,20 @@ PRESETS: Dict[str, Tuple[int, int, List[Slot]]] = {
     "equal_5": (2, 6, [(0, 1, 0, 2), (0, 1, 2, 4), (0, 1, 4, 6), (1, 2, 1, 3), (1, 2, 3, 5)]),
     "equal_6": (2, 3, [(0, 1, 0, 1), (0, 1, 1, 2), (0, 1, 2, 3),
                        (1, 2, 0, 1), (1, 2, 1, 2), (1, 2, 2, 3)]),
+    "single_strip": (2, 1, [(0, 1, 0, 1), (1, 2, 0, 1)]),
+    "large_plus_2_strip": (3, 3, [(0, 2, 0, 2), (0, 1, 2, 3), (1, 2, 2, 3), (2, 3, 0, 3)]),
+    "large_plus_3_strip": (4, 3, [(0, 3, 0, 2), (0, 1, 2, 3), (1, 2, 2, 3), (2, 3, 2, 3), (3, 4, 0, 3)]),
+    "large_top_3_strip": (4, 3, [(0, 2, 0, 3), (2, 3, 0, 1), (2, 3, 1, 2), (2, 3, 2, 3), (3, 4, 0, 3)]),
+    "equal_4_strip": (3, 2, [(0, 1, 0, 1), (0, 1, 1, 2), (1, 2, 0, 1), (1, 2, 1, 2), (2, 3, 0, 2)]),
+}
+
+#: relative row heights of presets whose rows are not all equal
+HEIGHT_RATIOS: Dict[str, List[float]] = {
+    "single_strip": [1.0, 0.22],
+    "large_plus_2_strip": [1.0, 1.0, 0.4],
+    "large_plus_3_strip": [1.0, 1.0, 1.0, 0.55],
+    "large_top_3_strip": [1.0, 1.0, 1.0, 0.55],
+    "equal_4_strip": [1.0, 1.0, 0.4],
 }
 
 PRESET_LABELS = {
@@ -38,6 +54,11 @@ PRESET_LABELS = {
     "equal_4": "4 equal panels (2x2)",
     "equal_5": "5 equal panels",
     "equal_6": "6 equal panels (2x3)",
+    "single_strip": "1 large + full-width strip",
+    "large_plus_2_strip": "1 large + 2 small + strip",
+    "large_plus_3_strip": "1 large + 3 small + strip",
+    "large_top_3_strip": "1 large (top) + 3 small + strip",
+    "equal_4_strip": "4 equal panels + strip",
 }
 
 
@@ -49,3 +70,9 @@ def preset(name: str) -> Tuple[int, int, List[Slot]]:
 
 def n_slots(name: str) -> int:
     return len(preset(name)[2])
+
+
+def height_ratios(name: str) -> List[float]:
+    """Row heights of a preset (all 1 unless the preset defines them)."""
+    rows = preset(name)[0]
+    return list(HEIGHT_RATIOS.get(name, [1.0] * rows))

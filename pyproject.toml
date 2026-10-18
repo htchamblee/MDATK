@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdatk"
-version = "0.0.3a0"
+version = "0.0.3b0"
 description = "Molecular Dynamic Analysis Tool Kit (MDATK): offline analysis and multi-panel video rendering of MD trajectories of RNA systems"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -32,6 +32,7 @@ dependencies = [
 gui = ["PyGObject>=3.36", "pycairo>=1.16"]
 netcdf4 = ["netCDF4"]
 vtk = ["vtk>=9.1,<10"]
+barnaba = ["barnaba"]
 test = ["pytest>=7"]
 
 [project.scripts]

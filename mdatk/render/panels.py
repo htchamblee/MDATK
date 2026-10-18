@@ -19,7 +19,8 @@ from matplotlib.ticker import MaxNLocator
 
 from ..config import PanelSpec, Project
 from ..data import Dataset
-from .coloring import frame_colors, glow_intensity, static_colors
+from .coloring import frame_colors
+from .residues import residue_shading, tag_rows, warn_once
 from .orientation import euler_to_matrix
 from .theme import Theme, get_theme, style_axes, style_legend
 
@@ -161,11 +162,14 @@ class StructurePanel(Panel):
             raise KeyError("trace")
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
-        center = coords[0].mean(axis=0)
+        self.view_note = ""
+        center, shift = self._view_centre(coords, tr)
         self.center = center
+        self.frame_shift = shift  # per frame, for a followed centre residue (else zeros)
         # centred coordinates; the view is a rotation of these (see set_rotation)
-        self.centred = coords - center
-        self.ions_centred = ions - center if ions.size else np.zeros((len(coords), 0, 3))
+        self.centred = coords - center - shift[:, None, :]
+        self.ions_centred = (ions - center - shift[:, None, :] if ions.size
+                             else np.zeros((len(coords), 0, 3)))
         self.links = np.asarray(tr.arrays["links"], dtype=np.int64).reshape(-1, 2)
         n_res = coords.shape[1]
         # Frame the model by its bounding sphere so any orientation fits without zooming.
@@ -174,9 +178,10 @@ class StructurePanel(Panel):
             radius = max(radius, float(np.linalg.norm(self.ions_centred, axis=-1).max()))
         radius = max(radius, 1.0)
         self.radius = radius
-        pad = 0.06 * radius + 2.0
-        self.data_lo = np.array([-radius - pad, -radius - pad])
-        self.data_hi = np.array([radius + pad, radius + pad])
+        view = radius / max(float(v.zoom), 0.05)  # zoom > 1 shows a smaller window
+        pad = 0.06 * view + 2.0 / max(float(v.zoom), 1.0)
+        self.data_lo = np.array([-view - pad, -view - pad])
+        self.data_hi = np.array([view + pad, view + pad])
         self.ax.set_xlim(self.data_lo[0], self.data_hi[0])
         self.ax.set_ylim(self.data_lo[1], self.data_hi[1])
         self.ax.set_xticks([])
@@ -192,36 +197,9 @@ class StructurePanel(Panel):
         self.set_rotation(v.rotation)
         self.auto_title = "Structure"
 
-        project = self.ctx.project
-        group_colors = [g.color for g in project.groups]
-        self.static = static_colors(v.color_mode, np.asarray(tr.arrays["chain"]),
-                                    np.asarray(tr.arrays["group_index"]), group_colors,
-                                    v.base_color, v.chain_palette)
-        n_frames = len(coords)
-        self.member = np.zeros(n_res, bool)
-        self.glow = np.zeros((n_res, n_frames), np.float32)
-        self.color_i = np.zeros((n_res, n_frames), np.float32)
-        prox = ds.results.get("proximity")
-        need_prox = v.color_mode == "proximity" or v.glow_mode != "none"
-        if need_prox:
-            if prox is None:
-                raise KeyError("proximity")
-            dist = np.asarray(prox.arrays["min_distance"], dtype=np.float64)
-            member = np.asarray(prox.arrays["member"], bool)
-            if not np.array_equal(prox.arrays["resindex"], tr.arrays["resindex"]):
-                order = {int(ix): k for k, ix in enumerate(prox.arrays["resindex"])}
-                rows = [order.get(int(ix), -1) for ix in tr.arrays["resindex"]]
-                dist = np.array([dist[k] if k >= 0 else np.full(n_frames, np.inf) for k in rows])
-                member = np.array([member[k] if k >= 0 else False for k in rows])
-            self.member = member
-            cutoff = v.proximity_cutoff
-            self.glow = glow_intensity(dist, member, cutoff, v.glow_mode, v.fade_frames)
-            mode = v.glow_mode if v.glow_mode != "none" else "current"
-            self.color_i = glow_intensity(dist, member, cutoff, mode, v.fade_frames)
-
+        sh = residue_shading(self.ctx, tr)
+        self.static, self.member, self.glow, self.color_i, self.glow_rgb = sh
         ps = v.point_size
-        glow_rgb = np.array(to_rgba(v.glow_color))[:3]
-        self.glow_rgb = glow_rgb
         self.halo_outer = self.ax.scatter([], [], s=[], linewidths=0, zorder=1)
         self.halo_inner = self.ax.scatter([], [], s=[], linewidths=0, zorder=2)
         self.lines = LineCollection([], capstyle="round", zorder=3)
@@ -259,9 +237,31 @@ class StructurePanel(Panel):
         if note:
             self.stage_note = note
             log.warning("3D representations: %s", note)
-        xyz = np.asarray(atoms.arrays["coords"], dtype=np.float32) - self.center.astype(np.float32)
+        xyz = (np.asarray(atoms.arrays["coords"], dtype=np.float32) - self.center.astype(np.float32)
+               - self.frame_shift[:, None, :].astype(np.float32))
         self.stage = MoleculeStage(self, scene, xyz, renderer)
         self.covered[:] = True  # the scene draws every residue (or hides it): no 2D trace
+
+    def _view_centre(self, coords: np.ndarray, tr):
+        """Centre of the view (reference frame) and its per-frame shift (visual.center_on / center_follow)."""
+        v = self.ctx.project.visual
+        shift = np.zeros((len(coords), 3))
+        spec = (v.center_on or "").strip()
+        if not spec:
+            return coords[0].mean(axis=0), shift
+        if spec.lower() == "origin":
+            return np.zeros(3), shift
+        from ..selections import SelectionError
+        from .residues import residue_rows
+        try:
+            row = int(residue_rows(tr, spec)[0])
+        except (SelectionError, IndexError) as exc:
+            self.view_note = f"centre: {exc}"
+            warn_once(f"structure view centre: {exc}; using the model centre")
+            return coords[0].mean(axis=0), shift
+        if v.center_follow:
+            shift = coords[:, row] - coords[0, row]
+        return coords[0, row].copy(), shift
 
     def residue_rgb(self, pos: int) -> np.ndarray:
         """Residue colours of a frame without fog (the 3D renderer fogs by depth); renderers
@@ -346,7 +346,8 @@ class StructurePanel(Panel):
 
         # the visible window (after_layout widens it to the panel's aspect) plus a margin
         (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
-        mx, my = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
+        drift = float(np.linalg.norm(self.frame_shift, axis=1).max()) if len(self.frame_shift) else 0.0
+        mx, my = 0.1 * (x1 - x0) + drift, 0.1 * (y1 - y0) + drift  # a followed residue moves the map
         window = (x0 - mx, x1 + mx, y0 - my, y1 + my)
         n = 100 if self.density_fast else 200
         try:
@@ -360,8 +361,22 @@ class StructurePanel(Panel):
             return
         d = self.ctx.project.density
         self.density_img.set_data(shadow_rgba(sh, self._density_rgb, d.opacity))
+        self._density_extent = np.asarray(sh.extent, dtype=np.float64)
         self.density_img.set_extent(sh.extent)
         self.density_img.set_visible(True)
+
+    def _density_animated(self) -> bool:
+        """The shadow is redrawn every frame: drawn in front, or moved with a followed residue."""
+        return self.density_img is not None and (self.ctx.project.density.front or self.frame_shift.any())
+
+    def _follow_density(self, pos: int) -> None:
+        """Shift the shadow with the model when the view follows a residue (the model moves by
+        -frame_shift[pos]; the map, fixed to the model, moves with it)."""
+        base = getattr(self, "_density_extent", None)
+        if base is None or not self.frame_shift.any():
+            return
+        dx, dy = (self.frame_shift[pos] @ self.view_matrix.T)[:2]
+        self.density_img.set_extent((base[0] - dx, base[1] - dx, base[2] - dy, base[3] - dy))
 
     def has_density(self) -> bool:
         return self._dmap is not None and self.density_img is not None
@@ -390,26 +405,17 @@ class StructurePanel(Panel):
 
     def rotation_artists(self) -> list:
         """Static artists that still change when the view rotates (interactive previews)."""
-        if self.density_img is None or self.ctx.project.density.front:  # front: already animated
+        if self.density_img is None or self._density_animated():  # already animated
             return []
         return [self.density_img]
 
     def _residue_tags(self, v, tr):
         """Residue-number labels: every N-th residue and/or an explicit list."""
-        resid = np.asarray(tr.arrays["resid"]) if "resid" in tr.arrays else None
-        self.tag_rows = np.zeros(0, dtype=np.int64)
+        self.tag_rows = tag_rows(tr, v)
         self.tags = []
-        if resid is None or not (v.label_every > 0 or v.label_residues.strip()):
+        if not len(self.tag_rows):
             return
-        wanted = np.zeros(len(resid), bool)
-        if v.label_every > 0:
-            wanted |= (resid % int(v.label_every)) == 0
-        if v.label_residues.strip():
-            from ..selections import parse_residue_ranges
-
-            for _chain, a, b in parse_residue_ranges(v.label_residues):
-                wanted |= (resid >= a) & (resid <= b)
-        self.tag_rows = np.flatnonzero(wanted)
+        resid = np.asarray(tr.arrays["resid"])
         self.tags = [self.ax.text(0, 0, str(int(resid[k])), ha="center", va="center",
                                   color=self.theme.ink2, fontsize=self.ctx.font_size * 0.7,
                                   zorder=6, clip_on=True) for k in self.tag_rows]
@@ -466,6 +472,8 @@ class StructurePanel(Panel):
 
     def animated_artists(self):
         arts = [self.halo_outer, self.halo_inner, self.lines]
+        if self._density_animated() and not self.ctx.project.density.front:
+            arts.insert(0, self.density_img)  # moving with a followed residue, behind everything
         if self.stage is not None:
             arts.append(self.stage.image)
         if self.density_img is not None and self.ctx.project.density.front:
@@ -481,6 +489,8 @@ class StructurePanel(Panel):
     def draw_frame(self, pos):
         v = self.ctx.project.visual
         xyz = self.view[pos]
+        if self.density_img is not None:
+            self._follow_density(pos)
         if self.stage is not None:
             self.stage.update(pos)
         # the 3D scene draws the residues, ions and glow; if it fails, the 2D trace does
@@ -543,7 +553,7 @@ class StructurePanel(Panel):
             out = xy - centre
             norm = np.linalg.norm(out, axis=1, keepdims=True)
             out = np.where(norm > 1e-6, out / np.maximum(norm, 1e-6), np.array([[0.0, 1.0]]))
-            pos_xy = xy + out * (0.07 * self.radius + 1.5)
+            pos_xy = xy + out * (0.07 * self.radius / max(float(v.zoom), 0.05) + 1.5)
             for text, (x, y) in zip(self.tags, pos_xy):
                 text.set_position((x, y))
         if self.time_text is not None:
@@ -816,3 +826,6 @@ def required_analyses(project: Project, specs: Optional[Sequence[PanelSpec]] = N
     for spec in (project.layout.panels if specs is None else specs):
         need |= panel_class(spec.type).required_analyses(spec, project)
     return need
+
+
+from . import seqpanels  # noqa: E402,F401  (registers the sequence and secondary-structure panels)

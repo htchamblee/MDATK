@@ -495,12 +495,33 @@ def cmd_pdb(args) -> int:
     if args.pdb_command == "check":
         return pdbtools.run(args)[0]
     name = os.path.basename(args.input)
+    if args.pdb_command == "annotate":
+        return _pdb_annotate(args, name)
     with logged(_project_file(args), f"pdb {args.pdb_command}", f"PDB clean-up of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
         code, result = pdbtools.run(args)
         entry.files = list(result.get("files", []))
         entry.summary = "\n".join(result.get("notes", []))
     return code
+
+
+def _pdb_annotate(args, name: str) -> int:
+    from .annotate import annotate
+    from .projectfile import logged
+    with logged(_project_file(args), "pdb annotate", f"Base-pair annotation of {name}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        res = annotate(args.input, pairs=not args.no_pairs, stacking=not args.no_stacking,
+                       dotbracket=not args.no_dotbracket, engine=args.engine)
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(res.text)
+        for note in res.notes:
+            print(f"annotate: {note}", file=sys.stderr)
+        entry.files = [args.output]
+        entry.summary = "\n".join(res.notes)
+        if res.engine == "barnaba":
+            from .citations import keys_for
+            entry.citations = keys_for(["barnaba"])
+    return 0
 
 
 def cmd_workflow_tools(args) -> int:
@@ -828,6 +849,18 @@ def build_parser() -> argparse.ArgumentParser:
         c.add_argument("--project", "-p", "--params", dest="params",
                        help="project file whose step log records the clean-up")
         c.set_defaults(func=cmd_pdb)
+    c = psub.add_parser("annotate", help="add REMARK 950 base-pair / stacking / dot-bracket records "
+                                         "(barnaba when installed, else builtin canonical pairs)")
+    c.add_argument("input", help="PDB file")
+    c.add_argument("--output", "-o", required=True, help="output PDB")
+    c.add_argument("--no-pairs", action="store_true", help="no PAIR records")
+    c.add_argument("--no-stacking", action="store_true", help="no STACK records")
+    c.add_argument("--no-dotbracket", action="store_true", help="no sequence / dot-bracket records")
+    c.add_argument("--engine", choices=("auto", "builtin", "barnaba"), default="auto",
+                   help="auto: barnaba if importable, else builtin")
+    c.add_argument("--project", "-p", "--params", dest="params",
+                   help="project file whose step log records the annotation")
+    c.set_defaults(func=cmd_pdb)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "

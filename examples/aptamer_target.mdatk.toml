@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.3a"
+mdatk_version = "0.0.3b"
 # When the settings were last saved.
-saved = 2026-10-18T04:29:11
+saved = 2026-10-18T09:33:09
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -217,6 +217,21 @@ use_parm7 = true
 # Exclude pairs within n bonds (0: exclude none)
 exclude_bonded = 3
 
+# Base pairs (secondary structure)
+[analyses.basepairs]
+# Base pairs of the residues in the structure view, for the secondary-structure panel and PDB
+# annotation; computed whenever a panel needs them. Engine: "builtin" (canonical pairs from H-bond
+# geometry) or "barnaba" (optional)
+engine = "builtin"
+# Re-detect the pairs every n-th analysed frame (pairs hold in between)
+stride = 10
+# Builtin: maximum donor-acceptor distance of a base-pair H-bond (Å)
+cutoff = 3.5
+# Builtin: also count G-U wobble pairs
+wobble = true
+# Barnaba: also keep non-canonical (non Watson-Crick) pairs
+noncanonical = false
+
 # Structure view: colouring, glow, 3D representations, labels
 [visual]
 # Residue groups shown in the structure view (empty: all)
@@ -239,6 +254,13 @@ show_ions = true
 align_frames = true
 # View rotation in degrees about X, Y and Z (R = Rz Ry Rx)
 rotation = [-90.0, 0.0, 0.0]
+# Magnification of the structure view (1: the whole model fits; 2: twice as large)
+zoom = 1.0
+# View centre: "" (centre of the model), "origin" (0, 0, 0 of the coordinates) or a residue, e.g.
+# "12" or "B:12"
+center_on = ""
+# Keep the centre residue in the middle in every frame (not only the first)
+center_follow = false
 # Residue colouring: "chain", "groups" or "proximity"
 color_mode = "groups"
 # Colour of residues no group or proximity colour applies to

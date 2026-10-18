@@ -12,6 +12,8 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk  # noqa: E402
 
 from .. import pdbtools  # noqa: E402
+from ..annotate import annotate  # noqa: E402
+from ..citations import keys_for  # noqa: E402
 from ..projectfile import logged  # noqa: E402
 from . import widgets as W  # noqa: E402
 
@@ -27,6 +29,9 @@ SCHEME_LABELS = [
 RECORD_LABELS = [("", "follow the name scheme"), ("keep", "keep ATOM / HETATM"),
                  ("rosetta", "all polymer residues as ATOM (Rosetta)"),
                  ("pdb", "non-standard residues as HETATM (PDB)")]
+ENGINE_LABELS = [("auto", "Barnaba when installed, else builtin"),
+                 ("builtin", "builtin (canonical pairs only)"),
+                 ("barnaba", "Barnaba (Leontis-Westhof classes, stacking)")]
 CHAIN_LABELS = [("keep", "keep the chain ids"), ("reference", "copy from a reference PDB"),
                 ("list", "ids per TER segment (list)"), ("assign", "A, B, C … per TER segment")]
 
@@ -136,6 +141,27 @@ class PDBToolsWindow(Gtk.Window):
         self.fasta = W.file_chooser_button("FASTA file", Gtk.FileChooserAction.SAVE, patterns=[FASTA_FILES])
         r.add("FASTA (optional)", self.fasta)
         box.pack_start(W.frame("Numbering and sequence", r), False, False, 0)
+
+        a = W.Form()
+        self.annotate = W.check("Annotate base pairs as REMARK 950 records")
+        self.annotate.set_tooltip_text("Base pairs, stacking and dot-bracket written into the header of the "
+                                       "output (as 'mdatk pdb annotate')")
+        self.annotate.connect("toggled", lambda *_: self._sync())
+        a.add_wide(self.annotate)
+        from ..secstruct import barnaba_available
+        labels = ENGINE_LABELS if barnaba_available() else [
+            (k, text + " - not installed" if k == "barnaba" else text) for k, text in ENGINE_LABELS]
+        self.ann_engine = W.combo(labels)
+        self.ann_engine.set_active_id("auto")
+        a.add("Engine", self.ann_engine, "Barnaba is optional (pip install barnaba); the builtin engine finds "
+              "Watson-Crick and G-U wobble pairs from H-bond distances")
+        self.ann_pairs = W.check("Base pairs (PAIR)")
+        self.ann_stacking = W.check("Stacking (STACK, Barnaba only)")
+        self.ann_dbn = W.check("Sequence and dot-bracket (SEQ / DBN)")
+        for w in (self.ann_pairs, self.ann_stacking, self.ann_dbn):
+            w.set_active(True)
+            a.add_wide(w)
+        box.pack_start(W.frame("Annotation", a), False, False, 0)
         sw = W.scrolled(box)
         sw.set_size_request(500, -1)
         return sw
@@ -147,6 +173,9 @@ class PDBToolsWindow(Gtk.Window):
         self.chain_ids.set_sensitive(mode == "list")
         on = self.renumber.get_active()
         for w in (self.start, self.per_chain, self.keep_gaps):
+            w.set_sensitive(on)
+        on = self.annotate.get_active()
+        for w in (self.ann_engine, self.ann_pairs, self.ann_stacking, self.ann_dbn):
             w.set_sensitive(on)
 
     def _on_input(self, *_):
@@ -179,6 +208,13 @@ class PDBToolsWindow(Gtk.Window):
             start=int(self.start.get_value()), per_chain=self.per_chain.get_active(),
             keep_gaps=self.keep_gaps.get_active(), seqres=self.seqres.get_active(),
             make_fasta=bool(self.fasta.entry.get_text().strip()), terminal_names=self.terminals.get_active())
+
+    def annotation_options(self) -> Optional[dict]:
+        """Keyword arguments of :func:`mdatk.annotate.annotate`, or None when annotation is off."""
+        if not self.annotate.get_active():
+            return None
+        return dict(pairs=self.ann_pairs.get_active(), stacking=self.ann_stacking.get_active(),
+                    dotbracket=self.ann_dbn.get_active(), engine=self.ann_engine.get_active_id() or "auto")
 
     def _input(self) -> Optional[str]:
         path = self.input.entry.get_text().strip()
@@ -225,23 +261,31 @@ class PDBToolsWindow(Gtk.Window):
             self._show("The output must not overwrite the input file.")
             return
         opts = self.options()
+        ann_opts = self.annotation_options()
         fasta_path = self.fasta.entry.get_text().strip()
         project_path = getattr(self.main, "project_path", None)
         try:
             with logged(project_path, "pdb clean", f"PDB clean-up of {os.path.basename(path)}") as entry:
                 res = pdbtools.clean(path, **opts)
+                text, notes = res.text, list(res.notes)
+                if ann_opts is not None:
+                    ann = annotate(text, **ann_opts)
+                    text = ann.text
+                    notes += [n for n in ann.notes if n not in notes]
+                    if ann.engine == "barnaba":
+                        entry.citations = keys_for(["barnaba"])
                 with open(out, "w", encoding="utf-8") as fh:
-                    fh.write(res.text)
+                    fh.write(text)
                 entry.files = [out]
                 if fasta_path and res.fasta:
                     with open(fasta_path, "w", encoding="utf-8") as fh:
                         fh.write(res.fasta)
                     entry.files.append(fasta_path)
-                entry.summary = "\n".join(res.notes)
-        except (OSError, pdbtools.PDBError) as exc:
+                entry.summary = "\n".join(notes)
+        except (OSError, ValueError, ImportError, RuntimeError, pdbtools.PDBError) as exc:
             self._show(f"ERROR: {exc}")
             return
         self._show("\n".join([f"Wrote {out}"] + ([f"Wrote {fasta_path}"] if fasta_path else []) + [""]
-                             + res.notes))
+                             + notes))
         if hasattr(self.main, "append_log"):
             self.main.append_log(f"PDB clean-up: wrote {out}")

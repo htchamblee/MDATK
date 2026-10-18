@@ -16,6 +16,6 @@ PROJECT_NAME = "Molecular Dynamic Analysis Tool Kit"
 PROJECT_ABBREV = "MDATK"
 PROJECT_TITLE = f"{PROJECT_NAME} ({PROJECT_ABBREV})"
 
-__version__ = "0.0.3a"
+__version__ = "0.0.3b"
 
 __all__ = ["PROJECT_NAME", "PROJECT_ABBREV", "PROJECT_TITLE", "__version__"]

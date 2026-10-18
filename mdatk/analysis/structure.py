@@ -73,6 +73,25 @@ def chain_ids(residues) -> np.ndarray:
         return np.zeros(n, dtype=np.int64)
 
 
+def chain_names(residues) -> np.ndarray:
+    """Chain name of every residue, from the same source :func:`chain_ids` uses (chainID when it has
+    several values, else segid when it has several, else the single chainID); "" when there is none."""
+    n = len(residues)
+    if n == 0:
+        return np.zeros(0, dtype=str)
+    first_atoms = residues.atoms[np.unique(residues.atoms.resindices, return_index=True)[1]]
+    try:
+        cid = [str(c).strip() for c in first_atoms.chainIDs]
+    except (AttributeError, Exception):
+        cid = [""] * n
+    segs = [str(s).strip() for s in residues.segids]
+    if len(set(cid)) > 1:
+        return np.array(cid, dtype=str)
+    if len(set(segs)) > 1:
+        return np.array(segs, dtype=str)
+    return np.array(cid, dtype=str)
+
+
 def residue_group_membership(ctx, residues) -> np.ndarray:
     """[n_groups, n_residues] bool: residue belongs to project group k."""
     out = np.zeros((len(ctx.project.groups), len(residues)), dtype=bool)
@@ -132,7 +151,7 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
-    version = 3  # v2: residue numbers for tags; v3: group membership
+    version = 4  # v2: residue numbers for tags; v3: group membership; v4: chain and residue names
 
     @classmethod
     def params_for(cls, project):
@@ -204,7 +223,9 @@ class TraceAnalysis(Analysis):
                           chain=self.chain, group_index=self.group_index,
                           group_member=self.group_member, is_point=self.is_point, links=self.links,
                           resindex=self.residues.ix.astype(np.int64),
-                          resid=self.residues.resids.astype(np.int64))
+                          resid=self.residues.resids.astype(np.int64),
+                          resname=np.array([str(r) for r in self.residues.resnames], dtype="U8"),
+                          chain_name=chain_names(self.residues))
         return res
 
 

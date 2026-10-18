@@ -374,3 +374,29 @@ def test_placement_follows_the_molecule_and_failures_degrade(model, tmp_path):
     assert os.path.exists(out.video) and p.density.transform == []
     p.density.transform = [1, 0, 0, 0, 1, 0, 0, 0, 1, float("inf"), 0, 0]
     assert any("invalid" in m for m in p.density_problems())
+
+
+def test_shadow_moves_with_a_followed_centre_residue(model, tmp_path):
+    from mdatk.config import PanelSpec
+    from mdatk.pipeline import Pipeline
+    from mdatk.render.video import build_figure
+
+    xyz, el = model["xyz"], model["elements"]
+    path = str(tmp_path / "f.mrc")
+    write_map(path, _target_map(xyz, el, D.RigidTransform(np.eye(3), np.zeros(3)), noise=0.0))
+    p = Project.load(model["preset"])
+    p.output.out_dir = str(tmp_path / "out")
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("structure", [], "S")]
+    p.density.map_path, p.density.transform = path, [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+    p.visual.center_on, p.visual.center_follow = "3", True
+    ds = Pipeline(p).analyze()
+    st = build_figure(ds, p, 600, 600, dpi=60)[2][0]
+    st.after_layout()
+    shift = st.frame_shift
+    pos = int(np.argmax(np.linalg.norm(shift, axis=1)))
+    assert np.linalg.norm(shift[pos]) > 0.05  # the demo residue moves
+    assert st.density_img in st.animated_artists() and st.density_img not in st.rotation_artists()
+    base = np.array(st.density_img.get_extent())
+    st.draw_frame(pos)
+    d = (shift[pos] @ st.view_matrix.T)[:2]
+    np.testing.assert_allclose(st.density_img.get_extent(), base - [d[0], d[0], d[1], d[1]], atol=1e-6)

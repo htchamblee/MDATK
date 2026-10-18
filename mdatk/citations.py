@@ -87,6 +87,10 @@ def pipeline_resources(project) -> List[str]:
         out.append("ffmpeg")
     if getattr(project.visual, "renderer", "") == "vtk":
         out.append("vtk")
+    if project.analyses.basepairs.engine == "barnaba" and any(
+            s.type == "secondary" and (s.options or {}).get("source", "dynamic") != "dotbracket"
+            for s in project.layout.panels):
+        out.append("barnaba")
     return unique(out)
 
 
