@@ -748,7 +748,8 @@ class ContactMapPanel(Panel):
     type_name = "contact_map"
     label = "Residue contact map"
     description = ("Residue x residue map: 'instant' (evolving with the movie), 'frame' "
-                   "(fixed frame) or 'frequency' (fraction of frames).")
+                   "(fixed frame) or 'frequency' (fraction of frames). Option 'transpose' puts the "
+                   "first group on the x axis.")
     data_kind = "pairmaps"
     max_series = 1
 
@@ -760,6 +761,7 @@ class ContactMapPanel(Panel):
         if 0 in self.pm.shape:
             raise KeyError(f"{self.pm.key} is empty")
         self.mode = self.options.get("mode", "instant")
+        self.transpose = bool(self.options.get("transpose", False))  # first group along x
         cmap = self.theme.sequential()
         if self.mode == "frequency":
             data, vmax, label = self.pm.frequency(), 1.0, "fraction of frames"
@@ -771,6 +773,8 @@ class ContactMapPanel(Panel):
         else:
             data, label = self.pm.dense(0), "count"
             vmax = max(1.0, float(self.pm.values.max()) if len(self.pm.values) else 1.0)
+        if self.transpose:
+            data = data.T
         self.im = self.ax.imshow(data, aspect="auto", interpolation="nearest", cmap=cmap,
                                  vmin=0.0, vmax=vmax, origin="upper")
         cb = self.fig.colorbar(self.im, ax=self.ax, fraction=0.04, pad=0.02)
@@ -783,8 +787,11 @@ class ContactMapPanel(Panel):
                           labelsize=self.ctx.font_size * 0.75)
         self.ax.grid(False)
         mt = int(self.options.get("max_ticks", 14))
-        _set_residue_ticks(self.ax.set_yticks, self.pm.row_labels, mt)
-        _set_residue_ticks(self.ax.set_xticks, self.pm.col_labels, mt)
+        rows, cols = self.pm.row_labels, self.pm.col_labels
+        if self.transpose:
+            rows, cols = cols, rows
+        _set_residue_ticks(self.ax.set_yticks, rows, mt)
+        _set_residue_ticks(self.ax.set_xticks, cols, mt)
         self.ax.tick_params(axis="both", labelsize=self.ctx.font_size * 0.65)
         for lab in self.ax.get_xticklabels():
             lab.set_rotation(90)
@@ -794,7 +801,8 @@ class ContactMapPanel(Panel):
 
     def draw_frame(self, pos):
         if self.mode == "instant":
-            self.im.set_data(self.pm.dense(pos))
+            data = self.pm.dense(pos)
+            self.im.set_data(data.T if self.transpose else data)
 
 
 def panel_class(type_name: str) -> Type[Panel]:

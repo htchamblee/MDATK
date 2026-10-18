@@ -14,7 +14,6 @@ meant for demonstrations and tests only.
 
 from __future__ import annotations
 
-import json
 import os
 import warnings
 from typing import Dict, List, Tuple
@@ -554,7 +553,7 @@ def demo_project(topology: str, trajectory: str, out_dir: str, n_bp: int,
 
 def build_demo(out_dir: str, n_frames: int = 120, dt_ps: float = 10.0, solvent: bool = True,
                sequence: str = "GCAUGGCAUCGA", seed: int = 7) -> Dict[str, str]:
-    """Write ``demo.parm7``, ``demo.nc`` and ``demo_preset.json`` into ``out_dir``."""
+    """Write ``demo.parm7``, ``demo.nc`` and the project file ``demo.mdatk.toml`` into ``out_dir``."""
     import shutil
 
     os.makedirs(out_dir, exist_ok=True)
@@ -563,12 +562,11 @@ def build_demo(out_dir: str, n_frames: int = 120, dt_ps: float = 10.0, solvent: 
     traj = os.path.join(out_dir, "demo.nc")
     write_topology(top, topo, box)
     write_trajectory(traj, top, coords, box, dt_ps)
-    preset = os.path.join(out_dir, "demo_preset.json")
+    path = os.path.join(out_dir, "demo.mdatk.toml")
     project = demo_project("demo.parm7", "demo.nc", f"{PROJECT_ABBREV}_output", len(sequence),
                            cleaning=solvent and shutil.which("cpptraj") is not None,
                            mid_time_ps=(n_frames // 2) * dt_ps)
-    data = project.to_dict()
-    with open(preset, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    return {"topology": top, "trajectory": traj, "preset": preset}
+    project.notes = ("Synthetic 12-bp RNA aptamer/target duplex written by 'mdatk demo' to try every feature; "
+                     "its geometry is schematic.")
+    project.save(path)
+    return {"topology": top, "trajectory": traj, "project": path, "preset": path}

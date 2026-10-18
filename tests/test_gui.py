@@ -66,11 +66,19 @@ def test_canvas_shows_layout_with_example_data(window):
     assert canvas.surface is not None and len(canvas.slots) == len(window.project.layout.panels)
     assert canvas.structure_slot == 0
     assert "Example data" in canvas.watermark
-    # side panel slides out from the menus and keeps its fixed width
+    # the side bar is always shown at its fixed width; the icon bar switches pages
+    from mdatk.gui.app import PAGES, SIDE_WIDTH
+    assert window.side_stack.get_visible_child_name() == "input"  # default page
     window.open_section("layout", window.slot_rows[1]["frame"])
-    assert pump(lambda: window.side_revealer.get_child_revealed(), 5)
     assert window.side_stack.get_visible_child_name() == "layout"
-    window.close_side_panel()
+    assert window.page_buttons["layout"].get_active()
+    for page, _icon, _title in PAGES:
+        window.page_buttons[page].clicked()
+        assert pump(lambda: window.side_stack.get_visible_child_name() == page, 5)
+        pump(lambda: False, 0.2)  # let the page lay out
+        assert window.side_panel.get_allocated_width() == SIDE_WIDTH  # never widened by its content
+        hadj = window.pages[page].get_hadjustment()
+        assert hadj.get_upper() <= hadj.get_page_size() + 1  # no horizontal scrolling
 
 
 def test_drag_rotates_structure_and_swaps_panels(window):
@@ -212,3 +220,32 @@ def test_representation_editor_and_3d_preview(window):
     assert [r.style for r in p.visual.representations] == ["cartoon"]
     window.binder.load(p)
     assert window.collect(validate=False).to_dict() == p.to_dict()
+
+
+def test_pdb_tools_window_checks_and_cleans(window, tmp_path):
+    from test_pdbtools import make_pdb
+
+    from mdatk import pdbtools
+    src = tmp_path / "in.pdb"
+    src.write_text(make_pdb([("A", [("G", 1, "G", False), ("C", 2, "C", False)]),
+                             ("B", [("0G", 3, "G", True), ("0U", 4, "U", True)])]))
+    window.open_pdb_tools()
+    dlg = window.pdb_tools
+    dlg.input.entry.set_text(str(src))
+    assert dlg.output.entry.get_text().endswith("in_clean.pdb")  # suggested from the input
+    dlg.run_check()
+    buf = dlg.report.get_buffer()
+    report = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    assert "Chain B" in report and "chirality 2 L" in report
+    dlg.scheme.set_active_id("amber")
+    dlg.renumber.set_active(True)
+    dlg.run_clean()
+    names = [r.name for r in pdbtools.read_pdb(dlg.output.entry.get_text()).residues()]
+    assert names == ["G5", "C3", "LG5", "LU3"]
+    dlg.destroy()
+    assert window.pdb_tools is None
+
+
+def test_citation_text_lists_project_resources(window):
+    text = window.citation_text()
+    assert isinstance(text, str) and text

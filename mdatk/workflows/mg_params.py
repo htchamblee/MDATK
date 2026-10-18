@@ -18,8 +18,11 @@ for the pairs) at the commits named in ``source``:
 
 * TIP3P: Grotz, Cruz-León & Schwierz, J. Chem. Theory Comput. 17, 2530 (2021),
   doi:10.1021/acs.jctc.0c01281
-* SPC/E, TIP3P-FB, TIP4P-Ew, TIP4P-D: Grotz & Schwierz, J. Chem. Theory Comput.
-  18, 526 (2022), doi:10.1021/acs.jctc.1c00791
+* SPC/E, TIP3P-FB, TIP4P/2005, TIP4P-Ew, TIP4P-D: Grotz & Schwierz, J. Chem. Theory
+  Comput. 18, 526 (2022), doi:10.1021/acs.jctc.1c00791.  For TIP4P/2005 the paper's
+  Table 1 repeats the microMg Mg-OP pair (0.2217 nm / 6.6266 kJ/mol) in the nanoMg
+  row; its own lambda factors and the parameter file give 0.2196970595 / 7.62567188774,
+  which is what is used here
 * OPC (the SPC/E values, shown to transfer): Grotz & Schwierz, J. Chem. Phys.
   156, 114501 (2022), doi:10.1063/5.0087292
 
@@ -47,7 +50,12 @@ CITATIONS = {
     "fb3": "Grotz & Schwierz, JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791",
     "tip4pew": "Grotz & Schwierz, JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791",
     "tip4pd": "Grotz & Schwierz, JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791",
+    "tip4p2005": "Grotz & Schwierz, JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791",
 }
+# citation resource (mdatk.citations) of each published set
+RESOURCES = {(m, w): ("mg_micro_tip3p" if m == "micro" else "mg_nano_tip3p") if w == "tip3p"
+             else "mg_opc" if w == "opc" else "mg_tip4p_family"
+             for m in MODELS for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd", "tip4p2005")}
 UNAVAILABLE = {
     ("micro", "tip4pd"): "the authors' microMg / TIP4P-D Mg²⁺-RNA term differs between the parameter "
                          "file (Mg-O2 sigma 0.2598 nm) and the paper (0.2197 nm); use nanoMg or another "
@@ -311,6 +319,48 @@ MG_SETS: Dict[Tuple[str, str], MgSet] = {
             "P": (0.2646090986, 6.76033611757),
         },
         source="https://github.com/bio-phys/optimizedMgFFs/blob/1df53e9c94fc14a97864ac35c6951085bb60d1c0/ff_Mg_tip4pd.itp"),
+    ("micro", "tip4p2005"): MgSet(
+        ion=(0.09011, 712.674442),
+        chloride="co-optimised with Mg2+ (CXY)", chloride_lj=(0.503464, 0.042887),
+        mg_cl=(0.471891, 0.552851),
+        rna={
+            "C": (0.2469502134, 4.24041767915), "C4": (0.2469502134, 4.24041767915),
+            "C5": (0.2469502134, 4.24041767915), "CA": (0.2469502134, 4.24041767915),
+            "CB": (0.2469502134, 4.24041767915), "CI": (0.2469502134, 4.78264627547),
+            "CP": (0.2469502134, 4.24041767915), "CQ": (0.2469502134, 4.24041767915),
+            "CS": (0.2469502134, 4.24041767915), "CT": (0.2469502134, 4.78264627547),
+            "H": (0.1131277356, 1.8117957521), "H1": (0.193646079, 1.8117957521),
+            "H2": (0.1834149834, 1.8117957521), "H4": (0.195896943, 1.77094486475),
+            "H5": (0.1907813952, 1.77094486475), "HA": (0.2010124908, 1.77094486475),
+            "HO": (0.051741162, 0.0), "N*": (0.238356162, 5.96188880239),
+            "N2": (0.238356162, 5.96188880239), "NA": (0.238356162, 5.96188880239),
+            "NB": (0.238356162, 5.96188880239), "NC": (0.238356162, 5.96188880239),
+            "O": (0.2216997684, 6.62626893478), "O2": (0.2216997684, 6.62626893478),
+            "OH": (0.2278178694, 6.63257817171), "OS": (0.2240017362, 5.96188880239),
+            "P": (0.2665935954, 6.46657633683),
+        },
+        source="https://github.com/bio-phys/optimizedMgFFs/blob/1df53e9c94fc14a97864ac35c6951085bb60d1c0/ff_Mg_tip4p2005.itp"),
+    ("nano", "tip4p2005"): MgSet(
+        ion=(0.09131, 774.618078),
+        chloride="co-optimised with Mg2+ (CXY)", chloride_lj=(0.503464, 0.042887),
+        mg_cl=(0.472845, 0.576377),
+        rna={
+            "C": (0.24464187825, 4.879976078), "C4": (0.24464187825, 4.879976078),
+            "C5": (0.24464187825, 4.879976078), "CA": (0.24464187825, 4.879976078),
+            "CB": (0.24464187825, 4.879976078), "CI": (0.24464187825, 5.50398597021),
+            "CP": (0.24464187825, 4.879976078), "CQ": (0.24464187825, 4.879976078),
+            "CS": (0.24464187825, 4.879976078), "CT": (0.24464187825, 5.50398597021),
+            "H": (0.1124391605, 2.08505873654), "H1": (0.19198292625, 2.08505873654),
+            "H2": (0.18187566575, 2.08505873654), "H4": (0.19420654625, 2.03804653914),
+            "H5": (0.189152916, 2.03804653914), "HA": (0.1992601765, 2.03804653914),
+            "HO": (0.0517955975, 0.0), "N*": (0.2361518475, 6.86108702887),
+            "N2": (0.2361518475, 6.86108702887), "NA": (0.2361518475, 6.86108702887),
+            "NB": (0.2361518475, 6.86108702887), "NC": (0.2361518475, 6.86108702887),
+            "O": (0.2196970595, 7.62567188774), "O2": (0.2196970595, 7.62567188774),
+            "OH": (0.22574110825, 7.63293271147), "OS": (0.22197116475, 6.86108702887),
+            "P": (0.26404750075, 7.44189375153),
+        },
+        source="https://github.com/bio-phys/optimizedMgFFs/blob/1df53e9c94fc14a97864ac35c6951085bb60d1c0/ff_Mg_tip4p2005.itp"),
 }
 
 
@@ -318,16 +368,22 @@ def get_set(model: str, water: str) -> MgSet:
     return MG_SETS[(model, water)]
 
 
-def frcmod_text(model: str, water: str, water_label: str) -> str:
-    """frcmod replacing the Li-Merz 12-6 Mg2+ (atom type Mg2+) parameters."""
+def frcmod_text(model: str, water: str, water_label: str, chloride: bool = False) -> str:
+    """frcmod replacing the Li-Merz 12-6 Mg2+ (atom type Mg2+) parameters; ``chloride`` also replaces
+    Cl- by the Cl- model the set was optimised with (used where Amber has no Cl- for the water)."""
     p = get_set(model, water)
+    cl_rmin, cl_eps = p.chloride_lj[0] * 10.0 * TWO_SIXTH / 2.0, p.chloride_lj[1] / KJ_PER_KCAL
     return (f"{MODELS[model]} Mg2+ for {water_label} water ({CITATIONS[water]}); "
-            f"sigma {p.ion[0]} nm, epsilon {p.ion[1]} kJ/mol\n"
+            f"sigma {p.ion[0]} nm, epsilon {p.ion[1]} kJ/mol"
+            + (f"; Cl- {p.chloride}: sigma {p.chloride_lj[0]} nm, epsilon {p.chloride_lj[1]} kJ/mol"
+               if chloride else "") + "\n"
             "MASS\n"
             "Mg2+ 24.305\n"
+            + ("Cl-  35.45\n" if chloride else "") +
             "\n"
             "NONB\n"
             f"  Mg2+     {p.rmin_half:.8f}  {p.eps_kcal:.8f}\n"
+            + (f"  Cl-      {cl_rmin:.8f}  {cl_eps:.8f}\n" if chloride else "") +
             "\n")
 
 

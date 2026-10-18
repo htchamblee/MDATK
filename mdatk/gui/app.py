@@ -23,8 +23,8 @@ from ..analysis import expected_keys  # noqa: E402
 from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E402
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
-from ..config import (REP_COLORS, REP_STYLES, ExternalSeries, PanelSpec, Project,  # noqa: E402
-                      RepSpec, ResidueGroup, RMSDTarget)
+from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeries,  # noqa: E402
+                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, layout_warnings)
 from ..progress import Cancelled  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
 from ..render.example import example_dataset  # noqa: E402
@@ -42,14 +42,24 @@ APP_ID = "org.mdatk.MDATK"
 TIME_UNITS = [("ps", "ps"), ("ns", "ns"), ("us", "µs"), ("frame", "frames")]
 X_UNITS = ["ps", "ns", "us", "frame", "frame1"]
 DEFAULT_GROUP = ""  # "(analysis default)" entry of the per-panel group choosers
-PAGES = [  # (id, menu label, side panel title)
-    ("input", "Input", "Input & cleaning"),
-    ("groups", "Groups", "Residue groups"),
-    ("analyses", "Analyses", "Analyses"),
-    ("structure", "Structure", "Structure view"),
-    ("layout", "Layout", "Layout & panels"),
-    ("outputs", "Outputs", "Outputs"),
+PAGES = [  # (id, icon, side panel title)
+    ("input", "document-open-symbolic", "Input & cleaning"),
+    ("groups", "view-list-symbolic", "Residue groups"),
+    ("analyses", "x-office-spreadsheet-symbolic", "Analyses"),
+    ("structure", "applications-science-symbolic", "Structure view"),
+    ("layout", "view-grid-symbolic", "Layout & panels"),
+    ("outputs", "video-x-generic-symbolic", "Outputs"),
 ]
+SIDE_WIDTH = 520  # fixed width of the settings side bar (pixels)
+# file chooser filters: (name, patterns); the dialogs list the extensions in the name
+TOPOLOGY_FILES = ("Topology files", ["*.parm7", "*.prmtop", "*.top", "*.pdb", "*.psf", "*.gro"])
+TRAJECTORY_FILES = ("Trajectory files", ["*.nc", "*.mdcrd", "*.crd", "*.trj", "*.dcd", "*.trr", "*.gro",
+                                         "*.xtc", "*.pdb", "*.xyz", "*.binpos", "*.ncdf"])
+REFERENCE_FILES = ("Structure files", ["*.pdb", "*.rst7", "*.ncrst", "*.inpcrd", "*.crd", "*.gro", "*.cif"])
+DATA_FILES = ("Data files", ["*.dat", "*.csv", "*.tsv", "*.txt"])
+MAP_FILES = ("MRC / CCP4 maps", ["*.mrc", "*.map", "*.ccp4", "*.map.gz", "*.mrc.gz"])
+PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
+RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
 
 
 class GuiLogHandler(logging.Handler):
@@ -65,11 +75,11 @@ class GuiLogHandler(logging.Handler):
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application, project: Optional[Project] = None,
-                 preset_path: Optional[str] = None):
+                 project_path: Optional[str] = None):
         super().__init__(application=app, title=PROJECT_TITLE)
         self.set_default_size(1320, 920)
         self.project = project or Project()
-        self.preset_path = preset_path
+        self.project_path = project_path
         self.binder = W.Binder()
         self.worker: Optional[Worker] = None
         self.preview_data = None  # reference-frame trace once "Load real frame" ran
@@ -83,6 +93,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sections: Dict[str, List[Gtk.Frame]] = {}
         self.planner = None  # Project Planner window (created on demand)
         self.wizard = None  # stand-alone script wizard window
+        self.pdb_tools = None  # PDB clean-up window
 
         self._build_header()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -98,15 +109,16 @@ class MainWindow(Gtk.ApplicationWindow):
         frame = Gtk.Frame()
         frame.set_shadow_type(Gtk.ShadowType.NONE)
         frame.add(self.canvas)
-        body.pack_start(frame, True, True, 0)
         body.pack_start(side, False, False, 0)
+        body.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+        body.pack_start(frame, True, True, 0)
         outer.pack_start(body, True, True, 0)
         self.log_expander = Gtk.Expander(label="Log (pipeline and cpptraj output)")
         self.log_expander.add(self._build_log())
         outer.pack_start(self.log_expander, False, False, 0)
         outer.pack_start(self._build_action_bar(), False, False, 0)
         self._install_actions()
-        self.load_project(self.project, preset_path)
+        self.load_project(self.project, project_path)
         self.connect("delete-event", self._on_close)
         self.append_log(f"{PROJECT_TITLE} {__version__} ready. Everything runs locally and offline.")
 
@@ -117,17 +129,30 @@ class MainWindow(Gtk.ApplicationWindow):
         hb.set_title(PROJECT_TITLE)
         self.header = hb
         self.set_titlebar(hb)
-        hb.pack_start(W.button("Open preset", self.open_preset, "Load a parameter preset (Ctrl+O)",
-                               "document-open-symbolic"))
-        hb.pack_start(W.button("Save preset", self.save_preset, "Save parameters (Ctrl+S)",
+        # Open: button + drop-down with recent projects, the demo project and Browse
+        open_box = Gtk.Box()
+        open_box.get_style_context().add_class("linked")
+        open_box.pack_start(W.button("Open project", self.open_project, "Open a project file (Ctrl+O)",
+                                     "document-open-symbolic"), False, False, 0)
+        self.open_menu = Gtk.Menu()
+        self.open_menu_button = Gtk.MenuButton()
+        self.open_menu_button.set_image(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON))
+        self.open_menu_button.set_tooltip_text("Recent projects, the demo project, or browse")
+        self.open_menu_button.set_popup(self.open_menu)
+        self.open_menu_button.connect("toggled", lambda b: b.get_active() and self._fill_open_menu())
+        open_box.pack_start(self.open_menu_button, False, False, 0)
+        hb.pack_start(open_box)
+        hb.pack_start(W.button("Save", self.save_project, "Save the project (Ctrl+S)",
                                "document-save-symbolic"))
-        hb.pack_start(W.button("Save as…", lambda: self.save_preset(True),
-                               "Save parameters to a new file (Ctrl+Shift+S)"))
+        hb.pack_start(W.button("Save as…", lambda: self.save_project(True),
+                               "Save the project to a new file (Ctrl+Shift+S)"))
         wf_menu = Gtk.Menu()
         for text, cb, tip in (("Project Planner…", self.open_planner,
                                "Lay out the steps from sequence to MD ensemble on a canvas (Ctrl+P)"),
                               ("Script wizard…", self.open_wizard,
-                               "Write control files and scripts for one program (Ctrl+Shift+W)")):
+                               "Write control files and scripts for one program (Ctrl+Shift+W)"),
+                              ("PDB clean-up…", self.open_pdb_tools,
+                               "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files")):
             item = Gtk.MenuItem(label=text)
             item.set_tooltip_text(tip)
             item.connect("activate", lambda _w, c=cb: c())
@@ -141,15 +166,17 @@ class MainWindow(Gtk.ApplicationWindow):
         wf_box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
                           False, False, 0)
         wf.add(wf_box)
-        wf.set_tooltip_text("Project Planner and script wizard (Rosetta FARFAR2, SimRNA, RNAMake, "
-                            "Amber, GROMACS, VMD)")
+        wf.set_tooltip_text("Project Planner, script wizard (Rosetta FARFAR2, SimRNA, RNAMake, Amber, "
+                            "GROMACS, VMD) and PDB clean-up")
         wf.set_popup(wf_menu)
         self.workflow_button = wf
         hb.pack_start(wf)
         menu = Gtk.Menu()
-        for text, cb in (("New (defaults)", self.new_project),
+        for text, cb in (("New project (defaults)", self.new_project),
                          ("Create demo system…", self.create_demo),
-                         ("About", self.show_about)):
+                         ("Project log…", self.show_project_log),
+                         ("Export citations (BibTeX)…", self.export_citations),
+                         ("About and citations", self.show_about)):
             item = Gtk.MenuItem(label=text)
             item.connect("activate", lambda _w, c=cb: c())
             menu.append(item)
@@ -159,28 +186,49 @@ class MainWindow(Gtk.ApplicationWindow):
         mb.set_popup(menu)
         hb.pack_end(mb)
 
+    def _fill_open_menu(self) -> None:
+        from ..projectfile import recent_projects
+
+        for child in self.open_menu.get_children():
+            self.open_menu.remove(child)
+        recent = recent_projects()
+        if recent:
+            head = Gtk.MenuItem(label="Recent projects")
+            head.set_sensitive(False)
+            self.open_menu.append(head)
+            for path in recent:
+                item = Gtk.MenuItem(label=os.path.basename(path))
+                item.set_tooltip_text(path)
+                item.connect("activate", lambda _w, p=path: self.open_path(p))
+                self.open_menu.append(item)
+            self.open_menu.append(Gtk.SeparatorMenuItem())
+        for text, cb, tip in (("Demo project…", self.create_demo,
+                               "Write the synthetic aptamer/target demo system into a folder and open it"),
+                              ("Browse…", self.open_project, "Choose a project file")):
+            item = Gtk.MenuItem(label=text)
+            item.set_tooltip_text(tip)
+            item.connect("activate", lambda _w, c=cb: c())
+            self.open_menu.append(item)
+        self.open_menu.show_all()
+
     def _build_toolbar(self):
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, margin=4)
-        for page, menu_label, _title in PAGES:
-            menu = Gtk.Menu()
-            item = Gtk.MenuItem(label="Show all")
-            item.connect("activate", lambda _w, p=page: self.open_section(p))
-            menu.append(item)
-            menu.append(Gtk.SeparatorMenuItem())
-            for frame in self.sections.get(page, []):
-                item = Gtk.MenuItem(label=self._frame_title(frame))
-                item.connect("activate", lambda _w, p=page, f=frame: self.open_section(p, f))
-                menu.append(item)
-            menu.show_all()
-            mb = Gtk.MenuButton()
-            content = Gtk.Box(spacing=4)
-            content.pack_start(Gtk.Label(label=menu_label), False, False, 0)
-            content.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
-                               False, False, 0)
-            mb.add(content)
-            mb.set_popup(menu)
-            mb.set_relief(Gtk.ReliefStyle.NONE)
-            bar.pack_start(mb, False, False, 0)
+        pages = Gtk.Box()
+        pages.get_style_context().add_class("linked")
+        self.page_buttons: Dict[str, Gtk.RadioButton] = {}
+        group = None
+        for page, icon, title in PAGES:
+            btn = Gtk.RadioButton.new_from_widget(group)
+            group = group or btn
+            btn.set_mode(False)  # a toggle button, not a radio indicator
+            btn.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+            btn.set_always_show_image(True)
+            btn.set_tooltip_text(title)
+            btn.get_accessible().set_name(title)
+            btn.connect("toggled", lambda b, p=page: b.get_active() and self._show_page(p))
+            self.page_buttons[page] = btn
+            pages.pack_start(btn, False, False, 0)
+        bar.pack_start(pages, False, False, 0)
         bar.pack_end(W.button("Refresh", self.refresh_canvas,
                               "Redraw the layout preview with the current settings",
                               "view-refresh-symbolic"), False, False, 0)
@@ -194,39 +242,28 @@ class MainWindow(Gtk.ApplicationWindow):
         return bar
 
     def _build_side_panel(self, builders):
-        self.side_revealer = Gtk.Revealer()
-        # GTK 3 boxes treat a child as expanding when anything inside it expands; the side
-        # panel must never take space from the figure while it is hidden.
-        self.side_revealer.set_hexpand(False)
-        self.side_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
-        self.side_revealer.set_transition_duration(180)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.set_size_request(610, -1)
+        box.set_size_request(SIDE_WIDTH, -1)
+        box.set_hexpand(False)
         head = Gtk.Box(spacing=6, margin=6)
         self.side_title = W.label("", markup=True)
         head.pack_start(self.side_title, True, True, 0)
-        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON)
-        close.set_relief(Gtk.ReliefStyle.NONE)
-        close.set_tooltip_text("Close and refresh the preview")
-        close.connect("clicked", lambda *_: self.close_side_panel())
-        head.pack_end(close, False, False, 0)
         box.pack_start(head, False, False, 0)
         box.pack_start(Gtk.Separator(), False, False, 0)
         self.side_stack = Gtk.Stack()
         self.side_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        for page, _menu, title in PAGES:
+        self.side_stack.set_hhomogeneous(True)
+        for page, _icon, title in PAGES:
             widget = builders[page]()
-            if isinstance(widget, Gtk.ScrolledWindow):  # fixed panel width; wide rows scroll
-                widget.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            if isinstance(widget, Gtk.ScrolledWindow):  # fixed side bar width: rows fit it, never scroll sideways
+                widget.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             self.pages[page] = widget
             self.sections[page] = self._find_frames(widget)
             self.side_stack.add_titled(widget, page, title)
         box.pack_start(self.side_stack, True, True, 0)
-        sep = Gtk.Box()
-        sep.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
-        sep.pack_start(box, True, True, 0)
-        self.side_revealer.add(sep)
-        return self.side_revealer
+        self.side_panel = box
+        self._show_page("input")
+        return box
 
     @staticmethod
     def _find_frames(widget) -> List[Gtk.Frame]:
@@ -248,14 +285,19 @@ class MainWindow(Gtk.ApplicationWindow):
         lab = frame.get_label_widget()
         return lab.get_text() if isinstance(lab, Gtk.Label) else "Section"
 
-    def open_section(self, page: str, frame: Optional[Gtk.Frame] = None) -> None:
-        """Slide out the side panel at ``page`` and scroll to ``frame``."""
-        title = dict((p, t) for p, _m, t in PAGES)[page]
+    def _show_page(self, page: str) -> None:
+        title = dict((p, t) for p, _i, t in PAGES)[page]
         self.side_title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
         self.side_stack.set_visible_child_name(page)
-        self.side_revealer.set_reveal_child(True)
+        btn = getattr(self, "page_buttons", {}).get(page)
+        if btn is not None and not btn.get_active():
+            btn.set_active(True)
+
+    def open_section(self, page: str, frame: Optional[Gtk.Frame] = None) -> None:
+        """Show ``page`` in the side bar and scroll to ``frame``."""
+        self._show_page(page)
         if frame is not None:
-            GLib.timeout_add(220, self._scroll_to, page, frame)
+            GLib.timeout_add(60, self._scroll_to, page, frame)
 
     def _scroll_to(self, page, frame):
         sw = self.pages[page]
@@ -264,10 +306,6 @@ class MainWindow(Gtk.ApplicationWindow):
             if coords:
                 sw.get_vadjustment().set_value(max(0, coords[1] - 6))
         return False
-
-    def close_side_panel(self) -> None:
-        self.side_revealer.set_reveal_child(False)
-        self.refresh_canvas()
 
     # ----------------------------------------------------------- canvas
     def refresh_canvas(self) -> None:
@@ -285,6 +323,11 @@ class MainWindow(Gtk.ApplicationWindow):
         mark = ("Example data \u2013 layout preview (structure: reference frame)"
                 if self.preview_data is not None else "Example data \u2013 layout preview")
         self.canvas.set_content(project, ds, mark)
+        warnings_now = layout_warnings(project)
+        if warnings_now and warnings_now != getattr(self, "_layout_warned", None):
+            for w in warnings_now:
+                self.append_log(f"Layout: {w}")
+        self._layout_warned = warnings_now
 
     def _on_canvas_rotate(self, angles):
         self._syncing = True
@@ -348,9 +391,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _install_actions(self):
         app = self.get_application()
-        for name, cb, accels in (("open", self.open_preset, ["<Control>o"]),
-                                 ("save", self.save_preset, ["<Control>s"]),
-                                 ("saveas", lambda: self.save_preset(True), ["<Control><Shift>s"]),
+        for name, cb, accels in (("open", self.open_project, ["<Control>o"]),
+                                 ("save", self.save_project, ["<Control>s"]),
+                                 ("saveas", lambda: self.save_project(True), ["<Control><Shift>s"]),
                                  ("render", self.render, ["<Control>r"]),
                                  ("planner", self.open_planner, ["<Control>p"]),
                                  ("wizard", self.open_wizard, ["<Control><Shift>w"])):
@@ -365,9 +408,21 @@ class MainWindow(Gtk.ApplicationWindow):
         b = self.binder
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
+        notes = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        notes.set_size_request(-1, 54)
+        swn = Gtk.ScrolledWindow()
+        swn.set_shadow_type(Gtk.ShadowType.IN)
+        swn.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        swn.add(notes)
+        b.text_view("notes", notes)
+        nf = W.Form()
+        nf.add_wide(swn)
+        nf.add_wide(W.hint("Free text saved in the project file (aims, decisions, to-dos). The steps you "
+                           "run are logged there too (menu \u2192 Project log)."))
+        box.pack_start(W.frame("Project notes", nf), False, False, 0)
+
         files = W.Form()
-        top = W.file_chooser_button("Select topology", patterns=[
-            ("Topologies", ["*.parm7", "*.prmtop", "*.top", "*.pdb", "*.psf", "*.gro"])])
+        top = W.file_chooser_button("Select topology", patterns=[TOPOLOGY_FILES])
         b.path_entry("inputs.topology", files.add("Topology", top,
                      "Amber .parm7 (preferred), cleaned PDB or another MDAnalysis topology"))
         self.traj_editor = W.ListEditor([("Trajectory file(s), in order", 300)], height=70)
@@ -383,7 +438,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         fr = W.Form()
         start = b.spin_int("inputs.start", W.spin(0, 10 ** 9, 1))
-        stop = b.optional_int("inputs.stop", W.entry("last", width=8))
+        stop = b.optional_int("inputs.stop", W.entry("last", width=5))
         step = b.spin_int("inputs.step", W.spin(1, 10 ** 6, 1))
         fr.add_row("Start / stop / step", [start, stop, step],
                    "0-based frames of the (cleaned) trajectory; stop is exclusive (blank = last)")
@@ -428,12 +483,12 @@ class MainWindow(Gtk.ApplicationWindow):
                                           ("file", "file")])),
                                      b.spin_int("cleaning.reference_frame", W.spin(1, 10 ** 9, 1))])
         cl.add("Reference file", b.path_entry("cleaning.reference_file",
-               W.file_chooser_button("Select reference structure")))
+               W.file_chooser_button("Select reference structure", patterns=[REFERENCE_FILES])))
         cl.add_wide(b.check("cleaning.remove_box_after_fit", W.check(
             "Remove box information after fitting (a rotated box cannot be stored in NetCDF)")))
         cl.add_row("trajin start / stop / offset",
                    [b.spin_int("cleaning.start", W.spin(1, 10 ** 9, 1)),
-                    b.optional_int("cleaning.stop", W.entry("last", width=8)),
+                    b.optional_int("cleaning.stop", W.entry("last", width=5)),
                     b.spin_int("cleaning.offset", W.spin(1, 10 ** 6, 1))],
                    "1-based cpptraj trajin arguments")
         extra = Gtk.TextView(monospace=True)
@@ -471,11 +526,7 @@ class MainWindow(Gtk.ApplicationWindow):
                                     action=Gtk.FileChooserAction.OPEN)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
         dlg.set_select_multiple(True)
-        flt = Gtk.FileFilter()
-        flt.set_name("Trajectories")
-        for p in ("*.nc", "*.ncdf", "*.dcd", "*.xtc", "*.trr", "*.mdcrd", "*.crd", "*.pdb"):
-            flt.add_pattern(p)
-        dlg.add_filter(flt)
+        W.add_filters(dlg, [TRAJECTORY_FILES])
         if dlg.run() == Gtk.ResponseType.OK:
             for f in dlg.get_filenames():
                 self.traj_editor.add_row([f])
@@ -485,6 +536,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.FileChooserDialog(title="Add external data file", transient_for=self,
                                     action=Gtk.FileChooserAction.OPEN)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+        W.add_filters(dlg, [DATA_FILES])
         if dlg.run() == Gtk.ResponseType.OK:
             path = dlg.get_filename()
             self.ext_editor.add_row([path, os.path.splitext(os.path.basename(path))[0], "", "ps", ""])
@@ -626,10 +678,9 @@ class MainWindow(Gtk.ApplicationWindow):
                                       self._group_combo("analyses.mg.group_b")])
         m.add_row("Inner / outer sphere (Å)", [
             b.spin_float("analyses.mg.inner_cutoff", W.spin(1.5, 4.0, 0.05, 2)),
-            b.spin_float("analyses.mg.outer_cutoff", W.spin(2.0, 8.0, 0.1, 2)),
-            W.label("bridges from"),
-            b.combo("analyses.mg.bridge_shell", W.combo([("inner", "inner sphere"),
-                                                          ("outer", "inner + outer sphere")]))])
+            b.spin_float("analyses.mg.outer_cutoff", W.spin(2.0, 8.0, 0.1, 2))])
+        m.add("Bridges counted from", b.combo("analyses.mg.bridge_shell", W.combo(
+            [("inner", "inner sphere"), ("outer", "inner + outer sphere")])))
         m.add_row("Coordination geometry", [
             b.check("analyses.mg.geometry", W.check("require octahedral O–Mg–O angles ±")),
             b.spin_float("analyses.mg.angle_tolerance", W.spin(5, 45, 1, 0))])
@@ -641,16 +692,19 @@ class MainWindow(Gtk.ApplicationWindow):
         s = W.Form()
         s.add_wide(b.check("analyses.stacking.enabled", W.check("Detect π–π stacking")))
         s.add("Selection", b.entry("analyses.stacking.selection", W.entry()))
-        s.add_row("Scope", [b.combo("analyses.stacking.scope", W.combo([("all", "all ring pairs"),
-                                                                        ("inter", "group A vs group B")])),
-                            self._group_combo("analyses.stacking.group_a"), W.label("/"),
-                            self._group_combo("analyses.stacking.group_b")])
-        s.add_row("Centroid distance / angle / offset / planarity", [
+        s.add("Scope", b.combo("analyses.stacking.scope", W.combo([("all", "all ring pairs"),
+                                                                   ("inter", "group A vs group B")])))
+        s.add_row("Groups (A vs B)", [self._group_combo("analyses.stacking.group_a"), W.label("vs"),
+                                      self._group_combo("analyses.stacking.group_b")],
+                  "Used when the scope is 'group A vs group B'")
+        s.add_row("Centroid distance (Å) / angle (°)", [
             b.spin_float("analyses.stacking.distance_cutoff", W.spin(2.5, 8, 0.1, 2)),
-            b.spin_float("analyses.stacking.angle_cutoff", W.spin(5, 90, 1, 0)),
+            b.spin_float("analyses.stacking.angle_cutoff", W.spin(5, 90, 1, 0))],
+            "Ring-centroid distance and angle between ring normals")
+        s.add_row("Offset / planarity (Å)", [
             b.spin_float("analyses.stacking.offset_cutoff", W.spin(0.5, 5, 0.1, 2)),
             b.spin_float("analyses.stacking.planarity_cutoff", W.spin(0.01, 2, 0.01, 2))],
-            "Å, degrees between ring normals, Å lateral offset, Å RMS from plane")
+            "Lateral centroid offset and RMS deviation of the ring atoms from their plane")
         box.pack_start(W.frame("π–π stacking", s), False, False, 0)
 
         e = W.Form()
@@ -660,12 +714,11 @@ class MainWindow(Gtk.ApplicationWindow):
                              self._group_combo("analyses.energy.group_b")])
         e.add_row("Cutoff (Å) / dielectric", [
             b.spin_float("analyses.energy.cutoff", W.spin(4, 50, 0.5, 1)),
-            b.spin_float("analyses.energy.dielectric", W.spin(1, 100, 0.5, 1)),
-            b.check("analyses.energy.distance_dependent", W.check("distance-dependent (εr)"))])
-        e.add_row("Parameters", [
-            b.check("analyses.energy.use_parm7", W.check("Amber LJ from parm7 when available")),
-            W.label("exclude pairs within"),
-            b.spin_int("analyses.energy.exclude_bonded", W.spin(0, 3)), W.label("bonds")])
+            b.spin_float("analyses.energy.dielectric", W.spin(1, 100, 0.5, 1))])
+        e.add_wide(b.check("analyses.energy.distance_dependent", W.check("Distance-dependent dielectric (εr)")))
+        e.add_wide(b.check("analyses.energy.use_parm7", W.check("Amber LJ parameters from the parm7 when available")))
+        e.add_row("Exclude pairs within", [b.spin_int("analyses.energy.exclude_bonded", W.spin(0, 3)),
+                                           W.label("bonds")])
         e.add("Target value (kcal/mol)", b.optional_float("analyses.energy.target_value",
               W.entry("none", width=10)), "Drawn as a reference line on charts and panels")
         box.pack_start(W.frame("Intermolecular energy", e), False, False, 0)
@@ -828,9 +881,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _density_frame(self):
         b = self.binder
         d = W.Form()
-        mp = W.file_chooser_button("Select a density map", patterns=[
-            ("MRC / CCP4 maps (*.mrc, *.map, *.ccp4, *.gz)",
-             ["*.mrc", "*.map", "*.ccp4", "*.MRC", "*.MAP", "*.map.gz", "*.mrc.gz"])])
+        mp = W.file_chooser_button("Select a density map", patterns=[MAP_FILES])
         d.add("Map file", b.path_entry("density.map_path", mp), "MRC2014 / CCP4 map (.mrc, .map)")
         mp.entry.connect("changed", self._on_density_map_changed)
         self.density_map_entry = mp.entry
@@ -884,7 +935,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.density_status.set_selectable(True)
         d.add_wide(self.density_status)
         d.add_wide(W.hint("The map is shown on the real model: use 'Load real frame' (toolbar) or a fit, "
-                          "which loads it. The placement is stored in the preset."))
+                          "which loads it. The placement is stored in the project."))
         return W.frame("Density map", d)
 
     def _update_density_status(self) -> None:
@@ -1062,7 +1113,7 @@ class MainWindow(Gtk.ApplicationWindow):
         form.add("Panel type", tcombo)
         data = Gtk.ComboBoxText()
         data.set_hexpand(True)
-        data.set_size_request(320, -1)
+        data.set_size_request(200, -1)
         for cell in data.get_cells():  # long labels shrink with an ellipsis
             cell.set_property("ellipsize", Pango.EllipsizeMode.END)
         form.add("Data", data)
@@ -1071,6 +1122,7 @@ class MainWindow(Gtk.ApplicationWindow):
             c.append(DEFAULT_GROUP, "(analysis default)")
             for name in project.group_names():
                 c.append(name, name)
+            W.ellipsize_combo(c, 8)
         form.add_row("Groups", [ga, W.label("vs"), gb],
                      "Residue groups this panel's analysis compares; each choice is cached separately")
         more = W.entry("additional data keys (comma separated)")
@@ -1098,7 +1150,8 @@ class MainWindow(Gtk.ApplicationWindow):
         more.set_text(", ".join(spec.series[1:]))
         opts.set_text(json.dumps(spec.options) if spec.options else "")
         title_entry.set_text(spec.title)
-        row["auto"] = spec.title if spec.title == self._auto_title(row, project) else ""
+        # a default or automatic title follows the panel; a title you typed is kept
+        row["auto"] = spec.title if spec.title in (self._auto_title(row, project), *DEFAULT_PANEL_TITLES) else ""
         self._update_group_widgets(row)
 
         tcombo.connect("changed", lambda *_: self._on_slot_type(row))
@@ -1161,14 +1214,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_slot_type(self, row):
         project = self._project_for_choices()
         self._fill_data(row, row["type"].get_active_id() or "timeseries", project)
-        self._on_slot_data(row)
+        self._on_slot_data(row, new_type=True)
 
-    def _on_slot_data(self, row):
+    def _on_slot_data(self, row, new_type: bool = False):
         self._update_group_widgets(row)
         project = self._project_for_choices()
         auto = self._auto_title(row, project)
         current = row["title"].get_text().strip()
-        if not current or current == row["auto"]:
+        # a new panel type always gets its automatic title; within a type, a typed title is kept
+        if new_type or not current or current == row["auto"]:
             row["title"].set_text(auto)
         row["auto"] = auto
         if not self._loading:
@@ -1238,16 +1292,17 @@ class MainWindow(Gtk.ApplicationWindow):
             "Select cache directory", Gtk.FileChooserAction.SELECT_FOLDER)),
             f"Blank: <output>/{PROJECT_ABBREV}_cache (analysis .npz + JSON, cleaned trajectories)")
         g.add_wide(b.check("output.write_params_log", W.check(
-            f"Write {PROJECT_ABBREV}_params_log.json (parameters, versions, cache keys) for reproducibility")))
+            f"Write {PROJECT_ABBREV}_params_log.toml (parameters, versions, cache keys, citations) for "
+            "reproducibility; open it as a project to repeat the run")))
         box.pack_start(W.frame("Locations", g), False, False, 0)
 
         v = W.Form()
         v.add_wide(b.check("output.video.enabled", W.check("Write MP4 video")))
         v.add("File name", b.entry("output.video.filename", W.entry()))
-        v.add_row("Resolution (px) / DPI", [b.spin_int("output.video.width", W.spin(64, 7680, 2)),
-                                            W.label("×"),
-                                            b.spin_int("output.video.height", W.spin(64, 4320, 2)),
-                                            b.spin_int("output.video.dpi", W.spin(10, 600, 1))])
+        v.add_row("Resolution (px)", [b.spin_int("output.video.width", W.spin(64, 7680, 2)),
+                                      W.label("×"),
+                                      b.spin_int("output.video.height", W.spin(64, 4320, 2))])
+        v.add("DPI", b.spin_int("output.video.dpi", W.spin(10, 600, 1)))
         v.add_row("FPS / frame stride", [b.spin_int("output.video.fps", W.spin(1, 240)),
                                          b.spin_int("output.video.frame_stride", W.spin(1, 10000))])
         v.add_row("Codec / quality (CRF)", [b.combo_text("output.video.codec", W.combo_entry(
@@ -1269,10 +1324,10 @@ class MainWindow(Gtk.ApplicationWindow):
         b._add("output.charts.formats", fmt_box,
                lambda: [f for f, w in self.fmt_checks.items() if w.get_active()] or ["png"],
                lambda v: [w.set_active(f in v) for f, w in self.fmt_checks.items()])
-        c.add_row("DPI / size (in)", [b.spin_int("output.charts.dpi", W.spin(10, 1200, 10)),
-                                      b.spin_float("output.charts.width", W.spin(2, 30, 0.5, 1)),
-                                      W.label("×"),
-                                      b.spin_float("output.charts.height", W.spin(2, 30, 0.5, 1))])
+        c.add_row("Size (in)", [b.spin_float("output.charts.width", W.spin(2, 30, 0.5, 1)),
+                                W.label("×"),
+                                b.spin_float("output.charts.height", W.spin(2, 30, 0.5, 1))])
+        c.add("DPI", b.spin_int("output.charts.dpi", W.spin(10, 1200, 10)))
         styles = ["mdatk"]
         try:
             import matplotlib.style as mstyle
@@ -1314,7 +1369,7 @@ class MainWindow(Gtk.ApplicationWindow):
     # ============================================================ model sync
     def load_project(self, project: Project, path: Optional[str] = None) -> None:
         self.project = project
-        self.preset_path = path
+        self.project_path = path
         self._loading = True
         try:
             self.binder.load(project)
@@ -1322,7 +1377,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._loading = False
         self._on_scale()
         self._update_density_status()
-        self.header.set_subtitle(path or "unsaved parameters")
+        self.header.set_subtitle(path or "unsaved project")
         self._prefill_conda()
         self.refresh_canvas()
         if self.wizard is not None:
@@ -1370,15 +1425,13 @@ class MainWindow(Gtk.ApplicationWindow):
     def new_project(self):
         self.preview_data = None
         self.load_project(Project(), None)
+        self.append_log("New project with default settings (unsaved).")
 
-    def open_preset(self):
-        dlg = Gtk.FileChooserDialog(title="Open parameter preset", transient_for=self,
+    def open_project(self):
+        dlg = Gtk.FileChooserDialog(title="Open project", transient_for=self,
                                     action=Gtk.FileChooserAction.OPEN)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
-        flt = Gtk.FileFilter()
-        flt.set_name("Presets / parameter logs (*.json)")
-        flt.add_pattern("*.json")
-        dlg.add_filter(flt)
+        W.add_filters(dlg, [PROJECT_FILES, RUN_LOG_FILES])
         resp = dlg.run()
         path = dlg.get_filename()
         dlg.destroy()
@@ -1386,41 +1439,86 @@ class MainWindow(Gtk.ApplicationWindow):
             self.open_path(path)
 
     def open_path(self, path: str):
+        from ..projectfile import add_recent, is_params_log
+
         try:
             project = Project.load(path)
         except (OSError, ValueError) as exc:
             self.error(f"Could not open {path}", str(exc))
             return
-        self.load_project(project, path)
-        self.append_log(f"Loaded parameters from {path}")
+        replay = is_params_log(path)
+        self.load_project(project, None if replay else path)
+        if replay:
+            self.append_log(f"Loaded the settings of the run logged in {path} (save them as a project to "
+                            "keep them)")
+        else:
+            add_recent(path)
+            self.append_log(f"Opened project {path}")
 
-    def save_preset(self, save_as: bool = False):
+    def save_project(self, save_as: bool = False) -> bool:
+        from ..projectfile import PROJECT_SUFFIX, add_recent
+
         try:
             project = self.collect(validate=False)
         except ValueError as exc:
-            self.error("Some parameters are invalid", str(exc))
-            return
-        path = self.preset_path
-        if save_as or not path or not path.endswith(".json"):
-            dlg = Gtk.FileChooserDialog(title="Save parameter preset", transient_for=self,
+            self.error("Some settings are invalid", str(exc))
+            return False
+        path = self.project_path
+        if save_as or not path:
+            dlg = Gtk.FileChooserDialog(title="Save project", transient_for=self,
                                         action=Gtk.FileChooserAction.SAVE)
             dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
             dlg.set_do_overwrite_confirmation(True)
-            dlg.set_current_name(f"{PROJECT_ABBREV}_preset.json")
+            W.add_filters(dlg, [PROJECT_FILES])
+            name = project.workflow.project_name if project.workflow.project_name != "project" else PROJECT_ABBREV
+            dlg.set_current_name(f"{name}{PROJECT_SUFFIX}")
             resp = dlg.run()
             path = dlg.get_filename()
             dlg.destroy()
             if resp != Gtk.ResponseType.OK or not path:
-                return
+                return False
+            if not path.endswith(".toml"):
+                path += PROJECT_SUFFIX
         try:
             project.save(path)
         except OSError as exc:
-            self.error("Could not save preset", str(exc))
-            return
+            self.error("Could not save the project", str(exc))
+            return False
         self.project = project
-        self.preset_path = path
+        self.project_path = path
         self.header.set_subtitle(path)
-        self.append_log(f"Saved parameters to {path}")
+        add_recent(path)
+        self.append_log(f"Saved project {path}")
+        return True
+
+    def show_project_log(self):
+        from ..projectfile import read_log
+
+        if not self.project_path:
+            self.info("The project has no file yet", "Save the project; the steps you run are then logged in it.")
+            return
+        entries = read_log(self.project_path)
+        lines = []
+        for e in entries:
+            when = e.get("time")
+            lines.append(f"{when}  {e.get('step', '?')}  [{e.get('status', '?')}]  {e.get('title', '')}")
+            if e.get("summary"):
+                lines.append(f"    {e['summary']}")
+        self._show_text("Project log", "\n".join(lines) or "Nothing has been run in this project yet.")
+
+    def _show_text(self, title: str, text: str) -> None:
+        dlg = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dlg.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        view = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        view.get_buffer().set_text(text)
+        sw = Gtk.ScrolledWindow()
+        sw.set_min_content_width(720)
+        sw.set_min_content_height(420)
+        sw.add(view)
+        dlg.get_content_area().pack_start(sw, True, True, 0)
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
 
     def create_demo(self):
         dlg = Gtk.FileChooserDialog(title="Folder for the synthetic demo system", transient_for=self,
@@ -1438,8 +1536,8 @@ class MainWindow(Gtk.ApplicationWindow):
             return build_demo(folder)
 
         def done(result):
-            self.append_log(f"Demo system ready: {result['preset']}")
-            self.open_path(result["preset"])
+            self.append_log(f"Demo system ready: {result['project']}")
+            self.open_path(result["project"])
 
         self.start_job("Creating demo", job, done)
 
@@ -1473,22 +1571,94 @@ class MainWindow(Gtk.ApplicationWindow):
         planner, wizard = self.planner, self.wizard
         self.planner = self.wizard = None  # same workflow object: keep the windows as they are
         try:
-            self.load_project(project, self.preset_path)
+            self.load_project(project, self.project_path)
         finally:
             self.planner, self.wizard = planner, wizard
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
                         f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))
 
-    def show_about(self):
-        dlg = Gtk.AboutDialog(transient_for=self, modal=True)
-        dlg.set_program_name(PROJECT_TITLE)
-        dlg.set_version(__version__)
-        dlg.set_comments("Offline analysis and multi-panel video rendering of molecular dynamics "
-                         "trajectories of RNA systems.")
-        dlg.set_license_type(Gtk.License.GPL_3_0)
-        dlg.run()
+    def open_pdb_tools(self):
+        from .pdbdialog import PDBToolsWindow
+        if self.pdb_tools is None:
+            self.pdb_tools = PDBToolsWindow(self)
+            self.pdb_tools.connect("destroy", lambda *_: setattr(self, "pdb_tools", None))
+        self.pdb_tools.show_all()
+        self.pdb_tools.present()
+
+    def _citation_keys(self):
+        from ..citations import grouped, keys_for, project_resources
+        try:
+            project = self.collect(validate=False)
+        except ValueError:
+            project = self.project
+        resources = project_resources(project)
+        return project, grouped(resources), keys_for(resources)
+
+    def export_citations(self):
+        from ..citations import bibtex
+        project, _groups, keys = self._citation_keys()
+        if not keys:
+            self.info("Nothing to cite yet", "The project uses no external resource with a reference.")
+            return
+        dlg = Gtk.FileChooserDialog(title="Export citations (BibTeX)", transient_for=self,
+                                    action=Gtk.FileChooserAction.SAVE)
+        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+        dlg.set_do_overwrite_confirmation(True)
+        W.add_filters(dlg, [("BibTeX files", ["*.bib"])])
+        base = os.path.dirname(self.project_path) if self.project_path else project.out_dir
+        if base and os.path.isdir(base):
+            dlg.set_current_folder(base)
+        dlg.set_current_name(f"{project.workflow.project_name or PROJECT_ABBREV}_citations.bib")
+        path = dlg.get_filename() if dlg.run() == Gtk.ResponseType.OK else None
         dlg.destroy()
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(bibtex(keys))
+        except OSError as exc:
+            self.error("Could not write the BibTeX file", str(exc))
+            return
+        self.append_log(f"Wrote {len(keys)} references to {path}")
+
+    def citation_text(self) -> str:
+        _project, groups, keys = self._citation_keys()
+        if not keys:
+            return "This project uses no external resource with a reference yet."
+        lines = [f"Resources this project uses ({len(keys)} references; each generated script lists only "
+                 "its own):", ""]
+        for res, refs in groups:
+            if not refs:
+                continue
+            lines.append(res.name + (f" - {res.note}" if res.note else ""))
+            lines += [f"    {r.text}" for r in refs]
+            lines.append("")
+        return "\n".join(lines)
+
+    def show_about(self):
+        dlg = Gtk.Dialog(title=f"About {PROJECT_ABBREV}", transient_for=self, modal=True)
+        dlg.add_buttons("Export BibTeX…", 1, "Close", Gtk.ResponseType.CLOSE)
+        dlg.set_default_size(760, 560)
+        box = dlg.get_content_area()
+        box.set_spacing(6)
+        box.set_border_width(12)
+        box.pack_start(W.label(f"<big><b>{GLib.markup_escape_text(PROJECT_TITLE)}</b></big>  {__version__}",
+                               markup=True), False, False, 0)
+        box.pack_start(W.label("Offline analysis and multi-panel video rendering of molecular dynamics "
+                               "trajectories of RNA systems, with script generators for structure prediction "
+                               "and simulation. Licensed under the GNU GPL v3.", wrap=True), False, False, 0)
+        view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
+        view.get_buffer().set_text(self.citation_text())
+        sw = Gtk.ScrolledWindow()
+        sw.set_shadow_type(Gtk.ShadowType.IN)
+        sw.add(view)
+        box.pack_start(sw, True, True, 0)
+        dlg.show_all()
+        response = dlg.run()
+        dlg.destroy()
+        if response == 1:
+            self.export_citations()
 
     def open_output_dir(self):
         try:
@@ -1524,7 +1694,7 @@ class MainWindow(Gtk.ApplicationWindow):
     # --------------------------------------------------------------- jobs
     def _pipeline(self, project, rep):
         from ..pipeline import Pipeline
-        return Pipeline(project, rep)
+        return Pipeline(project, rep, project_path=self.project_path)
 
     def render(self):
         try:
@@ -1712,6 +1882,45 @@ class MainWindow(Gtk.ApplicationWindow):
         self.worker = Worker(job, self.append_log, self._on_progress, done)
         self.worker.start()
 
+    def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None) -> None:
+        """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation."""
+        from ..workflows.runner import run_jobs
+
+        parent = parent or self
+        if not jobs:
+            self.error("No scripts to run", "None of the selected steps has a script to run here.")
+            return
+        lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}" for j in jobs]
+        detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
+        detail += ("\n\nThe scripts run one after the other on this computer; the first failure stops "
+                   "the run, Cancel stops the running script. Their output appears in the log.")
+        if separate:
+            detail += f"\n\n{len(separate)} script(s) marked 'run separately' are not started."
+        if self.project_path:
+            detail += f"\n\nEach run is logged in {os.path.basename(self.project_path)}."
+        else:
+            detail += "\n\nThe project has not been saved, so the runs are not logged (save it first to keep a log)."
+        dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                buttons=Gtk.ButtonsType.OK_CANCEL, text=f"Run {len(jobs)} generated script(s)?")
+        dlg.format_secondary_text(detail)
+        ok = dlg.run() == Gtk.ResponseType.OK
+        dlg.destroy()
+        if not ok:
+            return
+        self.log_expander.set_expanded(True)
+        project_path = self.project_path
+
+        def job(rep):
+            return run_jobs(jobs, project_path, on_line=rep.raw_log, cancel=rep.cancel_event)
+
+        def done(results):
+            msg = f"{len(results)} script(s) finished"
+            if separate:
+                msg += "; run separately: " + ", ".join(os.path.basename(s) for s in separate)
+            self.info("Scripts finished", msg)
+
+        self.start_job("Running generated scripts", job, done)
+
     def _on_progress(self, fraction: float, message: str):
         self.progress.set_fraction(min(1.0, max(0.0, fraction)))
         if message:
@@ -1774,7 +1983,7 @@ class MainWindow(Gtk.ApplicationWindow):
 class MDATKApplication(Gtk.Application):
     def __init__(self, preset: Optional[str] = None):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
-        self.preset = preset
+        self.preset = preset  # project file named on the command line (nothing is opened otherwise)
         self.window: Optional[MainWindow] = None
 
     def do_activate(self):
@@ -1783,6 +1992,9 @@ class MDATKApplication(Gtk.Application):
             if self.preset:
                 try:
                     project, path = Project.load(self.preset), self.preset
+                    from ..projectfile import is_params_log
+                    if is_params_log(path):  # replay a run: Save must not overwrite the log
+                        path = None
                 except (OSError, ValueError) as exc:
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = MainWindow(self, project, path)

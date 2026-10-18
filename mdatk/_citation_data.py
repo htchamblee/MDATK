@@ -1,0 +1,1215 @@
+"""Reference and resource data for :mod:`mdatk.citations`.
+
+Every reference records in ``verified`` where its details were checked: ``pdf:<file>`` (text of the
+article itself), ``ref-list:<file>`` (the reference list of one of those articles), ``repo:<url>``
+(the project's own README / CITATION file), ``github-bib:<url>`` (a third-party BibTeX file on
+GitHub) or ``memory``.  Page numbers that could not be checked are left out rather than guessed.
+"""
+
+REFERENCE_DATA = [
+    {
+        "key": 'michaudagrawal2011',
+        "text": (
+            'Michaud-Agrawal N., Denning E. J., Woolf T. B., Beckstein O. J. Comput. Chem. 2011, 32, '
+            '2319-2327. doi:10.1002/jcc.21787'
+        ),
+        "bibtex": (
+            '@article{michaudagrawal2011,\n  author = {Michaud-Agrawal, N. and Denning, E. J. and Woolf, '
+            'T. B. and Beckstein, O.},\n  title = {{MDAnalysis: A Toolkit for the Analysis of Molecular '
+            'Dynamics Simulations}},\n  journal = {Journal of Computational Chemistry},\n  year = '
+            '{2011},\n  volume = {32},\n  pages = {2319--2327},\n  doi = {10.1002/jcc.21787}\n}'
+        ),
+        "doi": '10.1002/jcc.21787',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/MDAnalysis/mdanalysis/develop/README.rst',
+    },
+    {
+        "key": 'gowers2016',
+        "text": (
+            'Gowers R. J., Linke M., Barnoud J., Reddy T. J. E., Melo M. N., Seyler S. L., Domański J., '
+            'Dotson D. L., Buchoux S., Kenney I. M., et al. In Proceedings of the 15th Python in Science '
+            'Conference (SciPy 2016), S. Benthall and S. Rostrup, Eds.; Austin, TX, 2016. '
+            'doi:10.25080/Majora-629e541a-00e'
+        ),
+        "bibtex": (
+            '@inproceedings{gowers2016,\n  author = {Gowers, R. J. and Linke, M. and Barnoud, J. and '
+            'Reddy, T. J. E. and Melo, M. N. and Seyler, S. L. and Domański, J. and Dotson, D. L. and '
+            'Buchoux, S. and Kenney, I. M. and Beckstein, O.},\n  title = {{MDAnalysis: A Python Package '
+            'for the Rapid Analysis of Molecular Dynamics Simulations}},\n  booktitle = {Proceedings of '
+            'the 15th Python in Science Conference},\n  editor = {Benthall, S. and Rostrup, S.},\n  '
+            'address = {Austin, TX},\n  year = {2016},\n  doi = {10.25080/Majora-629e541a-00e}\n}'
+        ),
+        "doi": '10.25080/Majora-629e541a-00e',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/MDAnalysis/mdanalysis/develop/README.rst',
+    },
+    {
+        "key": 'harris2020',
+        "text": (
+            'Harris C. R., Millman K. J., van der Walt S. J., Gommers R., Virtanen P., Cournapeau D., '
+            'Wieser E., Taylor J., Berg S., Smith N. J., et al. Nature 2020, 585, 357-362. '
+            'doi:10.1038/s41586-020-2649-2'
+        ),
+        "bibtex": (
+            '@article{harris2020,\n  author = {Harris, C. R. and Millman, K. J. and {van der Walt}, S. J. '
+            'and Gommers, R. and Virtanen, P. and Cournapeau, D. and Wieser, E. and Taylor, J. and Berg, '
+            'S. and Smith, N. J. and Kern, R. and Picus, M. and Hoyer, S. and {van Kerkwijk}, M. H. and '
+            'Brett, M. and Haldane, A. and {Fernández del Río}, J. and Wiebe, M. and Peterson, P. and '
+            'Gérard-Marchant, P. and Sheppard, K. and Reddy, T. and Weckesser, W. and Abbasi, H. and '
+            'Gohlke, C. and Oliphant, T. E.},\n  title = {{Array programming with {NumPy}}},\n  journal = '
+            '{Nature},\n  year = {2020},\n  volume = {585},\n  pages = {357--362},\n  doi = '
+            '{10.1038/s41586-020-2649-2}\n}'
+        ),
+        "doi": '10.1038/s41586-020-2649-2',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/numpy/numpy/main/CITATION.bib',
+    },
+    {
+        "key": 'virtanen2020',
+        "text": (
+            'Virtanen P., Gommers R., Oliphant T. E., Haberland M., Reddy T., Cournapeau D., Burovski E., '
+            'Peterson P., Weckesser W., Bright J., et al. Nat. Methods 2020, 17, 261-272. '
+            'doi:10.1038/s41592-019-0686-2'
+        ),
+        "bibtex": (
+            '@article{virtanen2020,\n  author = {Virtanen, P. and Gommers, R. and Oliphant, T. E. and '
+            'Haberland, M. and Reddy, T. and Cournapeau, D. and Burovski, E. and Peterson, P. and '
+            'Weckesser, W. and Bright, J. and {van der Walt}, S. J. and Brett, M. and Wilson, J. and '
+            'Millman, K. J. and Mayorov, N. and Nelson, A. R. J. and Jones, E. and Kern, R. and Larson, '
+            'E. and Carey, C. J. and Polat, İ. and Feng, Y. and Moore, E. W. and VanderPlas, J. and '
+            'Laxalde, D. and Perktold, J. and Cimrman, R. and Henriksen, I. and Quintero, E. A. and '
+            'Harris, C. R. and Archibald, A. M. and Ribeiro, A. H. and Pedregosa, F. and {van Mulbregt}, '
+            'P. and {SciPy 1.0 Contributors}},\n  title = {{{SciPy} 1.0: Fundamental Algorithms for '
+            'Scientific Computing in {Python}}},\n  journal = {Nature Methods},\n  year = {2020},\n  '
+            'volume = {17},\n  pages = {261--272},\n  doi = {10.1038/s41592-019-0686-2}\n}'
+        ),
+        "doi": '10.1038/s41592-019-0686-2',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/scipy/scipy/main/CITATION.bib',
+    },
+    {
+        "key": 'hunter2007',
+        "text": 'Hunter J. D. Comput. Sci. Eng. 2007, 9, 90-95. doi:10.1109/MCSE.2007.55',
+        "bibtex": (
+            '@article{hunter2007,\n  author = {Hunter, J. D.},\n  title = {{Matplotlib: A 2D Graphics '
+            'Environment}},\n  journal = {Computing in Science \\& Engineering},\n  year = {2007},\n  '
+            'volume = {9},\n  number = {3},\n  pages = {90--95},\n  doi = {10.1109/MCSE.2007.55}\n}'
+        ),
+        "doi": '10.1109/MCSE.2007.55',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/matplotlib/matplotlib/main/CITATION.cff',
+    },
+    {
+        "key": 'roe2013',
+        "text": (
+            'Roe D. R., Cheatham T. E. J. Chem. Theory Comput. 2013, 9, 3084-3095. doi:10.1021/ct400341p'
+        ),
+        "bibtex": (
+            '@article{roe2013,\n  author = {Roe, D. R. and Cheatham, III, T. E.},\n  title = {{{PTRAJ} '
+            'and {CPPTRAJ}: Software for Processing and Analysis of Molecular Dynamics Trajectory '
+            'Data}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = {2013},\n  '
+            'volume = {9},\n  number = {7},\n  pages = {3084--3095},\n  doi = {10.1021/ct400341p}\n}'
+        ),
+        "doi": '10.1021/ct400341p',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/Amber-MD/cpptraj/master/README.md',
+    },
+    {
+        "key": 'ffmpeg',
+        "text": 'FFmpeg Developers. FFmpeg. https://ffmpeg.org',
+        "bibtex": (
+            '@software{ffmpeg,\n  author = {{FFmpeg Developers}},\n  title = {{FFmpeg}},\n  url = '
+            '{https://ffmpeg.org}\n}'
+        ),
+        "doi": '',
+        "url": 'https://ffmpeg.org',
+        "verified": (
+            'repo:https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/README.md (no paper; project '
+            'asks for none)'
+        ),
+    },
+    {
+        "key": 'schroeder2006',
+        "text": (
+            'Schroeder W., Martin K., Lorensen B. The Visualization Toolkit, 4th ed. Kitware, 2006. ISBN '
+            '978-1-930934-19-1'
+        ),
+        "bibtex": (
+            '@book{schroeder2006,\n  author = {Schroeder, W. and Martin, K. and Lorensen, B.},\n  title = '
+            '{{The Visualization Toolkit}},\n  edition = {4th},\n  publisher = {Kitware},\n  year = '
+            '{2006},\n  isbn = {978-1-930934-19-1}\n}'
+        ),
+        "doi": '',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/Kitware/VTK/master/Documentation/docs/about.md',
+    },
+    {
+        "key": 'case2023',
+        "text": (
+            'Case D. A., Aktulga H. M., Belfon K., Cerutti D. S., Cisneros G. A., Cruzeiro V. W. D., '
+            'Forouzesh N., Giese T. J., Götz A. W., Gohlke H., et al. J. Chem. Inf. Model. 2023, 63, '
+            '6183-6191. doi:10.1021/acs.jcim.3c01153'
+        ),
+        "bibtex": (
+            '@article{case2023,\n  author = {Case, D. A. and Aktulga, H. M. and Belfon, K. and Cerutti, '
+            'D. S. and Cisneros, G. A. and Cruzeiro, V. W. D. and Forouzesh, N. and Giese, T. J. and '
+            'Götz, A. W. and Gohlke, H. and Izadi, S. and Kasavajhala, K. and Kaymak, M. C. and King, E. '
+            'and Kurtzman, T. and Lee, T.-S. and Li, P. and Liu, J. and Luchko, T. and Luo, R. and '
+            "Manathunga, M. and Machado, M. R. and Nguyen, H. M. and O'Hearn, K. A. and Onufriev, A. V. "
+            'and Pan, F. and Pantano, S. and Qi, R. and Rahnamoun, A. and Risheh, A. and Schott-Verdugo, '
+            'S. and Shajan, A. and Swails, J. and Wang, J. and Wei, H. and Wu, X. and Wu, Y. and Zhang, '
+            'S. and Zhao, S. and Zhu, Q. and Cheatham, III, T. E. and Roe, D. R. and Roitberg, A. and '
+            'Simmerling, C. and York, D. M. and Nagan, M. C. and Merz, Jr., K. M.},\n  title = '
+            '{{{AmberTools}}},\n  journal = {Journal of Chemical Information and Modeling},\n  year = '
+            '{2023},\n  volume = {63},\n  number = {20},\n  pages = {6183--6191},\n  doi = '
+            '{10.1021/acs.jcim.3c01153}\n}'
+        ),
+        "doi": '10.1021/acs.jcim.3c01153',
+        "url": '',
+        "verified": (
+            'github-bib:https://github.com/matsunagalab/mdclaw/blob/main/mdclaw/evidence/references.bib'
+        ),
+    },
+    {
+        "key": 'shirts2017',
+        "text": (
+            'Shirts M. R., Klein C., Swails J. M., Yin J., Gilson M. K., Mobley D. L., Case D. A., Zhong '
+            'E. D. J. Comput.-Aided Mol. Des. 2017, 31, 147-161. doi:10.1007/s10822-016-9977-1'
+        ),
+        "bibtex": (
+            '@article{shirts2017,\n  author = {Shirts, M. R. and Klein, C. and Swails, J. M. and Yin, J. '
+            'and Gilson, M. K. and Mobley, D. L. and Case, D. A. and Zhong, E. D.},\n  title = {{Lessons '
+            'learned from comparing molecular dynamics engines on the {SAMPL5} dataset}},\n  journal = '
+            '{Journal of Computer-Aided Molecular Design},\n  year = {2017},\n  volume = {31},\n  number '
+            '= {1},\n  pages = {147--161},\n  doi = {10.1007/s10822-016-9977-1}\n}'
+        ),
+        "doi": '10.1007/s10822-016-9977-1',
+        "url": '',
+        "verified": (
+            'repo:https://raw.githubusercontent.com/ParmEd/ParmEd/master/README.md (doi); '
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 55)'
+        ),
+    },
+    {
+        "key": 'salomonferrer2013',
+        "text": (
+            'Salomon-Ferrer R., Götz A. W., Poole D., Le Grand S., Walker R. C. J. Chem. Theory Comput. '
+            '2013, 9, 3878-3888. doi:10.1021/ct400314y'
+        ),
+        "bibtex": (
+            '@article{salomonferrer2013,\n  author = {Salomon-Ferrer, R. and Götz, A. W. and Poole, D. '
+            'and {Le Grand}, S. and Walker, R. C.},\n  title = {{Routine Microsecond Molecular Dynamics '
+            'Simulations with {AMBER} on {GPUs}. 2. Explicit Solvent Particle Mesh {Ewald}}},\n  journal '
+            '= {Journal of Chemical Theory and Computation},\n  year = {2013},\n  volume = {9},\n  number '
+            '= {9},\n  pages = {3878--3888},\n  doi = {10.1021/ct400314y}\n}'
+        ),
+        "doi": '10.1021/ct400314y',
+        "url": '',
+        "verified": (
+            'github-bib:https://github.com/jrihon/thesis/blob/main/chapters/02_chapter/02_chapter.bib'
+        ),
+    },
+    {
+        "key": 'goetz2012',
+        "text": (
+            'Götz A. W., Williamson M. J., Xu D., Poole D., Le Grand S., Walker R. C. J. Chem. Theory '
+            'Comput. 2012, 8, 1542-1555. doi:10.1021/ct200909j'
+        ),
+        "bibtex": (
+            '@article{goetz2012,\n  author = {Götz, A. W. and Williamson, M. J. and Xu, D. and Poole, D. '
+            'and {Le Grand}, S. and Walker, R. C.},\n  title = {{Routine Microsecond Molecular Dynamics '
+            'Simulations with {AMBER} on {GPUs}. 1. Generalized {Born}}},\n  journal = {Journal of '
+            'Chemical Theory and Computation},\n  year = {2012},\n  volume = {8},\n  pages = '
+            '{1542--1555},\n  doi = {10.1021/ct200909j}\n}'
+        ),
+        "doi": '10.1021/ct200909j',
+        "url": '',
+        "verified": (
+            'github-bib:https://github.com/rmcgibbo/opt-k/blob/master/paper/bibliography.bib (authors, '
+            'doi); pages from NCBI-Codeathons/pubmed-codeathon-team1 PubMed XML'
+        ),
+    },
+    {
+        "key": 'cornell1995',
+        "text": (
+            'Cornell W. D., Cieplak P., Bayly C. I., Gould I. R., Merz K. M., Ferguson D. M., Spellmeyer '
+            'D. C., Fox T., Caldwell J. W., Kollman P. A. J. Am. Chem. Soc. 1995, 117, 5179-5197. '
+            'doi:10.1021/ja00124a002'
+        ),
+        "bibtex": (
+            '@article{cornell1995,\n  author = {Cornell, W. D. and Cieplak, P. and Bayly, C. I. and '
+            'Gould, I. R. and Merz, Jr., K. M. and Ferguson, D. M. and Spellmeyer, D. C. and Fox, T. and '
+            'Caldwell, J. W. and Kollman, P. A.},\n  title = {{A Second Generation Force Field for the '
+            'Simulation of Proteins, Nucleic Acids, and Organic Molecules}},\n  journal = {Journal of the '
+            'American Chemical Society},\n  year = {1995},\n  volume = {117},\n  number = {19},\n  pages '
+            '= {5179--5197},\n  doi = {10.1021/ja00124a002}\n}'
+        ),
+        "doi": '10.1021/ja00124a002',
+        "url": '',
+        "verified": (
+            'ref-list:e8612d02-Refinement_of_the_Cornell_et_al._Nucleic_Acids_Force'
+            '_Field_Based_on_Reference_Quantum_Chemical_Calculations_of_Glycosidic_Torsion_Profiles.txt '
+            '(ref. 8); doi: https://github.com/lammps/lammps/blob/develop/doc/src/Bibliography.rst'
+        ),
+    },
+    {
+        "key": 'wang2000',
+        "text": (
+            'Wang J., Cieplak P., Kollman P. A. J. Comput. Chem. 2000, 21, 1049-1074. '
+            'doi:10.1002/1096-987X(200009)21:12<1049::AID-JCC3>3.0.CO;2-F'
+        ),
+        "bibtex": (
+            '@article{wang2000,\n  author = {Wang, J. and Cieplak, P. and Kollman, P. A.},\n  title = '
+            '{{How well does a restrained electrostatic potential ({RESP}) model perform in calculating '
+            'conformational energies of organic and biological molecules?}},\n  journal = {Journal of '
+            'Computational Chemistry},\n  year = {2000},\n  volume = {21},\n  number = {12},\n  pages = '
+            '{1049--1074},\n  doi = {10.1002/1096-987X(200009)21:12<1049::AID-JCC3>3.0.CO;2-F}\n}'
+        ),
+        "doi": '10.1002/1096-987X(200009)21:12<1049::AID-JCC3>3.0.CO;2-F',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 35); doi: '
+            'https://github.com/ComputeCanada/molmodsim-md-theory-lesson-novice'
+        ),
+    },
+    {
+        "key": 'perez2007',
+        "text": (
+            'Pérez A., Marchán I., Svozil D., Šponer J., Cheatham T. E., Laughton C. A., Orozco M. '
+            'Biophys. J. 2007, 92, 3817-3829. doi:10.1529/biophysj.106.097782'
+        ),
+        "bibtex": (
+            '@article{perez2007,\n  author = {Pérez, A. and Marchán, I. and Svozil, D. and Šponer, J. and '
+            'Cheatham, III, T. E. and Laughton, C. A. and Orozco, M.},\n  title = {{Refinement of the '
+            '{AMBER} Force Field for Nucleic Acids: Improving the Description of $\\alpha$/$\\gamma$ '
+            'Conformers}},\n  journal = {Biophysical Journal},\n  year = {2007},\n  volume = {92},\n  '
+            'number = {11},\n  pages = {3817--3829},\n  doi = {10.1529/biophysj.106.097782}\n}'
+        ),
+        "doi": '10.1529/biophysj.106.097782',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 36); doi: '
+            'https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'zgarbova2011',
+        "text": (
+            'Zgarbová M., Otyepka M., Šponer J., Mládek A., Banáš P., Cheatham T. E., Jurečka P. J. Chem. '
+            'Theory Comput. 2011, 7, 2886-2902. doi:10.1021/ct200162x'
+        ),
+        "bibtex": (
+            '@article{zgarbova2011,\n  author = {Zgarbová, M. and Otyepka, M. and Šponer, J. and Mládek, '
+            'A. and Banáš, P. and Cheatham, III, T. E. and Jurečka, P.},\n  title = {{Refinement of the '
+            '{Cornell} et al. Nucleic Acids Force Field Based on Reference Quantum Chemical Calculations '
+            'of Glycosidic Torsion Profiles}},\n  journal = {Journal of Chemical Theory and '
+            'Computation},\n  year = {2011},\n  volume = {7},\n  number = {9},\n  pages = '
+            '{2886--2902},\n  doi = {10.1021/ct200162x}\n}'
+        ),
+        "doi": '10.1021/ct200162x',
+        "url": '',
+        "verified": (
+            'pdf:e8612d02-Refinement_of_the_Cornell_et_al._Nucleic_Acids_Force_Fiel'
+            'd_Based_on_Reference_Quantum_Chemical_Calculations_of_Glycosidic_Torsion_Profiles.txt'
+        ),
+    },
+    {
+        "key": 'steinbrecher2012',
+        "text": (
+            'Steinbrecher T., Latzer J., Case D. A. J. Chem. Theory Comput. 2012, 8, 4405-4412. '
+            'doi:10.1021/ct300613v'
+        ),
+        "bibtex": (
+            '@article{steinbrecher2012,\n  author = {Steinbrecher, T. and Latzer, J. and Case, D. A.},\n  '
+            'title = {{Revised {AMBER} Parameters for Bioorganic Phosphates}},\n  journal = {Journal of '
+            'Chemical Theory and Computation},\n  year = {2012},\n  volume = {8},\n  number = {11},\n  '
+            'pages = {4405--4412},\n  doi = {10.1021/ct300613v}\n}'
+        ),
+        "doi": '10.1021/ct300613v',
+        "url": '',
+        "verified": 'pdf:44e47698-Revised_AMBER_Parameters_for_Bioorganic_Phosphates.txt',
+    },
+    {
+        "key": 'bergonzo2015',
+        "text": (
+            'Bergonzo C., Cheatham T. E. J. Chem. Theory Comput. 2015, 11, 3969-3972. '
+            'doi:10.1021/acs.jctc.5b00444'
+        ),
+        "bibtex": (
+            '@article{bergonzo2015,\n  author = {Bergonzo, C. and Cheatham, III, T. E.},\n  title = '
+            '{{Improved Force Field Parameters Lead to a Better Description of {RNA} Structure}},\n  '
+            'journal = {Journal of Chemical Theory and Computation},\n  year = {2015},\n  volume = '
+            '{11},\n  number = {9},\n  pages = {3969--3972},\n  doi = {10.1021/acs.jctc.5b00444}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.5b00444',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 25); doi: '
+            'https://github.com/hpcanalytics/documentation/blob/master/docs/bms-cpptraj.md'
+        ),
+    },
+    {
+        "key": 'aytenfisu2017',
+        "text": (
+            'Aytenfisu A. H., Spasic A., Grossfield A., Stern H. A., Mathews D. H. J. Chem. Theory '
+            'Comput. 2017, 13, 900-915. doi:10.1021/acs.jctc.6b00870'
+        ),
+        "bibtex": (
+            '@article{aytenfisu2017,\n  author = {Aytenfisu, A. H. and Spasic, A. and Grossfield, A. and '
+            'Stern, H. A. and Mathews, D. H.},\n  title = {{Revised {RNA} Dihedral Parameters for the '
+            '{Amber} Force Field Improve {RNA} Molecular Dynamics}},\n  journal = {Journal of Chemical '
+            'Theory and Computation},\n  year = {2017},\n  volume = {13},\n  number = {2},\n  pages = '
+            '{900--915},\n  doi = {10.1021/acs.jctc.6b00870}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.6b00870',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 10); doi: '
+            'https://github.com/matsunagalab/mdclaw (citation-audit bib)'
+        ),
+    },
+    {
+        "key": 'yildirim2010',
+        "text": (
+            'Yildirim I., Stern H. A., Kennedy S. D., Tubbs J. D., Turner D. H. J. Chem. Theory Comput. '
+            '2010, 6, 1520-1531. doi:10.1021/ct900604a'
+        ),
+        "bibtex": (
+            '@article{yildirim2010,\n  author = {Yildirim, I. and Stern, H. A. and Kennedy, S. D. and '
+            'Tubbs, J. D. and Turner, D. H.},\n  title = {{Reparameterization of {RNA} $\\chi$ Torsion '
+            'Parameters for the {AMBER} Force Field and Comparison to {NMR} Spectra for Cytidine and '
+            'Uridine}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = {2010},\n  '
+            'volume = {6},\n  number = {5},\n  pages = {1520--1531},\n  doi = {10.1021/ct900604a}\n}'
+        ),
+        "doi": '10.1021/ct900604a',
+        "url": '',
+        "verified": (
+            'ref-list:e8612d02-Refinement_of_the_Cornell_et_al._Nucleic_Acids_Force'
+            '_Field_Based_on_Reference_Quantum_Chemical_Calculations_of_Glycosidic_Torsion_Profiles.txt '
+            '(ref. 45); title/doi: https://github.com/matsunagalab/mdclaw (citation-audit bib)'
+        ),
+    },
+    {
+        "key": 'tan2018',
+        "text": (
+            'Tan D., Piana S., Dirks R. M., Shaw D. E. Proc. Natl. Acad. Sci. U.S.A. 2018, 115, '
+            'E1346-E1355. doi:10.1073/pnas.1713027115'
+        ),
+        "bibtex": (
+            '@article{tan2018,\n  author = {Tan, D. and Piana, S. and Dirks, R. M. and Shaw, D. E.},\n  '
+            'title = {{{RNA} force field with accuracy comparable to state-of-the-art protein force '
+            'fields}},\n  journal = {Proceedings of the National Academy of Sciences of the United States '
+            'of America},\n  year = {2018},\n  volume = {115},\n  number = {7},\n  pages = '
+            '{E1346--E1355},\n  doi = {10.1073/pnas.1713027115}\n}'
+        ),
+        "doi": '10.1073/pnas.1713027115',
+        "url": '',
+        "verified": (
+            'ref-list:3d6e7fac-Barnaba-_software_for_analysis_of_nucleic_acid_struc'
+            'tures_and_trajectories.txt (doi); ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt '
+            '(ref. 11)'
+        ),
+    },
+    {
+        "key": 'kuhrova2019',
+        "text": (
+            'Kührová P., Mlýnský V., Zgarbová M., Krepl M., Bussi G., Best R. B., Otyepka M., Šponer J., '
+            'Banáš P. J. Chem. Theory Comput. 2019, 15, 3288-3305. doi:10.1021/acs.jctc.8b00955'
+        ),
+        "bibtex": (
+            '@article{kuhrova2019,\n  author = {Kührová, P. and Mlýnský, V. and Zgarbová, M. and Krepl, '
+            'M. and Bussi, G. and Best, R. B. and Otyepka, M. and Šponer, J. and Banáš, P.},\n  title = '
+            '{{Improving the Performance of the {Amber} {RNA} Force Field by Tuning the Hydrogen-Bonding '
+            'Interactions}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = '
+            '{2019},\n  volume = {15},\n  number = {5},\n  pages = {3288--3305},\n  doi = '
+            '{10.1021/acs.jctc.8b00955}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.8b00955',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 14); doi: '
+            'https://github.com/plumed/doc-master (GHBFIX page)'
+        ),
+    },
+    {
+        "key": 'mlynsky2023',
+        "text": (
+            'Mlýnský V., Kührová P., Stadlbauer P., Krepl M., Otyepka M., Banáš P., Šponer J. J. Chem. '
+            'Theory Comput. 2023, 19, 8423-8433. doi:10.1021/acs.jctc.3c00990'
+        ),
+        "bibtex": (
+            '@article{mlynsky2023,\n  author = {Mlýnský, V. and Kührová, P. and Stadlbauer, P. and Krepl, '
+            'M. and Otyepka, M. and Banáš, P. and Šponer, J.},\n  title = {{Simple Adjustment of '
+            'Intranucleotide Base-Phosphate Interaction in the {OL3} {AMBER} Force Field Improves {RNA} '
+            'Simulations}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = '
+            '{2023},\n  volume = {19},\n  number = {22},\n  pages = {8423--8433},\n  doi = '
+            '{10.1021/acs.jctc.3c00990}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.3c00990',
+        "url": '',
+        "verified": 'pdf:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt',
+    },
+    {
+        "key": 'hopkins2015',
+        "text": (
+            'Hopkins C. W., Le Grand S., Walker R. C., Roitberg A. E. J. Chem. Theory Comput. 2015, 11, '
+            '1864-1874. doi:10.1021/ct5010406'
+        ),
+        "bibtex": (
+            '@article{hopkins2015,\n  author = {Hopkins, C. W. and {Le Grand}, S. and Walker, R. C. and '
+            'Roitberg, A. E.},\n  title = {{Long-Time-Step Molecular Dynamics through Hydrogen Mass '
+            'Repartitioning}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = '
+            '{2015},\n  volume = {11},\n  number = {4},\n  pages = {1864--1874},\n  doi = '
+            '{10.1021/ct5010406}\n}'
+        ),
+        "doi": '10.1021/ct5010406',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 52); doi: '
+            'https://github.com/MobleyLab/basic_simulation_training/blob/master/paper/basic_training.bib'
+        ),
+    },
+    {
+        "key": 'jorgensen1983',
+        "text": (
+            'Jorgensen W. L., Chandrasekhar J., Madura J. D., Impey R. W., Klein M. L. J. Chem. Phys. '
+            '1983, 79, 926-935. doi:10.1063/1.445869'
+        ),
+        "bibtex": (
+            '@article{jorgensen1983,\n  author = {Jorgensen, W. L. and Chandrasekhar, J. and Madura, J. '
+            'D. and Impey, R. W. and Klein, M. L.},\n  title = {{Comparison of simple potential functions '
+            'for simulating liquid water}},\n  journal = {The Journal of Chemical Physics},\n  year = '
+            '{1983},\n  volume = {79},\n  number = {2},\n  pages = {926--935},\n  doi = '
+            '{10.1063/1.445869}\n}'
+        ),
+        "doi": '10.1063/1.445869',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 51); doi: '
+            'https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'berendsen1987',
+        "text": (
+            'Berendsen H. J. C., Grigera J. R., Straatsma T. P. J. Phys. Chem. 1987, 91, 6269-6271. '
+            'doi:10.1021/j100308a038'
+        ),
+        "bibtex": (
+            '@article{berendsen1987,\n  author = {Berendsen, H. J. C. and Grigera, J. R. and Straatsma, '
+            'T. P.},\n  title = {{The missing term in effective pair potentials}},\n  journal = {The '
+            'Journal of Physical Chemistry},\n  year = {1987},\n  volume = {91},\n  number = {24},\n  '
+            'pages = {6269--6271},\n  doi = {10.1021/j100308a038}\n}'
+        ),
+        "doi": '10.1021/j100308a038',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 50); doi: '
+            'https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'izadi2014',
+        "text": (
+            'Izadi S., Anandakrishnan R., Onufriev A. V. J. Phys. Chem. Lett. 2014, 5, 3863-3871. '
+            'doi:10.1021/jz501780a'
+        ),
+        "bibtex": (
+            '@article{izadi2014,\n  author = {Izadi, S. and Anandakrishnan, R. and Onufriev, A. V.},\n  '
+            'title = {{Building Water Models: A Different Approach}},\n  journal = {The Journal of '
+            'Physical Chemistry Letters},\n  year = {2014},\n  volume = {5},\n  number = {21},\n  pages = '
+            '{3863--3871},\n  doi = {10.1021/jz501780a}\n}'
+        ),
+        "doi": '10.1021/jz501780a',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 26); doi: '
+            'https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'izadi2016',
+        "text": 'Izadi S., Onufriev A. V. J. Chem. Phys. 2016, 145, 074501. doi:10.1063/1.4960175',
+        "bibtex": (
+            '@article{izadi2016,\n  author = {Izadi, S. and Onufriev, A. V.},\n  title = {{Accuracy limit '
+            'of rigid 3-point water models}},\n  journal = {The Journal of Chemical Physics},\n  year = '
+            '{2016},\n  volume = {145},\n  number = {7},\n  pages = {074501},\n  doi = '
+            '{10.1063/1.4960175}\n}'
+        ),
+        "doi": '10.1063/1.4960175',
+        "url": '',
+        "verified": (
+            'github-bib:https://github.com/matsunagalab/mdclaw/blob/main/mdclaw/evidence/references.bib'
+        ),
+    },
+    {
+        "key": 'horn2004',
+        "text": (
+            'Horn H. W., Swope W. C., Pitera J. W., Madura J. D., Dick T. J., Hura G. L., Head-Gordon T. '
+            'J. Chem. Phys. 2004, 120, 9665-9678. doi:10.1063/1.1683075'
+        ),
+        "bibtex": (
+            '@article{horn2004,\n  author = {Horn, H. W. and Swope, W. C. and Pitera, J. W. and Madura, '
+            'J. D. and Dick, T. J. and Hura, G. L. and Head-Gordon, T.},\n  title = {{Development of an '
+            'improved four-site water model for biomolecular simulations: {TIP4P-Ew}}},\n  journal = {The '
+            'Journal of Chemical Physics},\n  year = {2004},\n  volume = {120},\n  number = {20},\n  '
+            'pages = {9665--9678},\n  doi = {10.1063/1.1683075}\n}'
+        ),
+        "doi": '10.1063/1.1683075',
+        "url": '',
+        "verified": (
+            'ref-list:5195daf9-Grotz__Schwierz_JCTC_18_526_2022_SPC-E_TIP3P-FB_TIP4P-Ew_and_TIP4P-D.txt '
+            '(ref. 49); doi: https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'wang2014',
+        "text": (
+            'Wang L.-P., Martinez T. J., Pande V. S. J. Phys. Chem. Lett. 2014, 5, 1885-1891. '
+            'doi:10.1021/jz500737m'
+        ),
+        "bibtex": (
+            '@article{wang2014,\n  author = {Wang, L.-P. and Martinez, T. J. and Pande, V. S.},\n  title '
+            '= {{Building Force Fields: An Automatic, Systematic, and Reproducible Approach}},\n  journal '
+            '= {The Journal of Physical Chemistry Letters},\n  year = {2014},\n  volume = {5},\n  number '
+            '= {11},\n  pages = {1885--1891},\n  doi = {10.1021/jz500737m}\n}'
+        ),
+        "doi": '10.1021/jz500737m',
+        "url": '',
+        "verified": (
+            'ref-list:5195daf9-Grotz__Schwierz_JCTC_18_526_2022_SPC-E_TIP3P-FB_TIP4P-Ew_and_TIP4P-D.txt '
+            '(ref. 47); doi: https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'piana2015',
+        "text": (
+            'Piana S., Donchev A. G., Robustelli P., Shaw D. E. J. Phys. Chem. B 2015, 119, 5113-5123. '
+            'doi:10.1021/jp508971m'
+        ),
+        "bibtex": (
+            '@article{piana2015,\n  author = {Piana, S. and Donchev, A. G. and Robustelli, P. and Shaw, '
+            'D. E.},\n  title = {{Water dispersion interactions strongly influence simulated structural '
+            'properties of disordered protein states}},\n  journal = {The Journal of Physical Chemistry '
+            'B},\n  year = {2015},\n  volume = {119},\n  pages = {5113--5123},\n  doi = '
+            '{10.1021/jp508971m}\n}'
+        ),
+        "doi": '10.1021/jp508971m',
+        "url": '',
+        "verified": (
+            'ref-list:5195daf9-Grotz__Schwierz_JCTC_18_526_2022_SPC-E_TIP3P-FB_TIP4P-Ew_and_TIP4P-D.txt '
+            '(ref. 50); doi: https://github.com/Becksteinlab/MDPOW (tip4pd.itp)'
+        ),
+    },
+    {
+        "key": 'abascal2005',
+        "text": 'Abascal J. L. F., Vega C. J. Chem. Phys. 2005, 123, 234505. doi:10.1063/1.2121687',
+        "bibtex": (
+            '@article{abascal2005,\n  author = {Abascal, J. L. F. and Vega, C.},\n  title = {{A general '
+            'purpose model for the condensed phases of water: {TIP4P/2005}}},\n  journal = {The Journal '
+            'of Chemical Physics},\n  year = {2005},\n  volume = {123},\n  number = {23},\n  pages = '
+            '{234505},\n  doi = {10.1063/1.2121687}\n}'
+        ),
+        "doi": '10.1063/1.2121687',
+        "url": '',
+        "verified": 'pdf:47ea09d5-A_general_purpose_model_for_the_condensed_phases_of_water_TIP4P-2005.txt',
+    },
+    {
+        "key": 'joung2008',
+        "text": 'Joung I. S., Cheatham T. E. J. Phys. Chem. B 2008, 112, 9020-9041. doi:10.1021/jp8001614',
+        "bibtex": (
+            '@article{joung2008,\n  author = {Joung, I. S. and Cheatham, III, T. E.},\n  title = '
+            '{{Determination of Alkali and Halide Monovalent Ion Parameters for Use in Explicitly '
+            'Solvated Biomolecular Simulations}},\n  journal = {The Journal of Physical Chemistry B},\n  '
+            'year = {2008},\n  volume = {112},\n  number = {30},\n  pages = {9020--9041},\n  doi = '
+            '{10.1021/jp8001614}\n}'
+        ),
+        "doi": '10.1021/jp8001614',
+        "url": '',
+        "verified": (
+            'ref-list:f492e4a0-Zgarbov__et_al._JCTC_7_2886_2011_OL3.txt (ref. 41); doi: '
+            'https://github.com/matsunagalab/mdclaw (references.bib)'
+        ),
+    },
+    {
+        "key": 'li2013',
+        "text": (
+            'Li P., Roberts B. P., Chakravorty D. K., Merz K. M. J. Chem. Theory Comput. 2013, 9, '
+            '2733-2748. doi:10.1021/ct400146w'
+        ),
+        "bibtex": (
+            '@article{li2013,\n  author = {Li, P. and Roberts, B. P. and Chakravorty, D. K. and Merz, '
+            'Jr., K. M.},\n  title = {{Rational Design of Particle Mesh {Ewald} Compatible '
+            '{Lennard-Jones} Parameters for +2 Metal Cations in Explicit Solvent}},\n  journal = {Journal '
+            'of Chemical Theory and Computation},\n  year = {2013},\n  volume = {9},\n  number = {6},\n  '
+            'pages = {2733--2748},\n  doi = {10.1021/ct400146w}\n}'
+        ),
+        "doi": '10.1021/ct400146w',
+        "url": '',
+        "verified": (
+            'ref-list:6c652cd2-Grotz__Schwierz_J._Chem._Phys._156_114501_2022_OPC_a'
+            'nd_the_transfer_of_the_SPC-E_values.txt; doi: https://github.com/duartegroup/metallicious '
+            '(docs/source/usage.rst)'
+        ),
+    },
+    {
+        "key": 'li2014',
+        "text": 'Li P., Merz K. M. J. Chem. Theory Comput. 2014, 10, 289-297. doi:10.1021/ct400751u',
+        "bibtex": (
+            '@article{li2014,\n  author = {Li, P. and Merz, Jr., K. M.},\n  title = {{Taking into Account '
+            'the Ion-Induced Dipole Interaction in the Nonbonded Model of Ions}},\n  journal = {Journal '
+            'of Chemical Theory and Computation},\n  year = {2014},\n  volume = {10},\n  number = {1},\n  '
+            'pages = {289--297},\n  doi = {10.1021/ct400751u}\n}'
+        ),
+        "doi": '10.1021/ct400751u',
+        "url": '',
+        "verified": (
+            'ref-list:deb341ad-Grotz_Cruz-Le_n__Schwierz_JCTC_17_2530_2021_si_001.txt (ref. 6); doi: '
+            'https://github.com/matsunagalab/mdclaw (citation-audit bib)'
+        ),
+    },
+    {
+        "key": 'grotz2021',
+        "text": (
+            'Grotz K. K., Cruz-León S., Schwierz N. J. Chem. Theory Comput. 2021, 17, 2530-2540. '
+            'doi:10.1021/acs.jctc.0c01281'
+        ),
+        "bibtex": (
+            '@article{grotz2021,\n  author = {Grotz, K. K. and Cruz-León, S. and Schwierz, N.},\n  title '
+            '= {{Optimized Magnesium Force Field Parameters for Biomolecular Simulations with Accurate '
+            'Solvation, Ion-Binding, and Water-Exchange Properties}},\n  journal = {Journal of Chemical '
+            'Theory and Computation},\n  year = {2021},\n  volume = {17},\n  pages = {2530--2540},\n  doi '
+            '= {10.1021/acs.jctc.0c01281}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.0c01281',
+        "url": '',
+        "verified": (
+            'ref-list:5195daf9-Grotz__Schwierz_JCTC_18_526_2022_SPC-E_TIP3P-FB_TIP4P-Ew_and_TIP4P-D.txt '
+            '(ref. 26); doi: https://github.com/bio-phys/Magnesium-FFs (README.md)'
+        ),
+    },
+    {
+        "key": 'grotz2022',
+        "text": (
+            'Grotz K. K., Schwierz N. J. Chem. Theory Comput. 2022, 18, 526-537. '
+            'doi:10.1021/acs.jctc.1c00791'
+        ),
+        "bibtex": (
+            '@article{grotz2022,\n  author = {Grotz, K. K. and Schwierz, N.},\n  title = {{Optimized '
+            'Magnesium Force Field Parameters for Biomolecular Simulations with Accurate Solvation, '
+            'Ion-Binding, and Water-Exchange Properties in {SPC/E}, {TIP3P-fb}, {TIP4P/2005}, {TIP4P-Ew}, '
+            'and {TIP4P-D}}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = '
+            '{2022},\n  volume = {18},\n  number = {1},\n  pages = {526--537},\n  doi = '
+            '{10.1021/acs.jctc.1c00791}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.1c00791',
+        "url": '',
+        "verified": 'pdf:5195daf9-Grotz__Schwierz_JCTC_18_526_2022_SPC-E_TIP3P-FB_TIP4P-Ew_and_TIP4P-D.txt',
+    },
+    {
+        "key": 'grotz2022b',
+        "text": 'Grotz K. K., Schwierz N. J. Chem. Phys. 2022, 156, 114501. doi:10.1063/5.0087292',
+        "bibtex": (
+            '@article{grotz2022b,\n  author = {Grotz, K. K. and Schwierz, N.},\n  title = {{Magnesium '
+            'force fields for {OPC} water with accurate solvation, ion-binding, and water-exchange '
+            'properties: Successful transfer from {SPC/E}}},\n  journal = {The Journal of Chemical '
+            'Physics},\n  year = {2022},\n  volume = {156},\n  number = {11},\n  pages = {114501},\n  doi '
+            '= {10.1063/5.0087292}\n}'
+        ),
+        "doi": '10.1063/5.0087292',
+        "url": '',
+        "verified": (
+            'pdf:6c652cd2-Grotz__Schwierz_J._Chem._Phys._156_114501_2022_OPC_and_th'
+            'e_transfer_of_the_SPC-E_values.txt'
+        ),
+    },
+    {
+        "key": 'dudek2017',
+        "text": 'Dudek M., Trylska J. J. Chem. Theory Comput. 2017, 13. doi:10.1021/acs.jctc.6b01075',
+        "bibtex": (
+            '@article{dudek2017,\n  author = {Dudek, M. and Trylska, J.},\n  title = {{Molecular Dynamics '
+            'Simulations of {L-RNA} Involving Homo- and Heterochiral Complexes}},\n  journal = {Journal '
+            'of Chemical Theory and Computation},\n  year = {2017},\n  volume = {13},\n  doi = '
+            '{10.1021/acs.jctc.6b01075}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.6b01075',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/martadudek/lrna-amber (README.md, local copy '
+            'ext/lrna-amber/README.md); volume from year'
+        ),
+    },
+    {
+        "key": 'leman2020',
+        "text": (
+            'Leman J. K., Weitzner B. D., Lewis S. M., Adolf-Bryfogle J., Alam N., Alford R. F., '
+            'Aprahamian M., Baker D., Barlow K. A., Barth P., et al. Nat. Methods 2020, 17, 665-680. '
+            'doi:10.1038/s41592-020-0848-2'
+        ),
+        "bibtex": (
+            '@article{leman2020,\n  author = {Leman, J. K. and Weitzner, B. D. and Lewis, S. M. and '
+            'Adolf-Bryfogle, J. and Alam, N. and Alford, R. F. and Aprahamian, M. and Baker, D. and '
+            'Barlow, K. A. and Barth, P. and others},\n  title = {{Macromolecular modeling and design in '
+            '{Rosetta}: recent methods and frameworks}},\n  journal = {Nature Methods},\n  year = '
+            '{2020},\n  volume = {17},\n  number = {7},\n  pages = {665--680},\n  doi = '
+            '{10.1038/s41592-020-0848-2}\n}'
+        ),
+        "doi": '10.1038/s41592-020-0848-2',
+        "url": '',
+        "verified": (
+            'repo:https://raw.githubusercontent.com/RosettaCommons/rosetta/main/CITING_ROSETTA.md; first '
+            'ten authors: https://github.com/sergio-santos-group/ProtoSyn.jl (paper/ref.bib)'
+        ),
+    },
+    {
+        "key": 'watkins2020',
+        "text": (
+            'Watkins A. M., Rangan R., Das R. Structure 2020, 28, 963-976. doi:10.1016/j.str.2020.05.011'
+        ),
+        "bibtex": (
+            '@article{watkins2020,\n  author = {Watkins, A. M. and Rangan, R. and Das, R.},\n  title = '
+            '{{{FARFAR2}: Improved De Novo {Rosetta} Prediction of Complex Global {RNA} Folds}},\n  '
+            'journal = {Structure},\n  year = {2020},\n  volume = {28},\n  pages = {963--976},\n  doi = '
+            '{10.1016/j.str.2020.05.011}\n}'
+        ),
+        "doi": '10.1016/j.str.2020.05.011',
+        "url": '',
+        "verified": 'repo:https://github.com/RosettaCommons/documentation (FARFAR2.md)',
+    },
+    {
+        "key": 'lu2015',
+        "text": (
+            'Lu X.-J., Bussemaker H. J., Olson W. K. Nucleic Acids Res. 2015, 43, e142. '
+            'doi:10.1093/nar/gkv716'
+        ),
+        "bibtex": (
+            '@article{lu2015,\n  author = {Lu, X.-J. and Bussemaker, H. J. and Olson, W. K.},\n  title = '
+            '{{{DSSR}: an integrated software tool for dissecting the spatial structure of {RNA}}},\n  '
+            'journal = {Nucleic Acids Research},\n  year = {2015},\n  volume = {43},\n  pages = '
+            '{e142},\n  doi = {10.1093/nar/gkv716}\n}'
+        ),
+        "doi": '10.1093/nar/gkv716',
+        "url": '',
+        "verified": (
+            'ref-list:3d6e7fac-Barnaba-_software_for_analysis_of_nucleic_acid_struc'
+            'tures_and_trajectories.txt'
+        ),
+    },
+    {
+        "key": 'boniecki2016',
+        "text": (
+            'Boniecki M. J., Lach G., Dawson W. K., Tomala K., Lukasz P., Soltysinski T., Rother K. M., '
+            'Bujnicki J. M. Nucleic Acids Res. 2016, 44, e63. doi:10.1093/nar/gkv1479'
+        ),
+        "bibtex": (
+            '@article{boniecki2016,\n  author = {Boniecki, M. J. and Lach, G. and Dawson, W. K. and '
+            'Tomala, K. and Lukasz, P. and Soltysinski, T. and Rother, K. M. and Bujnicki, J. M.},\n  '
+            'title = {{{SimRNA}: a coarse-grained method for {RNA} folding simulations and {3D} structure '
+            'prediction}},\n  journal = {Nucleic Acids Research},\n  year = {2016},\n  volume = {44},\n  '
+            'number = {7},\n  pages = {e63},\n  doi = {10.1093/nar/gkv1479}\n}'
+        ),
+        "doi": '10.1093/nar/gkv1479',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/mmagnus/rna-tools (notes/SimRNA_and_SimRNAweb.md); authors: '
+            'https://github.com/ViennaRNA/ernwin (doc/bvht.rst)'
+        ),
+    },
+    {
+        "key": 'yesselman2019',
+        "text": (
+            "Yesselman J. D., Eiler D., Carlson E. D., Gotrik M. R., d'Aquino A. E., Ooms A. N., Kladwang "
+            'W., Carlson P. D., Shi X., Costantino D. A., et al. Nat. Nanotechnol. 2019, 14, 866-873. '
+            'doi:10.1038/s41565-019-0517-8'
+        ),
+        "bibtex": (
+            '@article{yesselman2019,\n  author = {Yesselman, J. D. and Eiler, D. and Carlson, E. D. and '
+            "Gotrik, M. R. and d'Aquino, A. E. and Ooms, A. N. and Kladwang, W. and Carlson, P. D. and "
+            'Shi, X. and Costantino, D. A. and Herschlag, D. and Lucks, J. B. and Jewett, M. C. and '
+            'Kieft, J. S. and Das, R.},\n  title = {{Computational design of three-dimensional {RNA} '
+            'structure and function}},\n  journal = {Nature Nanotechnology},\n  year = {2019},\n  volume '
+            '= {14},\n  pages = {866--873},\n  doi = {10.1038/s41565-019-0517-8}\n}'
+        ),
+        "doi": '10.1038/s41565-019-0517-8',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/CHTC/Articles (2021-08-10-Science-Gateway.md); authors: '
+            'https://github.com/rnabioco/rbi-website (pmid-31427748)'
+        ),
+    },
+    {
+        "key": 'humphrey1996',
+        "text": (
+            'Humphrey W., Dalke A., Schulten K. J. Mol. Graph. 1996, 14, 33-38. '
+            'doi:10.1016/0263-7855(96)00018-5'
+        ),
+        "bibtex": (
+            '@article{humphrey1996,\n  author = {Humphrey, W. and Dalke, A. and Schulten, K.},\n  title = '
+            '{{{VMD}: Visual Molecular Dynamics}},\n  journal = {Journal of Molecular Graphics},\n  year '
+            '= {1996},\n  volume = {14},\n  number = {1},\n  pages = {33--38},\n  doi = '
+            '{10.1016/0263-7855(96)00018-5}\n}'
+        ),
+        "doi": '10.1016/0263-7855(96)00018-5',
+        "url": '',
+        "verified": (
+            'repo:VMD source vmd.C startup banner (citations03/repos/vmd_vmd.C); doi: '
+            'https://github.com/Colvars/colvars (src/colvarmodule_refs.h)'
+        ),
+    },
+    {
+        "key": 'stone1998',
+        "text": (
+            'Stone J. E. An Efficient Library for Parallel Ray Tracing and Animation. MS thesis, Computer '
+            'Science Department, University of Missouri-Rolla, 1998.'
+        ),
+        "bibtex": (
+            '@mastersthesis{stone1998,\n  author = {Stone, J. E.},\n  title = {{An Efficient Library for '
+            'Parallel Ray Tracing and Animation}},\n  school = {Computer Science Department, University '
+            'of Missouri-Rolla},\n  year = {1998},\n  month = apr\n}'
+        ),
+        "doi": '',
+        "url": '',
+        "verified": 'repo:https://github.com/Eigenstate/vmd-python (vmd_src/src/OSPRayRenderer.h header)',
+    },
+    {
+        "key": 'abraham2015',
+        "text": (
+            'Abraham M. J., Murtola T., Schulz R., Páll S., Smith J. C., Hess B., Lindahl E. SoftwareX '
+            '2015, 1-2, 19-25. doi:10.1016/j.softx.2015.06.001'
+        ),
+        "bibtex": (
+            '@article{abraham2015,\n  author = {Abraham, M. J. and Murtola, T. and Schulz, R. and Páll, '
+            'S. and Smith, J. C. and Hess, B. and Lindahl, E.},\n  title = {{{GROMACS}: High performance '
+            'molecular simulations through multi-level parallelism from laptops to supercomputers}},\n  '
+            'journal = {SoftwareX},\n  year = {2015},\n  volume = {1-2},\n  pages = {19--25},\n  doi = '
+            '{10.1016/j.softx.2015.06.001}\n}'
+        ),
+        "doi": '10.1016/j.softx.2015.06.001',
+        "url": '',
+        "verified": (
+            'ref-list:3d6e7fac-Barnaba-_software_for_analysis_of_nucleic_acid_struc'
+            'tures_and_trajectories.txt; '
+            'ref-list:6c652cd2-Grotz__Schwierz_J._Chem._Phys._156_114501_2022_OPC_a'
+            'nd_the_transfer_of_the_SPC-E_values.txt'
+        ),
+    },
+    {
+        "key": 'sousadasilva2012',
+        "text": (
+            'Sousa da Silva A. W., Vranken W. F. BMC Res. Notes 2012, 5, 367. doi:10.1186/1756-0500-5-367'
+        ),
+        "bibtex": (
+            '@article{sousadasilva2012,\n  author = {{Sousa da Silva}, A. W. and Vranken, W. F.},\n  '
+            'title = {{{ACPYPE} - {AnteChamber} {PYthon} Parser {interfacE}}},\n  journal = {BMC Research '
+            'Notes},\n  year = {2012},\n  volume = {5},\n  pages = {367},\n  doi = '
+            '{10.1186/1756-0500-5-367}\n}'
+        ),
+        "doi": '10.1186/1756-0500-5-367',
+        "url": '',
+        "verified": 'repo:https://raw.githubusercontent.com/alanwilter/acpype/master/README.md',
+    },
+    {
+        "key": 'bottaro2019',
+        "text": (
+            'Bottaro S., Bussi G., Pinamonti G., Reißer S., Boomsma W., Lindorff-Larsen K. RNA 2019, 25, '
+            '219-231. doi:10.1261/rna.067678.118'
+        ),
+        "bibtex": (
+            '@article{bottaro2019,\n  author = {Bottaro, S. and Bussi, G. and Pinamonti, G. and Reißer, '
+            'S. and Boomsma, W. and Lindorff-Larsen, K.},\n  title = {{Barnaba: software for analysis of '
+            'nucleic acid structures and trajectories}},\n  journal = {RNA},\n  year = {2019},\n  volume '
+            '= {25},\n  number = {2},\n  pages = {219--231},\n  doi = {10.1261/rna.067678.118}\n}'
+        ),
+        "doi": '10.1261/rna.067678.118',
+        "url": '',
+        "verified": (
+            'pdf:3d6e7fac-Barnaba-_software_for_analysis_of_nucleic_acid_structures_and_trajectories.txt'
+        ),
+    },
+]
+
+RESOURCE_DATA = [
+    {
+        "id": 'mdanalysis',
+        "name": 'MDAnalysis',
+        "keys": ['michaudagrawal2011', 'gowers2016'],
+        "note": 'The MDAnalysis project asks for both papers.',
+    },
+    {
+        "id": 'numpy',
+        "name": 'NumPy',
+        "keys": ['harris2020'],
+        "note": '',
+    },
+    {
+        "id": 'scipy',
+        "name": 'SciPy',
+        "keys": ['virtanen2020'],
+        "note": '',
+    },
+    {
+        "id": 'matplotlib',
+        "name": 'Matplotlib',
+        "keys": ['hunter2007'],
+        "note": '',
+    },
+    {
+        "id": 'cpptraj',
+        "name": 'CPPTRAJ',
+        "keys": ['roe2013'],
+        "note": '',
+    },
+    {
+        "id": 'ffmpeg',
+        "name": 'FFmpeg',
+        "keys": ['ffmpeg'],
+        "note": 'No paper; cite the project website.',
+    },
+    {
+        "id": 'vtk',
+        "name": 'VTK',
+        "keys": ['schroeder2006'],
+        "note": "Citation requested in VTK's documentation (about.md, 'Citing').",
+    },
+    {
+        "id": 'ambertools',
+        "name": 'AmberTools',
+        "keys": ['case2023'],
+        "note": '',
+    },
+    {
+        "id": 'parmed',
+        "name": 'ParmEd',
+        "keys": ['shirts2017'],
+        "note": 'The ParmEd README names this paper (doi 10.1007/s10822-016-9977-1).',
+    },
+    {
+        "id": 'sander',
+        "name": 'sander (AmberTools)',
+        "keys": ['case2023'],
+        "note": (
+            'sander ships with AmberTools; cite the AmberTools paper (the Amber manual also asks for the '
+            'Amber reference of the release used).'
+        ),
+    },
+    {
+        "id": 'pmemd',
+        "name": 'pmemd (Amber)',
+        "keys": ['salomonferrer2013', 'goetz2012'],
+        "note": (
+            'Salomon-Ferrer 2013 covers pmemd(.cuda) with explicit solvent PME; Götz 2012 is the GPU '
+            'generalized-Born paper and is listed because pmemd.cuda builds on it. Also cite the Amber '
+            'release used.'
+        ),
+    },
+    {
+        "id": 'ol3',
+        "name": 'OL3 RNA force field',
+        "keys": ['cornell1995', 'wang2000', 'perez2007', 'zgarbova2011'],
+        "note": 'ff99 (Cornell 1995 + Wang 2000) with the bsc0 and chiOL3 corrections.',
+    },
+    {
+        "id": 'cp',
+        "name": 'Steinbrecher-Latzer-Case phosphate parameters',
+        "keys": ['steinbrecher2012'],
+        "note": '',
+    },
+    {
+        "id": 'ljbb',
+        "name": 'Bergonzo-Cheatham LJ backbone modification',
+        "keys": ['bergonzo2015'],
+        "note": 'Used on top of OL3.',
+    },
+    {
+        "id": 'roc',
+        "name": 'ROC-RNA force field',
+        "keys": ['aytenfisu2017'],
+        "note": '',
+    },
+    {
+        "id": 'yil',
+        "name": 'Yildirim chi torsion parameters',
+        "keys": ['yildirim2010'],
+        "note": '',
+    },
+    {
+        "id": 'shaw',
+        "name": 'DESRES RNA force field',
+        "keys": ['tan2018'],
+        "note": '',
+    },
+    {
+        "id": 'nbfix19',
+        "name": 'gHBfix19 / NBfix modifications',
+        "keys": ['kuhrova2019'],
+        "note": 'A correction to this paper appeared in J. Chem. Theory Comput. 2020, 16, 818-819.',
+    },
+    {
+        "id": 'bph0',
+        "name": '0BPh base-phosphate adjustment',
+        "keys": ['mlynsky2023'],
+        "note": 'Used on top of OL3.',
+    },
+    {
+        "id": 'hmr',
+        "name": 'Hydrogen mass repartitioning',
+        "keys": ['hopkins2015'],
+        "note": '',
+    },
+    {
+        "id": 'water_tip3p',
+        "name": 'TIP3P water',
+        "keys": ['jorgensen1983'],
+        "note": '',
+    },
+    {
+        "id": 'water_spce',
+        "name": 'SPC/E water',
+        "keys": ['berendsen1987'],
+        "note": '',
+    },
+    {
+        "id": 'water_opc',
+        "name": 'OPC water',
+        "keys": ['izadi2014'],
+        "note": '',
+    },
+    {
+        "id": 'water_opc3',
+        "name": 'OPC3 water',
+        "keys": ['izadi2016'],
+        "note": '',
+    },
+    {
+        "id": 'water_tip4pew',
+        "name": 'TIP4P-Ew water',
+        "keys": ['horn2004'],
+        "note": '',
+    },
+    {
+        "id": 'water_fb3',
+        "name": 'TIP3P-FB water',
+        "keys": ['wang2014'],
+        "note": '',
+    },
+    {
+        "id": 'water_tip4pd',
+        "name": 'TIP4P-D water',
+        "keys": ['piana2015'],
+        "note": '',
+    },
+    {
+        "id": 'water_tip4p2005',
+        "name": 'TIP4P/2005 water',
+        "keys": ['abascal2005'],
+        "note": '',
+    },
+    {
+        "id": 'ions_jc',
+        "name": 'Joung-Cheatham monovalent ions',
+        "keys": ['joung2008'],
+        "note": '',
+    },
+    {
+        "id": 'ions_lm126',
+        "name": 'Li-Merz 12-6 divalent ions',
+        "keys": ['li2013'],
+        "note": '',
+    },
+    {
+        "id": 'ions_lm1264',
+        "name": 'Li-Merz 12-6-4 ions',
+        "keys": ['li2014'],
+        "note": '',
+    },
+    {
+        "id": 'mg_micro_tip3p',
+        "name": 'microMg (TIP3P)',
+        "keys": ['grotz2021'],
+        "note": '',
+    },
+    {
+        "id": 'mg_nano_tip3p',
+        "name": 'nanoMg (TIP3P)',
+        "keys": ['grotz2021'],
+        "note": '',
+    },
+    {
+        "id": 'mg_tip4p_family',
+        "name": 'Grotz-Schwierz Mg2+ (SPC/E, TIP3P-FB, TIP4P/2005, TIP4P-Ew, TIP4P-D)',
+        "keys": ['grotz2022'],
+        "note": '',
+    },
+    {
+        "id": 'mg_opc',
+        "name": 'Grotz-Schwierz Mg2+ (OPC)',
+        "keys": ['grotz2022b', 'grotz2022'],
+        "note": 'The OPC parameters were transferred from the SPC/E set of the 2022 JCTC paper.',
+    },
+    {
+        "id": 'lrna',
+        "name": 'L-RNA corrections (lrna-amber)',
+        "keys": ['dudek2017'],
+        "note": '',
+    },
+    {
+        "id": 'rosetta',
+        "name": 'Rosetta',
+        "keys": ['leman2020'],
+        "note": '',
+    },
+    {
+        "id": 'farfar2',
+        "name": 'FARFAR2',
+        "keys": ['watkins2020'],
+        "note": '',
+    },
+    {
+        "id": 'dssr',
+        "name": 'DSSR (x3dna-dssr)',
+        "keys": ['lu2015'],
+        "note": '',
+    },
+    {
+        "id": 'simrna',
+        "name": 'SimRNA',
+        "keys": ['boniecki2016'],
+        "note": '',
+    },
+    {
+        "id": 'rnamake',
+        "name": 'RNAMake',
+        "keys": ['yesselman2019'],
+        "note": '',
+    },
+    {
+        "id": 'vmd',
+        "name": 'VMD',
+        "keys": ['humphrey1996'],
+        "note": '',
+    },
+    {
+        "id": 'tachyon',
+        "name": 'Tachyon ray tracer',
+        "keys": ['stone1998'],
+        "note": 'Citation requested by VMD when Tachyon renders images.',
+    },
+    {
+        "id": 'gromacs',
+        "name": 'GROMACS',
+        "keys": ['abraham2015'],
+        "note": '',
+    },
+    {
+        "id": 'acpype',
+        "name": 'ACPYPE',
+        "keys": ['sousadasilva2012'],
+        "note": '',
+    },
+    {
+        "id": 'barnaba',
+        "name": 'Barnaba',
+        "keys": ['bottaro2019'],
+        "note": '',
+    },
+]

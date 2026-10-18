@@ -7,6 +7,7 @@ import subprocess
 import numpy as np
 import pytest
 
+from mdatk import tomlio
 from mdatk.config import PanelSpec, Project
 from mdatk.pipeline import Pipeline
 from mdatk.progress import Cancelled, Reporter
@@ -51,15 +52,16 @@ def test_full_run_and_cache_reuse(demo_dry, tmp_path):
     n, w, h = frame_count(out.video)
     assert (n, w, h) == (24, 320, 180)
     assert len(out.charts) == 4 and all(os.path.exists(c) for c in out.charts)
-    stamp = json.load(open(out.params_log))["timestamp"]
+    log = tomlio.load(out.params_log)
+    stamp = log["run"]["timestamp"]
     assert re.fullmatch(r"\d{4}-\d\d-\d\d_\d{6}", stamp)
     assert os.path.basename(out.video) == f"MDATK_video_{stamp}.mp4"
     assert all(c.endswith((f"_{stamp}.png", f"_{stamp}.svg")) for c in out.charts)
     assert [os.path.basename(x) for x in out.pdbs] == [
         f"MDATK_frame_{f:05d}_{stamp}.pdb" for f in (0, 12, 23)]
-    assert os.path.exists(os.path.join(p.out_dir, "MDATK_params_log.json"))  # fixed name
+    assert os.path.exists(os.path.join(p.out_dir, "MDATK_params_log.toml"))  # fixed name
     assert out.pdbs and "ATOM" in open(out.pdbs[0]).read()
-    log = json.load(open(out.params_log))
+    assert log["format"] == "mdatk-params-log" and "citation_keys" in log["run"]
     assert log["parameters"]["analyses"]["contacts"]["cutoff"] == p.analyses.contacts.cutoff
     assert Project.load(out.params_log).to_dict() == p.to_dict()  # reproducible
 

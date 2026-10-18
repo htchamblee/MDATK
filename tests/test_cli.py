@@ -37,7 +37,7 @@ def test_apply_override():
 def test_cli_demo_render_and_tools(tmp_path, capsys):
     d = tmp_path / "demo"
     assert main(["demo", str(d), "--n-frames", "10", "--no-solvent"]) == 0
-    preset = str(d / "demo_preset.json")
+    preset = str(d / "demo.mdatk.toml")
     capsys.readouterr()
     assert main(["list"]) == 0
     assert "contact_map" in capsys.readouterr().out
@@ -50,6 +50,9 @@ def test_cli_demo_render_and_tools(tmp_path, capsys):
     assert main(["render"] + args) == 0
     out = json.loads(capsys.readouterr().out)
     assert os.path.exists(out["video"]) and len(out["charts"]) == 1 and out["pdbs"]
+    from mdatk.projectfile import read_log
+    entry = read_log(preset)[-1]  # the run is logged in the project file
+    assert entry["step"] == "render" and entry["status"] == "ok" and out["video"] in entry["files"]
     assert main(["charts", "--from-cache", "--formats", "svg"] + args) == 0
     assert json.loads(capsys.readouterr().out)["charts"][0].endswith(".svg")
     assert main(["preview", "--from-cache", "--frame", "3", "--output",
@@ -62,8 +65,8 @@ def test_cli_demo_render_and_tools(tmp_path, capsys):
     assert re.fullmatch(r"MDATK_frame_00001_\d{4}-\d\d-\d\d_\d{6}\.pdb", os.path.basename(pdbs[0]))
     text = open(pdbs[0]).read()
     assert text.count("ATOM") > 100 and " U  " not in text.split("ATOM", 1)[0]
-    init = tmp_path / "init.json"
-    assert main(["init-params", str(init), "--top", "x.parm7"]) == 0
+    init = tmp_path / "init.mdatk.toml"
+    assert main(["init", str(init), "--top", "x.parm7"]) == 0
     assert Project.load(str(init)).inputs.topology.endswith("x.parm7")
 
 

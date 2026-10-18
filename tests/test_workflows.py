@@ -10,6 +10,7 @@ import textwrap
 
 import pytest
 
+from mdatk import tomlio
 from mdatk.config import PlanEdge, PlanNode, Project, WorkflowParams
 from mdatk.workflows import TOOLS, rna
 from mdatk.workflows.amber import AmberMDTool
@@ -218,7 +219,8 @@ def test_amber_plan_chains_file_names():
 
 
 def test_amber_build_files():
-    plan, st = step("amber-build", {"mg_count": 6, "two_pass": True, "lrna": True, "lrna_ranges": "45-73",
+    plan, st = step("amber-build", {"mg_count": 6, "two_pass": True, "lrna": True, "lrna_ranges": "A:45-73",
+                                    "cp_source": "frcmod",
                                     "extra_libs": "LRNA.lib", "extra_frcmod": "frcmod.LRNA",
                                     "leap_before_params": 'addAtomTypes { { "LD" "O" "sp3" } }',
                                     "hmr": True, "mg_model": "1264", "water": "opc"},
@@ -229,34 +231,36 @@ def test_amber_build_files():
     assert wet[2:9] == ["source leaprc.RNA.OL3", "source leaprc.water.opc", 'addAtomTypes { { "LD" "O" "sp3" } }',
                         "loadamberparams frcmod.99bsc0-chiol3-CaseP", "loadamberparams frcmod.LRNA",
                         "loadamberparams frcmod.ionslm_1264_opc", "loadOff LRNA.lib"]
-    assert 'mol = loadpdb "apt1_01_lrna_20261015-1432.pdb"' in wet
+    assert 'mol = loadpdb "apt1_01_lrna-dry_20261015-1432.pdb"' in wet
     assert "solvateoct mol OPCBOX 15.0" in wet
     assert wet.index("addIonsRand mol Na+ 0") < wet.index("addIonsRand mol MG 6") < wet.index(
         "addIonsRand mol Cl- 12")
     dry = files["apt1_01_tleap-dry_20261015-1432.leap"].content
-    assert "solvate" not in dry and "water" not in dry and 'loadpdb "apt1_01_prep_20261015-1432.pdb"' in dry
+    assert "solvate" not in dry and "water" not in dry and 'loadpdb "apt1_01_lrna_20261015-1432.pdb"' in dry
     pm = files["apt1_01_parmed_20261015-1432.in"].content
     assert "addLJType @%NB,NC\nchangeLJPair @%NB,NC @%H 2.1 0.63" in pm
     assert "changeLJPair @%H4 @%OS 2.9308 0.0505" in pm and "add12_6_4 :MG watermodel OPC" in pm
     assert "HMassRepartition" in pm and pm.rstrip().endswith("outparm apt1_01_parmed_20261015-1432.parm7")
     assert "HMassRepartition" not in files["apt1_01_parmed-dry_20261015-1432.in"].content
     sh = files["apt1_01_amber-build_20261015-1432.sh"].content
-    order = [sh.index(x) for x in ("python3 apt1_01_prep", "tleap -f apt1_01_tleap-dry", "parmed -O apt1_01_tleap-dry",
-                                   "ambpdb -p apt1_01_parmed-dry", "to_lrna.sh apt1_01_ambpdb", "tleap -f apt1_01_tleap_",
-                                   "parmed -O apt1_01_tleap_")]
+    order = [sh.index(x) for x in ("python3 apt1_01_prep", "python3 apt1_01_pdbtools_20261015-1432.py clean apt1_01_prep",
+                                   "tleap -f apt1_01_tleap-dry", "parmed -O apt1_01_tleap-dry",
+                                   "ambpdb -p apt1_01_parmed-dry", "pdbtools_20261015-1432.py clean apt1_01_ambpdb",
+                                   "tleap -f apt1_01_tleap_", "parmed -O apt1_01_tleap_")]
     assert order == sorted(order)
-    assert "to_lrna.sh apt1_01_ambpdb_20261015-1432.pdb A 45,73 > apt1_01_lrna_20261015-1432.pdb" in sh
+    assert ("clean apt1_01_ambpdb_20261015-1432.pdb -o apt1_01_lrna-dry_20261015-1432.pdb --scheme amber "
+            "--no-detect") in sh
+    assert "to_lrna" not in sh and "def main(" in files["apt1_01_pdbtools_20261015-1432.py"].content
     out = st.outputs
     assert out["topology"].data["hmr"] and out["topology"].data["c4"] and out["topology"].data["nbfix"]
-    split = generated(step("amber-build", {"split_types": True}, {"structure": "/x.pdb"})[0])
+    split = generated(step("amber-build", {"split_types": True, "cp_source": "frcmod"}, {"structure": "/x.pdb"})[0])
     assert "addLJType @%HO\naddLJType @%O2\n#" in split["apt1_01_parmed_20261015-1432.in"].content
 
 
 @pytest.mark.parametrize("settings, expected", [
     ({"rna_ff": "ol3"}, "NBfix19 / 0BPh masks assume the OL3 + CP"),
     ({"water": "tip4pd", "mg_model": "1264", "mg_count": 2}, "no 12-6-4 ion parameters"),
-    ({"two_pass": True, "lrna": True}, "residue range(s) to rename"),
-    ({"lrna_ranges": "45-x"}, "residue ranges look like"),
+    ({"lrna_ranges": "45-x"}, "L ranges: cannot read residue range"),
 ])
 def test_amber_build_errors(settings, expected):
     _plan, st = step("amber-build", settings, {"structure": "/x.pdb"})
@@ -267,7 +271,7 @@ def test_amber_build_warnings():
     _plan, st = step("amber-build", {"two_pass": True, "buffer": 8.0, "rna_ff": "shaw", "nbfix19": False,
                                      "bph0": False}, {"structure": "/x.pdb"})
     warn = " ".join(messages(st, "warning"))
-    assert "two-pass build only matters" in warn and "below 10" in warn and "TIP4P-D" in warn
+    assert "below 10" in warn and "TIP4P-D" in warn
     _plan, st = step("amber-build", {}, {"structure": "/x.pdb"})
     assert any("HO the same Lennard-Jones type as water HW" in m for m in messages(st, "info"))
 
@@ -291,7 +295,7 @@ def test_mg_parameter_table_is_internally_consistent():
     from mdatk.workflows import mg_params
 
     assert set(mg_params.MG_SETS) == {(m, w) for m in ("micro", "nano")
-                                      for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd")} - {
+                                      for w in ("tip3p", "spce", "opc", "fb3", "tip4pew", "tip4pd", "tip4p2005")} - {
         ("micro", "tip4pd")}
     assert ("micro", "tip4pd") in mg_params.UNAVAILABLE
     for key, p in mg_params.MG_SETS.items():
@@ -312,6 +316,14 @@ def test_mg_parameter_table_is_internally_consistent():
     assert mg_params.MG_SETS[("micro", "opc")] == mg_params.MG_SETS[("micro", "spce")].__class__(
         **{**mg_params.MG_SETS[("micro", "spce")].__dict__, "source": mg_params.MG_SETS[("micro", "opc")].source})
     assert p.rmin_half == pytest.approx(0.572085, abs=1e-6) and p.eps_kcal == pytest.approx(56.35856, abs=1e-5)
+    # TIP4P/2005 (Grotz & Schwierz 2022, Table 1): lambda_RNA 1.1484 / 0.2648 (micro), 1.1345 / 0.2923 (nano);
+    # the table's nanoMg Mg-OP pair repeats the microMg value, the lambdas and the authors' file do not
+    for model, lam in (("micro", (1.1484, 0.2648)), ("nano", (1.1345, 0.2923))):
+        p = mg_params.get_set(model, "tip4p2005")
+        s0, e0 = OL3_LJ["O2"]
+        assert p.rna["O2"][0] / ((p.ion[0] + s0) / 2) == pytest.approx(lam[0], abs=1e-4)
+        assert p.rna["O2"][1] / (p.ion[1] * e0) ** 0.5 == pytest.approx(lam[1], abs=1e-4)
+    assert mg_params.get_set("nano", "tip4p2005").rna["O2"] == (0.2196970595, 7.62567188774)
 
 
 def test_amber_build_optimised_mg_files():
@@ -324,7 +336,7 @@ def test_amber_build_optimised_mg_files():
     assert "NONB\n  Mg2+     0.57545262  93.16414946\n" in frc and frc.isascii()
     leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
     assert leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod") < leap.index(
-        'mol = loadpdb "apt1_01_prep_20261015-1432.pdb"')
+        'mol = loadpdb "apt1_01_lrna_20261015-1432.pdb"')
     assert leap.index("source leaprc.water.tip3p") < leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod")
     pm = files["apt1_01_parmed_20261015-1432.in"].content
     lines = pm.splitlines()
@@ -789,7 +801,7 @@ def test_all_generated_scripts_pass_bash_syntax_check(tmp_path):
         assert proc.returncode == 0, (path, proc.stderr)
 
 
-def test_workflow_saved_in_preset(tmp_path):
+def test_workflow_saved_in_project(tmp_path):
     project = Project()
     project.workflow.project_name = "apt1"
     b = add_node(project.workflow, "amber-build", settings={"mg_count": 4})
@@ -797,9 +809,9 @@ def test_workflow_saved_in_preset(tmp_path):
     f = add_node(project.workflow, "input-file", settings={"path": "maps/map.mrc", "kind": "map"})
     connect(project.workflow, b.id, "topology", add_node(project.workflow, "amber-md").id, "topology")
     scratch_node(project.workflow, "vmd").settings["rna_style"] = "Tube"
-    path = tmp_path / "preset.json"
+    path = tmp_path / "plan.mdatk.toml"
     project.save(str(path))
-    data = json.loads(path.read_text())
+    data = tomlio.load(str(path))
     assert data["workflow"]["nodes"][0]["settings"]["mg_count"] == 4
     loaded = Project.load(str(path))
     assert loaded.workflow.nodes[0].files["structure"] == str(tmp_path / "inputs" / "model.pdb")
@@ -810,11 +822,11 @@ def test_workflow_saved_in_preset(tmp_path):
 
 def test_cli_workflow(tmp_path, capsys, demo_dry):
     from mdatk.cli import main
-    preset = tmp_path / "p.json"
-    assert main(["init-params", str(preset)]) == 0
-    raw_before = json.loads(preset.read_text())
+    preset = tmp_path / "p.mdatk.toml"
+    assert main(["init", str(preset)]) == 0
+    raw_before = tomlio.load(str(preset))
     assert main(["workflow", "template", "amber", "-p", str(preset)]) == 0
-    data = json.loads(preset.read_text())
+    data = tomlio.load(str(preset))
     assert [n["tool"] for n in data["workflow"]["nodes"]] == ["amber-build", "amber-restraints", "amber-md",
                                                               "mdatk"]
     assert data["inputs"] == raw_before["inputs"]  # only the workflow part changed
@@ -854,5 +866,65 @@ def test_mg_pairs_cover_cp_types_and_warn(tmp_path):
     assert any("not a published combination" in m for m in messages(st, "warning"))
     cp = tmp_path / "frcmod.cp"
     cp.write_text("CP correction\nMASS\nOP 16.00\nOR 16.00\n\nNONB\n  OP   1.7493  0.2100\n  OR   1.7718  0.1700\n")
-    _plan, st = step("amber-build", {"cp_frcmod": str(cp)}, {"structure": "/x.pdb"})
+    _plan, st = step("amber-build", {"cp_source": "frcmod", "cp_frcmod": str(cp)}, {"structure": "/x.pdb"})
     assert any("OP, OR" in m and "no effect" in m for m in messages(st, "warning"))
+
+
+def test_amber_build_cp_library_and_tip4p2005():
+    plan, st = step("amber-build", {"mg_count": 4, "mg_model": "nano", "water": "tip4p2005", "split_types": True},
+                    {"structure": "/x.pdb"})
+    assert not messages(st, "error"), messages(st)
+    assert any("Na+ parameters exist for TIP4P/2005" in m for m in messages(st, "warning"))
+    files = generated(plan)
+    leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
+    assert leap[2:11] == ["source leaprc.RNA.OL3", "source leaprc.water.tip4pew", "loadamberparams frcmod.tip4p2005",
+                          "loadOff tip4p2005box.off", "WAT = TIP4P2005", "HOH = TIP4P2005",
+                          'addAtomTypes { { "OR" "O" "sp3" } }', "loadamberparams frcmod.cp", "loadOff RNA_CP.lib"]
+    assert leap.index("loadOff RNA_CP.lib") < leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod")
+    assert "solvateoct mol TIP4P2005BOX 15.0" in leap
+    frc = files["apt1_01_mg_20261015-1432.frcmod"].content
+    assert "  Cl-      2.82559616  0.01025024" in frc  # the authors' TIP4P/2005 Cl- (Table 2)
+    pm = files["apt1_01_parmed_20261015-1432.in"].content
+    assert "changeLJPair @%HO @%OP 2.73 0.01" in pm and "changeLJPair @%HO @%OR 3.03 0.01" in pm
+    assert "changeLJPair @%H5 @%OR 2.8808 0.0505" in pm and "changeLJPair @%H4 @%OR 2.9308 0.0505" in pm
+    assert "changeLJPair @%HO @%OS" not in pm and "addLJType @%O2" not in pm
+    sh = files["apt1_01_amber-build_20261015-1432.sh"].content
+    order = [sh.index(x) for x in ('AMBERHOME="${AMBERHOME:-', 'python3 apt1_01_cp-lib_20261015-1432.py "$AMBERHOME" .',
+                                   'python3 apt1_01_tip4p2005_20261015-1432.py "$AMBERHOME" .', "tleap -f")]
+    assert order == sorted(order)
+    for name in ("apt1_01_cp-lib_20261015-1432.py", "apt1_01_tip4p2005_20261015-1432.py"):
+        compile(files[name].content, name, "exec")
+    _plan, st = step("amber-build", {"mg_count": 2, "water": "tip4p2005"}, {"structure": "/x.pdb"})
+    warn = " ".join(messages(st, "warning"))
+    assert "TIP4P-Ew Li & Merz" in warn and "Joung-Cheatham" in warn
+
+
+def test_cp_retype_helper_on_ambertools(tmp_path):
+    from mdatk.workflows.scripts import cp_retype
+    home = os.environ.get("MDATK_TEST_AMBERHOME") or os.environ.get("AMBERHOME", "")
+    lib = os.path.join(home, "dat", "leap", "lib", "RNA.lib")
+    if not home or not os.path.isfile(lib):
+        pytest.skip("AmberTools data not available (set MDATK_TEST_AMBERHOME)")
+    assert cp_retype.main([home, str(tmp_path)]) == 0
+    text = (tmp_path / "RNA_CP.lib").read_text()
+    assert '"OP1" "OP"' in text and '"O5\'" "OR"' in text and '"O4\'" "OS"' in text
+    assert '"O5\'" "OH"' in text  # 5'-terminal hydroxyl untouched
+    frc = (tmp_path / "frcmod.cp").read_text()
+    assert "OP-P   525.0    1.480" in frc and "OR-P   230.0    1.610" in frc
+    assert "  OP       1.7493  0.2100" in frc and "  OR       1.7718  0.1700" in frc
+
+
+def test_amber_1264_with_cp_library_and_two_pass_ranges():
+    plan, st = step("amber-build", {"mg_count": 2, "mg_model": "1264", "water": "tip3p"}, {"structure": "/x.pdb"})
+    pm = generated(plan)["apt1_01_parmed_20261015-1432.in"].content
+    assert "add12_6_4 :MG watermodel TIP3P polfile lj_1264_pol_cp.dat" in pm
+    from mdatk.workflows.scripts import cp_retype
+    pol = cp_retype.pol_table("O2    0.569    x\nOS    0.637    y\n")
+    assert "OP    0.569" in pol and "OR    0.637" in pol
+    plan, st = step("amber-build", {"two_pass": True, "lrna_ranges": "C:50-52", "extra_libs": "LRNA.lib"},
+                    {"structure": "/x.pdb"})
+    sh = generated(plan)["apt1_01_amber-build_20261015-1432.sh"].content
+    dry = [ln for ln in sh.splitlines() if "clean apt1_01_ambpdb" in ln][0]
+    assert "--no-detect" in dry and "--l-ranges" not in dry
+    md = TOOLS["amber-md"]
+    assert "cpptraj" not in md.resources(md.normalise({"dry_pdb": False, "dry_traj": False}))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdatk"
-version = "0.0.2c0"
+version = "0.0.3a0"
 description = "Molecular Dynamic Analysis Tool Kit (MDATK): offline analysis and multi-panel video rendering of MD trajectories of RNA systems"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -25,6 +25,7 @@ dependencies = [
     "numpy>=1.25",  # fast ufunc.at (the 3D renderer)
     "scipy>=1.8",
     "matplotlib>=3.6",
+    "tomli>=1.1; python_version < '3.11'",  # project files (tomllib from 3.11)
 ]
 
 [project.optional-dependencies]

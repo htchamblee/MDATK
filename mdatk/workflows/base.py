@@ -136,7 +136,7 @@ class Tool:
     sections: List[Section] = []
     inputs: List[Port] = []
     outputs: List[Port] = []
-    path_settings: Tuple[str, ...] = ()  # settings that hold paths relative to the preset
+    path_settings: Tuple[str, ...] = ()  # settings that hold paths relative to the project file
 
     # ----------------------------------------------------------- schema
     def all_options(self) -> Iterator[Tuple[Section, Option]]:
@@ -168,7 +168,7 @@ class Tool:
         """Complete ``settings`` with defaults and coerce types.
 
         Invalid values fall back to their default with a warning issue;
-        unknown keys are dropped (logged), so presets from other versions
+        unknown keys are dropped (logged), so project files from other versions
         still load.
         """
         settings = dict(settings or {})
@@ -235,6 +235,10 @@ class Tool:
     def describe(self, s: Dict[str, Any]) -> str:
         """Short summary shown on planner boxes."""
         return self.description.split(".")[0]
+
+    def resources(self, s: Dict[str, Any]) -> List[str]:
+        """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
+        return []
 
 
 # ---------------------------------------------------------------------------

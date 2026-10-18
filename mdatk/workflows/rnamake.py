@@ -88,6 +88,9 @@ class RNAMakeTool(Tool):
         env_section("export RNAMAKE=$HOME/RNAMake"),
     ]
 
+    def resources(self, s):
+        return ["rnamake"]
+
     def describe(self, s):
         return f"{s['app']}: {s['start_bp'] or '?'} → {s['end_bp'] or '?'}, {s['designs']} designs"
 

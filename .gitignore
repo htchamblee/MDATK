@@ -11,3 +11,7 @@ venv/
 MDATK_output/
 MDATK_cache/
 *.mp4
+
+# Claude Code agent worktrees
+.claude/worktrees/
+.*.mdatk.toml.lock

@@ -1,5 +1,3 @@
-import json
-
 import numpy as np
 import pytest
 
@@ -16,7 +14,7 @@ def test_project_roundtrip(tmp_path):
     p.output.out_dir = str(tmp_path / "out")  # relative paths resolve against the preset folder
     p.analyses.contacts.cutoff = 5.25
     p.layout.panels.append(PanelSpec("contact_map", ["contacts/map"], "Map", {"mode": "frequency"}))
-    path = tmp_path / "preset.json"
+    path = tmp_path / "p.mdatk.toml"
     p.save(str(path))
     q = Project.load(str(path))
     assert q.to_dict() == p.to_dict()
@@ -24,10 +22,9 @@ def test_project_roundtrip(tmp_path):
 
 
 def test_relative_paths_and_aliases(tmp_path, caplog):
-    data = {"input": {"topology": "top.parm7", "trajectory": "traj.nc"},
-            "output": {"out_dir": "out"}, "not_a_key": 1}
-    path = tmp_path / "p.json"
-    path.write_text(json.dumps(data))
+    path = tmp_path / "p.mdatk.toml"
+    path.write_text('not_a_key = 1\n[input]\ntopology = "top.parm7"\ntrajectory = "traj.nc"\n'
+                    '[output]\nout_dir = "out"\n')
     p = Project.load(str(path))
     assert p.inputs.topology == str(tmp_path / "top.parm7")
     assert p.inputs.trajectories == [str(tmp_path / "traj.nc")]
@@ -43,12 +40,21 @@ def test_type_errors_are_reported():
 
 
 def test_params_log_can_be_replayed(tmp_path):
+    from mdatk.projectfile import write_params_log
     p = Project()
     p.analyses.hbonds.angle_cutoff = 150.0
-    log = {"format": "mdatk-params-log", "parameters": p.to_dict()}
-    path = tmp_path / "log.json"
-    path.write_text(json.dumps(log))
+    path = tmp_path / "MDATK_params_log.toml"
+    write_params_log(str(path), p, {"timestamp": "now", "citations": ["x"]})
     assert Project.load(str(path)).analyses.hbonds.angle_cutoff == 150.0
+
+
+def test_json_presets_are_rejected(tmp_path):
+    path = tmp_path / "old_preset.json"
+    path.write_text("{}")
+    with pytest.raises(ValueError, match="TOML"):
+        Project.load(str(path))
+    with pytest.raises(ValueError, match="TOML"):
+        Project().save(str(path))
 
 
 def test_validate_flags_problems(tmp_path):

@@ -1,13 +1,15 @@
 """Companion command line interface for MDATK.
 
-Every GUI action is available here, driven by the same parameter preset::
+Every GUI action is available here, driven by the same TOML project file::
 
-    mdatk demo ./demo                      # synthetic RNA system + preset
-    mdatk render --params ./demo/demo_preset.json
-    mdatk render --params run.json --set analyses.contacts.cutoff=5.0 --no-pdb
-    mdatk charts --params MDATK_output/MDATK_params_log.json --from-cache
+    mdatk demo ./demo                      # synthetic RNA system + project file
+    mdatk render -p ./demo/demo.mdatk.toml
+    mdatk render -p run.mdatk.toml --set analyses.contacts.cutoff=5.0 --no-pdb
+    mdatk charts -p MDATK_output/MDATK_params_log.toml --from-cache
     mdatk workflow generate amber-md -i topology=sys.parm7 -i coordinates=sys.rst7 --set engine=pmemd.MPI
-    mdatk workflow write --params plan_preset.json
+    mdatk workflow write -p plan.mdatk.toml
+    mdatk workflow run -p plan.mdatk.toml --step 3
+    mdatk pdb clean model.pdb -o model_amber.pdb --scheme amber --chain-reference start.pdb
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ def apply_override(project: Project, assignment: str) -> None:
     """Apply ``dotted.path=value`` (value parsed as JSON when possible).
 
     List elements are addressed by index (``groups.0.residues``, ``layout.panels.2``).
-    Every assignment goes through the validating preset loader, so nested objects
+    Every assignment goes through the validating project loader, so nested objects
     given as JSON become proper parameter objects and type errors are reported.
     """
     if "=" not in assignment:
@@ -86,7 +88,10 @@ def apply_override(project: Project, assignment: str) -> None:
         setattr(project, f.name, getattr(fresh, f.name))
 
 
-def load_project(args) -> Project:
+def load_project(args, resolve: bool = True) -> Project:
+    """The project of ``-p`` (or the defaults) with the command-line overrides; with ``resolve`` the
+    paths still relative after loading (defaults, --set values) are taken relative to the working
+    directory, so a parameter log of the run records where the files really are."""
     if getattr(args, "params", None):
         project = Project.load(args.params)
     else:
@@ -112,6 +117,8 @@ def load_project(args) -> Project:
         project.inputs.step = int(parts[2]) if parts[2] else 1
     for assignment in getattr(args, "set", None) or []:
         apply_override(project, assignment)
+    if resolve:
+        project.resolve_paths(os.getcwd())
     return project
 
 
@@ -153,7 +160,16 @@ def _pipeline(args):
     from .pipeline import Pipeline
 
     project = load_project(args)
-    return project, Pipeline(project, make_reporter(args))
+    return project, Pipeline(project, make_reporter(args), project_path=_project_file(args))
+
+
+def _project_file(args) -> Optional[str]:
+    """The project file named by --project (not a parameter log), whose step log records runs."""
+    from .projectfile import is_params_log
+    path = getattr(args, "params", None)
+    if not path or is_params_log(path):
+        return None
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +192,9 @@ def cmd_demo(args) -> int:
     for k, v in paths.items():
         print(f"  {k:10s} {v}")
     if args.run:
-        ns = argparse.Namespace(params=paths["preset"], set=[], quiet=args.quiet, verbose=False)
+        ns = argparse.Namespace(params=paths["project"], set=[], quiet=args.quiet, verbose=False)
         return cmd_render(_render_namespace(ns))
-    print(f"Next: mdatk render --params {paths['preset']}   (or: mdatk gui {paths['preset']})")
+    print(f"Next: mdatk render -p {paths['project']}   (or: mdatk gui {paths['project']})")
     return 0
 
 
@@ -193,12 +209,12 @@ def _render_namespace(ns):
 
 
 def cmd_init(args) -> int:
-    project = load_project(args)
+    project = load_project(args, resolve=False)  # relative paths stay relative to the new file
     if os.path.exists(args.output) and not args.overwrite:
         print(f"{args.output} exists (use --overwrite)", file=sys.stderr)
         return 1
     project.save(args.output)
-    print(f"Wrote default parameters to {args.output}")
+    print(f"Wrote a project file with default settings to {args.output}")
     return 0
 
 
@@ -208,7 +224,7 @@ def cmd_info(args) -> int:
 
     project = load_project(args)
     if not project.inputs.topology:
-        print("info needs --params or --top", file=sys.stderr)
+        print("info needs --project or --top", file=sys.stderr)
         return 2
     u = load_universe(project.inputs.topology, project.inputs.trajectories, project.inputs.dt_ps)
     info = system_summary(u)
@@ -435,7 +451,7 @@ def cmd_density_fit(args) -> int:
     _density_overrides(project, args)
     problems = project.density_problems()
     if not project.density.map_path:
-        problems.append("no density map: give --map or set density.map_path in the preset")
+        problems.append("no density map: give --map or set density.map_path in the project")
     if problems:
         raise ValueError("; ".join(problems))
     pipe.check()
@@ -446,7 +462,7 @@ def cmd_density_fit(args) -> int:
     if args.save:
         target = args.save if isinstance(args.save, str) else args.params
         if not target:
-            raise ValueError("--save needs a path when no --params preset was given")
+            raise ValueError("--save needs a path when no --project was given")
         project.save(target)
         out["saved"] = os.path.abspath(target)
     print(json.dumps(out, indent=2))
@@ -471,6 +487,20 @@ def cmd_density_simulate(args) -> int:
                       "frame_of_reference": "map (placed)" if args.placed else "model (superposed)"},
                      indent=2))
     return 0
+
+
+def cmd_pdb(args) -> int:
+    from . import pdbtools
+    from .projectfile import logged
+    if args.pdb_command == "check":
+        return pdbtools.run(args)[0]
+    name = os.path.basename(args.input)
+    with logged(_project_file(args), f"pdb {args.pdb_command}", f"PDB clean-up of {name}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        code, result = pdbtools.run(args)
+        entry.files = list(result.get("files", []))
+        entry.summary = "\n".join(result.get("notes", []))
+    return code
 
 
 def cmd_workflow_tools(args) -> int:
@@ -539,12 +569,49 @@ def cmd_workflow_write(args) -> int:
         print("error: the plan has errors (fix them or use --force to write the other steps)", file=sys.stderr)
         return 1
     stamp_was = project.workflow.stamp
-    report = plan.write(ids)
+    from .projectfile import logged
+    with logged(_project_file(args), "workflow write", "Generated the plan's files") as entry:
+        report = plan.write(ids)
+        entry.folder = report.root
+        entry.files = list(report.written)
+        entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
-        _edit_preset_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
+        _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
     print(json.dumps({"folder": report.root, "written": report.written, "skipped": report.skipped,
                       "master": report.master, "summary": report.summary}, indent=2))
+    if args.run:
+        ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
+        return _run_plan_scripts(plan, ok_ids, _project_file(args))
+    return 0
+
+
+def cmd_workflow_run(args) -> int:
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    ids = None
+    if args.step is not None:
+        ids = [n.id for n in project.workflow.nodes if n.step == args.step]
+        if not ids:
+            raise ValueError(f"no step number {args.step} in the plan")
+    return _run_plan_scripts(plan, ids, _project_file(args))
+
+
+def _run_plan_scripts(plan, ids, project_path: Optional[str]) -> int:
+    """Run the main scripts of ``ids`` (all steps when None); 0 when every script succeeded."""
+    from .workflows.runner import ScriptFailed, plan_jobs, run_jobs, separate_scripts
+    jobs = plan_jobs(plan, ids)
+    if not jobs:
+        print("no scripts to run", file=sys.stderr)
+        return 1
+    try:
+        run_jobs(jobs, project_path, on_line=lambda line: print(line, flush=True))
+    except ScriptFailed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for path in separate_scripts(plan, ids):
+        print(f"not started (run separately): {path}")
     return 0
 
 
@@ -575,6 +642,8 @@ def cmd_workflow_generate(args) -> int:
     report = plan.write([node.id], master=False)
     print(json.dumps({"folder": os.path.join(report.root, plan.steps[node.id].ctx.folder),
                       "written": report.written, "stamp": plan.stamp}, indent=2))
+    if args.run:
+        return _run_plan_scripts(plan, [node.id], _project_file(args))
     return 0
 
 
@@ -585,33 +654,25 @@ def cmd_workflow_template(args) -> int:
             print(f"{name:16s} {label}")
         return 0
     if not args.params:
-        raise ValueError("give the preset to add the template to (--params)")
+        raise ValueError("give the project to add the template to (--project)")
     added = []
 
     def add(wf):
         y = max((n.y for n in wf.nodes), default=-180.0) + 220.0
         added.extend(apply_template(wf, args.name, 40.0, y))
 
-    _edit_preset_workflow(args.params, add)
-    print(json.dumps({"added": [f"{n.step:02d} {n.tool}" for n in added], "preset": args.params}, indent=2))
+    _edit_project_workflow(args.params, add)
+    print(json.dumps({"added": [f"{n.step:02d} {n.tool}" for n in added], "project": args.params}, indent=2))
     return 0
 
 
-def _edit_preset_workflow(path: str, edit) -> None:
-    """Change only the "workflow" part of a preset file (other settings stay byte-for-byte)."""
-    from .config import WorkflowParams, _from_plain, _to_plain
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    if not isinstance(data, dict) or data.get("format") not in (None, "mdatk-preset"):
-        raise ValueError(f"{path}: not an {PROJECT_ABBREV} preset")
-    wf = _from_plain(WorkflowParams, data.get("workflow") or {}, "workflow")
-    edit(wf)
-    data["workflow"] = _to_plain(wf)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+def _edit_project_workflow(path: str, edit) -> None:
+    """Change the workflow part of a project file (paths stay as written; the step log is kept)."""
+    from .projectfile import read
+
+    project = Project.from_dict(read(path))  # no path resolution: relative paths stay relative
+    edit(project.workflow)
+    project.save(path)
 
 
 def cmd_workflow_restraints(args) -> int:
@@ -635,7 +696,8 @@ def cmd_workflow_restraints(args) -> int:
 
 
 def _common(p: argparse.ArgumentParser, inputs: bool = True) -> None:
-    p.add_argument("--params", "-p", help="parameter preset (JSON) or a previous params log")
+    p.add_argument("--project", "-p", "--params", dest="params",
+                   help=f"project file (.mdatk.toml) or a run's {PROJECT_ABBREV}_params_log.toml")
     if inputs:
         p.add_argument("--top", help="topology file (.parm7, .pdb, ...)")
         p.add_argument("--traj", nargs="+", help="trajectory file(s) (.nc, .dcd, ...)")
@@ -662,10 +724,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="command")
 
     p = sub.add_parser("gui", help="start the GTK 3 interface")
-    p.add_argument("params", nargs="?", help="preset to open")
+    p.add_argument("params", nargs="?", help="project file to open")
     p.set_defaults(func=cmd_gui)
 
-    p = sub.add_parser("demo", help="write a synthetic RNA aptamer/target system and preset")
+    p = sub.add_parser("demo", help="write a synthetic RNA aptamer/target system and project file")
     p.add_argument("out_dir")
     p.add_argument("--n-frames", type=int, default=120)
     p.add_argument("--dt", type=float, default=10.0, help="ps between frames")
@@ -674,7 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", "-q", action="store_true")
     p.set_defaults(func=cmd_demo)
 
-    p = sub.add_parser("init-params", help="write a parameter preset with defaults")
+    p = sub.add_parser("init", aliases=["init-params"], help="write a project file with default settings")
     p.add_argument("output")
     p.add_argument("--overwrite", action="store_true")
     _common(p)
@@ -736,9 +798,9 @@ def build_parser() -> argparse.ArgumentParser:
     d = dsub.add_parser("info", help="print a map's grid, voxel size, origin and statistics")
     d.add_argument("map")
     d.set_defaults(func=cmd_density_info)
-    d = dsub.add_parser("fit", help="fit the structure into the preset's (or --map) density map")
+    d = dsub.add_parser("fit", help="fit the structure into the project's (or --map) density map")
     _common(d)
-    d.add_argument("--map", help="MRC / CCP4 map (default: density.map_path of the preset)")
+    d.add_argument("--map", help="MRC / CCP4 map (default: density.map_path of the project)")
     d.add_argument("--resolution", type=float, help="map resolution in Å (simulated-map width)")
     d.add_argument("--level", type=float, help="contour level in σ (shadow and centring)")
     d.add_argument("--frame", help="'ref' (first analysed frame) or a trajectory frame number")
@@ -746,7 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
                    "placement (default: density.search)")
     d.add_argument("--step", type=float, help="angular step of the global search (degrees)")
     d.add_argument("--save", nargs="?", const=True, default=False, metavar="PRESET",
-                   help="store the placement in the preset (--params, or the given path)")
+                   help="store the placement in the project (--project, or the given path)")
     d.set_defaults(func=cmd_density_fit)
     d = dsub.add_parser("simulate", help="write a map simulated from one frame (molmap-style Gaussians)")
     _common(d)
@@ -758,6 +820,16 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(func=cmd_density_simulate)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
+    from .pdbtools import add_commands as pdb_commands
+    p = sub.add_parser("pdb", help="PDB hygiene: ChimeraX repair, L-RNA detection and naming (Amber / CCD / "
+                                   "Rosetta), chain ids, renumbering, SEQRES / FASTA")
+    psub = p.add_subparsers(dest="pdb_command", metavar="action")
+    for c in pdb_commands(psub):
+        c.add_argument("--project", "-p", "--params", dest="params",
+                       help="project file whose step log records the clean-up")
+        c.set_defaults(func=cmd_pdb)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
     p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "
                                         "VMD) and the Project Planner")
     wsub = p.add_subparsers(dest="wcommand", metavar="action")
@@ -766,14 +838,15 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_workflow_tools)
 
     def naming(w):
-        w.add_argument("--params", "-p", help="preset holding the plan / wizard settings")
+        w.add_argument("--project", "-p", "--params", dest="params",
+                       help="project file holding the plan / wizard settings")
         w.add_argument("--out-dir", "-o", help="plan folder (default <output dir>/<project>_workflow)")
         w.add_argument("--project-name", help="the <project> part of file names")
         w.add_argument("--stamp", help="the <time> part of file names (default: the plan's stamp or now)")
         w.add_argument("--no-stamp", action="store_true", help="names without a time stamp")
         w.add_argument("--quiet", "-q", action="store_true", help="only print errors")
 
-    w = wsub.add_parser("check", help="resolve the preset's plan and list its problems")
+    w = wsub.add_parser("check", help="resolve the project's plan and list its problems")
     naming(w)
     w.set_defaults(func=cmd_workflow_check)
     w = wsub.add_parser("write", help="write the plan's files, master script and summary")
@@ -781,8 +854,15 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--step", type=int, help="only this step number")
     w.add_argument("--force", action="store_true", help="write the steps without errors even if others "
                                                        "have errors")
-    w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the preset")
+    w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the project")
+    w.add_argument("--run", action="store_true", help="then run the written steps' main scripts in plan "
+                                                     "order (stops at the first failure)")
     w.set_defaults(func=cmd_workflow_write)
+    w = wsub.add_parser("run", help="run the plan's main scripts (already written) in plan order; each run "
+                                    "is logged in the project file")
+    naming(w)
+    w.add_argument("--step", type=int, help="only this step number")
+    w.set_defaults(func=cmd_workflow_run)
     w = wsub.add_parser("generate", help="stand-alone wizard: write one step's files")
     w.add_argument("tool", help="step type (see: mdatk workflow tools)")
     naming(w)
@@ -792,10 +872,12 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--input", "-i", action="append", metavar="PORT=PATH",
                    help="input file, e.g. structure=model.pdb (repeatable; ';' separates several)")
     w.add_argument("--dry-run", action="store_true", help="print the files instead of writing them")
+    w.add_argument("--run", action="store_true", help="then run the step's main script")
     w.set_defaults(func=cmd_workflow_generate)
-    w = wsub.add_parser("template", help="list templates, or add one to a preset's plan")
+    w = wsub.add_parser("template", help="list templates, or add one to a project's plan")
     w.add_argument("name", nargs="?")
-    w.add_argument("--params", "-p", help="preset to add the template to (saved in place)")
+    w.add_argument("--project", "-p", "--params", dest="params",
+                   help="project to add the template to (saved in place)")
     w.set_defaults(func=cmd_workflow_template)
     w = wsub.add_parser("restraints", help="write helix-preserving DISANG restraints for an existing "
                                            "topology")

@@ -8,6 +8,12 @@ import pytest
 warnings.filterwarnings("ignore", module="MDAnalysis")
 
 
+@pytest.fixture(autouse=True)
+def _private_settings(tmp_path_factory, monkeypatch):
+    """Keep the recent-projects list of the tests out of the user's ~/.config."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("config")))
+
+
 def make_universe(atoms, coords, bonds=(), dt=1.0):
     """Small in-memory Universe.
 

@@ -17,7 +17,14 @@ Everything runs locally; MDATK makes no network calls.
 Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
 wizard and a free-form **Project Planner** generate consistently named control files for Rosetta
 FARFAR2, SimRNA, RNAMake, Amber (tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD
-ensemble. MDATK only writes these files; it never runs those programs.
+ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run…*), which logs
+every run in the project file.
+
+Since 0.0.3a a project is **one commented TOML file** (`*.mdatk.toml`) holding the settings, the
+planner workflow, notes and a log of every step that ran; MDATK repairs and renames **PDB files**
+(ChimeraX damage, L-RNA detected from the sugar chirality, Amber / CCD / Rosetta names, chain ids,
+numbering, SEQRES); and every script, run log and the *About* dialog **cite** the programs, force
+fields and parameter sets the project actually uses (BibTeX export).
 
 ---
 
@@ -34,8 +41,10 @@ ensemble. MDATK only writes these files; it never runs those programs.
 - [Panels, data keys and layouts](#panels-data-keys-and-layouts)
 - [Outputs](#outputs)
 - [Caching and reproducibility](#caching-and-reproducibility)
+- [PDB clean-up](#pdb-clean-up)
+- [Citations](#citations)
 - [Command line reference](#command-line-reference)
-- [Parameter presets](#parameter-presets)
+- [Project files](#project-files)
 - [Architecture and extending MDATK](#architecture-and-extending-mdatk)
 - [Testing](#testing)
 - [Notes and limitations](#notes-and-limitations)
@@ -71,7 +80,7 @@ cd MDATK
 # PyGObject comes from the system packages, so the venv needs --system-site-packages
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
-pip install .            # installs MDAnalysis, NumPy, SciPy, Matplotlib
+pip install .            # installs MDAnalysis, NumPy, SciPy, Matplotlib (+ tomli on Python < 3.11)
 pip install '.[test]'    # optional: adds pytest for running the test suite
 pip install '.[vtk]'     # optional: VTK as an alternative 3D renderer (see 3D representations)
 ```
@@ -93,10 +102,10 @@ pre-fills the field with what it finds; `mdatk list` prints the candidates).
 ## Quick start
 
 ```bash
-mdatk demo ./demo                        # synthetic solvated RNA aptamer/target system + preset
-mdatk gui ./demo/demo_preset.json        # open it in the GUI and press "Render"
+mdatk demo ./demo                        # synthetic solvated RNA aptamer/target system + project
+mdatk gui ./demo/demo.mdatk.toml         # open it in the GUI and press "Render"
 # or headless:
-mdatk render -p ./demo/demo_preset.json  # add --clean to strip solvent with cpptraj first
+mdatk render -p ./demo/demo.mdatk.toml   # add --clean to strip solvent with cpptraj first
 ```
 
 The demo writes a genuine Amber `demo.parm7` + `demo.nc` pair (a 12-bp aptamer/target duplex,
@@ -104,8 +113,10 @@ three Mg²⁺ ions, Na⁺ and ~4 000 waters, 120 frames) in which one end of the
 re-anneals, a Mg²⁺ bridge between the strands breaks and reforms, and another ion visits a
 phosphate. It exists to exercise every feature without real data; its geometry is schematic.
 
-For your own system start from `examples/aptamer_target_preset.json` (relative paths in a
-preset are resolved against the preset's folder) or from the GUI.
+For your own system start from `examples/aptamer_target.mdatk.toml` (relative paths in a
+project file are resolved against its folder) or from the GUI. The GUI opens empty: nothing is
+loaded at start-up; *Open project* has a drop-down with the recent projects, the demo project and
+*Browse…*.
 
 ## Workflow
 
@@ -120,8 +131,8 @@ preset are resolved against the preset's folder) or from the GUI.
    grid layout and panel contents.
 4. **Render**: MDATK computes the analyses the enabled outputs need (with progress), caches them,
    then writes the MP4, the charts and the PDB files, plus a parameter log.
-5. **Reproduce**: save/load presets, re-render from the cache, or replay a run from its
-   `MDATK_params_log.json`.
+5. **Reproduce**: save/open project files, re-render from the cache, or replay a run from its
+   `MDATK_params_log.toml`.
 
 ### The GUI
 
@@ -136,12 +147,12 @@ trajectory.
   it instead). The X/Y/Z sliders follow and show the exact angles in degrees and radians.
 - **Double-click a panel** to edit its settings.
 
-The settings live in drop-down menus that slide out a side panel (close it to refresh the
-preview):
+The settings live in a permanent side bar on the left (fixed 520 px wide, never scrolled
+sideways), opened at the Input page; the icon bar above it switches pages (hover for the name):
 
-| Menu | Contents |
+| Page | Contents |
 |---|---|
-| **Input** | topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
+| **Input** | project notes, topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
 | **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker |
 | **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
 | **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
@@ -150,13 +161,21 @@ preview):
 
 The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
-cpptraj is in the expander above it. Presets are opened/saved from the header bar (Ctrl+O /
-Ctrl+S, Ctrl+R renders). Long jobs run in a background thread and can be cancelled.
+cpptraj is in the expander above it. Projects are opened/saved from the header bar (Ctrl+O /
+Ctrl+S, Ctrl+R renders); the main menu has *Project log…* (the steps that ran), *Export citations
+(BibTeX)…* and *About and citations*. File choosers name the extensions they accept, e.g.
+"Trajectory files (.nc, .ncdf, .mdcrd, .crd, .trj, .dcd, .trr, .gro, .xtc, .pdb, .xyz, .binpos)".
+Long jobs run in a background thread and can be cancelled.
 
 ## Script wizard and Project Planner
 
 The **Workflow** menu in the header bar opens two windows (they also work from the command
-line, see below). Both only **write** files and scripts; nothing is executed.
+line, see below) and the PDB clean-up window. They write files and scripts; nothing is executed
+unless you ask for it with *Run…* (planner) or *Write and run…* (wizard). MDATK then asks for
+confirmation, runs each step's main script in plan order with `bash`, streams the output into the
+log, stops at the first failure (Cancel stops the running script) and records every run in the
+project file. Scripts marked *run separately* (production runs meant for a cluster queue) are never
+started.
 
 - **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
@@ -172,20 +191,20 @@ line, see below). Both only **write** files and scripts; nothing is executed.
   VMD; Amber protocol; Amber → GROMACS). *Write all files* writes every step, a master script that
   runs the steps in order, and a Markdown summary of the plan. *Use for analysis* (on an MDATK
   analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
-  the preset (`workflow` section), so one JSON file holds the plan and the analysis settings.
-  `examples/rna_plan_preset.json` is a complete example plan (open it, set the output folder, and
+  the project file (`workflow` section), so one file holds the plan and the analysis settings.
+  `examples/rna_plan.mdatk.toml` is a complete example plan (open it, set the output folder, and
   open the planner).
 
 ### File names
 
 Every file is named `<project>_<step>_<tool>_<time>.<ext>`, e.g. `apt1_03_tleap_20261015-1432.parm7`:
 the project name, the step number of the box, the program or stage that writes the file, and one
-time stamp per plan. The stamp is fixed the first time files are written (and stored in the preset),
+time stamp per plan. The stamp is fixed the first time files are written (and stored in the project),
 so later re-generations keep the same names; *New stamp* starts a new set, and the stamp can be
 switched off. Each step writes into its own folder (`03_amber-build/`), and scripts refer to the files
 of other steps by relative paths (`../03_amber-build/apt1_03_parmed_….parm7`), so a whole plan folder
 can be copied to a cluster. Every script starts with `cd "$(dirname "$0")"`, so it can be started from
-anywhere.
+anywhere. Each script's header cites what that step uses (see [Citations](#citations)).
 
 ### Step types
 
@@ -195,30 +214,61 @@ anywhere.
 | **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
-| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, a PDB-preparation helper and the build script | see below |
+| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming, CP library, TIP4P/2005 files) and the build script | see below |
 | **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
 | **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours, bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
-**Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (`frcmod.99bsc0-chiol3-CaseP`),
-the NBfix19 and 0BPh Lennard-Jones pair modifications applied with ParmEd (only offered with OL3 + CP,
-whose atom types their masks assume), SPC/E water in a 15 Å truncated octahedron, neutralising Na⁺,
+**Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
+below), the NBfix19 and 0BPh Lennard-Jones pair modifications applied with ParmEd (only offered with
+OL3 + CP, whose atom types their masks assume), SPC/E water in a 15 Å truncated octahedron, neutralising Na⁺,
 optional Mg²⁺ balanced with Cl⁻, and the stages min1 (solute restrained) → min2 → heat (Langevin from
 0 K) → NPT equilibration → NPT equilibration without positional restraints → production; the mdin files
 match the hand-written reference files line for line. Other choices: RNA force fields OL3, LJbb,
-ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D; four Mg²⁺ models (see
-below); hydrogen mass repartitioning;
+ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4P/2005; four Mg²⁺
+models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
 a separate production script for the cluster; resuming (finished stages are skipped); a dry PDB and a
-dry, imaged production trajectory. The **two-pass build** (dry tleap → ParmEd → ambpdb → `to_lrna.sh`
-→ solvated tleap → ParmEd) is there for L-RNA: leap cannot reload a prmtop, and ambpdb writes D-RNA
-residue names, so `to_lrna.sh` renames the given ranges before the second pass. The engine is pmemd,
+dry, imaged production trajectory. The engine is pmemd,
 pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
 the same input, the version is recorded in the scripts. The *Environment* section adds
 `conda activate` / `module load` / `source amber.sh` lines.
+
+**L-RNA.** *Name L-nucleotides for leap* (on by default) runs MDATK's PDB tools, copied into the step
+folder, on the starting structure before tleap: residues whose sugar chirality (C1′, C3′, C4′) is L
+get the Dudek & Trylska names (LA LC LG LU, LA5/LA3 … at chain ends), the others Amber names; *Force L
+for* (e.g. `C:45-73`) overrides the detection, and *5′/3′ terminal names* can be switched off for
+libraries that map chain ends with `addPdbResMap` (plain LG, as `to_lrna.sh` wrote). This replaces
+`to_lrna.sh`. The L-RNA library and parameters themselves go under *Force field* (Dudek & Trylska's
+`nucleic12_LRNA.lib` + `parm10_LRNA.dat`, or your own `LRNA.lib` + `frcmod.LRNA`); when the input PDB
+exists the build step checks it and reports L residues without a library as an error. The optional
+**two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue
+names → solvated tleap → ParmEd) is kept for set-ups that need the dry intermediate files.
+
+**OL3 + CP library.** The CP correction of Steinbrecher, Latzer & Case (JCTC 2012) gives the phosphate
+oxygens their own Lennard-Jones types: non-bridging OP (Rmin/2 1.7493 Å, ε 0.21 kcal/mol) and
+bridging OR (1.7718 Å, 0.17 kcal/mol). AmberTools' `RNA.lib` types them O2 / OS like other oxygens
+(O4′ is also OS), so by default (*CP parameters: Retyped library*) the build script writes
+`RNA_CP.lib` (OP1/OP2 → OP; bridging O5′/O3′ → OR; terminal hydroxyls and O4′ unchanged) and
+`frcmod.cp` (the CP values plus every parm10.dat bonded term of O2 / OS repeated for OP / OR) from
+the AmberTools installation, and loads them after `leaprc.RNA.OL3`. The NBfix19 and 0BPh masks then
+address the phosphate oxygens as `@%OP` / `@%OR`, as their authors describe (0BPh: "H5−OR/OS and
+H4−OR/OS atom types", OR in OL3CP). *Own frcmod file* loads a CP parameter file you provide instead
+(masks stay `@%O2` / `@%OS`). Only standard (D-) residues are retyped; L-RNA libraries keep their own
+types (Dudek & Trylska type O5′ and O4′ as LD).
+
+**TIP4P/2005.** AmberTools ships no TIP4P/2005 files. The build script derives `frcmod.tip4p2005` and
+`tip4p2005box.off` from AmberTools' TIP4P-Ew files with the Abascal & Vega (2005) values (ε/k 93.2 K,
+σ 3.1589 Å, q_H 0.5564 e, d_OM 0.1546 Å; Rmin/2 1.772873 Å, ε 0.185207 kcal/mol), keeps residue
+WAT and the atom names (so `:WAT` masks and SETTLE work) and maps crystal waters to it. A 200 ps NPT
+run of 608 waters (sander, 298 K, 1 bar, 9 Å cutoff, PME) gave 0.9964 ± 0.002 g/cm³ against the
+paper's 0.9979; sander keeps the extra point at 0.1546 Å. There are no Na⁺/K⁺ or 12-6-4 parameters
+for TIP4P/2005: neutralising ions come from the TIP4P-Ew (Joung–Cheatham) set, with a warning, and
+12-6-4 is not offered. microMg / nanoMg include the authors' TIP4P/2005 Cl⁻ (Grotz & Schwierz 2022,
+Table 2).
 
 > tleap merges atom types with identical Lennard-Jones parameters: HO (2′-OH hydrogen) shares its LJ
 > type with water HW (both have zero LJ terms) and O2 with base carbonyl O. ParmEd's
@@ -243,7 +293,10 @@ from the authors' GROMACS parameter files and are cited in `mdatk/workflows/mg_p
 links:
 
 - TIP3P: JCTC 17, 2530 (2021), doi:10.1021/acs.jctc.0c01281
-- SPC/E, TIP3P-FB, TIP4P-Ew, TIP4P-D: JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791
+- SPC/E, TIP3P-FB, TIP4P/2005, TIP4P-Ew, TIP4P-D: JCTC 18, 526 (2022), doi:10.1021/acs.jctc.1c00791.
+  For TIP4P/2005, Table 1 of the paper repeats the microMg Mg–OP pair (0.2217 nm / 6.6266 kJ/mol) in
+  the nanoMg row; the nanoMg λ factors of that row and the authors' parameter file both give
+  0.2197 nm / 7.6257 kJ/mol, which MDATK uses.
 - OPC (the SPC/E values, shown to transfer): J. Chem. Phys. 156, 114501 (2022), doi:10.1063/5.0087292
 
 MDATK does not offer two combinations:
@@ -258,20 +311,21 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
 
 - **Order.** The pair lines come after every `addLJType`, including NBfix19's `addLJType @%NB,NC` and
   *Separate HO and O2 types*, because `addLJType` resets the pair terms of the atoms it moves.
-- **CP library.** If a CP residue library retypes the phosphate oxygens (O2 → OP, OS → OR), those types
-  get the authors' O2 / OS terms. This is MDATK's choice: the authors fitted against plain OL3 oxygens.
+- **CP library.** With the retyped CP library (the default) the phosphate oxygens are OP / OR; they
+  get the authors' O2 / OS terms, and the build step warns. This is MDATK's choice: the authors fitted
+  against plain OL3 oxygens.
 - **Other types.** Atom types outside the authors' table, for example from an L-RNA library, keep the
   plain combination rule; the build step warns about this.
 - **ParmEd output.** ParmEd's messages, including skipped masks, go into the step's log.
-- **Cl⁻.** Amber's Cl⁻ is kept; only the Mg²⁺–Cl⁻ pair takes the authors' value, which was fitted with
+- **Cl⁻.** Amber's Cl⁻ is kept (except with TIP4P/2005, where Amber has none and the authors' Cl⁻ is
+  used); only the Mg²⁺–Cl⁻ pair takes the authors' value, which was fitted with
   their Cl⁻ model. Without that pair (*Mg²⁺–Cl⁻ pair term* unticked), Mg²⁺–Cl⁻ follows the combination
   rule with the optimised Mg²⁺. That is not a published combination and gives far too strong Mg²⁺–Cl⁻
   contacts, so the build step warns about it.
 
-> In the default *OL3 + CP*, `frcmod.99bsc0-chiol3-CaseP` is loaded after `leaprc.RNA.OL3`. If that
-> frcmod defines new atom types (OP / OR, as the published file does) and no CP residue library is
-> loaded, no atom uses them and the CP correction has no effect. The build step warns when it can read
-> the frcmod and finds such types.
+> With *CP parameters: Own frcmod file*, the file is loaded after `leaprc.RNA.OL3`. If it defines new
+> atom types (OP / OR) and no CP residue library is loaded, no atom uses them and the CP correction
+> has no effect. The build step warns when it can read the frcmod and finds such types.
 
 **GROMACS.** ParmEd's GROMACS writer (and acpype) keep only the diagonal Lennard-Jones terms, so the
 NBfix19 / 0BPh pairs would be lost silently. MDATK's conversion script therefore gives every LJ type
@@ -290,9 +344,10 @@ mdatk workflow tools                       # step types; `mdatk workflow tools a
 mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
     -i topology=sys.parm7 -i coordinates=sys.rst7 -i restraints=helix.dist \
     --set engine=pmemd.MPI --set nproc=32 --set stages.5.nstlim=150000000
-mdatk workflow template farfar2-amber -p plan.json   # add a template to a preset's plan
-mdatk workflow check -p plan.json                    # list the plan's problems
-mdatk workflow write -p plan.json [--step 3]         # write files, master script, summary
+mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
+mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
+mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
+mdatk workflow run -p plan.mdatk.toml [--step 3]           # run the written main scripts (logged)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```
@@ -302,7 +357,9 @@ mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
 The Amber chain was run end to end with AmberTools 26: tleap, ParmEd 4.3.1, ambpdb and cpptraj, with
 sander standing in for pmemd. The restraints, segments, a 4 fs HMR step and the dry trajectory were
 included. The GROMACS output was run through ParmEd conversion, grompp and mdrun with GROMACS 2023.3,
-including microMg (TIP3P) and nanoMg (SPC/E) builds with NBfix19.
+including microMg (TIP3P) and nanoMg (SPC/E) builds with NBfix19. In 0.0.3a the default build (CP
+library, NBfix19, 0BPh, HMR) and a CP + TIP4P/2005 + nanoMg build were run with tleap and ParmEd, and
+the default build was converted to GROMACS and run with grompp / mdrun.
 For Rosetta, SimRNA, RNAMake, VMD and x3dna-dssr, the flags were checked against each program's
 source or documentation. The scripts were tested with stand-in executables. Review the generated
 scripts before running them on your machines.
@@ -342,7 +399,7 @@ topologies number residues 1…N in file order. Defaults are provided for the re
 - 2D projection of the backbone trace of the selected groups (consecutive residues of the same
   chain are linked), Mg²⁺ ions and a time label, with depth cueing (size, width and fog).
 - **Orientation**: drag the preview of the reference frame with the mouse, or use the X/Y/Z
-  sliders. The angles (degrees and radians) are stored in the preset (`visual.rotation`,
+  sliders. The angles (degrees and radians) are stored in the project (`visual.rotation`,
   `R = Rz·Ry·Rx` about the reference-frame centroid) and applied to every frame. Frames are
   superposed onto the reference frame first (*superpose frames*), so the model does not drift.
 - **Colouring modes**: `chain` (chainID, segment or bonded fragment), `groups` (group colours) and
@@ -439,7 +496,7 @@ placed on it by a rigid-body fit.
 - **Automatic fitting.** With *Fit automatically before rendering* (`density.auto_fit`), a render
   without a stored placement runs the global search first. The placement (`density.transform`: a 3×3
   rotation and a translation from model to map), its correlation and a summary are stored in the
-  preset.
+  project file.
 - **Appearance.**
   - Contour level `density.level`, in σ above the map mean; default 2. Lower it for faint maps.
   - Colour, opacity (0–1) and *show*.
@@ -450,9 +507,9 @@ placed on it by a rigid-body fit.
 
 ```bash
 mdatk density info map.mrc                               # grid, voxel size, origin, statistics
-mdatk density fit -p run.json --map map.mrc --resolution 4.5 --save   # store the placement
-mdatk density fit -p run.json --search manual --frame 250             # refine on another frame
-mdatk density simulate -p run.json --resolution 6 -O model_6A.mrc [--placed]
+mdatk density fit -p run.mdatk.toml --map map.mrc --resolution 4.5 --save   # store the placement
+mdatk density fit -p run.mdatk.toml --search manual --frame 250             # refine on another frame
+mdatk density simulate -p run.mdatk.toml --resolution 6 -O model_6A.mrc [--placed]
 ```
 
 ## Panels, data keys and layouts
@@ -500,7 +557,7 @@ All outputs go to the output directory (default `MDATK_output/`):
 | `MDATK_video_<timestamp>.mp4` | H.264 video of the multi-panel figure (FPS, resolution, DPI, frame stride, codec and CRF configurable). Rendering is headless (Matplotlib Agg) and frames are piped straight into FFmpeg; static content is drawn once and only moving artists are redrawn per frame. |
 | `MDATK_chart_<key>_<timestamp>.png/svg/pdf` | standalone time charts (all series or a chosen subset), optionally per-residue heatmaps; DPI, size, Matplotlib style (or MDATK's own chrome), colour, labels, title template, running-mean smoothing and target line are configurable |
 | `MDATK_frame_<n>_<timestamp>.pdb` | selected frames by number (`0, 10, 20-50:10, last`) and/or time (`1.5ns, 2000ps`, nearest frame), optionally restricted to groups or a selection |
-| `MDATK_params_log.json` | full parameters, software versions, input fingerprints, cache keys, the run's timestamp and the list of outputs |
+| `MDATK_params_log.toml` | full parameters, software versions, input fingerprints, cache keys, the run's timestamp, the list of outputs and the project's citations; open it as a project to repeat the run |
 | `MDATK_cache/` | analysis cache (see below) and cleaned trajectories |
 
 All outputs of one run share a timestamp such as `2026-10-15_143205`, so runs never overwrite
@@ -520,25 +577,75 @@ each other; the cache and the parameter log keep fixed names. Set
   from the manifest without touching the trajectory.
 - Cleaned trajectories live in `MDATK_cache/cleaned/<key>/` with the generated `cpptraj.in`,
   the full `cpptraj.log` and a completion marker.
-- Any preset or `MDATK_params_log.json` can be passed back with `--params` to reproduce a run.
+- Any project file or `MDATK_params_log.toml` can be passed back with `-p` to reproduce a run.
+
+## PDB clean-up
+
+*Workflow → PDB clean-up…* in the GUI and `mdatk pdb` on the command line repair and rewrite PDB
+files with fixed-column output that keeps coordinates, occupancies and B-factors verbatim:
+
+- **ChimeraX damage** such as a residue name fused with the chain id (`GC:` = residue G of chain C)
+  is repaired automatically; only the first MODEL is kept.
+- **L-nucleotides** are detected from the signed chiral volumes at C1′, C3′ and C4′ (all usable
+  centres must agree; flat or contradicting centres leave the residue to its name) and ranges such as
+  `C:45-73` force L. A warning lists L-named residues with D geometry and vice versa.
+- **Residue names**: `amber` (D: A C G U, A5/A3 …; L: LA LC LG LU, LA5/LA3 … as in Dudek & Trylska's
+  library; a single-residue L segment gets the 5′ unit), `ccd` for Coot / Phenix (L: 0A 0C 0G 0U and
+  0A5/0A3 … - these terminal variants are not CCD entries), `rosetta` (L: 0A …, no terminal variants,
+  every polymer residue as ATOM because Rosetta ignores HETATM residues) and `pdb` (non-standard
+  residues as HETATM). Any of these, plus common aliases (RA, G5, ADE …), is recognised on input;
+  DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
+- **CONECT** records are stripped by default (until final deposition processing).
+- **Chains**: restore the chain ids of a cpptraj PDB by copying them residue by residue from a
+  reference (e.g. the structure the topology was built from), from a list per TER segment, or as
+  A, B, C …; split chains per TER segment or at a residue (new ids); combine chains; sort them.
+- **Numbering**: continuous across chains (default) or restarting per chain, optional start number
+  and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked).
+
+```bash
+mdatk pdb check model.pdb                                   # chains, sequences, names, chirality (JSON)
+mdatk pdb clean rosetta.pdb -o amber.pdb --scheme amber     # L names from the geometry
+mdatk pdb clean cpptraj.pdb -o fixed.pdb --chain-reference start.pdb --scheme amber
+mdatk pdb clean chimerax.pdb -o rosetta.pdb --scheme rosetta --l-ranges C --renumber --keep-gaps
+mdatk pdb to-lrna in.pdb A:45-73 -o out.pdb [--no-terminal-names]   # the to_lrna.sh replacement
+```
+
+Add `-p project.mdatk.toml` to record the clean-up in the project's step log. The same module is
+copied into Amber build steps, so generated scripts need only `python3`.
+
+## Citations
+
+MDATK cites only what a project uses. Each planner step reports the programs, force fields,
+modifications, water models and ion parameters its settings turn on (an Amber build with OL3 + CP,
+NBfix19, TIP4P/2005 and nanoMg cites those papers, not the ones for options left off); the analysis
+and video pipeline adds MDAnalysis, NumPy, SciPy, Matplotlib, and cpptraj / FFmpeg / VTK when they
+are used. The citations appear
+
+- in the header of every generated script (that step only),
+- in the step log entries and in `MDATK_params_log.toml` (the whole project),
+- in *About and citations* (the whole project), with *Export citations (BibTeX)…*.
+
+The reference data live in `mdatk/_citation_data.py`; each entry records where its details were
+checked (the paper's PDF, the project's own citation file, or a reference list).
 
 ## Command line reference
 
 ```text
-mdatk gui [PRESET]                 start the GUI
+mdatk gui [PROJECT]                start the GUI (opens PROJECT if given; nothing otherwise)
 mdatk demo DIR [--n-frames N] [--no-solvent] [--run]
-mdatk init-params OUT.json         write defaults (accepts the overrides below)
-mdatk info      -p PRESET          system summary and residue-group check (JSON)
+mdatk init OUT.mdatk.toml          write a project with the defaults (accepts the overrides below)
+mdatk info      -p PROJECT         system summary and residue-group check (JSON)
 mdatk list                         analyses, panel types, layout presets
-mdatk clean     -p PRESET [--force]
-mdatk analyze   -p PRESET [--only rmsd,contacts] [--force]
-mdatk render    -p PRESET [--no-video|--no-charts|--no-pdb] [--force] [--from-cache]
-mdatk charts    -p PRESET [--series k1,k2] [--formats png,svg,pdf] [--dpi N] [--from-cache]
-mdatk export-pdb -p PRESET [--frame-list "0, last"] [--times "1ns"] [--selection "Aptamer"]
-mdatk preview   -p PRESET --frame N [--output still.png] [--from-cache]
-mdatk density info MAP | fit -p PRESET [--map M] [--resolution R] [--search global|manual] [--save]
-mdatk density simulate -p PRESET --resolution R -O OUT.mrc [--frame F] [--placed]
-mdatk workflow tools|generate|template|check|write|restraints   (see Script wizard and Project Planner)
+mdatk clean     -p PROJECT [--force]
+mdatk analyze   -p PROJECT [--only rmsd,contacts] [--force]
+mdatk render    -p PROJECT [--no-video|--no-charts|--no-pdb] [--force] [--from-cache]
+mdatk charts    -p PROJECT [--series k1,k2] [--formats png,svg,pdf] [--dpi N] [--from-cache]
+mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selection "Aptamer"]
+mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
+mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
+mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
+mdatk workflow tools|generate|template|check|write|run|restraints   (see Script wizard and Project Planner)
+mdatk pdb check|clean|to-lrna      (see PDB clean-up)
 ```
 
 Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
@@ -546,17 +653,25 @@ Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no
 `-s/--set KEY=VALUE` (repeatable; values are JSON when they parse as JSON), for example:
 
 ```bash
-mdatk render -p run.json --set analyses.contacts.cutoff=5.0 \
+mdatk render -p run.mdatk.toml --set analyses.contacts.cutoff=5.0 \
     --set 'visual.rotation=[-90, 30, 0]' --set visual.glow_mode=current --no-pdb
 ```
 
 Set `MDATK_DEBUG=1` to get full tracebacks.
 
-## Parameter presets
+## Project files
 
-A preset is a JSON file mirroring `mdatk.config.Project`:
+A project is a TOML file (`*.mdatk.toml`) mirroring `mdatk.config.Project`. Every entry has a
+comment above it saying what it does (planner step settings carry their option's description), and
+settings that are not set are written as commented lines (`# stop =   (not set)`). Below the settings
+the file keeps a step log: one `[[log]]` entry per analysis run, render, PDB clean-up, plan write or
+generated script that MDATK ran (time, status, duration, command, folder, files, summary, citations
+and the tail of the program output). Saving the settings keeps the log; when the file would grow
+beyond 50 MB the log moves to `<name>.log.toml` next to it. JSON presets of earlier versions are not
+read.
 
 ```text
+notes      free text (aims, decisions, to-dos)
 inputs     topology, trajectories, start/stop/step, dt_ps, time_unit, external[]
 cleaning   enabled, cpptraj_path, solvent/ion/extra masks, autoimage(+anchor), fit, fit_mask,
            fit_reference (first|frame|file), reference_frame/file, remove_box_after_fit,
@@ -572,14 +687,17 @@ workflow   project_name, stamp, use_stamp, out_dir, step_folders,
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
 
-Unknown keys are ignored with a warning and missing keys take their defaults, so presets stay
-compatible across versions.
+Unknown keys are ignored with a warning and missing keys take their defaults, so project files stay
+compatible across versions. The recent-projects list is kept in `~/.config/mdatk/settings.toml`.
 
 ## Architecture and extending MDATK
 
 ```text
 mdatk/
-  config.py          parameter model, JSON presets, hashing
+  config.py          parameter model, hashing
+  projectfile.py, tomlio.py   commented TOML project files, step log, parameter logs, recent projects
+  pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
+  citations.py       per-use citations (data in _citation_data.py)
   selections.py      residue ranges, group:<Name> expansion, frame/time specs, elements
   spatial.py         cKDTree / cell-list neighbour search, Kabsch superposition
   cleaning/          cpptraj script generation, streaming execution, cached cleaned outputs;
@@ -651,7 +769,8 @@ fog, glow and translucency, thread safety and a render without a display.
 - Very large systems: restrict groups and the structure selection to the region of interest;
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
-- The script wizard and planner only write files. Generated scripts call the programs by name
+- The script wizard and planner write files; they run them only on request (*Run…*). Generated
+  scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in

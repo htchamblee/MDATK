@@ -254,7 +254,7 @@ def test_cli_density(model, tmp_path, capsys):
     assert main(["density", "info", path]) == 0
     info = json.loads(capsys.readouterr().out)
     assert info["voxel_A"] == [1.5, 1.5, 1.5] and info["grid_xyz"][0] > 10
-    saved = str(tmp_path / "fitted.json")
+    saved = str(tmp_path / "fitted.mdatk.toml")
     assert main(["density", "fit", "-p", model["preset"], "--map", path, "--resolution", "6", "-q",
                  "-o", str(tmp_path / "out"), "--save", saved]) == 0
     res = json.loads(capsys.readouterr().out)
