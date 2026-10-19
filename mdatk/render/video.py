@@ -131,7 +131,7 @@ def build_figure(dataset: Dataset, project: Project, width: Optional[int] = None
     canvas = FigureCanvasAgg(fig)
     fig.set_layout_engine("constrained", h_pad=0.08, w_pad=0.08, hspace=0.06, wspace=0.04)
     nrows, ncols, slots = layouts.preset(project.layout.preset)
-    gs = GridSpec(nrows, ncols, figure=fig)
+    gs = GridSpec(nrows, ncols, figure=fig, height_ratios=layouts.height_ratios(project.layout.preset))
     panels: List[Panel] = []
     specs = list(project.layout.panels)
     if len(specs) > len(slots):

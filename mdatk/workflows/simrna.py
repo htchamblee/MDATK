@@ -135,6 +135,9 @@ class SimRNATool(Tool):
             return float(s["threshold"])
         return round(0.1 * (model.length if model else 50), 2)
 
+    def resources(self, s):
+        return ["simrna"]
+
     def describe(self, s):
         return f"{s['runs']} runs × {s['replicas']} replicas"
 

@@ -5,6 +5,7 @@ Importing this package registers every built-in analysis in
 """
 
 from . import contacts, energy, hbonds, mg, rmsd, stacking, structure  # noqa: F401 (registration)
+from . import basepairs  # noqa: F401 (registration, after the analyses it builds on)
 from .base import ANALYSES, Analysis, AnalysisContext, referenced_groups, register, run_analyses
 
 __all__ = ["ANALYSES", "Analysis", "AnalysisContext", "referenced_groups", "register",

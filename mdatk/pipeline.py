@@ -22,11 +22,12 @@ import numpy as np
 from . import PROJECT_ABBREV, PROJECT_TITLE, __version__
 from .analysis import ANALYSES, AnalysisContext, run_analyses
 from .analysis.base import analysis_class, instance_project, parse_instance, split_key
+from .citations import keys_for, pipeline_resources, project_resources, text_lines
 from .cleaning import CleanResult, clean, cleaning_key
 from .cleaning.cpptraj import MARKER, cpptraj_command
-from .config import Project, file_fingerprint
+from .config import Project, file_fingerprint, layout_warnings
 from .data import Dataset
-from .io.cache import CacheStore, write_json
+from .io.cache import CacheStore
 from .io.external import load_external
 from .io.loader import frame_indices, load_universe
 from .io.pdb_export import export_frames, frames_from_specs, resolve_export_selection
@@ -34,7 +35,7 @@ from .progress import Reporter
 
 log = logging.getLogger(__name__)
 
-PARAMS_LOG_NAME = f"{PROJECT_ABBREV}_params_log.json"
+PARAMS_LOG_NAME = f"{PROJECT_ABBREV}_params_log.toml"
 STAMP_FORMAT = "%Y-%m-%d_%H%M%S"
 
 
@@ -72,8 +73,10 @@ class RunOutputs:
 
 
 class Pipeline:
-    def __init__(self, project: Project, reporter: Optional[Reporter] = None):
+    def __init__(self, project: Project, reporter: Optional[Reporter] = None,
+                 project_path: Optional[str] = None):
         self.project = project
+        self.project_path = project_path  # project file whose step log records the runs
         self.reporter = reporter or Reporter()
         self.cache = CacheStore(project.cache_dir)
         self._inputs: Optional[ResolvedInputs] = None
@@ -99,6 +102,8 @@ class Pipeline:
         problems = self.project.validate()
         if problems:
             raise PipelineError("Invalid parameters:\n  - " + "\n  - ".join(problems))
+        for text in layout_warnings(self.project):
+            self.reporter.log(f"WARNING: {text}")
 
     def resolve_inputs(self, reporter: Optional[Reporter] = None, force_clean: bool = False) -> ResolvedInputs:
         if self._inputs is not None and not force_clean:
@@ -286,13 +291,12 @@ class Pipeline:
             _release_gl()
 
     def write_params_log(self, outputs: RunOutputs) -> str:
+        from .projectfile import write_params_log
+
         path = os.path.join(self.project.out_dir, PARAMS_LOG_NAME)
         inputs = self._inputs
-        write_json(path, {
-            "format": "mdatk-params-log",
+        run = {
             "project": PROJECT_TITLE,
-            "mdatk_version": __version__,
-            "created": _dt.datetime.now().isoformat(timespec="seconds"),
             "environment": environment_info(self.project),
             "inputs": {
                 "topology": inputs.topology if inputs else None,
@@ -305,18 +309,33 @@ class Pipeline:
             "analysis_keys": self.analysis_keys,
             "timestamp": self._stamp,
             "outputs": outputs.summary(),
-            "parameters": self.project.to_dict(),
-        })
+        }
+        keys = keys_for(project_resources(self.project))  # the whole project: every planner step + this run
+        run["citation_keys"] = keys
+        run["citations"] = text_lines(keys)
+        write_params_log(path, self.project, run)
         return path
 
     def run(self, video: Optional[bool] = None, charts: Optional[bool] = None,
             pdb: Optional[bool] = None, force_analysis: bool = False) -> RunOutputs:
         """Run everything that is enabled (or explicitly requested)."""
+        from .projectfile import logged
+
         p = self.project
         video = p.output.video.enabled if video is None else video
         charts = p.output.charts.enabled if charts is None else charts
         pdb = p.output.pdb.enabled if pdb is None else pdb
         self.check()
+        with logged(self.project_path, "render", "Analyses and outputs",
+                    keys_for(pipeline_resources(p))) as entry:
+            outputs = self._run(video, charts, pdb, force_analysis)
+            entry.files = [f for f in [outputs.video, *outputs.charts, *outputs.pdbs, outputs.params_log] if f]
+            entry.summary = (f"{outputs.dataset.n_frames} frames analysed" if outputs.dataset else "no analyses") + \
+                f"; {len(entry.files)} file(s) written to {p.out_dir}"
+        return outputs
+
+    def _run(self, video: bool, charts: bool, pdb: bool, force_analysis: bool) -> RunOutputs:
+        p = self.project
         rep = self.reporter
         os.makedirs(p.out_dir, exist_ok=True)
         outputs = RunOutputs()
@@ -461,6 +480,7 @@ class Pipeline:
                 "chain": res.arrays["chain"], "group_index": res.arrays["group_index"],
                 "group_member": res.arrays["group_member"],
                 "resid": res.arrays["resid"],
+                "resname": res.arrays["resname"], "chain_name": res.arrays["chain_name"],
                 "labels": res.meta.get("residue_labels", []),
                 "atoms": {"coords": atoms.arrays["coords"][0].astype(float),
                           "names": atoms.meta["atom_names"], "elements": atoms.meta["elements"],

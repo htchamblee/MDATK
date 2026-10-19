@@ -232,6 +232,9 @@ class FarfarTool(Tool):
                                          dict(data))
         return out
 
+    def resources(self, s):
+        return ["rosetta", "farfar2"]
+
     def describe(self, s):
         model, _ = self.model(s)
         size = f"{model.length} nt, " if model and model.chains else ""
@@ -399,6 +402,9 @@ class FarfarModelsTool(Tool):
         ]),
         env_section("export PATH=$HOME/rosetta/main/source/bin:$PATH"),
     ]
+
+    def resources(self, s):
+        return ["rosetta", "farfar2"] + (["dssr"] if s["dssr"] else [])
 
     def describe(self, s):
         return (f"rna_cluster {s['radius']:g} Å, " if s["cluster"] else "by score, ") + f"top {s['n_models']}"

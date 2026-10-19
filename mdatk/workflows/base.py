@@ -7,6 +7,7 @@ import datetime as _dt
 import logging
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -60,6 +61,7 @@ class StepContext:
         self.title = title
         self.node_id = node_id
         self.groups = list(groups or [])
+        self.preview = False  # True while the wizard previews the files: no network or slow work
 
     # ------------------------------------------------------------- naming
     def name(self, tag: str, ext: str = "") -> str:
@@ -136,7 +138,7 @@ class Tool:
     sections: List[Section] = []
     inputs: List[Port] = []
     outputs: List[Port] = []
-    path_settings: Tuple[str, ...] = ()  # settings that hold paths relative to the preset
+    path_settings: Tuple[str, ...] = ()  # settings that hold paths relative to the project file
 
     # ----------------------------------------------------------- schema
     def all_options(self) -> Iterator[Tuple[Section, Option]]:
@@ -168,7 +170,7 @@ class Tool:
         """Complete ``settings`` with defaults and coerce types.
 
         Invalid values fall back to their default with a warning issue;
-        unknown keys are dropped (logged), so presets from other versions
+        unknown keys are dropped (logged), so project files from other versions
         still load.
         """
         settings = dict(settings or {})
@@ -235,6 +237,10 @@ class Tool:
     def describe(self, s: Dict[str, Any]) -> str:
         """Short summary shown on planner boxes."""
         return self.description.split(".")[0]
+
+    def resources(self, s: Dict[str, Any]) -> List[str]:
+        """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -319,5 +325,11 @@ def extra_lines(text: str) -> List[str]:
 
 
 def extra_flags(text: str) -> List[str]:
-    """Extra command-line flags typed in a free-text box (one or more per line)."""
-    return [line.strip() for line in (text or "").splitlines() if line.strip() and not line.strip().startswith("#")]
+    """Extra command-line flags typed in a free-text box (one or more per line; '#' starts a comment,
+    also after a flag - a comment left in a continued command line would swallow its backslash)."""
+    out = []
+    for line in (text or "").splitlines():
+        line = re.split(r"(?:^|\s)#", line, maxsplit=1)[0].strip()
+        if line:
+            out.append(line)
+    return out

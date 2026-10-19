@@ -1,12 +1,13 @@
 """MDATK parameter model.
 
 All user-adjustable settings live in one :class:`Project` tree of dataclasses.
-The tree serialises to and from plain JSON so that a parameter preset written
-by the GUI can be replayed by the CLI (and vice versa) and so that every render
-can leave a reproducible parameter log next to its outputs.
+The tree is stored in a human-readable TOML project file (see
+:mod:`mdatk.projectfile`) that the GUI and the CLI share, and every render
+leaves a parameter log of the same form next to its outputs.  The comment on
+each field below becomes the explanation written above that entry in the file.
 
-Unknown keys in a preset are ignored with a warning (forward compatibility);
-missing keys fall back to the defaults below (backward compatibility).
+Unknown keys are ignored with a warning (forward compatibility); missing keys
+fall back to the defaults below (backward compatibility).
 """
 
 from __future__ import annotations
@@ -22,12 +23,9 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import PROJECT_ABBREV, __version__
+from . import PROJECT_ABBREV
 
 log = logging.getLogger(__name__)
-
-PRESET_FORMAT = "mdatk-preset"
-PRESET_FORMAT_VERSION = 1
 
 
 # ---------------------------------------------------------------------------
@@ -44,33 +42,37 @@ class ResidueGroup:
     selection string that, when given, overrides ``residues``.
     """
 
-    name: str = "Group"
-    residues: str = ""
-    selection: str = ""
-    color: str = "#2a78d6"
+    name: str = "Group"  # Group name, used in selections (group:<name>), panels and legends
+    residues: str = ""  # Residue numbers or ranges, e.g. "1-40, 45"; may be chain-qualified ("A:1-40")
+    selection: str = ""  # MDAnalysis selection that replaces 'residues' when given
+    color: str = "#2a78d6"  # Colour of the group in the structure view, legends and charts (#rrggbb)
 
 
 @dataclass
 class ExternalSeries:
     """An external CSV / whitespace-delimited data file to show as traces."""
 
-    path: str = ""
-    label: str = ""
-    x_column: str = ""  # column name or 0-based index; "" -> first column
-    x_unit: str = "ps"  # "ps", "ns", "us" or "frame"
-    columns: List[str] = field(default_factory=list)  # empty -> all others
-    delimiter: str = ""  # "" -> auto (comma, tab or whitespace)
+    path: str = ""  # CSV or whitespace-delimited text file (e.g. a cpptraj .dat file)
+    label: str = ""  # Name of the trace in panels and charts ("": the file name)
+    x_column: str = ""  # Column holding the time axis: name or 0-based index ("": the first column)
+    x_unit: str = "ps"  # Unit of that column: "ps", "ns", "us", "frame" (0-based) or "frame1" (1-based)
+    # Columns to show, by name or index (empty: all other columns)
+    columns: List[str] = field(default_factory=list)
+    delimiter: str = ""  # Column separator ("": detect comma, tab or whitespace)
 
 
 @dataclass
 class InputParams:
-    topology: str = ""
+    topology: str = ""  # Topology: Amber .parm7 / .prmtop (preferred), PDB, PSF, GRO, ...
+    # Trajectory files in order; several files are concatenated
     trajectories: List[str] = field(default_factory=list)
-    start: int = 0  # 0-based frame of the (cleaned) trajectory
-    stop: Optional[int] = None  # exclusive, None -> last frame
-    step: int = 1
-    dt_ps: Optional[float] = None  # override time between stored frames
-    time_unit: str = "ns"  # display unit: "ps", "ns", "us" or "frame"
+    start: int = 0  # First analysed frame (0-based; of the cleaned trajectory when cleaning is on)
+    stop: Optional[int] = None  # Stop before this frame (0-based, exclusive; not set: up to the last frame)
+    step: int = 1  # Analyse every n-th frame
+    # Time between stored frames in ps (not set: from the trajectory's time stamps)
+    dt_ps: Optional[float] = None
+    time_unit: str = "ns"  # Unit shown on time axes: "ps", "ns", "us" or "frame"
+    # External data files shown as extra traces (interpolated onto the analysed frames)
     external: List[ExternalSeries] = field(default_factory=list)
 
 
@@ -78,33 +80,38 @@ class InputParams:
 class CleaningParams:
     """cpptraj based stripping / imaging / fitting."""
 
-    enabled: bool = False
-    cpptraj_path: str = "cpptraj"
-    conda_env: str = ""  # e.g. "AmberTools26" or a prefix path; run as `conda run -n <env> cpptraj`
-    conda_exe: str = ""  # conda / mamba / micromamba executable ("" = auto-detect)
-    solvent_mask: str = ":WAT,HOH,TIP3,SOL,T3P,T4P,SPC"
-    ion_mask: str = ":Na+,Cl-,K+,NA,CL,K,Na,Cl,SOD,CLA,POT"  # Mg2+ is kept
-    extra_strip_mask: str = ""
-    autoimage: bool = True
-    autoimage_anchor: str = ""  # cpptraj mask, "" -> cpptraj default
-    fit: bool = True
-    fit_mask: str = "@P,C4'"
-    fit_reference: str = "first"  # "first", "frame" or "file"
-    remove_box_after_fit: bool = True  # a fitted (rotated) box cannot be stored in NetCDF
-    reference_frame: int = 1  # 1-based (cpptraj convention)
-    reference_file: str = ""
-    start: int = 1  # 1-based (cpptraj trajin convention)
-    stop: Optional[int] = None  # None -> last
-    offset: int = 1
-    extra_commands: str = ""  # advanced: inserted before trajout
-    output_dir: str = ""  # "" -> <cache_dir>/cleaned
+    enabled: bool = False  # Strip, image and fit the trajectory with cpptraj before the analyses
+    cpptraj_path: str = "cpptraj"  # cpptraj executable: a name on PATH or an absolute path
+    # Conda environment providing cpptraj (a name such as AmberTools26 or a prefix path); every call runs
+    # through 'conda run -n <env>'
+    conda_env: str = ""
+    conda_exe: str = ""  # conda / mamba / micromamba executable ("": found automatically)
+    solvent_mask: str = ":WAT,HOH,TIP3,SOL,T3P,T4P,SPC"  # cpptraj mask of the solvent residues to strip
+    # cpptraj mask of the ions to strip (Mg2+ is kept by default)
+    ion_mask: str = ":Na+,Cl-,K+,NA,CL,K,Na,Cl,SOD,CLA,POT"
+    extra_strip_mask: str = ""  # Further atoms to strip (cpptraj mask; optional)
+    autoimage: bool = True  # Re-image molecules into the primary box (cpptraj autoimage)
+    autoimage_anchor: str = ""  # Anchor mask for autoimage ("": cpptraj's default, the first molecule)
+    fit: bool = True  # RMS-fit every frame onto the reference
+    fit_mask: str = "@P,C4'"  # cpptraj mask of the atoms used for the RMS fit
+    fit_reference: str = "first"  # Fit reference: the "first" frame, a given "frame" number or a "file"
+    # Remove the box after fitting (a rotated box cannot be stored in NetCDF)
+    remove_box_after_fit: bool = True
+    reference_frame: int = 1  # Reference frame for fit_reference = "frame" (1-based, cpptraj convention)
+    reference_file: str = ""  # Reference structure for fit_reference = "file"
+    start: int = 1  # First frame read by cpptraj (1-based trajin argument)
+    stop: Optional[int] = None  # Last frame read by cpptraj (1-based, inclusive; not set: the last frame)
+    offset: int = 1  # Read every n-th frame (cpptraj trajin offset)
+    extra_commands: str = ""  # Advanced: cpptraj commands inserted before trajout
+    output_dir: str = ""  # Folder for the cleaned files ("": <cache_dir>/cleaned)
 
 
 @dataclass
 class RMSDTarget:
-    label: str = "Complex"
+    label: str = "Complex"  # Name of the series (data key rmsd/<label>)
+    # Atoms whose RMSD is computed (selection; group:<name> allowed)
     selection: str = "(group:Aptamer or group:Target) and not name H*"
-    fit_selection: str = ""  # "" -> same as selection
+    fit_selection: str = ""  # Atoms superposed before computing the RMSD ("": the same atoms)
 
 
 def _default_rmsd_targets() -> List[RMSDTarget]:
@@ -114,87 +121,100 @@ def _default_rmsd_targets() -> List[RMSDTarget]:
 
 @dataclass
 class RMSDParams:
-    enabled: bool = True
-    targets: List[RMSDTarget] = field(default_factory=_default_rmsd_targets)
-    reference_frame: int = 0  # index into the analysed frames
-    superposition: bool = True
-    mass_weighted: bool = False
+    enabled: bool = True  # Compute RMSD time series
+    targets: List[RMSDTarget] = field(default_factory=_default_rmsd_targets)  # One RMSD series per target
+    reference_frame: int = 0  # Reference structure: index into the analysed frames (0: the first)
+    superposition: bool = True  # Superpose each frame onto the reference before computing the RMSD
+    mass_weighted: bool = False  # Mass-weighted superposition and RMSD
 
 
 @dataclass
 class ContactParams:
-    enabled: bool = True
-    group_a: str = "Aptamer"
-    group_b: str = "Target"
-    cutoff: float = 4.5
-    heavy_only: bool = True
+    enabled: bool = True  # Count heavy-atom contacts between two groups
+    group_a: str = "Aptamer"  # First residue group
+    group_b: str = "Target"  # Second residue group
+    cutoff: float = 4.5  # Contact distance cutoff (Å)
+    heavy_only: bool = True  # Ignore hydrogens
 
 
 @dataclass
 class HBondParams:
-    enabled: bool = True
-    group_a: str = "Aptamer"
-    group_b: str = "Target"
-    distance_cutoff: float = 3.5  # donor - acceptor
-    use_angle: bool = True
-    angle_cutoff: float = 135.0  # minimum D-H...A angle (degrees)
-    donor_elements: str = "N,O"
-    acceptor_elements: str = "N,O"
+    enabled: bool = True  # Count hydrogen bonds between two groups
+    group_a: str = "Aptamer"  # First residue group
+    group_b: str = "Target"  # Second residue group
+    distance_cutoff: float = 3.5  # Maximum donor-acceptor distance (Å)
+    use_angle: bool = True  # Also require a minimum D-H...A angle (needs hydrogens in the topology)
+    angle_cutoff: float = 135.0  # Minimum D-H...A angle (degrees)
+    donor_elements: str = "N,O"  # Elements that can donate (comma separated)
+    acceptor_elements: str = "N,O"  # Elements that can accept (comma separated)
 
 
 @dataclass
 class MgParams:
-    enabled: bool = True
-    mg_selection: str = "resname MG Mg MG2 or name MG Mg"
-    ligand_selection: str = "group:Aptamer or group:Target"
-    ligand_elements: str = "O"
-    group_a: str = "Aptamer"
-    group_b: str = "Target"
-    inner_cutoff: float = 2.6  # inner-sphere Mg-O
-    outer_cutoff: float = 4.5  # outer-sphere (water mediated) Mg-O
-    bridge_shell: str = "inner"  # "inner" or "outer"
-    geometry: bool = False  # require octahedral O-Mg-O angles (~90 / 180 deg)
-    angle_tolerance: float = 25.0
-    occupancy_selection: str = ""  # "" -> ligand_selection
-    occupancy_elements: str = "N,O"
+    enabled: bool = True  # Analyse Mg2+ coordination: inner/outer-sphere contacts, bridges and occupancy
+    mg_selection: str = "resname MG Mg MG2 or name MG Mg"  # Selection of the Mg2+ ions
+    ligand_selection: str = "group:Aptamer or group:Target"  # Atoms that can coordinate Mg2+
+    ligand_elements: str = "O"  # Elements of the coordinating atoms (comma separated)
+    group_a: str = "Aptamer"  # First group of a Mg2+ bridge
+    group_b: str = "Target"  # Second group of a Mg2+ bridge
+    inner_cutoff: float = 2.6  # Inner-sphere Mg-O distance cutoff (Å)
+    outer_cutoff: float = 4.5  # Outer-sphere (water-mediated) Mg-O distance cutoff (Å)
+    bridge_shell: str = "inner"  # Shell that counts as a bridge: "inner" or "outer"
+    geometry: bool = False  # Require octahedral O-Mg-O angles (about 90 or 180 degrees)
+    angle_tolerance: float = 25.0  # Allowed deviation from the octahedral angles (degrees)
+    occupancy_selection: str = ""  # Atoms whose Mg2+ occupancy is reported ("": the ligand selection)
+    occupancy_elements: str = "N,O"  # Elements counted for the occupancy (comma separated)
 
 
 @dataclass
 class StackingParams:
-    enabled: bool = True
-    selection: str = "group:Aptamer or group:Target"
-    scope: str = "all"  # "all" (every ring pair) or "inter" (group A vs group B only)
-    group_a: str = "Aptamer"
-    group_b: str = "Target"
-    distance_cutoff: float = 4.5  # ring centroid distance
-    angle_cutoff: float = 30.0  # angle between ring normals
-    offset_cutoff: float = 2.5  # lateral centroid displacement
-    planarity_cutoff: float = 0.25  # RMS deviation of ring atoms from plane
+    enabled: bool = True  # Detect base stacking from ring geometry
+    selection: str = "group:Aptamer or group:Target"  # Residues whose rings are considered
+    scope: str = "all"  # "all" ring pairs, or "inter" (group A against group B only)
+    group_a: str = "Aptamer"  # First group for scope = "inter"
+    group_b: str = "Target"  # Second group for scope = "inter"
+    distance_cutoff: float = 4.5  # Maximum ring-centroid distance (Å)
+    angle_cutoff: float = 30.0  # Maximum angle between the ring normals (degrees)
+    offset_cutoff: float = 2.5  # Maximum lateral displacement of the centroids (Å)
+    planarity_cutoff: float = 0.25  # Maximum RMS deviation of ring atoms from their plane (Å)
+
+
+@dataclass
+class BasePairParams:
+    # Base pairs of the residues in the structure view, for the secondary-structure panel and
+    # PDB annotation; computed whenever a panel needs them.
+    engine: str = "builtin"  # Engine: "builtin" (canonical pairs from H-bond geometry) or "barnaba" (optional)
+    stride: int = 10  # Re-detect the pairs every n-th analysed frame (pairs hold in between)
+    cutoff: float = 3.5  # Builtin: maximum donor-acceptor distance of a base-pair H-bond (Å)
+    wobble: bool = True  # Builtin: also count G-U wobble pairs
+    noncanonical: bool = False  # Barnaba: also keep non-canonical (non Watson-Crick) pairs
 
 
 @dataclass
 class EnergyParams:
-    enabled: bool = True
-    group_a: str = "Aptamer"
-    group_b: str = "Target"
-    cutoff: float = 12.0
-    dielectric: float = 1.0
-    distance_dependent: bool = False
-    use_parm7: bool = True  # exact Amber LJ parameters when the topology is parm7
-    target_value: Optional[float] = None  # kcal/mol, drawn on charts / panels
-    exclude_bonded: int = 3  # exclude pairs within n bonds (0 disables)
+    enabled: bool = True  # Non-bonded interaction energy between two groups
+    group_a: str = "Aptamer"  # First residue group
+    group_b: str = "Target"  # Second residue group
+    cutoff: float = 12.0  # Pair distance cutoff (Å)
+    dielectric: float = 1.0  # Relative dielectric constant
+    distance_dependent: bool = False  # Distance-dependent dielectric (epsilon = dielectric x r)
+    use_parm7: bool = True  # Use the exact Lennard-Jones parameters of a parm7 topology
+    # Reference energy drawn on charts and panels (kcal/mol; not set: none)
+    target_value: Optional[float] = None
+    exclude_bonded: int = 3  # Exclude pairs within n bonds (0: exclude none)
 
 
 @dataclass
 class AnalysisParams:
-    rmsd: RMSDParams = field(default_factory=RMSDParams)
-    contacts: ContactParams = field(default_factory=ContactParams)
-    hbonds: HBondParams = field(default_factory=HBondParams)
-    mg: MgParams = field(default_factory=MgParams)
-    stacking: StackingParams = field(default_factory=StackingParams)
-    energy: EnergyParams = field(default_factory=EnergyParams)
-    use_pbc: bool = False  # minimum-image distances (cleaned systems rarely need it)
-    proximity_search_radius: float = 8.0  # max proximity cutoff usable at render time
+    rmsd: RMSDParams = field(default_factory=RMSDParams)  # RMSD time series
+    contacts: ContactParams = field(default_factory=ContactParams)  # Heavy-atom contacts between two groups
+    hbonds: HBondParams = field(default_factory=HBondParams)  # Hydrogen bonds between two groups
+    mg: MgParams = field(default_factory=MgParams)  # Mg2+ coordination, bridges and occupancy
+    stacking: StackingParams = field(default_factory=StackingParams)  # Base stacking
+    energy: EnergyParams = field(default_factory=EnergyParams)  # Non-bonded interaction energy
+    basepairs: BasePairParams = field(default_factory=BasePairParams)  # Base pairs (secondary structure)
+    use_pbc: bool = False  # Minimum-image distances (cleaned, imaged systems rarely need it)
+    proximity_search_radius: float = 8.0  # Largest proximity cutoff usable later without re-analysing (Å)
 
 
 REP_STYLES = ("cartoon", "ribbon", "tube", "licorice", "vdw", "surf", "trace")
@@ -206,46 +226,56 @@ REP_COLORS = ("auto", "residue", "element", "nucleotide")
 class RepSpec:
     """One 3D representation drawn in the structural view (VMD-like)."""
 
-    style: str = "cartoon"  # see REP_STYLES
-    groups: List[str] = field(default_factory=list)  # residue groups ([] -> every structure group)
-    color: str = "auto"  # residue colours, element colours (atoms), nucleotide colours (bases)
-    size: float = 1.0  # scales widths and radii
-    opacity: float = 1.0
-    sugars: bool = False  # cartoon: draw the ribose rings (shows the pucker)
+    style: str = "cartoon"  # Representation: cartoon, ribbon, tube, licorice, vdw, surf or trace
+    groups: List[str] = field(default_factory=list)  # Residue groups drawn (empty: every shown group)
+    color: str = "auto"  # Colouring: auto, residue, element or nucleotide
+    size: float = 1.0  # Scales widths and radii
+    opacity: float = 1.0  # Opacity, 0 (invisible) to 1
+    sugars: bool = False  # Cartoon only: draw the ribose rings (shows the pucker)
 
 
 @dataclass
 class VisualParams:
-    structure_groups: List[str] = field(default_factory=list)  # [] -> all groups
-    trace_atoms: str = "C4',CA"  # per-residue priority list (P, C4', C1', CA ...)
-    representations: List[RepSpec] = field(default_factory=list)  # [] -> 2D backbone trace
+    # Residue groups shown in the structure view (empty: all)
+    structure_groups: List[str] = field(default_factory=list)
+    # Atom used for each residue's 2D trace point, first one found wins (P, C4', C1', CA ...)
+    trace_atoms: str = "C4',CA"
+    # 3D representations (empty: the 2D backbone trace)
+    representations: List[RepSpec] = field(default_factory=list)
     renderer: str = "auto"  # 3D renderer: "auto" / "software" (built-in) or "vtk" (optional)
-    rep_rest: str = "trace"  # residues no representation draws: "trace" (3D trace) or "hide"
-    backbone_atom: str = "P"  # spline control atom of ribbons / cartoons: "P" or "C4'"
-    rep_hydrogens: bool = False  # include hydrogens in all-atom representations
-    show_ions: bool = True
-    align_frames: bool = True  # superpose each frame's trace onto the reference
-    rotation: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])  # deg X,Y,Z
-    color_mode: str = "groups"  # "chain", "groups" or "proximity"
-    base_color: str = "#b5b3ad"
-    chain_palette: str = "tab10"
-    proximity_set: str = "Target"  # group name or "sel:<selection>"
-    proximity_cutoff: float = 4.0
-    proximity_color: str = "#e34948"
-    glow_mode: str = "fade"  # "none", "ever", "fade" or "current"
-    glow_color: str = "#ffb000"
-    fade_frames: int = 15
-    glow_strength: float = 1.0
-    ion_color: str = "#008300"
-    line_width: float = 2.2
-    point_size: float = 22.0
-    depth_cue: bool = True
+    rep_rest: str = "trace"  # Residues no representation draws: "trace" (3D trace) or "hide"
+    backbone_atom: str = "P"  # Spline control atom of ribbons, cartoons and traces: "P" or "C4'"
+    rep_hydrogens: bool = False  # Include hydrogens in all-atom representations
+    show_ions: bool = True  # Show Mg2+ ions in the structure view
+    align_frames: bool = True  # Superpose each frame's trace onto the reference frame
+    # View rotation in degrees about X, Y and Z (R = Rz Ry Rx)
+    rotation: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    zoom: float = 1.0  # Magnification of the structure view (1: the whole model fits; 2: twice as large)
+    # View centre: "" (centre of the model), "origin" (0, 0, 0 of the coordinates) or a residue,
+    # e.g. "12" or "B:12"
+    center_on: str = ""
+    center_follow: bool = False  # Keep the centre residue in the middle in every frame (not only the first)
+    color_mode: str = "groups"  # Residue colouring: "chain", "groups" or "proximity"
+    base_color: str = "#b5b3ad"  # Colour of residues no group or proximity colour applies to
+    chain_palette: str = "tab10"  # Matplotlib palette for chain colouring
+    proximity_set: str = "Target"  # Group (or sel:<selection>) whose proximity colours and glows residues
+    proximity_cutoff: float = 4.0  # Distance that counts as proximity (Å)
+    proximity_color: str = "#e34948"  # Colour of residues in proximity
+    # Glow of residues near the proximity set: "none", "ever" (whole movie), "fade" or "current"
+    glow_mode: str = "fade"
+    glow_color: str = "#ffb000"  # Glow colour
+    fade_frames: int = 15  # Frames over which the glow fades (glow_mode = "fade")
+    glow_strength: float = 1.0  # Glow intensity factor
+    ion_color: str = "#008300"  # Colour of Mg2+ ions
+    line_width: float = 2.2  # Line width of the 2D trace (points)
+    point_size: float = 22.0  # Marker size of the 2D trace points
+    depth_cue: bool = True  # Fade distant parts toward the background colour
     theme: str = "light"  # "light" or "dark"
-    font_size: float = 11.0
-    show_time_label: bool = True
-    label_every: int = 0  # residue-number tags on every N-th residue (0: off)
-    label_residues: str = ""  # explicit residue numbers / ranges to tag, e.g. "1, 12, 24"
-    title: str = ""
+    font_size: float = 11.0  # Base font size (points)
+    show_time_label: bool = True  # Show the time label in the structure view
+    label_every: int = 0  # Residue-number tags on every n-th residue (0: off)
+    label_residues: str = ""  # Explicit residue numbers / ranges to tag, e.g. "1, 12, 24"
+    title: str = ""  # Figure title ("": none)
 
 
 @dataclass
@@ -253,23 +283,24 @@ class DensityParams:
     """A density map (MRC / CCP4) drawn behind the structural view as a projected
     "shadow", placed by a rigid-body fit of the model."""
 
-    map_path: str = ""  # .mrc / .map / .ccp4
-    show: bool = True
-    resolution: float = 5.0  # Å; width of the simulated map used for fitting
-    level: float = 2.0  # contour level in map standard deviations above the mean
-    color: str = "#2a78d6"
-    opacity: float = 0.45  # 0 (invisible) .. 1
-    front: bool = False  # draw the shadow in front of 3D representations (else behind them)
-    fit_frame: str = "ref"  # "ref" (first analysed frame) or a trajectory frame number
-    search: str = "global"  # automatic fit: "global" search or "manual" (refine the placement)
-    angular_step: float = 30.0  # degrees between sampled orientations of the global search
-    auto_fit: bool = True  # fit before rendering when no placement is stored
-    transform: List[float] = field(default_factory=list)  # 3x3 rotation (row-major) + translation, model -> map
-    # backbone points of the reference frame the placement was made on (the map follows the
-    # molecule when the reference changes: other start frame, cleaned vs raw files)
+    map_path: str = ""  # Density map file (.mrc / .map / .ccp4)
+    show: bool = True  # Draw the map shadow
+    resolution: float = 5.0  # Resolution in Å; width of the simulated map used for fitting
+    level: float = 2.0  # Contour level in map standard deviations above the mean
+    color: str = "#2a78d6"  # Shadow colour
+    opacity: float = 0.45  # Shadow opacity, 0 (invisible) to 1
+    front: bool = False  # Draw the shadow in front of 3D representations (else behind them)
+    fit_frame: str = "ref"  # "ref" (the first analysed frame) or a trajectory frame number to fit on
+    search: str = "global"  # Automatic fit: "global" search or "manual" (refine the stored placement)
+    angular_step: float = 30.0  # Degrees between sampled orientations of the global search
+    auto_fit: bool = True  # Fit before rendering when no placement is stored
+    # Placement: 3x3 rotation (row-major) + translation, model -> map
+    transform: List[float] = field(default_factory=list)
+    # Backbone points of the reference frame the placement was made on (the map follows the molecule when
+    # the reference changes: other start frame, cleaned vs raw files)
     anchor: List[List[float]] = field(default_factory=list)
-    fit_cc: float = 0.0  # correlation of the stored placement (0: not fitted)
-    fit_info: str = ""
+    fit_cc: float = 0.0  # Correlation of the stored placement (0: not fitted)
+    fit_info: str = ""  # Summary of the last fit
 
 
 @dataclass
@@ -281,10 +312,28 @@ class PanelSpec:
     ``"contacts/atom_pairs"`` or ``"contacts/per_residue_a"``.
     """
 
-    type: str = "structure"
+    type: str = "structure"  # Panel type: structure, timeseries, dual_axis, heatmap or contact_map
+    # Data keys shown, e.g. rmsd/Complex or contacts/per_residue_a
     series: List[str] = field(default_factory=list)
-    title: str = ""
+    title: str = ""  # Panel title ("": automatic)
+    # Panel-specific options, e.g. axis limits or the contact-map mode
     options: Dict[str, Any] = field(default_factory=dict)
+
+
+# titles of the default / demo layouts: they count as automatic, so a panel that changes type
+# gets the new type's title instead of keeping one that no longer fits
+DEFAULT_PANEL_TITLES = ("Structure", "RMSD", "Inter-strand H-bonds", "Aptamer residue contacts",
+                        "Mg occupancy")
+
+
+def layout_warnings(project: "Project") -> List[str]:
+    """Layout choices that are allowed but probably unintended."""
+    out = []
+    n_struct = sum(1 for sp in project.layout.panels if sp.type == "structure")
+    if n_struct > 1:
+        out.append(f"{n_struct} structure panels in the layout; usually one is intended (check each "
+                   "slot's panel type)")
+    return out
 
 
 def _default_panels() -> List[PanelSpec]:
@@ -292,68 +341,73 @@ def _default_panels() -> List[PanelSpec]:
         PanelSpec("structure", [], "Structure"),
         PanelSpec("timeseries", ["rmsd/Complex"], "RMSD"),
         PanelSpec("timeseries", ["hbonds/count"], "Inter-strand H-bonds"),
-        PanelSpec("heatmap", ["contacts/per_residue_a"], "Aptamer residue contacts"),
+        # aptamer residues along x, target residues along y, evolving with the movie
+        PanelSpec("contact_map", ["contacts/map"], "", {"mode": "instant", "transpose": True}),
     ]
 
 
 @dataclass
 class LayoutParams:
-    preset: str = "large_plus_3"
-    panels: List[PanelSpec] = field(default_factory=_default_panels)
+    preset: str = "large_plus_3"  # Grid layout (see 'mdatk list')
+    panels: List[PanelSpec] = field(default_factory=_default_panels)  # Panels in slot order
 
 
 @dataclass
 class VideoParams:
-    enabled: bool = True
+    enabled: bool = True  # Write the MP4 video
+    # Video file name (time-stamped when output.timestamp_files is on)
     filename: str = f"{PROJECT_ABBREV}_video.mp4"
-    fps: int = 24
-    width: int = 1920
-    height: int = 1080
-    dpi: int = 120
-    codec: str = "libx264"
-    crf: int = 20
-    frame_stride: int = 1
-    ffmpeg_path: str = "ffmpeg"
+    fps: int = 24  # Frames per second
+    width: int = 1920  # Width in pixels
+    height: int = 1080  # Height in pixels
+    dpi: int = 120  # Figure resolution; sets text and line sizes relative to the frame
+    codec: str = "libx264"  # FFmpeg video codec
+    crf: int = 20  # Constant rate factor: lower means better quality and larger files (libx264: 18-28)
+    frame_stride: int = 1  # Use every n-th analysed frame
+    ffmpeg_path: str = "ffmpeg"  # FFmpeg executable
 
 
 @dataclass
 class ChartParams:
-    enabled: bool = True
-    series: List[str] = field(default_factory=list)  # [] -> every scalar series
-    include_heatmaps: bool = False
-    formats: List[str] = field(default_factory=lambda: ["png"])
-    dpi: int = 300
-    width: float = 8.0  # inches
-    height: float = 4.5
-    style: str = "mdatk"  # "mdatk" (built-in chrome) or any matplotlib style name
-    color: str = ""  # "" -> first palette colour
-    line_width: float = 1.5
-    title: str = ""  # "" -> series label; "{label}" placeholders allowed
-    xlabel: str = ""
-    ylabel: str = ""
-    smoothing: int = 0  # running-average window in frames (0 disables)
-    show_target: bool = True
-    prefix: str = f"{PROJECT_ABBREV}_chart"
+    enabled: bool = True  # Write high-resolution time charts
+    series: List[str] = field(default_factory=list)  # Data keys to chart (empty: every scalar series)
+    include_heatmaps: bool = False  # Also chart per-residue heatmaps
+    formats: List[str] = field(default_factory=lambda: ["png"])  # File formats, e.g. png, pdf, svg
+    dpi: int = 300  # Raster resolution
+    width: float = 8.0  # Width in inches
+    height: float = 4.5  # Height in inches
+    style: str = "mdatk"  # "mdatk" (built-in look) or any matplotlib style name
+    color: str = ""  # Line colour ("": the first palette colour)
+    line_width: float = 1.5  # Line width (points)
+    title: str = ""  # Chart title ("": the series label; "{label}" placeholders allowed)
+    xlabel: str = ""  # x-axis label ("": automatic)
+    ylabel: str = ""  # y-axis label ("": automatic)
+    smoothing: int = 0  # Running-average window in frames (0: off)
+    show_target: bool = True  # Draw the energy target value when one is set
+    prefix: str = f"{PROJECT_ABBREV}_chart"  # File name prefix
 
 
 @dataclass
 class PDBParams:
-    enabled: bool = False
-    frames: str = ""  # e.g. "0, 10, 20-50:10, last"
-    times: str = ""  # e.g. "1.5ns, 2000ps" (unitless -> inputs.time_unit)
-    selection: str = ""  # group names (comma separated) or a selection; "" -> all
-    prefix: str = f"{PROJECT_ABBREV}_frame"
+    enabled: bool = False  # Export selected frames as PDB files
+    frames: str = ""  # Frames to export, e.g. "0, 10, 20-50:10, last"
+    times: str = ""  # Times to export, e.g. "1.5ns, 2000ps" (no unit: inputs.time_unit)
+    selection: str = ""  # Group names (comma separated) or a selection ("": everything)
+    prefix: str = f"{PROJECT_ABBREV}_frame"  # File name prefix
 
 
 @dataclass
 class OutputParams:
+    # Output folder (a relative path is relative to the project file)
     out_dir: str = f"{PROJECT_ABBREV}_output"
-    cache_dir: str = ""  # "" -> <out_dir>/MDATK_cache
-    video: VideoParams = field(default_factory=VideoParams)
-    charts: ChartParams = field(default_factory=ChartParams)
-    pdb: PDBParams = field(default_factory=PDBParams)
+    cache_dir: str = ""  # Cache of analyses and cleaned trajectories ("": <out_dir>/MDATK_cache)
+    video: VideoParams = field(default_factory=VideoParams)  # MP4 video
+    charts: ChartParams = field(default_factory=ChartParams)  # Time charts
+    pdb: PDBParams = field(default_factory=PDBParams)  # PDB export of selected frames
+    # Write MDATK_params_log.toml (settings, versions, cache keys, citations) next to the outputs
     write_params_log: bool = True
-    timestamp_files: bool = True  # e.g. MDATK_video_2026-10-15_143205.mp4 (cache/log keep fixed names)
+    # Time-stamp output file names, e.g. MDATK_video_2026-10-15_143205.mp4 (cache and log keep fixed names)
+    timestamp_files: bool = True
 
 
 @dataclass
@@ -365,13 +419,15 @@ class PlanNode:
     for ports that no connection feeds (``{port: path}``).
     """
 
-    id: str = ""
-    tool: str = "note"
-    step: int = 1
-    title: str = ""  # "" -> the tool's label
-    x: float = 40.0
-    y: float = 40.0
+    id: str = ""  # Unique id of the step
+    tool: str = "note"  # Step type: the script generator (see 'mdatk workflow tools')
+    step: int = 1  # Step number; orders the steps and their file names
+    title: str = ""  # Box title ("": the step type's label)
+    x: float = 40.0  # Position of the box on the planner canvas
+    y: float = 40.0  # Position of the box on the planner canvas
+    # The step's options (each one is explained by its comment)
     settings: Dict[str, Any] = field(default_factory=dict)
+    # Hand-picked input files for ports that no connection feeds ({port = path})
     files: Dict[str, str] = field(default_factory=dict)
 
 
@@ -379,10 +435,10 @@ class PlanNode:
 class PlanEdge:
     """A connection: output ``output`` of node ``source`` feeds input ``input`` of ``target``."""
 
-    source: str = ""
-    output: str = ""
-    target: str = ""
-    input: str = ""
+    source: str = ""  # Id of the producing step
+    output: str = ""  # Output port of the producing step
+    target: str = ""  # Id of the receiving step
+    input: str = ""  # Input port of the receiving step
 
 
 @dataclass
@@ -394,14 +450,15 @@ class WorkflowParams:
     files are written so later re-generations keep matching names.
     """
 
-    project_name: str = "project"
-    stamp: str = ""
-    use_stamp: bool = True
-    out_dir: str = ""  # "" -> <output.out_dir>/<project_name>_workflow
-    step_folders: bool = True  # one sub-folder per step, e.g. 03_amber-build/
-    nodes: List[PlanNode] = field(default_factory=list)
-    edges: List[PlanEdge] = field(default_factory=list)
-    scratch: List[PlanNode] = field(default_factory=list)  # stand-alone wizard settings per tool
+    project_name: str = "project"  # Project name used in every generated file name
+    stamp: str = ""  # Time stamp in generated file names (fixed once files are written)
+    use_stamp: bool = True  # Put the time stamp into file names
+    out_dir: str = ""  # Folder of the generated files ("": <output.out_dir>/<project_name>_workflow)
+    step_folders: bool = True  # One sub-folder per step, e.g. 03_amber-build/
+    nodes: List[PlanNode] = field(default_factory=list)  # Planner steps
+    edges: List[PlanEdge] = field(default_factory=list)  # Planner connections
+    # Stand-alone script wizard settings, one entry per step type
+    scratch: List[PlanNode] = field(default_factory=list)
 
 
 def _default_groups() -> List[ResidueGroup]:
@@ -416,27 +473,26 @@ def _default_groups() -> List[ResidueGroup]:
 class Project:
     """Complete MDATK parameter set."""
 
-    inputs: InputParams = field(default_factory=InputParams)
-    cleaning: CleaningParams = field(default_factory=CleaningParams)
-    groups: List[ResidueGroup] = field(default_factory=_default_groups)
-    analyses: AnalysisParams = field(default_factory=AnalysisParams)
+    notes: str = ""  # Free-text notes about the project (what, why, decisions, to-dos)
+    inputs: InputParams = field(default_factory=InputParams)  # Input files and frame range
+    cleaning: CleaningParams = field(default_factory=CleaningParams)  # Trajectory cleaning with cpptraj
+    groups: List[ResidueGroup] = field(default_factory=_default_groups)  # Residue groups
+    analyses: AnalysisParams = field(default_factory=AnalysisParams)  # Analyses
+    # Structure view: colouring, glow, 3D representations, labels
     visual: VisualParams = field(default_factory=VisualParams)
-    density: DensityParams = field(default_factory=DensityParams)
-    layout: LayoutParams = field(default_factory=LayoutParams)
-    output: OutputParams = field(default_factory=OutputParams)
-    workflow: WorkflowParams = field(default_factory=WorkflowParams)
+    density: DensityParams = field(default_factory=DensityParams)  # Density map shadow and fit
+    layout: LayoutParams = field(default_factory=LayoutParams)  # Figure layout: grid and panels
+    output: OutputParams = field(default_factory=OutputParams)  # Outputs: folders, video, charts, PDB frames
+    workflow: WorkflowParams = field(default_factory=WorkflowParams)  # Project Planner and script wizard
 
     # ------------------------------------------------------------------ I/O
     def to_dict(self) -> Dict[str, Any]:
-        data = {"format": PRESET_FORMAT, "format_version": PRESET_FORMAT_VERSION,
-                "mdatk_version": __version__}
-        data.update(_to_plain(self))
-        return data
+        return _to_plain(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], base_dir: Optional[str] = None) -> "Project":
         data = dict(data)
-        for meta_key in ("format", "format_version", "mdatk_version"):
+        for meta_key in ("format", "format_version", "mdatk_version", "saved", "log", "log_file"):
             data.pop(meta_key, None)
         project = _from_plain(cls, data, "project")
         if base_dir:
@@ -444,24 +500,17 @@ class Project:
         return project
 
     def save(self, path: str) -> None:
-        directory = os.path.dirname(os.path.abspath(path))
-        os.makedirs(directory, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(self.to_dict(), fh, indent=2, sort_keys=False)
-            fh.write("\n")
-        os.replace(tmp, path)
+        """Write the settings to a TOML project file (an existing step log is kept)."""
+        from . import projectfile
+
+        projectfile.save(path, self)
 
     @classmethod
     def load(cls, path: str) -> "Project":
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict):
-            raise ValueError(f"{path}: preset must contain a JSON object")
-        if data.get("format") == "mdatk-params-log":  # replay a previous run
-            data = data.get("parameters") or {}
-        if data.get("format") not in (None, PRESET_FORMAT):
-            raise ValueError(f"{path}: not an {PROJECT_ABBREV} preset (format={data.get('format')!r})")
+        """Read a project file (or a parameter log, to replay that run)."""
+        from . import projectfile
+
+        data = projectfile.read(path)
         return cls.from_dict(data, base_dir=os.path.dirname(os.path.abspath(path)))
 
     def copy(self) -> "Project":
@@ -608,6 +657,15 @@ class Project:
                 problems.append(f"Representation {k + 1}: size must be positive and opacity in (0, 1].")
         if v.renderer not in ("auto", "software", "vtk"):
             problems.append(f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
+        if not 0.05 <= v.zoom <= 50:
+            problems.append("Structure zoom must be between 0.05 and 50.")
+        bp = a.basepairs
+        if bp.engine not in ("builtin", "barnaba"):
+            problems.append(f"Unknown base-pair engine {bp.engine!r} (builtin or barnaba).")
+        if bp.stride < 1:
+            problems.append("Base-pair stride must be at least 1.")
+        if not 2.0 <= bp.cutoff <= 5.0:
+            problems.append("Base-pair H-bond cutoff must be between 2.0 and 5.0 Å.")
         if v.rep_rest not in REP_REST:
             problems.append(f"Unknown setting for residues without a representation {v.rep_rest!r} "
                             "(trace or hide).")
@@ -623,7 +681,7 @@ class Project:
 
 
 # ---------------------------------------------------------------------------
-# Generic dataclass <-> plain JSON conversion
+# Generic dataclass <-> plain data conversion
 # ---------------------------------------------------------------------------
 
 
@@ -632,13 +690,13 @@ def _to_plain(obj: Any) -> Any:
         return {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
     if isinstance(obj, (list, tuple)):
         return [_to_plain(v) for v in obj]
-    if isinstance(obj, dict):
-        return {str(k): _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, dict):  # free-form settings: an unset (None) option is simply absent
+        return {str(k): _to_plain(v) for k, v in obj.items() if v is not None}
     return obj
 
 
 _ALIASES = {
-    # convenience spellings accepted in hand-written presets
+    # convenience spellings accepted in hand-written project files
     ("InputParams", "trajectory"): "trajectories",
     ("Project", "input"): "inputs",
 }

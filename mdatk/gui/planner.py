@@ -6,7 +6,7 @@ port (right edge) to an input port (left edge) connects them; the planner then
 hands the upstream file names to the downstream step, so every generated
 script refers to the files the previous step will write
 (``<project>_<step>_<tool>_<time>.<ext>``).  Double-click a box to edit it in
-the wizard.  The plan is stored in the preset (``workflow`` section).
+the wizard.  The plan is stored in the project file (``workflow`` section).
 """
 
 from __future__ import annotations
@@ -23,10 +23,12 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanEdge, PlanNode  # noqa: E402
+from ..projectfile import logged  # noqa: E402
 from ..workflows import TOOLS, tools_by_category  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
                               connect, next_step, remove_node, step_title)
+from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
@@ -551,7 +553,7 @@ class PlannerWindow(Gtk.Window):
         return self.plan
 
     def reload(self) -> None:
-        """Re-read everything from the main window's project (after a preset was loaded)."""
+        """Re-read everything from the main window's project (after a project was opened)."""
         for win in list(self.wizards.values()):
             win.destroy()
         self.wizards.clear()
@@ -635,13 +637,18 @@ class PlannerWindow(Gtk.Window):
         bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
         bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
+        bar.pack_end(W.button("Run…", lambda: self.write(None, run=True),
+                              "Write every step's files, then run the main scripts in plan order on this "
+                              "computer (scripts marked 'run separately', e.g. production runs, are not "
+                              "started); each run is logged in the project file", "media-playback-start-symbolic"),
+                     False, False, 0)
         write = W.button("Write all files", lambda: self.write(None),
                          "Write every step's files, a master script and a plan summary",
                          "document-save-symbolic")
         write.get_style_context().add_class("suggested-action")
         bar.pack_end(write, False, False, 0)
-        bar.pack_end(W.button("Save preset", self._save, "Save the plan with the other settings (Ctrl+S in "
-                                                          "the main window)", "document-save-symbolic"),
+        bar.pack_end(W.button("Save project", self._save, "Save the plan with the other settings (Ctrl+S in "
+                                                           "the main window)", "document-save-symbolic"),
                      False, False, 0)
         return bar
 
@@ -713,6 +720,9 @@ class PlannerWindow(Gtk.Window):
         self.d_write = W.button("Write step", lambda: self.write([self._details_node]),
                                 "Write only this step's files")
         btns.pack_start(self.d_write, False, False, 0)
+        self.d_run = W.button("Run step…", lambda: self.write([self._details_node], run=True),
+                              "Write this step's files, then run its main script on this computer")
+        btns.pack_start(self.d_run, False, False, 0)
         self.d_use = W.button("Use for analysis", lambda: self.use_for_analysis(self.node(self._details_node)),
                               "Copy the topology / trajectory paths into Input & cleaning")
         btns.pack_start(self.d_use, False, False, 0)
@@ -748,7 +758,7 @@ class PlannerWindow(Gtk.Window):
                     self.d_title.set_markup("<b>Nothing selected</b>")
                     self.d_desc.set_text("Select a box to see its files and checks. Double-click it to edit "
                                          "it in the wizard. Right-click the canvas to add steps.")
-                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_use):
+                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_run, self.d_use):
                     w.set_sensitive(False)
                 self.d_note_sw.hide()
                 self.d_files.set_text("")
@@ -763,6 +773,7 @@ class PlannerWindow(Gtk.Window):
             self.d_step.set_value(max(1, n.step))
             self.d_wizard.set_sensitive(bool(tool) and n.tool != "note")
             self.d_write.set_sensitive(gen)
+            self.d_run.set_sensitive(gen)
             self.d_use.set_sensitive(n.tool == "mdatk")
             if n.tool == "note":
                 self.d_note.get_buffer().set_text(n.settings.get("text", ""))
@@ -946,7 +957,7 @@ class PlannerWindow(Gtk.Window):
         if self._details_node is not None and not self._loading:
             self.show_details(self._details_node)
 
-    def write(self, node_ids: Optional[List[str]]) -> None:
+    def write(self, node_ids: Optional[List[str]], run: bool = False) -> None:
         plan = self.resolve()
         ids = node_ids if node_ids is not None else list(plan.steps)
         bad = [(plan.steps[n].label, i.message) for n in ids if n in plan.steps
@@ -959,7 +970,11 @@ class PlannerWindow(Gtk.Window):
                              "with errors are skipped."):
                 return
         try:
-            report = plan.write(node_ids)
+            with logged(getattr(self.main, "project_path", None), "workflow write",
+                        "Generated the plan's files") as entry:
+                report = plan.write(node_ids)
+                entry.folder, entry.files = report.root, list(report.written)
+                entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
         except OSError as exc:
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
@@ -972,6 +987,9 @@ class PlannerWindow(Gtk.Window):
             self.main.append_log("Project Planner: " + msg)
             if report.master:
                 self.main.append_log(f"Master script: {report.master}")
+        if run and hasattr(self.main, "run_scripts"):
+            ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
+            self.main.run_scripts(plan_jobs(plan, ok_ids), separate_scripts(plan, ok_ids), parent=self)
 
     def open_folder(self) -> None:
         path = self.main.project.workflow_dir
@@ -993,7 +1011,7 @@ class PlannerWindow(Gtk.Window):
         self.set_status(f"Analysis inputs set: {os.path.basename(top)} + {len(trajs)} trajectory file(s)")
 
     def _save(self) -> None:
-        self.main.save_preset()
+        self.main.save_project()
         self.reload_keep()
 
     def reload_keep(self) -> None:

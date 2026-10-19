@@ -149,6 +149,14 @@ class VMDTool(Tool):
             return {"image": PortValue([ctx.own("movie", "mp4")], "image")}
         return {}
 
+    def resources(self, s):
+        out = ["vmd"]
+        if s["render"] in ("snapshot", "movie") and s["renderer"] == "TachyonInternal":
+            out.append("tachyon")
+        if s["render"] == "movie":
+            out.append("ffmpeg")
+        return out
+
     def describe(self, s):
         return f"{s['rna_style']}, {s['render']}"
 

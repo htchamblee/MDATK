@@ -10,6 +10,7 @@ Markdown summary named ``<project>_00_plan_<stamp>.{sh,md}``.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import heapq
 import os
@@ -340,7 +341,7 @@ class Plan:
             step = self.steps[nid]
             if step.tool is None or not step.tool.generates or not step.ok:
                 continue
-            step.files = step.tool.generate(step.settings, step.ctx)
+            step.files = generate_step(step)
             out[nid] = step.files
         return out
 
@@ -393,7 +394,7 @@ class Plan:
                 continue
             lines.append(f"# {step.label}")
             if not step.files and step.ok:
-                step.files = step.tool.generate(step.settings, step.ctx)
+                step.files = generate_step(step)
             if not step.ok:
                 lines.append("#   (not written: the step has errors)")
             for f in step.files:
@@ -445,6 +446,26 @@ class Plan:
                 lines += [f"- {i}" for i in notes]
                 lines.append("")
         return "\n".join(lines)
+
+
+def generate_step(step: ResolvedStep) -> List[GeneratedFile]:
+    """The step's files, with a 'Please cite' block for the resources it uses in its shell scripts."""
+    from ..citations import comment_lines, step_resources
+
+    files = step.tool.generate(step.settings, step.ctx)
+    cite = comment_lines(step_resources(step))
+    if not cite:
+        return files
+    out = []
+    for f in files:
+        lines = f.content.split("\n")
+        if f.role in ("run", "run-separate") and lines and lines[0].startswith("#!"):
+            k = 1
+            while k < len(lines) and lines[k].startswith("#"):
+                k += 1  # after the header comment block
+            f = dataclasses.replace(f, content="\n".join(lines[:k] + cite + lines[k:]))
+        out.append(f)
+    return out
 
 
 def _write_text(path: str, text: str, executable: bool) -> None:
@@ -536,6 +557,34 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
         ("md", "trajectory", "analysis", "trajectory"),
         ("md", "dry_topology", "vmd", "topology"),
         ("md", "dry_trajectory", "vmd", "trajectory"),
+    ]),
+    "builder-amber": ("Ideal A-form helix → Amber build → helix restraints → MD", [
+        ("helix", "structure-builder", 0, 0, {"mode": "helix"}),
+        ("build", "amber-build", 1, 0, {}),
+        ("restraints", "amber-restraints", 2, 1, {}),
+        ("md", "amber-md", 3, 0, {}),
+    ], [
+        ("helix", "pdb", "build", "structure"),
+        ("helix", "secstruct", "restraints", "secstruct"),
+        ("build", "topology", "restraints", "topology"),
+        ("build", "topology", "md", "topology"),
+        ("build", "coordinates", "md", "coordinates"),
+        ("restraints", "restraints", "md", "restraints"),
+    ]),
+    "cryoem-refine": ("Model + map → restraint dictionaries → Phenix RSR → Coot RSR", [
+        ("model", "input-file", 0, 0, {"kind": "pdb"}),
+        ("map", "input-file", 0, 1, {"kind": "map"}),
+        ("dicts", "restraint-dicts", 1, 1, {}),
+        ("phenix", "phenix-rsr", 2, 0, {}),
+        ("coot", "coot-rsr", 3, 0, {}),
+    ], [
+        ("model", "file", "dicts", "structure"),
+        ("model", "file", "phenix", "model"),
+        ("map", "file", "phenix", "map"),
+        ("dicts", "dictionaries", "phenix", "dictionaries"),
+        ("phenix", "refined", "coot", "model"),
+        ("map", "file", "coot", "map"),
+        ("dicts", "dictionaries", "coot", "dictionaries"),
     ]),
     "amber-gromacs": ("Amber topology → GROMACS MD", [
         ("build", "amber-build", 0, 0, {}),

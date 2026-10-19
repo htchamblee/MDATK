@@ -4,7 +4,8 @@ The forms are built from each tool's option schema (check boxes, radio
 buttons, combo boxes, spin buttons, text fields - each with its tooltip).
 Logic checks run on every change; problems are listed below the form and the
 offending fields are highlighted.  A live preview shows the files that
-"Write files" will create.  The wizard never runs the programs.
+"Write files" will create.  Programs only run when "Write and run" is used
+(after a confirmation; each run is logged in the project file).
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanNode  # noqa: E402
+from ..projectfile import logged  # noqa: E402
 from ..workflows import TOOLS, tools_by_category  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
-from ..workflows.plan import Plan, scratch_node, single_step_plan  # noqa: E402
+from ..workflows.plan import Plan, generate_step, scratch_node, single_step_plan  # noqa: E402
+from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import (FILE_KINDS, Issue, Option, Section, kind_label,  # noqa: E402
                                 requirements_met)
 from . import desktop  # noqa: E402
@@ -347,7 +350,7 @@ class WizardWindow(Gtk.Window):
     """Edit and write one step.
 
     Stand-alone (``node`` is None): a tool list on the left; settings are kept
-    per tool in the preset's workflow scratch area.  From the planner: the
+    per tool in the project's workflow scratch area.  From the planner: the
     node's tool is fixed and its inputs come from the plan's connections.
     """
 
@@ -522,6 +525,10 @@ class WizardWindow(Gtk.Window):
                                   "(blocked while there are errors)", "document-save-symbolic")
         self.write_btn.get_style_context().add_class("suggested-action")
         bar.pack_end(self.write_btn, False, False, 0)
+        self.run_btn = W.button("Write and run…", lambda: self.write_files(run=True),
+                                "Write this step's files, then run its main script on this computer "
+                                "(asks first; logged in the project file)", "media-playback-start-symbolic")
+        bar.pack_end(self.run_btn, False, False, 0)
         bar.pack_end(W.button("Defaults", self.reset_defaults, "Reset this tool's options"), False, False, 0)
         return bar
 
@@ -742,7 +749,8 @@ class WizardWindow(Gtk.Window):
         self.files = []
         if step is not None and step.ok and step.ctx is not None:
             try:
-                self.files = self.tool.generate(step.settings, step.ctx)
+                step.ctx.preview = True  # e.g. no PubChem requests on every change
+                self.files = generate_step(step)
             except Exception as exc:  # pragma: no cover - shown to the user
                 issues.append(Issue("error", f"cannot generate the files: {exc}"))
         self._show_issues(issues)
@@ -771,6 +779,7 @@ class WizardWindow(Gtk.Window):
             self.preview.get_buffer().set_text("(fix the errors listed under Checks to see the files)")
         errors = [i for i in issues if i.level == "error"]
         self.write_btn.set_sensitive(not errors and bool(self.files))
+        self.run_btn.set_sensitive(not errors and any(f.role == "run" for f in self.files))
         n_err, n_warn = len(errors), len([i for i in issues if i.level == "warning"])
         self.status.set_text(f"{len(self.files)} files · {n_err} errors · {n_warn} warnings")
         if self.on_changed is not None:
@@ -835,14 +844,18 @@ class WizardWindow(Gtk.Window):
         self._build_pages()
         self.refresh_now()
 
-    def write_files(self) -> None:
+    def write_files(self, run: bool = False) -> None:
         plan = self._resolve()
         step = plan.steps.get(self.node.id)
         if step is None or not step.ok:
             self.refresh_now()
             return
         try:
-            report = plan.write([self.node.id], master=False)
+            with logged(getattr(self.main, "project_path", None), "workflow write",
+                        f"Script wizard: {step.tool.label}") as entry:
+                report = plan.write([self.node.id], master=False)
+                entry.files = list(report.written)
+                entry.summary = f"{len(report.written)} file(s) written"
         except OSError as exc:
             self._error("Could not write the files", str(exc))
             return
@@ -857,6 +870,9 @@ class WizardWindow(Gtk.Window):
         self.status.set_text(f"Wrote {len(written)} files to "
                              f"{os.path.dirname(written[0]) if written else '-'}")
         self.refresh_now()
+        if run and not report.skipped and hasattr(self.main, "run_scripts"):
+            self.main.run_scripts(plan_jobs(plan, [self.node.id]), separate_scripts(plan, [self.node.id]),
+                                  parent=self)
 
     def step_folder(self) -> str:
         plan = self.plan or self._resolve()

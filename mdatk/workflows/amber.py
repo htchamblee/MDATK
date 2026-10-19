@@ -15,15 +15,17 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import PROJECT_ABBREV, __version__
+from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
-                   require_file, script_header)
+                   require_file, script_header, shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
+from .scripts import cp_retype as _cp_retype
 from .scripts import embed
 from .scripts import helix_dist as _helix_dist
 from .scripts import prep_pdb as _prep_pdb
+from .scripts import tip4p2005 as _tip4p2005
 
 # ---------------------------------------------------------------------------
 # force fields, water models, ions
@@ -49,9 +51,11 @@ WATERS: Dict[str, Tuple[str, str, str, str, str]] = {
     "tip4pew": ("TIP4P-Ew", "leaprc.water.tip4pew", "TIP4PEWBOX", "TIP4PEW", "frcmod.ions234lm_1264_tip4pew"),
     "fb3": ("TIP3P-FB", "leaprc.water.fb3", "FB3BOX", "FB3", "frcmod.ionslm_1264_fb3"),
     "tip4pd": ("TIP4P-D", "leaprc.water.tip4pd", "TIP4PDBOX", "", ""),
+    # AmberTools has no TIP4P/2005 files: the build script derives them from the TIP4P-Ew ones
+    "tip4p2005": ("TIP4P/2005", "leaprc.water.tip4pew", "TIP4P2005BOX", "", ""),
     "none": ("none (no solvent box)", "", "", "", ""),
 }
-FOUR_SITE_WATERS = ("opc", "tip4pew", "tip4pd")
+FOUR_SITE_WATERS = ("opc", "tip4pew", "tip4pd", "tip4p2005")
 
 SOLVATED = tuple(k for k in WATERS if k != "none")
 DEFAULT_STRIP = ":WAT,HOH,Na+,Cl-,K+,MG"
@@ -261,9 +265,17 @@ class AmberBuildTool(Tool):
                    "leaprc file for RNA. 'OL3 + CP' adds the phosphate oxygen vdW correction of "
                    "Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it.",
                    choices=[(k, v[0]) for k, v in FORCE_FIELDS.items()]),
+            Option("cp_source", "CP parameters", "radio", "lib",
+                   "Retyped library: the build script writes RNA_CP.lib (AmberTools' RNA.lib with the "
+                   "phosphate oxygens retyped OP / OR) and frcmod.cp (the CP Lennard-Jones values plus "
+                   "the parm10.dat bonded terms for the new types), so only phosphate oxygens change "
+                   "and the NBfix19 / 0BPh masks address them as @%OP / @%OR. Own frcmod: load a CP "
+                   "parameter file you provide (masks stay @%O2 / @%OS).",
+                   choices=[("lib", "Retyped library (generated)"), ("frcmod", "Own frcmod file")],
+                   requires={"rna_ff": "ol3cp"}),
             Option("cp_frcmod", "CP frcmod file", "file", "frcmod.99bsc0-chiol3-CaseP",
                    "Parameter file with the CP phosphate correction: a name in leap's search path / "
-                   "the step folder, or an absolute path.", requires={"rna_ff": "ol3cp"}),
+                   "the step folder, or an absolute path.", requires={"rna_ff": "ol3cp", "cp_source": "frcmod"}),
             Option("extra_frcmod", "Extra parameter files", "multiline", "",
                    "One frcmod file per line, loaded with loadamberparams after the force field "
                    "(e.g. frcmod.LRNA).", placeholder="frcmod.LRNA"),
@@ -330,7 +342,8 @@ class AmberBuildTool(Tool):
                    "Off-diagonal Lennard-Jones terms for -NH...N- and -OH...O(phosphate) pairs "
                    "(Kuehrova & Mlynsky JCTC 2019; Mlynsky et al. 2026). The masks assume OL3 + CP."),
             Option("bph0", "0BPh pairs", "bool", True,
-                   "Extra H5/H4 – OS Lennard-Jones pairs of the 0BPh modification (OL3 + CP)."),
+                   "Extra H5/H4 – O5' Lennard-Jones pairs of the 0BPh modification (Mlýnský et al. 2023): "
+                   "masks @%OR with the CP library, @%OS otherwise."),
             Option("split_types", "Separate HO and O2 Lennard-Jones types first", "bool", False,
                    "addLJType @%HO and @%O2 before the pair changes. tleap merges atom types with equal "
                    "LJ parameters: HO shares its LJ type with water HW and O2 with base carbonyl O, so "
@@ -343,22 +356,24 @@ class AmberBuildTool(Tool):
                    "Added before outparm, e.g. the L-RNA changeLJPair lines.",
                    placeholder="changeLJPair @%HO @%LD 3.03 0.01"),
         ], tooltip="Topology edits applied with ParmEd after tleap (leap cannot reload a prmtop)."),
-        Section("twopass", "Two-pass / L-RNA", [
+        Section("lrna", "L-RNA", [
+            Option("lrna", "Name L-nucleotides for leap", "bool", True,
+                   "Before tleap, residues whose sugar chirality (C1'/C3'/C4') is L get L-RNA names "
+                   "(Dudek & Trylska: LA LC LG LU, terminals LA5/LA3 ...), the other RNA residues Amber "
+                   "names. Runs the PDB tools that MDATK copies into the step folder (replaces "
+                   "to_lrna.sh); a structure without L residues is only checked."),
+            Option("lrna_ranges", "Force L for", "text", "",
+                   "Residues that are L whatever their geometry says (overrides the detection), e.g. "
+                   "'C:45-73', 'A:45-73, A:80-90' or 'C' for a whole chain.",
+                   placeholder="C:45-73", requires={"lrna": True}),
+            Option("lrna_terminals", "5'/3' terminal names", "bool", True,
+                   "LA5/LA3 ... at chain ends as in nucleic12_LRNA.lib. Off: plain LA/LC/LG/LU at the ends "
+                   "(as to_lrna.sh wrote), for libraries that map terminals with addPdbResMap.",
+                   requires={"lrna": True}),
             Option("two_pass", "Two-pass build", "bool", False,
-                   "Dry tleap -> ParmEd -> ambpdb -> (to_lrna.sh) -> solvated tleap -> ParmEd. Needed "
-                   "when residues must be renamed (e.g. back to L-RNA) between the passes."),
-            Option("lrna", "Rename residues to L-RNA (to_lrna.sh)", "bool", False,
-                   "Call to_lrna.sh on the dry PDB: G/A/C/U in the given ranges become LG/LA/LC/LU "
-                   "(ambpdb writes them as D-RNA).", requires={"two_pass": True}),
-            Option("lrna_script", "to_lrna.sh", "file", "to_lrna.sh",
-                   "The renaming script: a name on PATH or a path (relative to the step folder or "
-                   "absolute).", requires={"two_pass": True, "lrna": True}),
-            Option("lrna_chain", "Chain", "text", "A", "Chain identifier passed to to_lrna.sh.",
-                   requires={"two_pass": True, "lrna": True}),
-            Option("lrna_ranges", "Residue ranges", "text", "",
-                   "Residue range(s) to rename, e.g. '45-73' or '45-73, 80-90'.",
-                   placeholder="45-73", requires={"two_pass": True, "lrna": True}),
-        ], tooltip="Leap cannot reload a prmtop, so renaming residues needs a dry first pass."),
+                   "L-RNA naming -> dry tleap -> ParmEd -> ambpdb -> solvated tleap -> ParmEd. The ambpdb "
+                   "PDB keeps the dry topology's residue names (Amber terminal names are re-applied)."),
+        ], tooltip="L-RNA residue names for leap (the library and parameters go under Force field)."),
         Section("outputs", "Outputs", [
             Option("save_pdb", "Also save a PDB of the built system", "bool", True,
                    "tleap savepdb after solvation - handy for a visual check."),
@@ -398,6 +413,27 @@ class AmberBuildTool(Tool):
     def _final_topology(self, s, ctx) -> str:
         return ctx.name("parmed" if self._wet_parmed(s) else "tleap", "parm7")
 
+    def resources(self, s):
+        out = ["ambertools"] + {"ol3cp": ["ol3", "cp"], "ol3": ["ol3"], "ljbb": ["ol3", "ljbb"], "roc": ["roc"],
+                                "yil": ["yil"], "shaw": ["shaw"]}[s["rna_ff"]]
+        if self._solvated(s):
+            out.append("water_" + s["water"])
+            if s["neutralize"] or s["salt_pairs"] or (s["mg_balance"] and s["mg_count"]):
+                out.append("ions_jc")
+            if s["mg_count"] and s["mg_model"] == "126":
+                out.append("ions_lm126")
+            elif s["mg_model"] == "1264":
+                out.append("ions_lm1264")
+            elif self._mg_pairs(s):
+                out.append(mg_params.RESOURCES[(s["mg_model"], s["water"])])
+        if self._wet_parmed(s) or (s["two_pass"] and self._lj_mods(s)):
+            out.append("parmed")
+        out += [r for r, on in (("nbfix19", s["nbfix19"]), ("bph0", s["bph0"]), ("hmr", s["hmr"])) if on]
+        libs = (s["extra_libs"] + s["extra_frcmod"]).lower()
+        if s["lrna"] and (s["lrna_ranges"].strip() or "lrna" in libs):
+            out.append("lrna")
+        return out
+
     def describe(self, s):
         parts = [FORCE_FIELDS[s["rna_ff"]][2]]
         if self._solvated(s):
@@ -409,8 +445,102 @@ class AmberBuildTool(Tool):
         if self._solvated(s) and s["mg_model"] != "126":
             parts.append(mg_params.MODELS.get(s["mg_model"], "12-6-4 Mg"))
         if s["two_pass"]:
-            parts.append("two-pass" + (" L-RNA" if s["lrna"] else ""))
+            parts.append("two-pass")
+        if s["lrna"] and s["lrna_ranges"].strip():
+            parts.append("L-RNA " + s["lrna_ranges"].strip())
         return ", ".join(parts)
+
+    @staticmethod
+    def _cp_lib(s) -> bool:
+        return s["rna_ff"] == "ol3cp" and s["cp_source"] == "lib"
+
+    @staticmethod
+    def _cp_frcmod(s) -> bool:
+        return s["rna_ff"] == "ol3cp" and s["cp_source"] == "frcmod"
+
+    def _check_water(self, s) -> List[Issue]:
+        out: List[Issue] = []
+        if s["water"] != "tip4p2005":
+            return out
+        out.append(Issue("info", "TIP4P/2005 (Abascal & Vega 2005): AmberTools has no files for it; the build "
+                                 "script derives frcmod.tip4p2005 and tip4p2005box.off from the TIP4P-Ew files "
+                                 "(residue WAT, extra point at 0.1546 Å)", ("water",)))
+        cations = s["neutralize"] or s["salt_pairs"]
+        if cations:
+            out.append(Issue("warning", f"no {s['cation']} parameters exist for TIP4P/2005; leaprc.water.tip4pew "
+                                        "loads the TIP4P-Ew (Joung-Cheatham) ones", ("cation", "water")))
+        has_cl = bool(s["mg_balance"] and s["mg_count"] or s["salt_pairs"])
+        if s["mg_model"] in mg_params.MODELS:
+            if has_cl:
+                out.append(Issue("info", "Cl⁻ gets the authors' TIP4P/2005 parameters (Grotz & Schwierz 2022, "
+                                         "Table 2) together with the Mg²⁺ set", ("water",)))
+        else:
+            if s["mg_count"]:
+                out.append(Issue("warning", "with TIP4P/2005 the 12-6 Mg²⁺ comes from the TIP4P-Ew Li & Merz "
+                                            "set; microMg / nanoMg were optimised for TIP4P/2005",
+                                 ("mg_model", "water")))
+            if has_cl:
+                out.append(Issue("warning", "Cl⁻ uses the TIP4P-Ew (Joung-Cheatham) parameters; choose microMg / "
+                                            "nanoMg to get the authors' TIP4P/2005 Cl⁻", ("mg_model", "water")))
+        return out
+
+    @staticmethod
+    def _lrna_args(s, src: str, dst: str) -> str:
+        args = ["clean", src, "-o", dst, "--scheme", "amber"]
+        if s["lrna_ranges"].strip():
+            args += ["--l-ranges", s["lrna_ranges"].strip()]
+        if not s["lrna_terminals"]:
+            args.append("--no-terminal-names")
+        return " ".join(shell_quote(a) for a in args)
+
+    @staticmethod
+    def _lrna_args_dry(s, src: str, dst: str) -> str:
+        """After ambpdb: residue numbers and chains changed, the names come from the topology."""
+        args = ["clean", src, "-o", dst, "--scheme", "amber", "--no-detect"]
+        if not s["lrna_terminals"]:
+            args.append("--no-terminal-names")
+        return " ".join(shell_quote(a) for a in args)
+
+    def _check_lrna(self, s, ctx) -> List[Issue]:
+        out: List[Issue] = []
+        if not s["lrna"]:
+            return out
+        try:
+            pdbtools.parse_ranges(s["lrna_ranges"] or None)
+        except pdbtools.PDBError as exc:
+            out.append(Issue("error", f"L ranges: {exc}", ("lrna_ranges",)))
+            return out
+        libs = extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"])
+        path = ctx.existing("structure")
+        n_l = 0
+        if path:
+            try:
+                struct = pdbtools.read_pdb(path)
+                notes = pdbtools.assign_chirality(struct, detect=True, l_ranges=s["lrna_ranges"] or None)
+            except (OSError, pdbtools.PDBError) as exc:
+                out.append(Issue("warning", f"could not check the input PDB: {exc}", ("lrna",)))
+                return out
+            n_l = sum(1 for r in struct.residues() if r.chirality == "L")
+            for note in notes:
+                if note.startswith("WARNING:"):
+                    out.append(Issue("warning", note[len("WARNING:"):].strip(), ("lrna_ranges",)))
+            if n_l:
+                out.append(Issue("info", f"{os.path.basename(path)}: {notes[0]}", ("lrna",)))
+        elif s["lrna_ranges"].strip():
+            n_l = 1
+        if n_l and not libs:
+            out.append(Issue("error" if path else "warning",
+                             "L-RNA residues need their library and parameters: add them under Force field "
+                             "(e.g. Dudek & Trylska's nucleic12_LRNA.lib with parm10_LRNA.dat, or your own "
+                             "LRNA.lib + frcmod.LRNA)", ("extra_libs", "extra_frcmod")))
+        if n_l and "LD" not in s["leap_before_params"]:
+            out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
+                                     "add  addAtomTypes { { \"LD\" \"O\" \"sp3\" } { \"LH\" \"O\" \"sp3\" } }  "
+                                     "under 'Leap commands before parameters'", ("leap_before_params",)))
+        if not path and ctx.has("structure"):
+            out.append(Issue("info", "L-nucleotides are detected from the sugar geometry when the script runs "
+                                     "(the input PDB does not exist yet)", ("lrna",)))
+        return out
 
     # checks -----------------------------------------------------------
     def check(self, s, ctx):
@@ -419,9 +549,13 @@ class AmberBuildTool(Tool):
             out.append(Issue("error", "NBfix19 / 0BPh masks assume the OL3 + CP force field; choose "
                                       "'OL3 + CP' or switch the modifications off",
                              ("rna_ff", "nbfix19", "bph0")))
-        if s["rna_ff"] == "ol3cp" and not s["cp_frcmod"].strip():
+        if self._cp_frcmod(s) and not s["cp_frcmod"].strip():
             out.append(Issue("error", "OL3 + CP needs the CP frcmod file", ("cp_frcmod",)))
-        if s["rna_ff"] == "ol3cp" and not extra_lines(s["extra_libs"]):
+        if self._cp_lib(s):
+            out.append(Issue("info", "the CP library and parameters are generated from AmberTools' RNA.lib and "
+                                     "parm10.dat when the script runs (AMBERHOME or tleap on PATH)",
+                             ("cp_source",)))
+        if self._cp_frcmod(s) and not extra_lines(s["extra_libs"]):
             new_types = _frcmod_new_types(s["cp_frcmod"].strip(), ctx)
             if new_types:
                 out.append(Issue("warning", f"the CP frcmod defines atom types {', '.join(new_types)} that the "
@@ -451,25 +585,11 @@ class AmberBuildTool(Tool):
             if not s["neutralize"] and s["mg_count"] and not s["mg_balance"]:
                 out.append(Issue("warning", "the box is not neutralised and Mg²⁺ is not balanced: "
                                             "PME will use a net-charge background", ("neutralize",)))
-        if s["two_pass"] and not s["lrna"]:
-            out.append(Issue("warning", "the two-pass build only matters when residues are renamed "
-                                        "between the passes; a single pass gives the same topology",
-                             ("two_pass",)))
-        if s["two_pass"] and s["lrna"]:
-            if not s["lrna_script"].strip():
-                out.append(Issue("error", "give the path of to_lrna.sh", ("lrna_script",)))
-            if not s["lrna_chain"].strip():
-                out.append(Issue("error", "give the chain passed to to_lrna.sh", ("lrna_chain",)))
-            if not _ranges(s["lrna_ranges"]):
-                out.append(Issue("error", "give the residue range(s) to rename, e.g. 45-73",
-                                 ("lrna_ranges",)))
-            if not (extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"])):
-                out.append(Issue("warning", "L-RNA residues need their library / parameters: add "
-                                            "e.g. LRNA.lib and frcmod.LRNA under Force field",
-                                 ("extra_libs", "extra_frcmod")))
-        if s["lrna_ranges"].strip() and not _ranges(s["lrna_ranges"]):
-            out.append(Issue("error", "residue ranges look like '45-73' or '45-73, 80-90'",
-                             ("lrna_ranges",)))
+        if s["two_pass"]:
+            out.append(Issue("info", "the L-RNA names are applied before tleap, so a single pass gives the "
+                                     "same topology; the two-pass build is kept for set-ups that need the "
+                                     "dry intermediate files", ("two_pass",)))
+        out += self._check_lrna(s, ctx)
         if not s["prep"] and ctx.value("structure") and ctx.value("structure").source:
             src = ctx.value("structure").source_label
             out.append(Issue("info", f"the PDB from {src} is used as is; models from Rosetta usually "
@@ -477,6 +597,7 @@ class AmberBuildTool(Tool):
         if s["hmr"]:
             out.append(Issue("info", "with hydrogen mass repartitioning the MD stages can use "
                                      "dt = 0.004 ps", ("hmr",)))
+        out += self._check_water(s)
         if s["nbfix19"] and not s["split_types"] and self._solvated(s):
             out.append(Issue("info", "tleap gives HO the same Lennard-Jones type as water HW (both zero) and "
                                      "O2 the same as carbonyl O, so 'changeLJPair @%HO ...' also changes "
@@ -521,7 +642,8 @@ class AmberBuildTool(Tool):
                                         f"optimised {name} parameters - not a published combination (the "
                                         f"authors' pair: σ {p.mg_cl[0]:.3f} nm, ε {p.mg_cl[1]:.2f} kJ/mol) and "
                                         "far too strong Mg²⁺-Cl⁻ contacts", ("mg_cl_pair",)))
-        if extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]) or s["lrna"]:
+        if (extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]) or s["lrna_ranges"].strip()
+                or self._cp_lib(s)):
             out.append(Issue("warning", f"the {name} pair terms cover the 27 parmBSC0χOL3 RNA atom types; atom "
                                         "types from extra libraries or parameter files (e.g. L-RNA) keep the "
                                         "plain combination rule with Mg²⁺. Phosphate oxygens retyped by a CP "
@@ -552,7 +674,7 @@ class AmberBuildTool(Tool):
             dry_top = "parmed-dry" if self._lj_mods(s) else "tleap-dry"
             out["dry_topology"] = PortValue([ctx.own(dry_top, "parm7")], "parm7",
                                             dict(data, box=False, c4=False, hmr=False, mg_pairs=""))
-            out["dry_pdb"] = PortValue([ctx.own("lrna" if s["lrna"] else "ambpdb", "pdb")], "pdb",
+            out["dry_pdb"] = PortValue([ctx.own("lrna-dry" if s["lrna"] else "ambpdb", "pdb")], "pdb",
                                        dict(data, box=False))
         return out
 
@@ -563,9 +685,14 @@ class AmberBuildTool(Tool):
         solvated = wet and self._solvated(s)
         if solvated:
             lines.append(f"source {WATERS[s['water']][1]}")
+            if s["water"] == "tip4p2005":
+                lines += ["loadamberparams frcmod.tip4p2005", "loadOff tip4p2005box.off",
+                          "WAT = TIP4P2005", "HOH = TIP4P2005"]
         lines += extra_lines(s["leap_before_params"])
-        if s["rna_ff"] == "ol3cp":
+        if self._cp_frcmod(s):
             lines.append(f"loadamberparams {s['cp_frcmod'].strip()}")
+        if self._cp_lib(s):
+            lines += ['addAtomTypes { { "OR" "O" "sp3" } }', "loadamberparams frcmod.cp", "loadOff RNA_CP.lib"]
         lines += [f"loadamberparams {f.strip()}" for f in extra_lines(s["extra_frcmod"])]
         if solvated and s["mg_model"] == "1264" and WATERS[s["water"]][4]:
             lines.append(f"loadamberparams {WATERS[s['water']][4]}")
@@ -610,19 +737,21 @@ class AmberBuildTool(Tool):
 
     def _parmed(self, s, title, out_parm, wet, ctx=None) -> str:
         lines = ["#", f"# {title}", f"# ParmEd input written by {PROJECT_ABBREV} {__version__}"]
+        cp = self._cp_lib(s)
         if s["nbfix19"] and s["split_types"]:
             lines += ["#", "# Give HO and O2 their own Lennard-Jones types so the pair changes below do not also",
                       "# apply to atom types tleap merged with them (water HW, carbonyl O)",
-                      "addLJType @%HO", "addLJType @%O2"]
+                      "addLJType @%HO"] + ([] if cp else ["addLJType @%O2"])
         if s["nbfix19"]:
-            lines += NBFIX19_LINES
+            lines += _cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES
         if s["bph0"]:
-            lines += BPH0_LINES
+            lines += _cp_masks(BPH0_LINES) if cp else BPH0_LINES
         if s["nbfix19"] or s["bph0"]:
             lines += LRNA_NOTE
         if wet and self._solvated(s) and s["mg_model"] == "1264":
             lines += ["#", "# 12-6-4 Lennard-Jones terms for Mg2+ (Li & Merz)",
-                      f"add12_6_4 :MG watermodel {WATERS[s['water']][3]}"]
+                      f"add12_6_4 :MG watermodel {WATERS[s['water']][3]}"
+                      + (" polfile lj_1264_pol_cp.dat" if self._cp_lib(s) else "")]
         if wet and s["hmr"]:
             lines += ["#", "# Hydrogen mass repartitioning (4 fs time steps with SHAKE)",
                       "HMassRepartition"]
@@ -642,6 +771,29 @@ class AmberBuildTool(Tool):
         ff = FORCE_FIELDS[s["rna_ff"]][2]
         sh = script_header(f"Amber system build ({ff}) - tleap / ParmEd", ctx, s, script_name)
         pdb_in = ctx.inp("structure")
+        if self._cp_lib(s) or (self._solvated(s) and s["water"] == "tip4p2005"):
+            sh += ["# AmberTools data folder (from tleap on PATH when AMBERHOME is not set)",
+                   'AMBERHOME="${AMBERHOME:-$(dirname "$(dirname "$(readlink -f "$(command -v tleap)")")")}"',
+                   '[ -f "$AMBERHOME/dat/leap/lib/RNA.lib" ] || { echo "ERROR: AmberTools data not found under '
+                   '$AMBERHOME; set AMBERHOME" >&2; exit 1; }', ""]
+        if self._cp_lib(s):
+            cp_py = n("cp-lib", "py")
+            files.append(GeneratedFile(cp_py, embed(
+                _cp_retype, {}, "main(sys.argv[1:])",
+                f"OL3 + CP library and parameters - written by {PROJECT_ABBREV} {__version__}.\n\n"
+                "Usage: python3 THIS_SCRIPT AMBERHOME OUTPUT_DIR"), "helper",
+                "writes RNA_CP.lib and frcmod.cp from AmberTools' RNA.lib / parm10.dat"))
+            sh += ["# CP phosphate oxygen types (Steinbrecher et al. 2012): RNA_CP.lib + frcmod.cp",
+                   f'python3 {cp_py} "$AMBERHOME" .', require_file("RNA_CP.lib", "the CP helper"), ""]
+        if self._solvated(s) and s["water"] == "tip4p2005":
+            w_py = n("tip4p2005", "py")
+            files.append(GeneratedFile(w_py, embed(
+                _tip4p2005, {}, "main(sys.argv[1:])",
+                f"TIP4P/2005 water files for tleap - written by {PROJECT_ABBREV} {__version__}.\n\n"
+                "Usage: python3 THIS_SCRIPT AMBERHOME OUTPUT_DIR"), "helper",
+                "writes frcmod.tip4p2005 and tip4p2005box.off from AmberTools' TIP4P-Ew files"))
+            sh += ["# TIP4P/2005 water (Abascal & Vega 2005), derived from AmberTools' TIP4P-Ew box",
+                   f'python3 {w_py} "$AMBERHOME" .', require_file("tip4p2005box.off", "the TIP4P/2005 helper"), ""]
         if s["prep"]:
             prep_py, prep_pdb = n("prep", "py"), n("prep", "pdb")
             files.append(GeneratedFile(prep_py, embed(
@@ -653,6 +805,18 @@ class AmberBuildTool(Tool):
             sh += ["# Prepare the starting structure for tleap (hydrogens, 5'-phosphates, TER records)",
                    f"python3 {prep_py} {pdb_in} {prep_pdb}", ""]
             pdb_in = prep_pdb
+        if s["lrna"]:
+            tools_py = n("pdbtools", "py")
+            files.append(GeneratedFile(tools_py, embed(
+                pdbtools, {}, "main()",
+                f"PDB hygiene for D- and L-RNA structures - copied by {PROJECT_ABBREV} {__version__}.\n\n"
+                "Usage: python3 THIS_SCRIPT clean IN.pdb -o OUT.pdb --scheme amber [--l-ranges C:45-73]\n"
+                "       python3 THIS_SCRIPT check IN.pdb"), "helper",
+                "L-RNA detection and Amber residue names (mdatk pdb)"))
+            named = n("lrna", "pdb")
+            sh += ["# L-RNA residue names from the sugar chirality (C1'/C3'/C4'): LA/LC/LG/LU, LA5/LA3 ...",
+                   f"python3 {tools_py} {self._lrna_args(s, pdb_in, named)}", require_file(named, "pdbtools"), ""]
+            pdb_in = named
         lj = self._lj_mods(s)
         mods = " + ".join(m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]),
                                           ("extra commands", bool(extra_lines(s["parmed_extra"]))))
@@ -680,20 +844,15 @@ class AmberBuildTool(Tool):
                    f"ambpdb -p {dry_top} -c {dry}.rst7 > {amb}", require_file(amb, "ambpdb"), ""]
             pdb_in = amb
             if s["lrna"]:
-                ranges = _ranges(s["lrna_ranges"])
-                out_pdb = n("lrna", "pdb")
-                src = amb
-                for k, (lo, hi) in enumerate(ranges):
-                    dst = out_pdb if k == len(ranges) - 1 else n(f"lrna{k + 1}", "pdb")
-                    sh.append(f"# Convert residues {lo}-{hi} of chain {s['lrna_chain']} back to L-RNA")
-                    sh.append(f"{s['lrna_script'].strip()} {src} {s['lrna_chain'].strip()} {lo},{hi} > {dst}")
-                    src = dst
-                sh += [require_file(out_pdb, "to_lrna.sh"), ""]
+                out_pdb = n("lrna-dry", "pdb")
+                sh += ["# Amber names of the dry topology (ambpdb renumbers residues and drops chain ids)",
+                       f"python3 {n('pdbtools', 'py')} {self._lrna_args_dry(s, amb, out_pdb)}",
+                       require_file(out_pdb, "pdbtools"), ""]
                 pdb_in = out_pdb
         if self._mg_pairs(s):
             name = mg_params.MODELS[s["mg_model"]]
             files.append(GeneratedFile(self._mg_frcmod(ctx), mg_params.frcmod_text(
-                s["mg_model"], s["water"], WATERS[s["water"]][0]), "input",
+                s["mg_model"], s["water"], WATERS[s["water"]][0], chloride=s["water"] == "tip4p2005"), "input",
                 f"{name} Mg2+ Lennard-Jones parameters (replace Li & Merz 12-6)"))
         wet = n("tleap")
         what = "Solvate and add ions" if self._solvated(s) else "Build the topology"
@@ -718,6 +877,12 @@ class AmberBuildTool(Tool):
         sh += [f'echo "Topology: {final}  Coordinates: {wet}.rst7"', ""]
         files.append(GeneratedFile(script_name, "\n".join(sh), "run", "runs tleap / ParmEd"))
         return files
+
+
+def _cp_masks(lines: List[str]) -> List[str]:
+    """NBfix19 / 0BPh lines for a topology with the CP types: phosphate O2 -> OP, bridging OS -> OR."""
+    return [ln.replace("@%O2", "@%OP").replace("@%OS", "@%OR") if ln.startswith("changeLJPair") else ln
+            for ln in lines]
 
 
 RNA_LIB_TYPES = {"C", "C4", "C5", "CA", "CB", "CI", "CP", "CQ", "CS", "CT", "H", "H1", "H2", "H4", "H5",
@@ -750,22 +915,6 @@ def _frcmod_new_types(path: str, ctx) -> List[str]:
             if t not in RNA_LIB_TYPES and t not in found:
                 found.append(t)
     return found
-
-
-def _ranges(text: str) -> List[Tuple[int, int]]:
-    out = []
-    for tok in re.split(r"[,\s]+", (text or "").strip()):
-        if not tok:
-            continue
-        m = re.fullmatch(r"(\d+)(?:-(\d+))?", tok)
-        if not m:
-            return []
-        lo = int(m.group(1))
-        hi = int(m.group(2) or lo)
-        if hi < lo:
-            return []
-        out.append((lo, hi))
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +976,9 @@ class AmberRestraintsTool(Tool):
         model, _src, _ = secondary_structure(s, ctx)
         data = {"pairs": len(model.pairs)} if model else {}
         return {"restraints": PortValue([ctx.own("helix", "dist")], "dist", data)}
+
+    def resources(self, s):
+        return ["ambertools"]
 
     def generate(self, s, ctx):
         model, source, _ = secondary_structure(s, ctx)
@@ -1307,6 +1459,9 @@ class AmberMDTool(Tool):
                 if st["listout"]:
                     lines.append("LISTOUT=POUT")
         return "\n".join(lines) + "\n"
+
+    def resources(self, s):
+        return ["ambertools", "pmemd"] + (["cpptraj"] if s.get("dry_pdb") or s.get("dry_traj") else [])
 
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []

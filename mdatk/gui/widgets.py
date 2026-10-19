@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, Gtk, Pango  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # dotted-path access
@@ -53,7 +55,7 @@ def rgba_to_hex(rgba: Gdk.RGBA) -> str:
 def spin(lo: float, hi: float, step: float = 1.0, digits: int = 0, tooltip: str = "") -> Gtk.SpinButton:
     adj = Gtk.Adjustment(value=lo, lower=lo, upper=hi, step_increment=step, page_increment=step * 10)
     w = Gtk.SpinButton(adjustment=adj, digits=digits, numeric=True)
-    w.set_width_chars(7)
+    w.set_width_chars(5)
     if tooltip:
         w.set_tooltip_text(tooltip)
     return w
@@ -72,6 +74,7 @@ def entry(placeholder: str = "", tooltip: str = "", width: int = 20) -> Gtk.Entr
 
 def check(label: str, tooltip: str = "") -> Gtk.CheckButton:
     w = Gtk.CheckButton(label=label)
+    wrap_child(w)
     if tooltip:
         w.set_tooltip_text(tooltip)
     return w
@@ -82,6 +85,7 @@ def combo(items: Sequence[Tuple[str, str]], tooltip: str = "") -> Gtk.ComboBoxTe
     w = Gtk.ComboBoxText()
     for ident, label in items:
         w.append(ident, label)
+    ellipsize_combo(w)
     if tooltip:
         w.set_tooltip_text(tooltip)
     return w
@@ -91,6 +95,7 @@ def combo_entry(items: Sequence[str] = (), tooltip: str = "") -> Gtk.ComboBoxTex
     w = Gtk.ComboBoxText.new_with_entry()
     for it in items:
         w.append_text(it)
+    w.get_child().set_width_chars(8)
     w.set_hexpand(True)
     if tooltip:
         w.set_tooltip_text(tooltip)
@@ -103,6 +108,23 @@ def set_combo_entry_items(w: Gtk.ComboBoxText, items: Sequence[str]) -> None:
     for it in items:
         w.append_text(it)
     w.get_child().set_text(text)
+
+
+def wrap_child(button: Gtk.Button, chars: int = 48) -> None:
+    """Let a check/radio button's label wrap so long texts fit the fixed-width side bar."""
+    child = button.get_child()
+    if isinstance(child, Gtk.Label):
+        child.set_line_wrap(True)
+        child.set_max_width_chars(chars)
+        child.set_xalign(0.0)
+
+
+def ellipsize_combo(w: Gtk.ComboBox, chars: int = 12) -> None:
+    """Long item labels are shortened with '…' instead of widening the side bar."""
+    for cell in w.get_cells():
+        if isinstance(cell, Gtk.CellRendererText):
+            cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+            cell.set_property("width-chars", chars)
 
 
 def color_button(tooltip: str = "") -> Gtk.ColorButton:
@@ -152,7 +174,8 @@ class Form(Gtk.Grid):
         self._row = 0
 
     def add(self, text: str, widget: Gtk.Widget, tooltip: str = "") -> Gtk.Widget:
-        lab = label(text)
+        lab = label(text, wrap=True)
+        lab.set_max_width_chars(18)  # narrow label column: the side bar has a fixed width
         if tooltip:
             lab.set_tooltip_text(tooltip)
             widget.set_tooltip_text(widget.get_tooltip_text() or tooltip)
@@ -194,11 +217,41 @@ def scrolled(child: Gtk.Widget) -> Gtk.ScrolledWindow:
     return sw
 
 
+def filter_name(name: str, patterns: Sequence[str]) -> str:
+    """'Trajectory files' + ['*.nc', '*.dcd'] -> 'Trajectory files (.nc, .dcd)'."""
+    exts: List[str] = []
+    for p in patterns:
+        ext = p[1:] if p.startswith("*") else p
+        if ext and ext.lower() not in [e.lower() for e in exts]:
+            exts.append(ext)
+    return f"{name} ({', '.join(exts)})" if exts else name
+
+
+def add_filters(dlg: Gtk.FileChooser, patterns: Sequence[Tuple[str, Sequence[str]]],
+                all_files: bool = True) -> None:
+    """File type filters whose names list their extensions; matching ignores case."""
+    for name, pats in patterns:
+        flt = Gtk.FileFilter()
+        flt.set_name(filter_name(name, pats))
+        for p in pats:
+            flt.add_pattern(p)
+            if p.lower() != p:
+                flt.add_pattern(p.lower())
+            if p.upper() != p:
+                flt.add_pattern(p.upper())
+        dlg.add_filter(flt)
+    if patterns and all_files:
+        flt = Gtk.FileFilter()
+        flt.set_name("All files")
+        flt.add_pattern("*")
+        dlg.add_filter(flt)
+
+
 def file_chooser_button(title: str, action=Gtk.FileChooserAction.OPEN,
                         patterns: Sequence[Tuple[str, Sequence[str]]] = ()) -> Gtk.Box:
     """Entry + browse button (more flexible than Gtk.FileChooserButton)."""
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-    ent = entry(width=22)
+    ent = entry(width=18)
     btn = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
     btn.set_tooltip_text(f"Browse: {title}")
 
@@ -207,19 +260,14 @@ def file_chooser_button(title: str, action=Gtk.FileChooserAction.OPEN,
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
                         Gtk.STOCK_OPEN if action != Gtk.FileChooserAction.SAVE else Gtk.STOCK_SAVE,
                         Gtk.ResponseType.OK)
-        for name, pats in patterns:
-            flt = Gtk.FileFilter()
-            flt.set_name(name)
-            for p in pats:
-                flt.add_pattern(p)
-            dlg.add_filter(flt)
-        if patterns:
-            flt = Gtk.FileFilter()
-            flt.set_name("All files")
-            flt.add_pattern("*")
-            dlg.add_filter(flt)
+        add_filters(dlg, patterns)
         current = ent.get_text().strip()
-        if current:
+        if action == Gtk.FileChooserAction.SAVE:
+            dlg.set_do_overwrite_confirmation(True)
+            if current:
+                dlg.set_current_folder(os.path.dirname(os.path.abspath(current)))
+                dlg.set_current_name(os.path.basename(current))
+        elif current:
             dlg.set_filename(current)
         if dlg.run() == Gtk.ResponseType.OK:
             ent.set_text(dlg.get_filename() or "")
@@ -368,9 +416,12 @@ class ListEditor(Gtk.Box):
         self.buttons.pack_start(button("Add", self.add_row, icon="list-add-symbolic"), False, False, 0)
         self.buttons.pack_start(button("Remove", self.remove_selected, icon="list-remove-symbolic"),
                                 False, False, 0)
-        self.buttons.pack_start(button("Up", lambda: self.move(-1), icon="go-up-symbolic"), False, False, 0)
-        self.buttons.pack_start(button("Down", lambda: self.move(1), icon="go-down-symbolic"),
-                                False, False, 0)
+        for icon, tip, delta in (("go-up-symbolic", "Move the selected row up", -1),
+                                 ("go-down-symbolic", "Move the selected row down", 1)):
+            btn = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
+            btn.set_tooltip_text(tip)
+            btn.connect("clicked", lambda _b, d=delta: self.move(d))
+            self.buttons.pack_start(btn, False, False, 0)
         self.pack_start(self.buttons, False, False, 0)
         self.on_change: Optional[Callable[[], None]] = None
 

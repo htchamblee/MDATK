@@ -205,7 +205,7 @@ def test_planner_template_connect_and_write(main, tmp_path):
     assert main.planner is pl and main.project.workflow.nodes  # same workflow, windows kept
 
 
-def test_planner_delete_and_preset_roundtrip(main, tmp_path):
+def test_planner_delete_and_project_roundtrip(main, tmp_path):
     main.open_planner()
     pl = main.planner
     pl.add_template("amber-gromacs")
@@ -220,8 +220,8 @@ def test_planner_delete_and_preset_roundtrip(main, tmp_path):
     pl.d_note.get_buffer().set_text("check the Mg count")
     pump(0.6)
     assert note.settings["text"] == "check the Mg count"
-    path = str(tmp_path / "preset.json")
-    main.preset_path = path
+    path = str(tmp_path / "plan.mdatk.toml")
+    main.project_path = path
     project = main.collect(validate=False)
     project.save(path)
     loaded = Project.load(path)

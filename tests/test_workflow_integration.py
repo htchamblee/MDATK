@@ -41,7 +41,7 @@ def _wrappers(tmp_path):
         p.write_text('#!/bin/sh\nexec python3 -c "import sys; from parmed.scripts import clapp; '
                      'sys.argv[0] = \'parmed\'; clapp()" "$@"\n')
         p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", AMBERHOME=AMBERHOME)
 
 
 def _duplex_pdb(tmp_path):
@@ -186,3 +186,37 @@ def test_optimised_mg_pairs_reach_gromacs(tmp_path, model, water):
     assert float(mg_line[-1]) == pytest.approx(p.ion[1], rel=1e-5)
     if run_gmx:
         assert (gro_dir / f"mg_02_md_{STAMP}.gro").exists()
+
+
+def test_amber_build_cp_library_tip4p2005_nanomg(tmp_path):
+    env = _wrappers(tmp_path)
+    wf = WorkflowParams(project_name="duplex", stamp=STAMP)
+    b = add_node(wf, "amber-build", settings={"water": "tip4p2005", "mg_model": "nano", "mg_count": 2,
+                                              "buffer": 8.0})
+    b.files["structure"] = _duplex_pdb(tmp_path)
+    plan = Plan(wf, str(tmp_path / "plan"))
+    assert not [i for _n, i in plan.all_issues() if i.level == "error"]
+    report = plan.write()
+    proc = subprocess.run(["bash", report.master], capture_output=True, text=True, env=env, timeout=1800)
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    step = tmp_path / "plan" / "01_amber-build"
+    log = (step / f"duplex_01_tleap_{STAMP}.log").read_text()
+    assert "Could not find" not in log and "FATAL" not in log
+    top = (step / f"duplex_01_parmed_{STAMP}.parm7").read_text()
+    types = " ".join(top.split("%FLAG AMBER_ATOM_TYPE")[1].split("%FLAG")[0].splitlines()[1:])
+    assert " OP " in f" {types} " and " OR " in f" {types} " and " EP " in f" {types} "
+    pm_log = (step / f"duplex_01_parmed_{STAMP}.log").read_text()
+    assert "@%OP-@%HO" in pm_log.replace(" ", "") or "OP" in pm_log
+
+
+def test_amber_build_1264_with_cp_library(tmp_path):
+    env = _wrappers(tmp_path)
+    wf = WorkflowParams(project_name="duplex", stamp=STAMP)
+    b = add_node(wf, "amber-build", settings={"water": "tip3p", "mg_model": "1264", "mg_count": 2, "buffer": 8.0})
+    b.files["structure"] = _duplex_pdb(tmp_path)
+    plan = Plan(wf, str(tmp_path / "plan"))
+    report = plan.write()
+    proc = subprocess.run(["bash", report.master], capture_output=True, text=True, env=env, timeout=1800)
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    step = tmp_path / "plan" / "01_amber-build"
+    assert "LENNARD_JONES_CCOEF" in (step / f"duplex_01_parmed_{STAMP}.parm7").read_text()

@@ -174,6 +174,9 @@ class GromacsTool(Tool):
             out["trajectory"] = PortValue([ctx.own(tags[k], "xtc") for k in prod], "xtc")
         return out
 
+    def resources(self, s):
+        return ["gromacs"] + {"parmed": ["parmed"], "acpype": ["acpype"]}.get(s["convert"], [])
+
     def describe(self, s):
         return f"GROMACS {s['gmx_version']}: " + " → ".join(self._tags(s))
 

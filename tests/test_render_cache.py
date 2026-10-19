@@ -59,8 +59,9 @@ def test_layout_slots_tile_without_overlap(name):
     assert used.max() == 1
     assert n_slots(name) == len(slots)
     if name.startswith("equal_"):
-        sizes = {(r1 - r0) * (c1 - c0) for r0, r1, c0, c1 in slots}
-        assert len(sizes) == 1  # equal-sized panels
+        panels = slots[:-1] if name.endswith("_strip") else slots
+        sizes = {(r1 - r0) * (c1 - c0) for r0, r1, c0, c1 in panels}
+        assert len(sizes) == 1  # equal-sized panels (besides the strip)
 
 
 def test_cache_roundtrip_and_manifest(tmp_path):
