@@ -944,11 +944,11 @@ REFERENCE_DATA = [
     },
     {
         "key": 'afonine2018rsr',
-        "text": 'Afonine P. V., Poon B. K., Read R. J., Sobolev O. V., Terwilliger T. C., Urzhumtsev A., Adams P. D. Acta Cryst. D 2018, 74. doi:10.1107/S2059798318006551',
-        "bibtex": '@article{afonine2018rsr,\n  author = {Afonine, P. V. and Poon, B. K. and Read, R. J. and Sobolev, O. V. and Terwilliger, T. C. and Urzhumtsev, A. and Adams, P. D.},\n  title = {{Real-space refinement in PHENIX for cryo-EM and crystallography}},\n  journal = {Acta Crystallographica Section D},\n  year = {2018},\n  volume = {74},\n  doi = {10.1107/S2059798318006551}\n}',
+        "text": 'Afonine P. V., Poon B. K., Read R. J., Sobolev O. V., Terwilliger T. C., Urzhumtsev A., Adams P. D. Acta Cryst. D 2018, 74, 531-544. doi:10.1107/S2059798318006551',
+        "bibtex": '@article{afonine2018rsr,\n  author = {Afonine, P. V. and Poon, B. K. and Read, R. J. and Sobolev, O. V. and Terwilliger, T. C. and Urzhumtsev, A. and Adams, P. D.},\n  title = {{Real-space refinement in PHENIX for cryo-EM and crystallography}},\n  journal = {Acta Crystallographica Section D},\n  year = {2018},\n  volume = {74},\n  pages = {531--544},\n  doi = {10.1107/S2059798318006551}\n}',
         "doi": '10.1107/S2059798318006551',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:5f7a240d-Real-space_refinement_in_PHENIX_for_cryo-EM_and_crystallography_2018.pdf',
     },
     {
         "key": 'emsley2010coot',
@@ -960,11 +960,11 @@ REFERENCE_DATA = [
     },
     {
         "key": 'casanal2020coot',
-        "text": 'Casañal A., Lohkamp B., Emsley P. Protein Sci. 2020, 29. doi:10.1002/pro.3791',
-        "bibtex": '@article{casanal2020coot,\n  author = {Casañal, A. and Lohkamp, B. and Emsley, P.},\n  title = {{Current developments in Coot for macromolecular model building of Electron Cryo-microscopy and Crystallographic Data}},\n  journal = {Protein Science},\n  year = {2020},\n  volume = {29},\n  doi = {10.1002/pro.3791}\n}',
+        "text": 'Casañal A., Lohkamp B., Emsley P. Protein Sci. 2020, 29, 1055-1064. doi:10.1002/pro.3791',
+        "bibtex": '@article{casanal2020coot,\n  author = {Casañal, A. and Lohkamp, B. and Emsley, P.},\n  title = {{Current developments in Coot for macromolecular model building of Electron Cryo-microscopy and Crystallographic Data}},\n  journal = {Protein Science},\n  year = {2020},\n  volume = {29},\n  pages = {1055--1064},\n  doi = {10.1002/pro.3791}\n}',
         "doi": '10.1002/pro.3791',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:8e9c26f4-Protein_Science_-_2019_-_Casa_al_-_Current_developments_in_Coot_for_macromolecular_model_building_of_Electron.pdf',
     },
     {
         "key": 'long2017acedrg',
@@ -976,11 +976,11 @@ REFERENCE_DATA = [
     },
     {
         "key": 'agirre2023ccp4',
-        "text": 'Agirre J., et al. Acta Cryst. D 2023, 79. doi:10.1107/S2059798323003595',
-        "bibtex": '@article{agirre2023ccp4,\n  author = {Agirre, J. and others},\n  title = {{The CCP4 suite: integrative software for macromolecular crystallography}},\n  journal = {Acta Crystallographica Section D},\n  year = {2023},\n  volume = {79},\n  doi = {10.1107/S2059798323003595}\n}',
+        "text": 'Agirre J., et al. Acta Cryst. D 2023, 79, 449-461. doi:10.1107/S2059798323003595',
+        "bibtex": '@article{agirre2023ccp4,\n  author = {Agirre, J. and others},\n  title = {{The CCP4 suite: integrative software for macromolecular crystallography}},\n  journal = {Acta Crystallographica Section D},\n  year = {2023},\n  volume = {79},\n  pages = {449--461},\n  doi = {10.1107/S2059798323003595}\n}',
         "doi": '10.1107/S2059798323003595',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:36fbeba5-The_CCP4_suite_integrative_software_for_macromolecular_crystallography_2023.pdf',
     },
     {
         "key": 'moriarty2009elbow',
@@ -992,19 +992,19 @@ REFERENCE_DATA = [
     },
     {
         "key": 'westbrook2015ccd',
-        "text": 'Westbrook J. D., Shao C., Feng Z., Zhuravleva M., Velankar S., Young J. Bioinformatics 2015, 31. doi:10.1093/bioinformatics/btu789',
-        "bibtex": '@article{westbrook2015ccd,\n  author = {Westbrook, J. D. and Shao, C. and Feng, Z. and Zhuravleva, M. and Velankar, S. and Young, J.},\n  title = {{The chemical component dictionary: complete descriptions of constituent molecules in experimentally determined 3D macromolecules in the Protein Data Bank}},\n  journal = {Bioinformatics},\n  year = {2015},\n  volume = {31},\n  doi = {10.1093/bioinformatics/btu789}\n}',
+        "text": 'Westbrook J. D., Shao C., Feng Z., Zhuravleva M., Velankar S., Young J. Bioinformatics 2015, 31, 1274-1278. doi:10.1093/bioinformatics/btu789',
+        "bibtex": '@article{westbrook2015ccd,\n  author = {Westbrook, J. D. and Shao, C. and Feng, Z. and Zhuravleva, M. and Velankar, S. and Young, J.},\n  title = {{The chemical component dictionary: complete descriptions of constituent molecules in experimentally determined 3D macromolecules in the Protein Data Bank}},\n  journal = {Bioinformatics},\n  year = {2015},\n  volume = {31},\n  pages = {1274--1278},\n  doi = {10.1093/bioinformatics/btu789}\n}',
         "doi": '10.1093/bioinformatics/btu789',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:21b189ac-The_chemical_component_dictionary_complete_descriptions_of_constituent_molecules_in_experimentally_determined_3D_macromolecules_in_the_Protein_Data_Bank_2014.pdf',
     },
     {
         "key": 'kim2023pubchem',
-        "text": 'Kim S., Chen J., Cheng T., et al. Nucleic Acids Res. 2023, 51. doi:10.1093/nar/gkac956',
-        "bibtex": '@article{kim2023pubchem,\n  author = {Kim, S. and Chen, J. and Cheng, T. and others},\n  title = {{PubChem 2023 update}},\n  journal = {Nucleic Acids Research},\n  year = {2023},\n  volume = {51},\n  doi = {10.1093/nar/gkac956}\n}',
+        "text": 'Kim S., Chen J., Cheng T., et al. Nucleic Acids Res. 2023, 51, D1373-D1380. doi:10.1093/nar/gkac956',
+        "bibtex": '@article{kim2023pubchem,\n  author = {Kim, S. and Chen, J. and Cheng, T. and others},\n  title = {{PubChem 2023 update}},\n  journal = {Nucleic Acids Research},\n  year = {2023},\n  volume = {51},\n  pages = {D1373--D1380},\n  doi = {10.1093/nar/gkac956}\n}',
         "doi": '10.1093/nar/gkac956',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:3aa3b349-PubChem_2023_update.pdf',
     },
 ]
 
