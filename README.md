@@ -279,7 +279,12 @@ the AmberTools installation, and loads them after `leaprc.RNA.OL3`. The NBfix19 
 address the phosphate oxygens as `@%OP` / `@%OR`, as their authors describe (0BPh: "H5−OR/OS and
 H4−OR/OS atom types", OR in OL3CP). *Own frcmod file* loads a CP parameter file you provide instead
 (masks stay `@%O2` / `@%OS`). Only standard (D-) residues are retyped; L-RNA libraries keep their own
-types (Dudek & Trylska type O5′ and O4′ as LD).
+types (Dudek & Trylska type O5′ and O4′ as LD). With *NBfix19 / 0BPh / CP for L-RNA* (on by default) the
+build declares the L-RNA library's types for tleap (`addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }`)
+and adds the same pairs for its oxygen type: `changeLJPair @%HO @%LD 3.03 0.01` (NBfix19),
+`@%H5 @%LD 2.8808 0.0505` and `@%H4 @%LD 2.9308 0.0505` (0BPh). ParmEd skips them when the structure has
+no L residues. The CP correction of L residues comes with the L-RNA parameter file (e.g. `frcmod.LRNA`);
+the types are editable (*L-RNA atom types*) for libraries that name them differently.
 
 **TIP4P/2005.** AmberTools ships no TIP4P/2005 files. The build script derives `frcmod.tip4p2005` and
 `tip4p2005box.off` from AmberTools' TIP4P-Ew files with the Abascal & Vega (2005) values (ε/k 93.2 K,

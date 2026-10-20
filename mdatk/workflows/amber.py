@@ -98,6 +98,19 @@ LRNA_NOTE = [
     "# 'Extra ParmEd commands' when the topology contains L-RNA residues.",
 ]
 
+
+def lrna_pair_lines(nbfix19: bool, bph0: bool, bridging: str = "LD") -> List[str]:
+    """NBfix19 / 0BPh pairs for the L-RNA library, whose bridging phosphate oxygens (O3'/O5') have their
+    own type (LD) instead of OS / OR; the base types (NB, NC, H) are shared with D-RNA, so the -NH...N-
+    pair above already covers L residues.  ParmEd skips the lines when no atom has the type."""
+    t = f"@%{bridging}"
+    out = ["#", f"# L-RNA pairs: bridging phosphate oxygens of the L-RNA library have the type {bridging}"]
+    if nbfix19:
+        out.append(f"changeLJPair @%HO {t} 3.03 0.01")
+    if bph0:
+        out += [f"changeLJPair @%H5 {t} 2.8808 0.0505", f"changeLJPair @%H4 {t} 2.9308 0.0505"]
+    return out
+
 # ---------------------------------------------------------------------------
 # shared option builders
 # ---------------------------------------------------------------------------
@@ -370,6 +383,15 @@ class AmberBuildTool(Tool):
                    "LA5/LA3 ... at chain ends as in nucleic12_LRNA.lib. Off: plain LA/LC/LG/LU at the ends "
                    "(as to_lrna.sh wrote), for libraries that map terminals with addPdbResMap.",
                    requires={"lrna": True}),
+            Option("lrna_fixes", "NBfix19 / 0BPh / CP for L-RNA", "bool", True,
+                   "Declare the L-RNA library's atom types for tleap (addAtomTypes) and add the NBfix19 / "
+                   "0BPh pairs for its bridging-oxygen type (HO, H5, H4 against LD, as for OS / OR in "
+                   "D-RNA). ParmEd skips them when the structure has no L residues. The CP correction of "
+                   "L residues comes with the L-RNA parameter file (e.g. frcmod.LRNA)."),
+            Option("lrna_types", "L-RNA atom types", "text", "LD LH",
+                   "Atom types of the L-RNA library declared as sp3 oxygens before it is loaded; the first "
+                   "one is the bridging phosphate oxygen used in the NBfix19 / 0BPh pairs.",
+                   requires={"lrna_fixes": True}),
             Option("two_pass", "Two-pass build", "bool", False,
                    "L-RNA naming -> dry tleap -> ParmEd -> ambpdb -> solvated tleap -> ParmEd. The ambpdb "
                    "PDB keeps the dry topology's residue names (Amber terminal names are re-applied)."),
@@ -449,6 +471,13 @@ class AmberBuildTool(Tool):
         if s["lrna"] and s["lrna_ranges"].strip():
             parts.append("L-RNA " + s["lrna_ranges"].strip())
         return ", ".join(parts)
+
+    @staticmethod
+    def _lrna_types(s) -> List[str]:
+        """L-RNA atom types to declare / pair ([] when the L-RNA fixes are off)."""
+        if not (s["lrna"] and s["lrna_fixes"]):
+            return []
+        return [t for t in re.split(r"[\s,]+", s["lrna_types"].strip()) if t]
 
     @staticmethod
     def _cp_lib(s) -> bool:
@@ -533,10 +562,16 @@ class AmberBuildTool(Tool):
                              "L-RNA residues need their library and parameters: add them under Force field "
                              "(e.g. Dudek & Trylska's nucleic12_LRNA.lib with parm10_LRNA.dat, or your own "
                              "LRNA.lib + frcmod.LRNA)", ("extra_libs", "extra_frcmod")))
-        if n_l and "LD" not in s["leap_before_params"]:
+        if n_l and "LD" not in s["leap_before_params"] and not s["lrna_fixes"]:
             out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
                                      "add  addAtomTypes { { \"LD\" \"O\" \"sp3\" } { \"LH\" \"O\" \"sp3\" } }  "
                                      "under 'Leap commands before parameters'", ("leap_before_params",)))
+        bad = [t for t in self._lrna_types(s) if not re.fullmatch(r"[A-Za-z0-9*+-]{1,4}", t)]
+        if bad:
+            out.append(Issue("error", f"L-RNA atom types {', '.join(bad)}: 1-4 letters / digits each", ("lrna_types",)))
+        elif s["lrna"] and s["lrna_fixes"] and not self._lrna_types(s) and (s["nbfix19"] or s["bph0"]):
+            out.append(Issue("warning", "no L-RNA atom type given: the NBfix19 / 0BPh pairs miss L residues",
+                             ("lrna_types",)))
         if not path and ctx.has("structure"):
             out.append(Issue("info", "L-nucleotides are detected from the sugar geometry when the script runs "
                                      "(the input PDB does not exist yet)", ("lrna",)))
@@ -689,6 +724,9 @@ class AmberBuildTool(Tool):
                 lines += ["loadamberparams frcmod.tip4p2005", "loadOff tip4p2005box.off",
                           "WAT = TIP4P2005", "HOH = TIP4P2005"]
         lines += extra_lines(s["leap_before_params"])
+        types = self._lrna_types(s)
+        if types and not any("addAtomTypes" in ln and types[0] in ln for ln in extra_lines(s["leap_before_params"])):
+            lines.append("addAtomTypes { " + " ".join(f'{{ "{t}" "O" "sp3" }}' for t in types) + " }")
         if self._cp_frcmod(s):
             lines.append(f"loadamberparams {s['cp_frcmod'].strip()}")
         if self._cp_lib(s):
@@ -746,7 +784,9 @@ class AmberBuildTool(Tool):
             lines += _cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES
         if s["bph0"]:
             lines += _cp_masks(BPH0_LINES) if cp else BPH0_LINES
-        if s["nbfix19"] or s["bph0"]:
+        if (s["nbfix19"] or s["bph0"]) and self._lrna_types(s):
+            lines += lrna_pair_lines(s["nbfix19"], s["bph0"], self._lrna_types(s)[0])
+        elif s["nbfix19"] or s["bph0"]:
             lines += LRNA_NOTE
         if wet and self._solvated(s) and s["mg_model"] == "1264":
             lines += ["#", "# 12-6-4 Lennard-Jones terms for Mg2+ (Li & Merz)",
