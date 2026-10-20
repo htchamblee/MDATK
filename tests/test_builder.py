@@ -15,6 +15,7 @@ USERFILES = os.environ.get("MDATK_TEST_USERFILES",
                            "/tmp/claude-0/-home-user-MDATK/85f8b95c-a2c8-519b-b4e2-60a59ac5f943/scratchpad/"
                            "userfiles03")
 HELICES = os.path.join(USERFILES, "3bcdf791-helices_73.pdb")
+HELICES_FIXED = os.path.join(USERFILES, "helices_fixed.pdb")  # the rebuilt starting helices
 
 
 # --- helpers ----------------------------------------------------------------------------------------
@@ -219,10 +220,12 @@ def test_helix_sugars_are_c3_endo():
     assert 75 < delta < 90 and nu2 > 30 and -175 < chi < -150
 
 
-@pytest.mark.skipif(not os.path.isfile(HELICES), reason="user model not available")
-def test_backbone_matches_an_experimental_a_form_helix():
+@pytest.mark.parametrize("model", [HELICES, HELICES_FIXED])
+def test_backbone_matches_an_experimental_a_form_helix(model):
     from mdatk.spatial import kabsch
-    ref = {(r.chain, r.resseq): r.coords() for r in pt.read_pdb(HELICES).residues()}
+    if not os.path.isfile(model):
+        pytest.skip("user model not available")
+    ref = {(r.chain, r.resseq): r.coords() for r in pt.read_pdb(model).residues()}
 
     def p_rmsd(seq, chirality, keys):
         mine = [r.coords() for r in pt.read_pdb(B.build_helix(seq, chirality=chirality,
@@ -230,7 +233,9 @@ def test_backbone_matches_an_experimental_a_form_helix():
         x = np.array([m["P"] for m, k in zip(mine, keys) if "P" in ref[k]])
         y = np.array([ref[k]["P"] for m, k in zip(mine, keys) if "P" in ref[k]])
         r, mc, rc = kabsch(x, y)
-        return np.sqrt((((x - mc) @ r.T + rc - y) ** 2).sum(axis=1).mean()), len(x)
+        rmsd = np.sqrt((((x - mc) @ r.T + rc - y) ** 2).sum(axis=1).mean())
+        print(f"{os.path.basename(model)} {seq} {chirality}: P RMSD {rmsd:.2f} A over {len(x)}")
+        return rmsd, len(x)
 
     # chain A 1-6 pairs with B 44-39 and A 13-16 with B 20-17 (two stems, not stacked on each other)
     rmsd, n = p_rmsd("GGGCAA", "D", [("A", i) for i in range(1, 7)] + [("B", i) for i in range(39, 45)])

@@ -881,8 +881,9 @@ def test_amber_build_cp_library_and_tip4p2005():
     assert any("Na+ parameters exist for TIP4P/2005" in m for m in messages(st, "warning"))
     files = generated(plan)
     leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
-    assert leap[2:11] == ["source leaprc.RNA.OL3", "source leaprc.water.tip4pew", "loadamberparams frcmod.tip4p2005",
+    assert leap[2:12] == ["source leaprc.RNA.OL3", "source leaprc.water.tip4pew", "loadamberparams frcmod.tip4p2005",
                           "loadOff tip4p2005box.off", "WAT = TIP4P2005", "HOH = TIP4P2005",
+                          'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }',
                           'addAtomTypes { { "OR" "O" "sp3" } }', "loadamberparams frcmod.cp", "loadOff RNA_CP.lib"]
     assert leap.index("loadOff RNA_CP.lib") < leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod")
     assert "solvateoct mol TIP4P2005BOX 15.0" in leap
@@ -963,3 +964,29 @@ def test_builder_and_cryoem_templates_write_valid_plans(tmp_path):
     for path in scripts:
         proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
         assert proc.returncode == 0, (path, proc.stderr)
+
+
+
+def test_lrna_force_field_fixes_are_automatic():
+    """NBfix19 / 0BPh pairs for the L-RNA bridging-oxygen type and its atom types for tleap, as in the
+    validated hand-written L-parmed_0BPh_NBfix19.in."""
+    plan, st = step("amber-build", {"mg_count": 2}, {"structure": "/x.pdb"})
+    files = generated(plan)
+    parmed = next(f.content for n, f in files.items() if n.endswith(".in") and "parmed" in n)
+    for line in ("changeLJPair @%HO @%LD 3.03 0.01", "changeLJPair @%H5 @%LD 2.8808 0.0505",
+                 "changeLJPair @%H4 @%LD 2.9308 0.0505"):
+        assert line in parmed
+    assert "are not included" not in parmed
+    leap = next(f.content for n, f in files.items() if n.endswith(".leap"))
+    assert 'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }' in leap
+    # only NBfix19: no 0BPh pairs; fixes off: the old note, no declaration
+    plan, _ = step("amber-build", {"bph0": False}, {"structure": "/x.pdb"})
+    parmed = next(f.content for n, f in generated(plan).items() if n.endswith(".in") and "parmed" in n)
+    assert "@%HO @%LD" in parmed and "@%H5 @%LD" not in parmed
+    plan, _ = step("amber-build", {"lrna_fixes": False}, {"structure": "/x.pdb"})
+    files = generated(plan)
+    parmed = next(f.content for n, f in files.items() if n.endswith(".in") and "parmed" in n)
+    assert "\nchangeLJPair @%HO @%LD" not in parmed and "are not included" in parmed
+    assert "LD" not in next(f.content for n, f in files.items() if n.endswith(".leap"))
+    _, st = step("amber-build", {"lrna_types": "L?D"}, {"structure": "/x.pdb"})
+    assert any("L-RNA atom types" in m for m in messages(st, "error"))
