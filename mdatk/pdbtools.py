@@ -33,6 +33,7 @@ chains them for the CLI / GUI / planner.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import re
 import string
@@ -684,7 +685,7 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                      + _listing(term_mismatch))
     if phosphate:
         notes.append("WARNING: 5'-terminal residues carry P/OP1/OP2, which the Amber 5' units do not have "
-                     "(tleap cannot type them; remove the phosphate or cap the end): " + _listing(phosphate))
+                     "(tleap cannot type them; remove them with --strip-5p or cap the end): " + _listing(phosphate))
     if kept_phosphate:
         notes.append("5'-terminal L residues with a 5'-phosphate keep the CCD component names (0A ..., which "
                      "include P/OP1/OP2/OP3; the 5' variants 0A5 ... have a 5'-OH): " + _listing(kept_phosphate))
@@ -890,6 +891,49 @@ def order_chains(structure: Structure, order: Optional[Sequence[str]] = None) ->
 
 # --- numbering and sequence ---------------------------------------------------------------------------
 
+PHOSPHATE_5P = ("P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P")
+
+
+def strip_5prime_phosphates(structure: Structure) -> List[str]:
+    """Remove P/OP1/OP2/OP3 from the first nucleotide of every TER segment (Amber's 5'-terminal units
+    have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5')."""
+    changed, skipped, emptied = [], [], []
+    for seg in structure.segments:
+        res = next((r for r in seg if not _is_solvent(r)), None)
+        while res is not None and res.atoms and all(a.name.replace("*", "'") in PHOSPHATE_5P for a in res.atoms):
+            emptied.append(res.label)  # a lone 5'-phosphate modelled as its own residue
+            seg.remove(res)
+            res = next((r for r in seg if not _is_solvent(r)), None)
+        if res is None:
+            continue
+        if _nucleotide(res) is None:
+            skipped.append(res.label)  # the segment starts with something else: its phosphates stay
+            continue
+        p_atoms = [a for a in res.atoms if a.name.replace("*", "'") in PHOSPHATE_5P]
+        if not p_atoms:
+            continue
+        p = next((a for a in p_atoms if a.name == "P"), None)
+        o5 = next((a for a in res.atoms if a.name.replace("*", "'") == "O5'"), None)
+        has_h = any(a.name.lstrip("0123456789").startswith("H") for a in res.atoms)
+        res.atoms = [a for a in res.atoms if a not in p_atoms]
+        if has_h and p is not None and o5 is not None and not any(a.name == "HO5'" for a in res.atoms):
+            o, d = o5.xyz, [p.xyz[k] - o5.xyz[k] for k in range(3)]
+            n = math.sqrt(sum(v * v for v in d)) or 1.0
+            h = [o[k] + 0.96 * d[k] / n for k in range(3)]
+            tail = f"   {h[0]:8.3f}{h[1]:8.3f}{h[2]:8.3f}" + o5.tail[27:]
+            res.atoms.insert(res.atoms.index(o5) + 1, Atom(o5.record, "HO5'", "", tail, "H"))
+        changed.append(res.label)
+    notes = []
+    if changed:
+        notes.append(f"Removed the 5'-terminal phosphate of {len(changed)} residue(s): " + _listing(changed))
+    if emptied:
+        notes.append(f"Removed {len(emptied)} 5'-terminal residue(s) that held only a phosphate: " + _listing(emptied))
+    if skipped:
+        notes.append("5' phosphates kept where a segment does not start with a recognised nucleotide: "
+                     + _listing(skipped))
+    return notes
+
+
 def renumber_residues(structure: Structure, start: int = 1, per_chain: bool = False,
                       keep_gaps: bool = False) -> List[str]:
     """Renumber residues in file order, continuously across chains (each chain continues after the last
@@ -998,13 +1042,14 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
           combine_into: Optional[str] = None, sort_chains: Union[bool, Sequence[str]] = False,
           renumber: bool = False, start: int = 1, per_chain: bool = False, keep_gaps: bool = False,
           seqres: bool = False, make_fasta: bool = False, title: Optional[str] = None,
-          terminal_names: bool = True) -> CleanResult:
+          terminal_names: bool = True, strip_5p: bool = False) -> CleanResult:
     """Read, fix and write a PDB file in one call; returns the text plus change notes.
 
     Order: parse (ChimeraX repair, first model) -> chain restore (``chain_reference`` / ``chain_ids`` /
     ``assign_chains``) -> chirality (detection unless ``detect_l`` is False; ``l_ranges`` force L and use
     the input residue numbers with the restored chain ids) -> split / combine / ``sort_chains`` (True =
-    alphabetical, or an explicit order) -> residue names (``scheme``) -> renumbering -> record policy
+    alphabetical, or an explicit order) -> 5'-phosphate removal (``strip_5p``) -> residue names (``scheme``) ->
+    renumbering -> record policy
     (``records``; None follows the scheme: 'rosetta' for rosetta, 'pdb' for pdb, else 'keep') -> writing.
     """
     s = read_pdb(source)
@@ -1026,6 +1071,8 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         notes += combine_chains(s, combine, combine_into)
     if sort_chains:
         notes += order_chains(s, None if sort_chains is True else list(sort_chains))
+    if strip_5p:
+        notes += strip_5prime_phosphates(s)
     if scheme:
         notes += convert_names(s, scheme, terminals=terminal_names)
     if renumber:
@@ -1098,6 +1145,8 @@ def _clean_arguments(p) -> None:
     p.add_argument("--per-chain", action="store_true", help="restart the numbering in every chain")
     p.add_argument("--keep-gaps", action="store_true", help="keep numbering gaps when renumbering")
     p.add_argument("--seqres", action="store_true", help="write SEQRES records")
+    p.add_argument("--strip-5p", action="store_true", help="remove the phosphate (P/OP1/OP2/OP3) of every "
+                   "chain's 5'-terminal nucleotide, as Amber's 5' units expect")
     p.add_argument("--fasta", help="also write the sequences to this FASTA file")
 
 
@@ -1113,7 +1162,8 @@ def clean_options(args) -> Dict[str, object]:
                 split_segments=args.split_segments, split_at=args.split_at or None,
                 combine=ids(args.combine), combine_into=args.combine_into, sort_chains=args.sort_chains,
                 renumber=args.renumber, start=args.start, per_chain=args.per_chain, keep_gaps=args.keep_gaps,
-                seqres=args.seqres, make_fasta=bool(args.fasta), terminal_names=not args.no_terminal_names)
+                seqres=args.seqres, make_fasta=bool(args.fasta), terminal_names=not args.no_terminal_names,
+                strip_5p=args.strip_5p)
 
 
 def add_commands(sub) -> list:

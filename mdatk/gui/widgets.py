@@ -52,9 +52,35 @@ def rgba_to_hex(rgba: Gdk.RGBA) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _ignore_wheel(widget, _event) -> bool:
+    widget.stop_emission_by_name("scroll-event")  # the widget keeps its value ...
+    return False  # ... and the event reaches the scrolled sidebar / dialog instead
+
+
+def no_wheel(widget):
+    """Spin buttons, combo boxes and sliders ignore the mouse wheel, so scrolling a page never changes a
+    value by accident (the wheel scrolls the page; the canvas keeps its wheel zoom)."""
+    if not getattr(widget, "_mdatk_no_wheel", False):
+        widget.connect("scroll-event", _ignore_wheel)
+        widget._mdatk_no_wheel = True
+    return widget
+
+
+WHEEL_TYPES = (Gtk.SpinButton, Gtk.ComboBox, Gtk.Range)
+
+
+def no_wheel_tree(root) -> None:
+    """Apply :func:`no_wheel` to every value widget below ``root`` (including its popovers' children)."""
+    if isinstance(root, WHEEL_TYPES) and not isinstance(root, Gtk.Scrollbar):
+        no_wheel(root)
+    if isinstance(root, Gtk.Container):
+        for child in root.get_children():
+            no_wheel_tree(child)
+
+
 def spin(lo: float, hi: float, step: float = 1.0, digits: int = 0, tooltip: str = "") -> Gtk.SpinButton:
     adj = Gtk.Adjustment(value=lo, lower=lo, upper=hi, step_increment=step, page_increment=step * 10)
-    w = Gtk.SpinButton(adjustment=adj, digits=digits, numeric=True)
+    w = no_wheel(Gtk.SpinButton(adjustment=adj, digits=digits, numeric=True))
     w.set_width_chars(5)
     if tooltip:
         w.set_tooltip_text(tooltip)
@@ -82,7 +108,7 @@ def check(label: str, tooltip: str = "") -> Gtk.CheckButton:
 
 def combo(items: Sequence[Tuple[str, str]], tooltip: str = "") -> Gtk.ComboBoxText:
     """Combo with (id, label) items."""
-    w = Gtk.ComboBoxText()
+    w = no_wheel(Gtk.ComboBoxText())
     for ident, label in items:
         w.append(ident, label)
     ellipsize_combo(w)
@@ -92,7 +118,7 @@ def combo(items: Sequence[Tuple[str, str]], tooltip: str = "") -> Gtk.ComboBoxTe
 
 
 def combo_entry(items: Sequence[str] = (), tooltip: str = "") -> Gtk.ComboBoxText:
-    w = Gtk.ComboBoxText.new_with_entry()
+    w = no_wheel(Gtk.ComboBoxText.new_with_entry())
     for it in items:
         w.append_text(it)
     w.get_child().set_width_chars(8)

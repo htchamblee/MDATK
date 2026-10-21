@@ -2,6 +2,8 @@
 the 'mdatk build' command, the planner step and the GUI window."""
 
 import os
+import re
+import shutil
 import subprocess
 
 import numpy as np
@@ -603,3 +605,483 @@ def test_l_ccd_names_match_pdb_clean_and_5prime_phosphates():
     names = [r.name for r in pt.read_pdb(B.build_helix("GGAC", chirality="L", scheme="ccd",
                                                          phosphate5=True)).residues()]
     assert names[0] == "0G" and "0G5" not in names  # a 5' end with its phosphate is the CCD component
+
+
+# --- other pairings: parallel duplexes, (reverse) Hoogsteen pairs, triplexes -------------------------
+
+JRD = os.path.join(USERFILES, "4JRD.pdb")  # poly(rA) parallel duplex (PDB 4JRD), A2-11 pair with B1-10 (HHt)
+
+# donor-acceptor pairs of the intended pairs, written out independently of mdatk.builder:
+# (strand-1 / duplex base, partner base) -> [(atom of the first, atom of the partner)]
+HBONDS = {
+    "reverse-wc": {"AU": [("N1", "N3"), ("N6", "O2")], "UA": [("N3", "N1"), ("O2", "N6")],
+                   "GC": [("N1", "O2"), ("N2", "N3")], "CG": [("O2", "N1"), ("N3", "N2")]},
+    "hoogsteen": {"AU": [("N7", "N3"), ("N6", "O4")], "GC": [("N7", "N3"), ("O6", "N4")]},
+    "reverse-hoogsteen": {"AU": [("N7", "N3"), ("N6", "O2")], "AA": [("N7", "N6"), ("N6", "N1")],
+                          "GG": [("N7", "N1"), ("O6", "N2")]},
+    "hh": {"AA": [("N6", "N7"), ("N7", "N6")]},
+    "wc": {"AU": [("N1", "N3"), ("N6", "O4")], "GC": [("N1", "N3"), ("N2", "O2"), ("O6", "N4")]},
+}
+
+
+def barnaba_pairs(text):
+    """{(chain, resseq, chain, resseq): Leontis-Westhof code} from barnaba (via mdatk.annotate)."""
+    pytest.importorskip("barnaba")
+    from mdatk.annotate import annotate
+    out = {}
+    for rec in annotate(text, engine="barnaba", stacking=False).records:
+        f = rec.split()
+        if f[2] == "PAIR":
+            out[(f[3], int(f[4]), f[6], int(f[7]))] = f[9]
+    return out
+
+
+def strand_pairs(s, parallel, strand=1):
+    """[(residue of strand 1, partner residue)] at each level."""
+    one, other = s.segments[0], s.segments[strand]
+    n = len(one)
+    return [(one[k], other[k] if parallel else other[n - 1 - k]) for k in range(n)]
+
+
+def check_model(text, notes, pairs, table):
+    """H-bonds 2.6-3.3 Å, O3'-P links 1.5-1.7 Å, no heavy-atom contacts < 2.4 Å (3+ bonds apart)."""
+    s = pt.read_pdb(text)
+    for a, b in pairs:
+        ca, cb = a.coords(), b.coords()
+        key = pt.parse_residue_name(a.name).base + pt.parse_residue_name(b.name).base
+        for x, y in table[key]:
+            d = np.linalg.norm(np.subtract(ca[x], cb[y]))
+            assert 2.6 <= d <= 3.3, (a.label, b.label, x, y, d)
+    d = o3p_distances(s)
+    assert 1.5 <= min(d) and max(d) <= 1.7
+    assert any(n.startswith("O3'-P links:") for n in notes)
+    atoms = heavy_atoms(s)
+    dist, topo = topology_distances(atoms, backbone_links(s, atoms))
+    assert dist[topo >= 3].min() >= 2.4
+    # the report checks hydrogens too (placed for the check in a heavy-atom model)
+    assert any(n.startswith("No close contacts (") and "hydrogens included" in n for n in notes), notes
+    return s
+
+
+def test_hh_duplex_matches_4jrd():
+    from mdatk.spatial import kabsch
+    if not os.path.isfile(JRD):
+        pytest.skip("PDB 4JRD not available")
+    notes = []
+    text = B.build_helix("A" * 10, pairing="hh", phosphate5=True, notes=notes)
+    s = check_model(text, notes, strand_pairs(pt.read_pdb(text), True), HBONDS["hh"])
+    ref = {(r.chain, r.resseq): r.coords() for r in pt.read_pdb(JRD).residues() if r.name.strip() == "A"}
+    mine = {(r.chain, r.resseq): r.coords() for r in s.residues()}
+    keys = [(("A", k), ("A", k + 1)) for k in range(1, 11)] + [(("B", k), ("B", k)) for k in range(1, 11)]
+    for atoms, limit in ((["P"], 1.5), (["P", "C4'", "C1'", "N9", "N1"], 1.5)):
+        x = np.array([mine[m][a] for m, r in keys for a in atoms if a in ref[r] and a in mine[m]])
+        y = np.array([ref[r][a] for m, r in keys for a in atoms if a in ref[r] and a in mine[m]])
+        rot, mc, rc = kabsch(x, y)
+        rmsd = np.sqrt((((x - mc) @ rot.T + rc - y) ** 2).sum(axis=1).mean())
+        print(f"4JRD {atoms}: RMSD {rmsd:.2f} A over {len(x)} atoms")
+        assert rmsd < limit
+    codes = barnaba_pairs(text)
+    assert sorted(codes.values()) == ["HHt"] * 10
+    assert set(codes) == {("A", k, "B", k) for k in range(1, 11)}
+    assert "REMARK 951 NUCLEOTIDE OF PDB 4JRD" in text
+
+
+@pytest.mark.parametrize("pairing, seq, code", [
+    ("reverse-wc", "GAUCAGUAGC", "WWt"),
+    ("hoogsteen", "AAGAGAAGGA", "HWc"),
+    ("reverse-hoogsteen", "AAGAAGGAAG", "HWt"),
+    ("hh", "AAAAAAAA", "HHt"),
+])
+def test_pairings_build_the_intended_pairs(pairing, seq, code):
+    notes = []
+    text = B.build_helix(seq, pairing=pairing, notes=notes)
+    s = pt.read_pdb(text)
+    pairs = strand_pairs(s, B.PARALLEL[pairing])
+    check_model(text, notes, pairs, HBONDS[pairing])
+    assert [r.name for r in s.segments[1]] == list(B.auto_partner(seq, pairing))
+    assert any(n.startswith(f"Pairing {pairing}:") for n in notes)
+    assert f"PAIRING {B.PAIRING_LW[pairing]}" in text and not any("mismatch" in n for n in notes)
+    codes = barnaba_pairs(text)
+    want = {(a.chain, a.resseq, b.chain, b.resseq) for a, b in pairs}
+    assert set(codes) == want and set(codes.values()) == {code}
+
+
+@pytest.mark.parametrize("motif, code", [("hoogsteen", "HWc"), ("reverse-hoogsteen", "HWt")])
+def test_triplex_third_strand(motif, code):
+    notes = []
+    seq = "AAGAGAAGGA"
+    text = B.build_helix(seq, triplex=motif, notes=notes)
+    s = pt.read_pdb(text)
+    assert s.chain_ids() == ["A", "B", "C"] and [len(seg) for seg in s.segments] == [10, 10, 10]
+    third = "".join(r.name for r in s.segments[2])
+    assert third == (B.resolve_third(seq, "auto", motif)[0])
+    assert third == ("UUCUCUUCCU" if motif == "hoogsteen" else "AGGAAGAGAA")
+    duplex = strand_pairs(s, False, 1)
+    triples = strand_pairs(s, motif == "hoogsteen", 2)
+    check_model(text, notes, duplex, HBONDS["wc"])
+    check_model(text, notes, triples, HBONDS[motif])
+    if motif == "hoogsteen":
+        assert any("G·C+ Hoogsteen pair(s): the cytosine is written as plain C" in n for n in notes)
+    assert any(n.startswith("Triplex, ") for n in notes) and "THIRD STRAND" in text
+    codes = barnaba_pairs(text)  # skips without barnaba
+    assert {codes[(a.chain, a.resseq, b.chain, b.resseq)] for a, b in duplex} == {"WCc"}
+    assert {codes[(a.chain, a.resseq, b.chain, b.resseq)] for a, b in triples} == {code}
+
+
+@pytest.mark.parametrize("kw", [dict(pairing="hoogsteen"), dict(pairing="reverse-wc"),
+                                dict(triplex="reverse-hoogsteen")])
+def test_l_pairings_are_mirror_images(kw):
+    seq = "AAGAGA"
+    d = pt.read_pdb(B.build_helix(seq, **kw))
+    lh = pt.read_pdb(B.build_helix(seq, chirality="L", **kw))
+    for rd, rl in zip(d.residues(), lh.residues()):
+        cd, cl = rd.coords(), rl.coords()
+        assert set(cd) == set(cl)
+        for name, x in cd.items():
+            assert np.allclose(np.multiply(x, [-1, 1, 1]), cl[name], atol=2e-3)
+    n = len(list(lh.residues()))
+    assert pt.assign_chirality(lh)[0] == f"Chirality (sugar geometry): {n} L and 0 D nucleotides"
+    assert pt.assign_chirality(d)[0] == f"Chirality (sugar geometry): 0 L and {n} D nucleotides"
+    assert {r.name for r in lh.residues()} <= {"0A", "0C", "0G", "0U"}
+
+
+def test_pairing_mismatches_messages_and_errors():
+    # mismatches are built in the reference frame and reported; strand-1 pyrimidines in Hoogsteen pairs
+    msgs = B.check_helix("AAGA", "UUUU", pairing="hoogsteen")
+    assert any(lvl == "warning" and "3:G·U" in t and "mismatched" in t for lvl, t in msgs)
+    assert ("info", "Hoogsteen (cis WC/Hoogsteen: A·U, G·C+), parallel: 4 pairs, 3 canonical cHW, "
+                    "1 mismatched") in msgs
+    notes = []
+    text = B.build_helix("AAGA", "UUUU", pairing="hoogsteen", notes=notes)
+    assert any(n.startswith("WARNING: mismatch A:3 · B:3: no cHW pair") for n in notes)
+    assert len(pt.read_pdb(text).segments) == 2
+    msgs = B.check_helix("AUGA", pairing="hoogsteen")
+    assert any(lvl == "warning" and "2:U·A" in t and "purine strand" in t for lvl, t in msgs)
+    assert B.auto_partner("AAGC", "reverse-hoogsteen") == "GGUU"  # antiparallel: reversed
+    assert B.auto_partner("AAGC", "hoogsteen") == "UUCG" and B.auto_partner("AGA", "hh") == "AGA"
+    msgs = B.check_helix("AAGAG", triplex="hoogsteen", third="UUCUA")
+    assert any(lvl == "warning" and "5:A·G" in t for lvl, t in msgs)  # third-strand A on strand-1 G
+    msgs = B.check_helix("AAUAG", triplex="hoogsteen")
+    assert any(lvl == "warning" and "3:U·U" in t for lvl, t in msgs)  # strand-1 pyrimidine
+    notes = []
+    B.build_helix("AAUAG", triplex="hoogsteen", notes=notes)
+    assert any("a strand-1 pyrimidine has no purine Hoogsteen edge" in n for n in notes)
+    for kw, match in ((dict(pairing="hh", triplex="hoogsteen"), "Watson-Crick duplex"),
+                      (dict(partner="none", pairing="hoogsteen"), "single strand"),
+                      (dict(triplex="hoogsteen", third="UU"), "same length"),
+                      (dict(pairing="zipper"), "unknown pairing"),
+                      (dict(triplex="tetraplex"), "unknown triplex"),
+                      (dict(triplex="hoogsteen", chains="A,B,A"), "three strands")):
+        with pytest.raises(B.BuildError, match=match):
+            B.build_helix("AAGAG", **kw)
+        assert B.check_helix("AAGAG", kw.get("partner", "auto"), kw.get("pairing", "wc"), kw.get("triplex"),
+                             kw.get("third", "auto"))[0][0] == "error" or "chains" in kw
+    s = pt.read_pdb(B.build_helix("AAGAG", triplex="hoogsteen", chains="P,Q", start="5,10"))
+    assert s.chain_ids() == ["P", "Q", "C"] and [seg[0].resseq for seg in s.segments] == [5, 10, 1]
+    assert B.helix_kind() == "A-form" and B.helix_kind("hh") == "parallel tHH"
+    assert B.helix_kind("wc", "reverse-hoogsteen") == "reverse-hoogsteen triplex"
+
+
+def test_pairing_cli_and_planner_step(tmp_path):
+    from mdatk.cli import main
+    from mdatk.workflows import TOOLS
+    from mdatk.workflows.base import StepContext
+
+    out = tmp_path / "hoog.pdb"
+    assert main(["build", "helix", "--seq", "AAGAG", "--pairing", "hoogsteen", "--chirality", "L",
+                 "-o", str(out)]) == 0
+    s = pt.read_pdb(str(out))
+    assert [r.name for r in s.segments[1]] == ["0U", "0U", "0C", "0U", "0C"]
+    out3 = tmp_path / "tri.pdb"
+    assert main(["build", "helix", "--seq", "AAGAG", "--triplex", "reverse-hoogsteen", "--third-strand", "GAGAA",
+                 "--chains", "A,B,T", "--start=1,1,7", "-o", str(out3)]) == 0
+    s = pt.read_pdb(str(out3))
+    assert s.chain_ids() == ["A", "B", "T"] and [r.resseq for r in s.segments[2]][0] == 7
+    assert main(["build", "helix", "--seq", "AAGAG", "--pairing", "hh", "--triplex", "hoogsteen",
+                 "-o", str(tmp_path / "bad.pdb")]) == 1
+
+    tool = TOOLS["structure-builder"]
+    ctx = StepContext("p", 1, "s", tool.tag)
+
+    def issues(**settings):
+        return [(i.level, i.message) for i in tool.check(tool.normalise(settings), ctx)]
+
+    s = tool.normalise({"sequence": "AAGAG", "pairing": "hoogsteen"})
+    assert ("info", "no secondary-structure output: the helix restraints (dot-bracket) assume antiparallel "
+                    "Watson-Crick pairs") in issues(sequence="AAGAG", pairing="hoogsteen")
+    assert [p.name for p in tool.output_ports(s)] == ["pdb"] and tool.ss_model(s) is None
+    assert "--pairing hoogsteen" in tool.command(s, ctx) and "(hoogsteen)" in tool.describe(s)
+    assert not [m for lvl, m in issues(sequence="AAGAG", pairing="hh") if lvl == "error"]
+    assert any(lvl == "warning" and "mismatched" in m for lvl, m in issues(sequence="AAGAG", pairing="hh"))
+    s = tool.normalise({"sequence": "AAGAG", "triplex": "hoogsteen", "start1": -3})
+    cmd = tool.command(s, ctx)
+    assert "--triplex hoogsteen --third-strand auto" in cmd and "--start=-3,1,1" in cmd
+    model = tool.ss_model(s)
+    assert model is not None and model.split(model.dotbracket) == "((((( ))))) ....."
+    assert [p.name for p in tool.output_ports(s)] == ["pdb", "secstruct"]
+    assert ("error", "type the third-strand sequence (or choose the motif bases)") in issues(
+        sequence="AAGAG", triplex="hoogsteen", third_mode="explicit")
+    assert any(lvl == "warning" and "third-strand mismatches" in m
+               for lvl, m in issues(sequence="AAGAG", triplex="hoogsteen", third_mode="explicit", third="UUCUA"))
+    assert any(lvl == "error" and "three different chain ids" in m
+               for lvl, m in issues(sequence="AAGAG", triplex="hoogsteen", chains="A,B,B"))
+    # pairing / triplex options are ignored for a single strand
+    s = tool.normalise({"sequence": "AAGAG", "partner_mode": "none", "pairing": "hh", "triplex": "hoogsteen"})
+    assert "--pairing" not in tool.command(s, ctx) and "--triplex" not in tool.command(s, ctx)
+
+
+# --- rebuilt helices with hydrogens: no close contacts, pairs kept (review findings 0.0.4) -------------
+
+POLAR_H = {"H1", "H3", "H21", "H22", "H41", "H42", "H61", "H62", "HO2'", "HO5'", "HO3'"}
+_BUILT = {}
+
+
+def built(pairing, motif, seq, **kw):
+    """build_helix text with hydrogens (cached: the rebuilt helices take seconds)."""
+    key = (pairing, motif, seq, tuple(sorted(kw.items())))
+    if key not in _BUILT:
+        notes = []
+        text = B.build_helix(seq, pairing=pairing, triplex=motif, hydrogens=True, notes=notes, **kw)
+        _BUILT[key] = (text, notes)
+    return _BUILT[key]
+
+
+def dist(c1, a, c2, b):
+    return float(np.linalg.norm(np.subtract(c1[a], c2[b])))
+
+
+def dihedral(p0, p1, p2, p3):
+    b0, b1, b2 = (np.subtract(p0, p1), np.subtract(p2, p1), np.subtract(p3, p2))
+    b1 = b1 / np.linalg.norm(b1)
+    v, w = b0 - b0 @ b1 * b1, b2 - b2 @ b1 * b1
+    return float(np.degrees(np.arctan2(np.cross(b1, v) @ w, v @ w)))
+
+
+def close_contacts(s):
+    """Close contacts of a model with hydrogens, written independently of mdatk.builder.  Bonds by distance
+    within residues (H: < 1.25 Å) and the O3'-P links; atoms four or more bonds apart: H-H < 2.0 Å, polar H -
+    N/O < 1.6 Å, other H-heavy < 1.9 Å, heavy atoms < 2.8 Å (N/O pairs of two residues < 2.6 Å); heavy atoms
+    three bonds apart < 2.4 Å."""
+    from scipy.spatial import cKDTree
+
+    atoms = [(k, r, a.name, np.array(a.xyz)) for k, r in enumerate(s.residues()) for a in r.atoms]
+    xyz = np.array([a[3] for a in atoms])
+    is_h = np.array([a[2][0] == "H" for a in atoms])
+    nb = [set() for _ in atoms]
+    tree = cKDTree(xyz)
+    for i, j in tree.query_pairs(1.75):
+        d = np.linalg.norm(xyz[i] - xyz[j])
+        if atoms[i][0] == atoms[j][0] and not (is_h[i] and is_h[j]) and (d < 1.25 or not (is_h[i] or is_h[j])):
+            nb[i].add(j)
+            nb[j].add(i)
+    for i, j in backbone_links(s, atoms):
+        nb[i].add(j)
+        nb[j].add(i)
+    out = []
+    for i, j in tree.query_pairs(2.8):
+        two = set().union(*(nb[c] for c in nb[i])) if nb[i] else set()
+        if j in nb[i] or j in two:
+            continue
+        three = set().union(*(nb[c] for c in two)) if two else set()
+        d = float(np.linalg.norm(xyz[i] - xyz[j]))
+        names = (atoms[i][2], atoms[j][2])
+        if j in three:
+            limit = 0.0 if is_h[i] or is_h[j] else 2.4
+        elif is_h[i] and is_h[j]:
+            limit = 2.0
+        elif is_h[i] or is_h[j]:
+            h, x = names if is_h[i] else names[::-1]
+            limit = 1.6 if h in POLAR_H and x[0] in "NO" else 1.9
+        else:
+            limit = 2.6 if names[0][0] in "NO" and names[1][0] in "NO" and atoms[i][0] != atoms[j][0] else 2.8
+        if d < limit:
+            out.append(f"{atoms[i][1].label} {names[0]} - {atoms[j][1].label} {names[1]} {d:.2f}")
+    return sorted(out)
+
+
+# mixed sequences: other pairs than the reference pair, strand-1 pyrimidines, mismatches
+MIXED = [("reverse-wc", None, "GAGGAUCA"), ("reverse-wc", None, "AUGCAU"), ("hoogsteen", None, "GAGGAUCA"),
+         ("reverse-hoogsteen", None, "GAAGAG"), ("reverse-hoogsteen", None, "AUGCAU"), ("hh", None, "GAGGAUCA"),
+         ("wc", "hoogsteen", "GAGGAUCA"), ("wc", "reverse-hoogsteen", "AUGCAU")]
+
+
+@pytest.mark.parametrize("pairing, motif, seq", MIXED)
+def test_rebuilt_helices_have_no_close_contacts(pairing, motif, seq):
+    text, notes = built(pairing, motif, seq)
+    s = pt.read_pdb(text)
+    assert close_contacts(s) == []
+    d = o3p_distances(s)
+    assert 1.5 <= min(d) and max(d) <= 1.7
+    report = [n for n in notes if "close contact" in n.lower()]
+    assert len(report) == 1 and "hydrogens included" in report[0]
+    assert not any(k in report[0] for k in ("(H-H <", "(H-heavy <", "(H-bond H <"))
+
+
+@pytest.mark.parametrize("seq", ["UCUCAG", "GAGGAUCA", "AUGCAU"])
+def test_reverse_wc_bases_clear_their_own_sugars(seq):
+    """Finding 1: chi about -121 put every base on its own sugar (C6-C3' 2.99 Å, H6-H3' 1.48 Å)."""
+    s = pt.read_pdb(built("reverse-wc", None, seq)[0])
+    for r in s.residues():
+        c = r.coords()
+        purine = pt.parse_residue_name(r.name).base in "AG"
+        ring, h, n, x = ("C8", "H8", "N9", "C4") if purine else ("C6", "H6", "N1", "C2")
+        chi = dihedral(c["O4'"], c["C1'"], c[n], c[x])
+        assert chi <= -135.0 or chi >= 170.0, (r.label, chi)  # anti, -190 .. -135 (was -121)
+        assert dist(c, ring, c, "C3'") >= 3.1, r.label  # was 2.99 (C6) / 3.11 (C8)
+        assert dist(c, h, c, "H3'") >= 2.0 and dist(c, h, c, "H2'") >= 2.0, r.label  # H6-H3' was 1.48
+    notes = built("reverse-wc", None, seq)[1]
+    chis = [float(m) for m in re.findall(r"chi (-?\d+)", next(n for n in notes if n.startswith("Backbone torsions")))]
+    assert all(c <= -135 or c >= 170 for c in chis[1:])  # the first one is the 4JRD reference
+
+
+@pytest.mark.parametrize("pairing, motif, seq", [("reverse-hoogsteen", None, "AAGAGG"),
+                                                 ("reverse-hoogsteen", None, "GAAGAG"), ("wc", "hoogsteen", "GAGGAG")])
+def test_sugar_steps_keep_c2_away_from_the_next_c5(pairing, motif, seq):
+    """Finding 2: C2'(i)-C5'(i+1) 2.69 Å and H2'(i)-H5'(i+1) 1.03 Å at every reverse-Hoogsteen step."""
+    s = pt.read_pdb(built(pairing, motif, seq)[0])
+    for seg in s.segments:
+        for a, b in zip(seg, seg[1:]):
+            ca, cb = a.coords(), b.coords()
+            assert dist(ca, "C2'", cb, "C5'") >= 3.1, (a.label, b.label)
+            assert dist(ca, "O2'", cb, "C5'") >= 3.0, (a.label, b.label)
+            for hb in ("H5'", "H5''"):
+                assert dist(ca, "H2'", cb, hb) >= 2.0 and dist(ca, "C2'", cb, hb) >= 2.4, (a.label, b.label, hb)
+
+
+@pytest.mark.parametrize("pairing, motif, seq", [("reverse-wc", None, "AUGCAU"), ("reverse-wc", None, "GAGGAUCA"),
+                                                 ("hoogsteen", None, "GAGGAUCA"),
+                                                 ("reverse-hoogsteen", None, "GAGGAUCA"),
+                                                 ("wc", "hoogsteen", "GAGGAUCA"),
+                                                 ("wc", "reverse-hoogsteen", "GAAGAG")])
+def test_closed_strands_keep_the_pair_geometry(pairing, motif, seq):
+    """Finding 3: closing a partner strand turned reverse-WC C·G into amine-amine (H41-H21 1.18 Å) and
+    acceptor-acceptor (O2-O6 2.80 Å) contacts.  Every canonical pair keeps donor-acceptor 2.8-3.0 Å, the
+    donor hydrogen on the line (H...acceptor <= 2.05 Å, angle >= 150 degrees) and coplanar bases."""
+    s = pt.read_pdb(built(pairing, motif, seq)[0])
+    groups = ([(strand_pairs(s, B.PARALLEL[pairing]), HBONDS[pairing])] if not motif else
+              [(strand_pairs(s, False, 1), HBONDS["wc"]), (strand_pairs(s, motif == "hoogsteen", 2), HBONDS[motif])])
+    checked = 0
+    for pairs, table in groups:
+        for a, b in pairs:
+            key = pt.parse_residue_name(a.name).base + pt.parse_residue_name(b.name).base
+            if key not in table:
+                continue
+            ca, cb = a.coords(), b.coords()
+            for x, y in table[key]:
+                assert 2.8 <= dist(ca, x, cb, y) <= 3.0, (a.label, b.label, x, y)
+                for don, acc, cd, cc in ((x, y, ca, cb), (y, x, cb, ca)):
+                    hs = [h for h in cd if h.startswith("H") and dist(cd, h, cd, don) < 1.1]
+                    if hs and acc[0] in "NO" and don[0] == "N":
+                        h = min(hs, key=lambda k: dist(cd, k, cc, acc))
+                        if dist(cd, h, cc, acc) < 2.6:
+                            u, v = np.subtract(cd[don], cd[h]), np.subtract(cc[acc], cd[h])
+                            angle = np.degrees(np.arccos(u @ v / np.linalg.norm(u) / np.linalg.norm(v)))
+                            assert dist(cd, h, cc, acc) <= 2.05 and angle >= 150, (a.label, b.label, h, acc)
+            normals = []
+            for c, base in ((ca, key[0]), (cb, key[1])):
+                ring = np.array([c[n] for n in B.BASE_NAMES[base]])
+                normals.append(np.linalg.svd(ring - ring.mean(axis=0))[2][2])
+            assert np.degrees(np.arccos(min(1.0, abs(normals[0] @ normals[1])))) <= 10.0, (a.label, b.label)
+            checked += 1
+    assert checked >= 5
+    # no amine-amine / acceptor-acceptor or hydrogen contacts between the paired bases
+    assert close_contacts(s) == []
+
+
+def test_contact_report_includes_hydrogens_and_close_heavy_atoms():
+    """Finding 4: the report checked heavy atoms below 2.4 Å only.  The Arnott A-form has H2'(i)-H6/H8(i+1)
+    of about 1.6 Å, which the report now lists; a C2'(i)-C5'(i+1) contact of 2.7 Å is listed too."""
+    s = pt.read_pdb(B.build_helix("GGCAUC", partner="none", hydrogens=True))
+    residues = list(s.residues())
+    labels = [r.label for r in residues]
+    bases = [pt.parse_residue_name(r.name).base for r in residues]
+    res_atoms = [[(a.name, np.array(a.xyz)) for a in r.atoms] for r in residues]
+    segments = [list(range(len(residues)))]
+    found = B._close_contacts(res_atoms, segments, bases)
+    assert any({a[1], b[1]} in ({"H2'", "H6"}, {"H2'", "H8"}) and what.startswith("H-H") and d < 2.0
+               for d, what, a, b in found)
+    note = B._geometry_notes(labels, res_atoms, segments, [], bases)[-1]
+    assert note.startswith("WARNING:") and "close contact(s)" in note and "(H-H < 2.0)" in note
+    # move residue 2 (rigidly) so that its C5' is 2.7 Å from C2' of residue 1: reported (heavy < 3.0)
+    c1, c2 = dict(res_atoms[0]), dict(res_atoms[1])
+    u = c1["C2'"] - c2["C5'"]
+    shift = u * (1.0 - 2.7 / np.linalg.norm(u))
+    res_atoms[1] = [(n, x + shift) for n, x in res_atoms[1]]
+    found = B._close_contacts(res_atoms, segments, bases)
+    assert any((a[1], b[1]) == ("C2'", "C5'") and what.startswith("heavy") and abs(d - 2.7) < 1e-6
+               for d, what, a, b in found)
+    # a heavy-atom model gets hydrogens for the check: the same report as with hydrogens
+    for pairing, motif, seq in MIXED[:2]:
+        report = [n for n in built(pairing, motif, seq)[1] if "close contact" in n.lower()]
+        notes = []
+        B.build_helix(seq, pairing=pairing, triplex=motif, notes=notes)
+        assert [n for n in notes if "close contact" in n.lower()] == report
+
+
+def tleap_executable():
+    home = os.environ.get("AMBERHOME")
+    for exe in ([os.path.join(home, "bin", "tleap")] if home else []) + [shutil.which("tleap")]:
+        if exe and os.path.isfile(exe):
+            return exe
+    return None
+
+
+@pytest.mark.parametrize("pairing, motif, seq", MIXED + [("hh", None, "AAAAAAAA"), ("reverse-wc", None, "UCUCAG"),
+                                                         ("reverse-hoogsteen", None, "AAGAGG")])
+def test_tleap_finds_no_close_contacts(tmp_path, pairing, motif, seq):
+    """tleap (leaprc.RNA.OL3, check) on the Amber-named, hydrogenated model: no 'Close contact' (< 1.5 Å)."""
+    exe = tleap_executable()
+    if exe is None:
+        pytest.skip("tleap (AmberTools) not available")
+    (tmp_path / "m.pdb").write_text(built(pairing, motif, seq, scheme="amber")[0])
+    (tmp_path / "leap.in").write_text("source leaprc.RNA.OL3\nm = loadpdb m.pdb\ncheck m\nquit\n")
+    env = dict(os.environ)
+    env.setdefault("AMBERHOME", os.path.dirname(os.path.dirname(exe)))
+    out = subprocess.run([exe, "-f", "leap.in"], cwd=tmp_path, env=env, capture_output=True, text=True,
+                         timeout=600).stdout
+    assert "Checking 'm'" in out, out[-2000:]
+    assert "Close contact" not in out and "Created a new atom" not in out, out[-3000:]
+
+
+def wait_for_builder(dlg, timeout=300):
+    """Other pairings build in a background worker: run the GTK main loop until it is done."""
+    import time
+
+    from gi.repository import Gtk
+
+    t0 = time.time()
+    while getattr(dlg, "worker", None) is not None and time.time() - t0 < timeout:
+        Gtk.main_iteration_do(False)
+        time.sleep(0.005)
+    assert getattr(dlg, "worker", None) is None
+
+
+def test_builder_window_pairings(main_window, tmp_path):
+    main_window.open_builder()
+    dlg = main_window.builder
+    dlg.seq.set_text("AAGAGA")
+    dlg.pairing.set_active_id("hh")
+    assert not dlg.triplex.get_sensitive() and not dlg.third.get_sensitive()
+    out = tmp_path / "gui_hh.pdb"
+    dlg.helix_out.entry.set_text(str(out))
+    dlg.check_current()
+    buf = dlg.report.get_buffer()
+    assert "2 mismatched" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    dlg.run_current()
+    wait_for_builder(dlg)
+    s = pt.read_pdb(str(out))
+    assert len(s.segments) == 2 and [r.name for r in s.segments[1]] == list("AAGAGA")
+    assert "tHH" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    dlg.pairing.set_active_id("wc")
+    dlg.triplex.set_active_id("reverse-hoogsteen")
+    assert dlg.triplex.get_sensitive() and dlg.third.get_sensitive() and dlg.chain3.get_sensitive()
+    dlg.chain3.set_text("T")
+    out3 = tmp_path / "gui_triplex.pdb"
+    dlg.helix_out.entry.set_text(str(out3))
+    dlg.run_current()
+    wait_for_builder(dlg)
+    s = pt.read_pdb(str(out3))
+    assert s.chain_ids() == ["A", "B", "T"] and "".join(r.name for r in s.segments[2]) == "AGAGAA"
+    dlg.partner_mode.set_active_id("none")
+    assert not dlg.pairing.get_sensitive() and not dlg.triplex.get_sensitive()
+    dlg.destroy()

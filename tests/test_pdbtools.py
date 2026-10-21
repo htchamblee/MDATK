@@ -1,5 +1,7 @@
 """Tests for mdatk.pdbtools (PDB hygiene: L-RNA detection, name schemes, ChimeraX repair, chains ...)."""
 
+import math
+
 import pytest
 
 from mdatk import pdbtools as pt
@@ -557,3 +559,40 @@ def test_single_residue_l_segment_has_no_false_terminal_warning():
     again = pt.clean(once, scheme="amber")
     assert [r.name for r in again.structure.residues()] == ["LG5"]
     assert not any("missing TER" in n for n in again.notes)
+
+
+def test_strip_5prime_phosphates_for_amber():
+    text = make_pdb(HYBRID)
+    r = pt.clean(text, scheme="amber", strip_5p=True)
+    assert any("Removed the 5'-terminal phosphate of" in n for n in r.notes)
+    assert not any("carry P/OP1/OP2" in n for n in r.notes)  # the Amber warning is gone
+    for seg in r.structure.segments:
+        first = [res for res in seg if pt._nucleotide(res)]
+        if first:
+            assert not {a.name for a in first[0].atoms} & {"P", "OP1", "OP2", "OP3"}
+    # a later residue keeps its phosphate; without the option nothing is removed
+    assert any(a.name == "P" for a in r.structure.segments[0][1].atoms)
+    assert "Removed" not in " ".join(pt.clean(text, scheme="amber").notes)
+    # hydrogens present: HO5' 0.96 A from O5', along the old O5'-P bond
+    lines = text.splitlines()
+    p_line = next(ln for ln in lines if ln[12:16].strip() == "P")
+    hline = p_line[:12] + " H5'" + p_line[16:]
+    lines.insert(lines.index(p_line), hline)
+    r = pt.clean("\n".join(lines) + "\n", strip_5p=True)
+    res = r.structure.segments[0][0]
+    c = res.coords()
+    assert "HO5'" in c and abs(math.dist(c["HO5'"], c["O5'"]) - 0.96) < 0.01
+
+
+def test_strip_5p_keeps_internal_phosphates_and_drops_lone_phosphates():
+    text = make_pdb([("A", [("XYZ", 1, "G", False), ("G", 2, "G", False), ("C", 3, "C", False)])])
+    r = pt.clean(text, strip_5p=True)
+    assert any(a.name == "P" for a in r.structure.segments[0][1].atoms)  # G2 is not a 5' end here
+    assert any("does not start with a recognised nucleotide" in n for n in r.notes)
+    lines = [ln for ln in make_pdb([("A", [("G", 1, "G", False), ("C", 2, "C", False)])]).splitlines()
+             if not (ln.startswith("ATOM") and ln[22:26].strip() == "1" and ln[12:16].strip() not in
+                     ("P", "OP1", "OP2"))]  # residue 1 keeps only its phosphate
+    r = pt.clean("\n".join(lines) + "\n", strip_5p=True)
+    res = list(r.structure.residues())
+    assert [x.resseq for x in res] == [2] and not any(a.name == "P" for a in res[0].atoms)
+    assert any("held only a phosphate" in n for n in r.notes)

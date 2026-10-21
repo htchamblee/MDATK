@@ -10,13 +10,31 @@ from typing import Optional
 
 from gi.repository import Gio, GLib
 
+from ..frozen import child_env
+
 
 def _uri(path: str) -> str:
     return GLib.filename_to_uri(os.path.abspath(path), None)
 
 
+def _launch_context() -> Optional[Gio.AppLaunchContext]:
+    """Launch context for desktop applications: in a frozen build without the bundle's GTK settings."""
+    env = child_env()
+    if env is None:
+        return None
+    ctx = Gio.AppLaunchContext()
+    for name, value in os.environ.items():
+        if name not in env:
+            ctx.unsetenv(name)
+        elif env[name] != value:
+            ctx.setenv(name, env[name])
+    return ctx
+
+
 def open_folder(path: str) -> str:
     """Show ``path`` in the file manager; returns how it was opened.
+
+    On Windows: Explorer.  Otherwise:
 
     1. ``org.freedesktop.FileManager1.ShowFolders`` over D-Bus (Dolphin,
        Nautilus, Nemo, Thunar, ... all implement it) - always a file manager.
@@ -25,6 +43,9 @@ def open_folder(path: str) -> str:
     """
     if not os.path.isdir(path):
         raise FileNotFoundError(f"folder does not exist: {path}")
+    if os.name == "nt":  # Windows build: Explorer
+        os.startfile(path)  # type: ignore[attr-defined]
+        return "explorer"
     uri = _uri(path)
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -37,13 +58,13 @@ def open_folder(path: str) -> str:
     app = Gio.AppInfo.get_default_for_type("inode/directory", False)
     if app is not None:
         try:
-            if app.launch_uris([uri], None):
+            if app.launch_uris([uri], _launch_context()):
                 return app.get_id() or app.get_name()
         except GLib.Error:
             pass
     opener = shutil.which("xdg-open")
     if opener:
-        subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=child_env())
         return "xdg-open"
     raise RuntimeError("no file manager could be started")
 
@@ -52,7 +73,7 @@ def open_file(path: str) -> None:
     """Open a file (e.g. the rendered video) with its default application."""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"file does not exist: {path}")
-    Gio.AppInfo.launch_default_for_uri(_uri(path), None)
+    Gio.AppInfo.launch_default_for_uri(_uri(path), _launch_context())
 
 
 def latest_video(out_dir: str, filename: str) -> Optional[str]:

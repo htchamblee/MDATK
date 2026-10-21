@@ -500,7 +500,8 @@ def _release_gl() -> None:
 
 def _tool_version(cmd: List[str]) -> Optional[str]:
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        from .frozen import child_env
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=child_env())
         text = (out.stdout or out.stderr).strip().splitlines()
         return text[0] if text else None
     except (OSError, subprocess.SubprocessError):

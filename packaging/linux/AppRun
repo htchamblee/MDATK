@@ -1,0 +1,21 @@
+#!/bin/sh
+# MDATK AppImage entry point.
+#
+#   ./MDATK-x86_64.AppImage                    the GTK interface
+#   ./MDATK-x86_64.AppImage project.mdatk.toml the GTK interface with that project
+#   ./MDATK-x86_64.AppImage COMMAND ...        the command line (mdatk --help lists the commands)
+#
+# A symbolic link to the AppImage named "mdatk-gui" always starts the interface.
+HERE="$(dirname "$(readlink -f "$0")")"
+MDATK="$HERE/usr/lib/mdatk/mdatk"
+
+case "$(basename "${ARGV0:-$0}")" in
+    mdatk-gui*) exec "$MDATK" gui "$@" ;;
+esac
+if [ $# -eq 0 ]; then
+    exec "$MDATK" gui
+fi
+if [ $# -eq 1 ] && [ -f "$1" ]; then  # a project file (double-click / "Open with")
+    exec "$MDATK" gui "$1"
+fi
+exec "$MDATK" "$@"

@@ -530,7 +530,8 @@ def cmd_build(args) -> int:
     from . import builder
     from .projectfile import logged
     if args.build_command == "helix":
-        title = f"Ideal A-form {args.chirality}-RNA helix {args.seq.strip()}"
+        kind = builder.helix_kind(getattr(args, "pairing", "wc"), getattr(args, "triplex", None))
+        title = f"Ideal {kind} {args.chirality}-RNA helix {args.seq.strip()}"
     elif args.build_command == "mutate":
         title = f"Mutation of {os.path.basename(args.input)}: {args.mutations.strip()}"
     else:
@@ -544,7 +545,8 @@ def cmd_build(args) -> int:
         entry.summary = "\n".join(res.notes)
         if args.build_command == "helix":
             from .citations import keys_for
-            entry.citations = keys_for(["arnott-arna"])  # the A-RNA fiber monomer
+            other = getattr(args, "pairing", "wc") != "wc" or getattr(args, "triplex", "none") not in (None, "", "none")
+            entry.citations = keys_for(["arnott-arna"] + (["pdb-4jrd"] if other else []))  # the template sources
     if res.cc is not None:
         print(json.dumps({"output": os.path.abspath(args.output), "cc": round(res.cc, 4)}, indent=2))
     return 0

@@ -498,7 +498,7 @@ class WizardWindow(Gtk.Window):
         prev = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin=4)
         top = Gtk.Box(spacing=6)
         top.pack_start(W.label("File"), False, False, 0)
-        self.preview_combo = Gtk.ComboBoxText()
+        self.preview_combo = W.no_wheel(Gtk.ComboBoxText())
         self.preview_combo.connect("changed", self._show_preview)
         top.pack_start(self.preview_combo, True, True, 0)
         prev.pack_start(top, False, False, 0)

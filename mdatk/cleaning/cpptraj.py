@@ -201,8 +201,9 @@ def run_cpptraj(command: Sequence[str], script_path: str, log_path: str, cwd: st
     cmd = [*command, "-i", script_path]
     log.info("running %s", " ".join(cmd))
     with open(log_path, "w", encoding="utf-8") as logfh:
+        from ..frozen import child_env
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, bufsize=0)
+                                stdin=subprocess.DEVNULL, bufsize=0, env=child_env())
         buf = ""
         try:
             while True:

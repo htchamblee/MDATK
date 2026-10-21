@@ -1,0 +1,6 @@
+# shell scripts must keep LF line endings on Windows checkouts (MSYS2 bash, AppRun)
+*.sh text eol=lf
+linux/AppRun text eol=lf
+*.iss text eol=crlf
+windows/*.txt text eol=lf
+notices/*.txt text eol=lf

@@ -1006,6 +1006,14 @@ REFERENCE_DATA = [
         "url": '',
         "verified": 'pdf:3aa3b349-PubChem_2023_update.pdf',
     },
+    {
+        "key": 'safaee2013',
+        "text": 'Safaee N., Noronha A. M., Rodionov D., Kozlov G., Wilds C. J., Sheldrick G. M., Gehring K. Angew. Chem. Int. Ed. 2013, 52. doi:10.1002/anie.201303461',
+        "bibtex": '@article{safaee2013,\n  author = {Safaee, N. and Noronha, A. M. and Rodionov, D. and Kozlov, G. and Wilds, C. J. and Sheldrick, G. M. and Gehring, K.},\n  title = {{Structure of the parallel duplex of poly(A) RNA: evaluation of a 50 year-old prediction}},\n  journal = {Angewandte Chemie International Edition},\n  year = {2013},\n  volume = {52},\n  doi = {10.1002/anie.201303461}\n}',
+        "doi": '10.1002/anie.201303461',
+        "url": '',
+        "verified": 'memory',
+    },
 ]
 
 RESOURCE_DATA = [
@@ -1339,5 +1347,11 @@ RESOURCE_DATA = [
         "name": 'PubChem',
         "keys": ['kim2023pubchem'],
         "note": 'Only used when SMILES are fetched on request.',
+    },
+    {
+        "id": 'pdb-4jrd',
+        "name": 'Parallel poly(A) duplex, PDB 4JRD (MDATK parallel helices and triplexes)',
+        "keys": ['safaee2013'],
+        "note": 'Nucleotide conformation and helix of the parallel / Hoogsteen pairings in the structure builder.',
     },
 ]
