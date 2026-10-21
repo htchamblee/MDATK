@@ -276,3 +276,48 @@ def test_slot_defaults_for_residue_panels_and_wheel_zoom(window):
     window._on_canvas_zoom(1.15)
     assert window.zoom_spin.get_value() == pytest.approx(z0 * 1.15)
     assert window.collect(validate=False).visual.zoom == pytest.approx(z0 * 1.15)
+
+
+def test_value_widgets_ignore_the_mouse_wheel(window):
+    from mdatk.gui import widgets as W
+    window.open_wizard("amber-build")
+    window.open_planner()
+    window.open_pdb_tools()
+    window.open_builder()
+    pump(lambda: False, 0.5)
+    missing = []
+
+    def walk(w, where):
+        if isinstance(w, W.WHEEL_TYPES) and not isinstance(w, Gtk.Scrollbar) \
+                and not getattr(w, "_mdatk_no_wheel", False):
+            missing.append(f"{where}: {type(w).__name__} {w.get_tooltip_text() or ''}"[:120])
+        if isinstance(w, Gtk.Container):
+            for c in w.get_children():
+                walk(c, where)
+    for top in Gtk.Window.list_toplevels():
+        if top.get_visible():
+            walk(top, top.get_title() or type(top).__name__)
+    assert not missing, missing
+    # a wheel event over a spin button leaves its value alone
+    spin = W.spin(0, 100, 1)
+    spin.set_value(5)
+    ev = Gdk.Event.new(Gdk.EventType.SCROLL)
+    ev.scroll.direction = Gdk.ScrollDirection.UP
+    spin.emit("scroll-event", ev)
+    assert spin.get_value() == 5
+
+
+def test_builder_non_wc_helix_builds_in_the_background(window, tmp_path):
+    window.open_builder()
+    dlg = window.builder
+    dlg.seq.set_text("AAAA")
+    dlg.pairing.set_active_id("hh")
+    out = tmp_path / "hh.pdb"
+    dlg.helix_out.entry.set_text(str(out))
+    dlg.notebook.set_current_page(0)
+    dlg.run_current()
+    assert dlg.worker is not None  # the window stays responsive while it builds
+    assert pump(lambda: dlg.worker is None, 120) and out.exists()
+    buf = dlg.report.get_buffer()
+    assert "Wrote" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    dlg.destroy()

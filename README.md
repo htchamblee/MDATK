@@ -33,6 +33,10 @@ structure view. The structure view can be **zoomed and centred** on a residue or
 in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
 file as REMARK 950 records.
 
+Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
+as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
+when the mouse wheel scrolls past them.
+
 Since 0.0.3c MDATK **builds starting structures** (ideal A-form helices of either chirality, base
 mutations with compensatory partners, rigid-body fits into a map), writes **restraint dictionaries**
 for the L-RNA terminal residues Coot and Phenix do not know (acedrg / phenix.elbow from built-in L
@@ -67,6 +71,58 @@ Phenix 1.21 / 2.x and Coot 0.9 / 1.x (batch). microMg is now available with TIP4
 ---
 
 ## Installation
+
+### Stand-alone downloads (no Python needed)
+
+Each [GitHub release](https://github.com/htchamblee/MDATK/releases) has ready-to-run builds
+that bring their own Python, GTK 3, NumPy / SciPy / Matplotlib, MDAnalysis, Barnaba and FFmpeg.
+No virtual environment, conda or system packages are needed for analysis and videos.
+
+**Linux** (x86-64; Ubuntu 22.04, RHEL / Rocky / Alma 9 or newer): download
+`MDATK-<version>-x86_64.AppImage`, then
+
+```bash
+chmod +x MDATK-<version>-x86_64.AppImage
+./MDATK-<version>-x86_64.AppImage                          # the GUI
+./MDATK-<version>-x86_64.AppImage project.mdatk.toml       # the GUI with a project
+./MDATK-<version>-x86_64.AppImage --help                   # the command line (any mdatk command)
+./MDATK-<version>-x86_64.AppImage demo ~/mdatk-demo        # e.g. the synthetic demo system
+```
+
+With no argument (or a project file) the AppImage starts the GUI; with a command it is the
+`mdatk` command line. For a shorter name, link it: `ln -s ~/Apps/MDATK-<version>-x86_64.AppImage
+~/.local/bin/mdatk` (a link named `mdatk-gui` always starts the GUI). If the AppImage does not
+start because FUSE is missing (some containers and minimal installs), run it with
+`--appimage-extract-and-run` or install `fuse`/`libfuse2`.
+
+**Windows 10 / 11** (64-bit) - **beta, not yet tested on real machines**: run
+`MDATK-<version>-windows-x64-setup.exe` (installs per user, no administrator rights needed;
+Start-menu entry "MDATK", optional PATH entry for `mdatk.exe`) or unzip
+`MDATK-<version>-windows-x64.zip` anywhere and start `mdatk-gui.exe` (`mdatk.exe` is the command
+line). On Windows:
+
+- the generated workflow scripts (Amber, GROMACS, Rosetta, Phenix, Coot ...) are bash scripts:
+  MDATK writes them but does not run them - run them on a Linux machine, a cluster or in
+  [WSL](https://learn.microsoft.com/windows/wsl/); the GUI's *Run* says so;
+- cpptraj (AmberTools) does not run natively, so clean trajectories on Linux / WSL first, or
+  analyse trajectories that are already cleaned.
+
+**What you still install yourself** (both platforms):
+
+- **cpptraj / AmberTools** - only for automatic solvent stripping and cleaning (see *Optional:
+  cpptraj* below); the stand-alone builds detect it exactly like the source installation
+  (`PATH`, `$AMBERHOME`, conda environments such as `AmberTools26`).
+- The programs the generated workflow scripts call (Amber, GROMACS, Rosetta, Phenix, Coot, VMD
+  ...), on the machine where you run those scripts.
+- The optional VTK renderer is not included (the built-in 3D renderer is used).
+
+FFmpeg is bundled: the default "FFmpeg executable" setting (`ffmpeg`) uses the bundled one;
+set a path there to use another build. The licences of all bundled components are in the
+`licenses` folder of each build (`licenses/THIRD_PARTY_NOTICES.txt`); the FFmpeg build is GPL v3
+(`licenses/ffmpeg/FFMPEG-NOTICE.txt` says where its source is). Building the stand-alone
+versions yourself: [packaging/README.md](packaging/README.md).
+
+### Installing from source
 
 MDATK needs Python ≥ 3.9 on Linux. It is installed from a clone of this repository:
 `pip install .` only works from **inside the cloned project directory** (the one containing
@@ -653,6 +709,9 @@ files with fixed-column output that keeps coordinates, occupancies and B-factors
   residues as HETATM). Any of these, plus common aliases (RA, G5, ADE …), is recognised on input;
   DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
 - **CONECT** records are stripped by default (until final deposition processing).
+- **5′ phosphates**: `--strip-5p` (GUI: *Remove 5′-terminal phosphates*, ticked automatically for
+  the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
+  (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was.
 - **Chains**: restore the chain ids of a cpptraj PDB by copying them residue by residue from a
   reference (e.g. the structure the topology was built from), from a list per TER segment, or as
   A, B, C …; split chains per TER segment or at a residue (new ids); combine chains; sort them.
@@ -713,6 +772,55 @@ the PDB clean-up schemes: by default A/C/G/U and 0A/0C/0G/0U (all ATOM, no termi
 `--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by default). G·U pairs get an
 approximate wobble geometry (bases turned in their plane about C1'); other mismatches keep the
 Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre at the origin.
+
+**Other pairings, parallel duplexes and triplexes.** `--pairing` (GUI: *Pairing*; planner option
+*Pairing*) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form duplex above,
+unchanged. The Leontis-Westhof rules fix the strand orientation:
+
+| `--pairing` | pairs (strand 1 · strand 2) | strands | Leontis-Westhof |
+|---|---|---|---|
+| `wc` | A·U, G·C (G·U wobble) | antiparallel | cis WC/WC |
+| `reverse-wc` | A·U, G·C (either strand) | parallel | trans WC/WC (barnaba `WWt`) |
+| `hoogsteen` | A·U, G·C+ (U / C on the Hoogsteen edge of the strand-1 purine) | parallel | cis WC/Hoogsteen (`HWc`) |
+| `reverse-hoogsteen` | A·U, A·A, G·G (partner WC edge on the strand-1 purine Hoogsteen edge) | antiparallel | trans WC/Hoogsteen (`HWt`) |
+| `hh` | A·A (N6–N7 twice) | parallel | trans Hoogsteen/Hoogsteen (`HHt`), as PDB 4JRD |
+
+`--partner auto` gives the canonical partner of each strand-1 base (the complement for `reverse-wc` and
+`hoogsteen`, A·U / G·G for `reverse-hoogsteen`, the same base for `hh`); a parallel partner is read
+5'→3' in the same direction as strand 1 (residue *i* pairs with residue *i*). For the Hoogsteen pairings
+strand 1 must be the purine strand. `--triplex hoogsteen` (pyrimidine motif: U·A-U, C+·G-C, third
+strand parallel to strand 1) or `--triplex reverse-hoogsteen` (purine motif: A·A-U, G·G-C, also U·A-U,
+antiparallel) adds a third strand in the major groove on the Hoogsteen edge of the strand-1 purines of a
+Watson-Crick duplex; `--third-strand` gives its sequence 5'→3' (default `auto`: the canonical motif
+bases), `--chains A,B,C` / `--start=1,1,1` its chain id and numbering (default: the next free chain id).
+Mismatches are allowed: they are placed in the frame of the reference pair and reported (strand-1
+pyrimidines have no Hoogsteen edge for the Hoogsteen pairings and the triplex). Protonated C+ is
+written as plain C with a note (protonate N3 or restrain the pair for the simulation).
+
+How they are built: every nucleotide is the C3'-endo / anti nucleotide of PDB 4JRD (the poly(rA) parallel
+duplex; its coordinates are embedded, PDB data are CC0) carrying the Arnott base, and each partner base
+is placed coplanar on the H-bond donors / acceptors of the two edges (2.9 Å). `hh` is the 4JRD helix
+itself (twist 41.8°, rise 3.79 Å; a poly(A) 10-mer has a phosphorus RMSD of 0.8 Å to 4JRD). For the
+other pairings and the triplexes MDATK fits the helical screw and the backbone torsions that repeat a
+reference level (A·U; A·U-U / A·U-A for the triplexes) with closed O3'–P links and no close contacts; a
+partner strand with other pairs (G·C, G·G, mismatches) is then closed residue by residue (small rigid
+shifts of each nucleoside, H-bonds kept). The Watson-Crick duplex of a triplex is fitted together with
+the third strand (the Arnott A-form duplex leaves no room for it). These are **starting models to be
+minimised**: the parallel and reverse pairings are not A-form RNA, and the notes say how far off the
+model is — O3'–P link range and gaps, heavy-atom contacts closer than 2.4 Å, the H-bond distances, the
+mismatches and the mean backbone torsions of each strand next to the 4JRD values. Long mixed sequences
+can take some seconds (reverse-Hoogsteen G·G pairs the longest). The secondary-structure output of the
+planner step (the dot-bracket for helix restraints) is written for Watson-Crick duplexes only (a
+triplex: the third strand unpaired); the other pairings write none, since the Amber helix restraints
+assume Watson-Crick H-bonds. L builds are the mirror images, as for the A-form helix.
+
+```bash
+mdatk build helix --seq AAAAAAAAAA --pairing hh -o polyA_hh.pdb          # parallel A·A, as PDB 4JRD
+mdatk build helix --seq AAGAGAAGGA --pairing hoogsteen -o hoog.pdb       # parallel U·A / C+·G
+mdatk build helix --seq GAUCAGUAGC --pairing reverse-wc --chirality L -o rwc_L.pdb
+mdatk build helix --seq AAGAGAAGGA --triplex hoogsteen -o triplex.pdb    # third strand UUCUCUUCCU
+mdatk build helix --seq AAGAG --triplex reverse-hoogsteen --third-strand GAGAA --chains A,B,T -o t.pdb
+```
 
 **Mutations.** `A:5G, B:20C`: the new base is superposed on the old glycosidic frame (C1', N9/N1 and the
 two ring atoms bonded to it: purine N9/C4/C8 ↔ pyrimidine N1/C2/C6); sugar and backbone atoms stay as
@@ -1003,6 +1111,11 @@ fog, glow and translucency, thread safety and a render without a display.
   `mdatk/workflows/dictstep.py`.
 - The CCD files of 0A / 0C / 0G / 0U describe the D enantiomer in their SMILES, InChI and ideal
   coordinates; only their chirality restraints are L. MDATK's dictionary step uses its own L SMILES.
+- The parallel, Hoogsteen and reverse-Hoogsteen helices and the triplexes are clash-free starting
+  models, not fibre models: their helix parameters are fitted so that the backbone closes without close
+  contacts (e.g. reverse-wc twist ≈ 22°, rise ≈ 4.2 Å; triplex rise ≈ 5 Å, so stacked bases are
+  ≈ 4.4 Å apart), and some backbone torsions are unusual. Minimise or restrain them before production
+  MD; long sequences take a few seconds per 10 nt to build.
 - Ideal helices are starting models: hydrogens, OP3 and G·U wobble placements are idealised, and a
   self-complementary duplex fitted into a map may come out with its strands swapped.
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with

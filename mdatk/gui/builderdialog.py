@@ -24,8 +24,15 @@ SCHEME_LABELS = [
     ("rosetta", "Rosetta (L: 0A/0C/0G/0U, all ATOM)"),
     ("pdb", "PDB deposition (L: 0A …, non-standard as HETATM)"),
 ]
-PARTNER_LABELS = [("auto", "Watson-Crick complement"), ("none", "none (single strand)"),
+PARTNER_LABELS = [("auto", "complement (canonical partners)"), ("none", "none (single strand)"),
                   ("explicit", "explicit sequence")]
+PAIRING_LABELS = [("wc", "Watson-Crick (cWW), antiparallel A-form"),
+                  ("reverse-wc", "reverse Watson-Crick (tWW), parallel"),
+                  ("hoogsteen", "Hoogsteen (cWH: A·U, G·C+), parallel"),
+                  ("reverse-hoogsteen", "reverse Hoogsteen (tWH), antiparallel"),
+                  ("hh", "Hoogsteen/Hoogsteen A·A (tHH, PDB 4JRD), parallel")]
+TRIPLEX_LABELS = [("none", "none (duplex)"), ("hoogsteen", "pyrimidine motif: Hoogsteen, parallel"),
+                  ("reverse-hoogsteen", "purine motif: reverse Hoogsteen, antiparallel")]
 PAGES = ("helix", "mutate", "fit")
 
 
@@ -92,16 +99,31 @@ class BuilderWindow(Gtk.Window):
         self.chirality = W.combo([("D", "D-RNA (right-handed)"), ("L", "L-RNA (mirror image, left-handed)")])
         self.chirality.set_active_id("D")
         f.add("Chirality", self.chirality)
+        self.pairing = W.combo(PAIRING_LABELS)
+        self.pairing.set_active_id("wc")
+        self.pairing.connect("changed", lambda *_: self._sync())
+        f.add("Pairing", self.pairing, "Base-pair geometry of the duplex; for the Hoogsteen pairings strand 1 is "
+              "the purine strand. Mismatches are allowed and reported.")
+        self.triplex = W.combo(TRIPLEX_LABELS)
+        self.triplex.set_active_id("none")
+        self.triplex.connect("changed", lambda *_: self._sync())
+        f.add("Triplex", self.triplex, "A third strand in the major groove on the Hoogsteen edge of the strand-1 "
+              "purines (Watson-Crick duplex only)")
+        self.third = W.entry("third strand 5'->3' (empty: motif bases)", "Empty: U / C+ (pyrimidine motif) or "
+                             "A / G (purine motif) on the strand-1 A / G")
+        f.add("Third strand", self.third)
         box.pack_start(W.frame("Sequence", f), False, False, 0)
         n = W.Form()
-        self.chain1, self.chain2 = W.entry("A", width=3), W.entry("B", width=3)
+        self.chain1, self.chain2, self.chain3 = W.entry("A", width=3), W.entry("B", width=3), W.entry("C", width=3)
         self.chain1.set_text("A")
         self.chain2.set_text("B")
-        n.add_row("Chains (strand 1 / 2)", [self.chain1, self.chain2])
-        self.start1, self.start2 = W.spin(-999, 9999, 1), W.spin(-999, 9999, 1)
+        self.chain3.set_text("C")
+        n.add_row("Chains (strand 1 / 2 / 3)", [self.chain1, self.chain2, self.chain3])
+        self.start1, self.start2, self.start3 = W.spin(-999, 9999, 1), W.spin(-999, 9999, 1), W.spin(-999, 9999, 1)
         self.start1.set_value(1)
         self.start2.set_value(1)
-        n.add_row("First residue (1 / 2)", [self.start1, self.start2])
+        self.start3.set_value(1)
+        n.add_row("First residue (1 / 2 / 3)", [self.start1, self.start2, self.start3])
         self.scheme = W.combo(SCHEME_LABELS)
         self.scheme.set_active_id("")
         n.add("Residue names", self.scheme)
@@ -117,8 +139,11 @@ class BuilderWindow(Gtk.Window):
         self.helix_out = W.file_chooser_button("Output PDB", Gtk.FileChooserAction.SAVE, patterns=[PDB_FILES])
         o.add("Output PDB", self.helix_out)
         box.pack_start(W.frame("Output", o), False, False, 0)
-        box.pack_start(W.hint("Arnott A-RNA fiber geometry: C3'-endo sugars, 11 bp per turn (twist 32.7°, rise "
-                              "2.81 Å). The L helix is the exact mirror image of the D helix."), False, False, 0)
+        box.pack_start(W.hint("Watson-Crick: Arnott A-RNA fiber geometry, C3'-endo sugars, 11 bp per turn (twist "
+                              "32.7°, rise 2.81 Å). Other pairings and triplexes: the PDB 4JRD nucleotide with "
+                              "fitted helices and backbones (starting models: minimise; the report lists link "
+                              "gaps, clashes and mismatches). The L helix is the exact mirror image of the D "
+                              "helix."), False, False, 0)
         return W.scrolled(box)
 
     def _mutate_page(self) -> Gtk.Widget:
@@ -178,6 +203,11 @@ class BuilderWindow(Gtk.Window):
         duplex = self.partner_mode.get_active_id() != "none"
         self.chain2.set_sensitive(duplex)
         self.start2.set_sensitive(duplex)
+        self.pairing.set_sensitive(duplex)
+        self.triplex.set_sensitive(duplex and self.pairing.get_active_id() == "wc")
+        triple = self.triplex.get_sensitive() and self.triplex.get_active_id() != "none"
+        for widget in (self.third, self.chain3, self.start3):
+            widget.set_sensitive(triple)
         self.wobble.set_sensitive(self.compensatory.get_active())
         self.step.set_sensitive(self.search.get_active_id() == "global")
         page = self.notebook.get_current_page() if page is None else page
@@ -204,10 +234,18 @@ class BuilderWindow(Gtk.Window):
         partner = self.partner.get_text().strip() if mode == "explicit" else mode
         c1 = self.chain1.get_text().strip() or "A"
         c2 = self.chain2.get_text().strip() or "B"
+        pairing = self.pairing.get_active_id() if mode != "none" else "wc"
+        triplex = self.triplex.get_active_id() if mode != "none" and pairing == "wc" else "none"
+        chains, start = (c1, c2), (int(self.start1.get_value()), int(self.start2.get_value()))
+        if triplex != "none":
+            chains += (self.chain3.get_text().strip() or "C",)
+            start += (int(self.start3.get_value()),)
         return dict(sequence=self.seq.get_text(), partner=partner, chirality=self.chirality.get_active_id(),
-                    chains=(c1, c2), start=(int(self.start1.get_value()), int(self.start2.get_value())),
+                    chains=chains, start=start,
                     scheme=self.scheme.get_active_id() or None, terminals=self.terminals.get_active(),
-                    hydrogens=self.hydrogens.get_active(), phosphate5=self.phosphate5.get_active())
+                    hydrogens=self.hydrogens.get_active(), phosphate5=self.phosphate5.get_active(),
+                    pairing=pairing, triplex=None if triplex == "none" else triplex,
+                    third=self.third.get_text().strip() or "auto")
 
     def _show(self, text: str) -> None:
         self.report.get_buffer().set_text(text)
@@ -232,7 +270,8 @@ class BuilderWindow(Gtk.Window):
     def check_current(self) -> None:
         if self.page() == "helix":
             opts = self.helix_options()
-            msgs = builder.check_helix(opts["sequence"], opts["partner"])
+            msgs = builder.check_helix(opts["sequence"], opts["partner"], opts["pairing"], opts["triplex"],
+                                       opts["third"])
             self._show("\n".join(f"{level.upper()}: {text}" for level, text in msgs))
         elif self.page() == "mutate":
             path = self._input(self.mut_input, "input PDB")
@@ -266,19 +305,46 @@ class BuilderWindow(Gtk.Window):
         if not out:
             return
         opts = self.helix_options()
-        notes = []
-        try:
-            title = f"Ideal A-form {opts['chirality']}-RNA helix {opts['sequence'].strip()}"
-            with logged(self._project(), "build helix", title) as entry:
+        other = opts["pairing"] != "wc" or opts["triplex"] not in (None, "", "none")
+        project = self._project()
+
+        def job(_rep=None):
+            notes = []
+            kind = builder.helix_kind(opts["pairing"], opts["triplex"])
+            title = f"Ideal {kind} {opts['chirality']}-RNA helix {opts['sequence'].strip()}"
+            with logged(project, "build helix", title) as entry:
                 text = builder.build_helix(notes=notes, **opts)
                 with open(out, "w", encoding="utf-8") as fh:
                     fh.write(text)
                 entry.files = [out]
                 entry.summary = "\n".join(notes)
-                entry.citations = keys_for(["arnott-arna"])
+                entry.citations = keys_for(["arnott-arna"] + (["pdb-4jrd"] if other else []))
+            return out, notes
+
+        if other:  # the fitted pairings can take tens of seconds: build in the background
+            from .worker import Worker
+            self._show("Building the helix (other pairings take a few seconds per 10 nucleotides) …")
+            self.progress.show()
+            self.progress.pulse()
+            self.write_button.set_sensitive(False)
+            self.worker = Worker(job, lambda _t: None, lambda *_: self.progress.pulse(), self._on_helix_done)
+            self.worker.start()
+            return
+        try:
+            result = job()
         except (OSError, ValueError) as exc:
             self._show(f"ERROR: {exc}")
             return
+        self._on_helix_done(result, None, None)
+
+    def _on_helix_done(self, result, error, trace) -> None:
+        self.worker = None
+        self.progress.hide()
+        self.write_button.set_sensitive(True)
+        if error is not None:
+            self._show(f"ERROR: {error}")
+            return
+        out, notes = result
         self._show("\n".join([f"Wrote {out}", ""] + notes))
         self._log(f"Structure builder: wrote {out}")
 

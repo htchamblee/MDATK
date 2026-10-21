@@ -761,7 +761,7 @@ class MainWindow(Gtk.ApplicationWindow):
         rot = W.Form()
         self.rot_scales = []
         for axis in "XYZ":
-            sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -180, 180, 0.5)
+            sc = W.no_wheel(Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -180, 180, 0.5))
             sc.set_digits(1)
             sc.set_value_pos(Gtk.PositionType.RIGHT)
             sc.set_size_request(220, -1)
@@ -928,7 +928,7 @@ class MainWindow(Gtk.ApplicationWindow):
         d.add("Map file", b.path_entry("density.map_path", mp), "MRC2014 / CCP4 map (.mrc, .map)")
         mp.entry.connect("changed", self._on_density_map_changed)
         self.density_map_entry = mp.entry
-        opacity = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
+        opacity = W.no_wheel(Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05))
         opacity.set_digits(2)
         opacity.set_value_pos(Gtk.PositionType.RIGHT)
         opacity.set_size_request(140, -1)
@@ -1159,13 +1159,13 @@ class MainWindow(Gtk.ApplicationWindow):
         row["frame"] = frame
         tcombo = W.combo([(t, cls.label) for t, cls in PANEL_TYPES.items()])
         form.add("Panel type", tcombo)
-        data = Gtk.ComboBoxText()
+        data = W.no_wheel(Gtk.ComboBoxText())
         data.set_hexpand(True)
         data.set_size_request(200, -1)
         for cell in data.get_cells():  # long labels shrink with an ellipsis
             cell.set_property("ellipsize", Pango.EllipsizeMode.END)
         form.add("Data", data)
-        ga, gb = Gtk.ComboBoxText(), Gtk.ComboBoxText()
+        ga, gb = W.no_wheel(Gtk.ComboBoxText()), W.no_wheel(Gtk.ComboBoxText())
         for c in (ga, gb):
             c.append(DEFAULT_GROUP, "(analysis default)")
             for name in project.group_names():
@@ -1943,11 +1943,15 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None) -> None:
         """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation."""
-        from ..workflows.runner import run_jobs
+        from ..workflows.runner import run_jobs, runner_problem
 
         parent = parent or self
         if not jobs:
             self.error("No scripts to run", "None of the selected steps has a script to run here.")
+            return
+        problem = runner_problem()  # Windows / no bash: the scripts are written but run elsewhere
+        if problem:
+            self.info("Scripts written, not run", problem + "\n\nScripts:\n" + "\n".join(j.path for j in jobs[:20]))
             return
         lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}" for j in jobs]
         detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")

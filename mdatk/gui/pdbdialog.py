@@ -100,6 +100,12 @@ class PDBToolsWindow(Gtk.Window):
         n.add("ATOM / HETATM", self.records)
         self.keep_conect = W.check("Keep CONECT records (stripped until final deposition processing)")
         n.add_wide(self.keep_conect)
+        self.strip_5p = W.check("Remove 5'-terminal phosphates (for Amber)")
+        self.strip_5p.set_tooltip_text("Drop P/OP1/OP2/OP3 of every chain's first nucleotide: Amber's 5' units "
+                                       "(G5, LG5 ...) have a 5'-OH. Hydrogenated residues get HO5'.")
+        self.scheme.connect("changed", lambda *_: self.strip_5p.set_active(
+            self.strip_5p.get_active() or self.scheme.get_active_id() == "amber"))
+        n.add_wide(self.strip_5p)
         box.pack_start(W.frame("Names and records", n), False, False, 0)
 
         c = W.Form()
@@ -207,7 +213,8 @@ class PDBToolsWindow(Gtk.Window):
             sort_chains=self.sort_chains.get_active(), renumber=self.renumber.get_active(),
             start=int(self.start.get_value()), per_chain=self.per_chain.get_active(),
             keep_gaps=self.keep_gaps.get_active(), seqres=self.seqres.get_active(),
-            make_fasta=bool(self.fasta.entry.get_text().strip()), terminal_names=self.terminals.get_active())
+            make_fasta=bool(self.fasta.entry.get_text().strip()), terminal_names=self.terminals.get_active(),
+            strip_5p=self.strip_5p.get_active())
 
     def annotation_options(self) -> Optional[dict]:
         """Keyword arguments of :func:`mdatk.annotate.annotate`, or None when annotation is off."""

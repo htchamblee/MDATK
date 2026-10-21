@@ -1,0 +1,24 @@
+FFmpeg in this MDATK build
+==========================
+
+This build includes the program "ffmpeg" (_internal/tools/ffmpeg, .exe on Windows), which
+MDATK uses to encode videos. It is an unmodified static build by the FFmpeg-Builds project
+(https://github.com/BtbN/FFmpeg-Builds), "gpl" variant:
+
+  version:  @FFMPEG_VERSION@
+  download: @FFMPEG_URL@
+
+Licence: this FFmpeg build is configured with --enable-gpl --enable-version3 and includes
+GPL-licensed libraries (e.g. x264, x265), so it is distributed under the GNU General Public
+License version 3 (see the LICENSE file in this folder; FFmpeg's own licence terms:
+https://ffmpeg.org/legal.html).
+
+Source code: the corresponding source of this build is
+  * FFmpeg: https://github.com/FFmpeg/FFmpeg (the commit named in the version string above,
+    "-g<commit>"; release tarballs: https://ffmpeg.org/releases/)
+  * the build scripts, which pin the version and source of every bundled library:
+    https://github.com/BtbN/FFmpeg-Builds (history at the date in the version string)
+Questions about the source of this build: https://github.com/htchamblee/MDATK/issues
+
+You can use any other FFmpeg: set its path as "FFmpeg executable" in the project (Output /
+video). With the default setting ("ffmpeg") MDATK uses the bundled one before one on PATH.

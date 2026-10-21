@@ -1,0 +1,223 @@
+# Stand-alone builds of MDATK: Linux AppImage and Windows 10/11 x64 (beta).
+#
+# - Push of a tag v* (e.g. v0.0.4): builds both, tests them and attaches them to a GitHub
+#   release for the tag (created if needed).
+# - Manual run (Actions -> Release builds -> Run workflow): builds and tests only; the files
+#   are the run's artifacts.
+#
+# Local builds and what is bundled: packaging/README.md.
+name: Release builds
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  appimage:
+    name: Linux AppImage (built on Ubuntu 22.04)
+    # the oldest supported distribution: the AppImage needs at least its glibc
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: System packages (GTK 3 and the headers PyGObject builds against)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgirepository1.0-dev libcairo2-dev pkg-config gir1.2-gtk-3.0 \
+            librsvg2-common adwaita-icon-theme hicolor-icon-theme \
+            xvfb xauth binutils file desktop-file-utils
+
+      - name: Python packages
+        run: |
+          python -m pip install --upgrade pip
+          # PyGObject 3.51+ needs girepository-2.0 (GLib 2.80), newer than Ubuntu 22.04's
+          python -m pip install "PyGObject>=3.42,<3.51" "pycairo>=1.20" pyinstaller
+          python -m pip install .                   # MDATK's dependencies ...
+          python -m pip uninstall -y mdatk          # ... the bundle uses the checked-out source
+          python -m pip install mdtraj future
+          python -m pip install --no-deps barnaba   # barnaba.annotate needs neither scikit-learn nor pandas
+          python -m pip list
+
+      - name: Version check
+        run: |
+          version="$(python -c 'import mdatk; print(mdatk.__version__)')"
+          echo "MDATK $version"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::warning::tag ${GITHUB_REF_NAME} does not match mdatk.__version__ ${version}"
+          fi
+
+      - name: Build the AppImage
+        env:
+          PYTHON: python
+        run: packaging/linux/build_appimage.sh --out dist
+
+      - name: glibc check (RHEL 9 has glibc 2.34)
+        run: |
+          if ! packaging/linux/check_glibc.sh build/appimage/dist/mdatk 2.34; then
+            echo "::warning::bundled files need a glibc newer than 2.34 (RHEL 9); see the list above"
+          fi
+
+      - name: Smoke test (headless; GUI under Xvfb)
+        run: |
+          xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work smoke \
+            --render --bundled-ffmpeg --barnaba --gui 20
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mdatk-linux-x86_64
+          path: dist/MDATK-*-x86_64.AppImage
+          if-no-files-found: error
+          compression-level: 0  # already compressed
+
+  rhel9:
+    name: AppImage test on Rocky Linux 9 (RHEL 9)
+    needs: appimage
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: mdatk-linux-x86_64
+          path: dist
+
+      - name: Test packages (no GTK, the AppImage brings its own)
+        run: dnf install -y python3 xorg-x11-server-Xvfb xorg-x11-xauth dejavu-sans-fonts findutils which
+
+      - name: Smoke test
+        run: |
+          chmod +x dist/*.AppImage
+          xvfb-run -a python3 packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work /tmp/smoke \
+            --render --bundled-ffmpeg --barnaba --gui 20
+
+  windows:
+    name: Windows x64 (MSYS2 UCRT64, beta)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e  # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: curl
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build (dependencies, PyInstaller bundle, zip, installer)
+        run: packaging/windows/build_windows.sh --install-deps --out dist
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Smoke test (outside MSYS2, so only the bundle's own DLLs are used)
+        shell: pwsh
+        run: |
+          $exe = "build\windows\dist\mdatk\mdatk.exe"
+          $opts = @("--work", "smoke", "--render", "--bundled-ffmpeg")
+          if (Get-ChildItem "build\windows\dist\mdatk\_internal" -Filter "barnaba-*.dist-info" -ErrorAction SilentlyContinue) {
+            $opts += "--barnaba"
+          } else {
+            Write-Output "::warning::the Windows build has no barnaba (mdtraj / barnaba did not install)"
+          }
+          python packaging/smoke_test.py $exe @opts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the Windows build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mdatk-windows-x64
+          path: |
+            dist/MDATK-*-windows-x64.zip
+            dist/MDATK-*-windows-x64-setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: GitHub release
+    needs: [appimage, rhel9, windows]
+    # tags only; the Windows build (beta) and the RHEL 9 test may fail without blocking the AppImage
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.appimage.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: mdatk-*
+          path: release
+          merge-multiple: true
+
+      - name: Checksums and release notes
+        env:
+          RHEL9: ${{ needs.rhel9.result }}
+          WINDOWS: ${{ needs.windows.result }}
+        run: |
+          cd release
+          ls -l
+          sha256sum MDATK-* > SHA256SUMS.txt
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo "## MDATK ${version}: stand-alone builds"
+            echo
+            echo "No Python, conda or virtual environment needed. cpptraj (AmberTools) is not included:"
+            echo "install AmberTools yourself for trajectory cleaning; MDATK finds it automatically."
+            echo
+            echo "**Linux** (x86-64; Ubuntu 22.04 / RHEL 9 or newer): \`MDATK-${version}-x86_64.AppImage\`"
+            echo '```'
+            echo "chmod +x MDATK-${version}-x86_64.AppImage"
+            echo "./MDATK-${version}-x86_64.AppImage            # the interface"
+            echo "./MDATK-${version}-x86_64.AppImage --help     # the command line"
+            echo '```'
+            echo "Tested on Ubuntu 22.04 (build machine); Rocky Linux 9 test: ${RHEL9}."
+            echo
+            if [ "$WINDOWS" = success ]; then
+              echo "**Windows 10/11 x64 - beta, untested on real machines**: \`MDATK-${version}-windows-x64-setup.exe\`"
+              echo "(installer) or \`MDATK-${version}-windows-x64.zip\` (unzip, run \`mdatk-gui.exe\`)."
+              echo "The generated workflow scripts are bash scripts: run them on Linux, a cluster or in WSL."
+              echo "Only the automated smoke test (CLI demo, analysis and video on a CI machine) has passed."
+            else
+              echo "**Windows**: no build for this release (the Windows build failed: ${WINDOWS})."
+            fi
+            echo
+            echo "Licences: MDATK is GPL v3. The builds include third-party software (Python, GTK 3,"
+            echo "NumPy, SciPy, Matplotlib, MDAnalysis, Barnaba, a GPL build of FFmpeg ...); their"
+            echo "licences and source pointers are in the \`licenses\` folder of each build."
+            echo "Checksums: \`SHA256SUMS.txt\`."
+          } > ../release_notes.md
+          cat ../release_notes.md
+
+      - name: Publish
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
+        with:
+          body_path: release_notes.md
+          files: release/*
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

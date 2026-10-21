@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence
 
+from .. import PROJECT_ABBREV
+from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
 
@@ -35,6 +37,20 @@ class ScriptCancelled(Cancelled):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
+
+
+def runner_problem() -> Optional[str]:
+    """Why generated scripts cannot be run on this computer, or None when they can.
+
+    The scripts are bash scripts for Linux (a workstation, a cluster or WSL); on Windows
+    MDATK writes them but does not start them."""
+    if os.name == "nt":
+        return (f"The generated scripts are bash scripts for Linux; {PROJECT_ABBREV} on Windows writes them "
+                "but cannot run them. Copy the project folder to a Linux machine or cluster, or open it in "
+                "WSL (Windows Subsystem for Linux), and run each script there with: bash <script>")
+    if shutil.which("bash") is None:
+        return "bash was not found on PATH; the generated scripts need bash (Linux, a cluster or WSL)"
+    return None
 
 
 def _stop(proc) -> None:
@@ -104,14 +120,16 @@ def separate_scripts(plan, node_ids: Optional[Sequence[str]] = None) -> List[str
 
 def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = None) -> "tuple[int, str]":
     """Run ``bash path`` in the script's folder; returns (exit status, captured output)."""
+    problem = runner_problem()
+    if problem:
+        raise ScriptFailed(problem)
     bash = shutil.which("bash")
-    if not bash:
-        raise ScriptFailed("bash was not found on PATH")
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
+    # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build)
     proc = subprocess.Popen([bash, path], cwd=os.path.dirname(path) or ".", stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
-                            start_new_session=True)  # own process group: cancelling stops its children too
+                            start_new_session=True, env=child_env())
     captured: List[str] = []
     stop = threading.Event()
 

@@ -7,4 +7,4 @@ Exec=mdatk-gui %f
 Icon=applications-science
 Terminal=false
 Categories=Science;Chemistry;Education;
-MimeType=application/json;
+MimeType=application/toml;

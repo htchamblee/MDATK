@@ -3,6 +3,10 @@
 The released Python package (up to v0.0.3c) is licensed under the GNU GPL v3 (see LICENSE). That
 does not change: copies already distributed stay GPLv3.
 
+The stand-alone Python builds (AppImage, Windows) are GPLv3 as well and may therefore bundle GPL
+components (Barnaba, a GPL FFmpeg build); their `licenses/` folder lists every bundled component. The
+dependency rules below apply to the planned C++ version only.
+
 ## Intended licensing of the C++ version
 
 Not adopted yet; it takes effect only after legal review and a formal change of LICENSE.
