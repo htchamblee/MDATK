@@ -341,8 +341,19 @@ class PlannerCanvas(Gtk.DrawingArea):
                                w / 2 - 14 if k < len(outs) else w - 24)
 
     # -------------------------------------------------------------- events
-    def _on_press(self, _w, ev) -> bool:
+    def _focus_in_place(self) -> None:
+        """Take the keyboard focus (Delete, arrow keys) without scrolling: the viewport around the canvas
+        would otherwise scroll to show the focused child's top-left corner."""
+        if self.has_focus():
+            return
+        h, v = self.win.scroller.get_hadjustment(), self.win.scroller.get_vadjustment()
+        x, y = h.get_value(), v.get_value()
         self.grab_focus()
+        h.set_value(x)
+        v.set_value(y)
+
+    def _on_press(self, _w, ev) -> bool:
+        self._focus_in_place()
         x, y = self.to_model(ev.x, ev.y)
         if ev.button == 3:
             self._context_menu(ev, x, y)

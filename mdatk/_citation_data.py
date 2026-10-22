@@ -1008,11 +1008,11 @@ REFERENCE_DATA = [
     },
     {
         "key": 'safaee2013',
-        "text": 'Safaee N., Noronha A. M., Rodionov D., Kozlov G., Wilds C. J., Sheldrick G. M., Gehring K. Angew. Chem. Int. Ed. 2013, 52. doi:10.1002/anie.201303461',
-        "bibtex": '@article{safaee2013,\n  author = {Safaee, N. and Noronha, A. M. and Rodionov, D. and Kozlov, G. and Wilds, C. J. and Sheldrick, G. M. and Gehring, K.},\n  title = {{Structure of the parallel duplex of poly(A) RNA: evaluation of a 50 year-old prediction}},\n  journal = {Angewandte Chemie International Edition},\n  year = {2013},\n  volume = {52},\n  doi = {10.1002/anie.201303461}\n}',
+        "text": 'Safaee N., Noronha A. M., Rodionov D., Kozlov G., Wilds C. J., Sheldrick G. M., Gehring K. Angew. Chem. Int. Ed. 2013, 52, 10370-10373. doi:10.1002/anie.201303461',
+        "bibtex": '@article{safaee2013,\n  author = {Safaee, N. and Noronha, A. M. and Rodionov, D. and Kozlov, G. and Wilds, C. J. and Sheldrick, G. M. and Gehring, K.},\n  title = {{Structure of the parallel duplex of poly(A) RNA: evaluation of a 50 year-old prediction}},\n  journal = {Angewandte Chemie International Edition},\n  year = {2013},\n  volume = {52},\n  pages = {10370--10373},\n  doi = {10.1002/anie.201303461}\n}',
         "doi": '10.1002/anie.201303461',
         "url": '',
-        "verified": 'memory',
+        "verified": 'pdf:352ef031-Angew_Chem_Int_Ed_-_2013_-_Safaee_-_Structure_of_the_Parallel_Duplex_of_Poly_A__RNA__Evaluation_of_a_50_Year_Old_Prediction.pdf',
     },
 ]
 
