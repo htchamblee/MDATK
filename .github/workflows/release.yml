@@ -1,9 +1,10 @@
 # Stand-alone builds of MDATK: Linux AppImage and Windows 10/11 x64 (beta).
 #
-# - Push of a tag v* (e.g. v0.0.4): builds both, tests them and attaches them to a GitHub
-#   release for the tag (created if needed).
-# - Manual run (Actions -> Release builds -> Run workflow): builds and tests only; the files
-#   are the run's artifacts.
+# - Push of a tag v* (e.g. v0.0.4.1, also made by publishing a release with a new tag): builds
+#   both, tests them and attaches them to the GitHub release for the tag (created if needed).
+#   Nothing is attached unless every build and test passed.
+# - Push to a branch that changes the packaging, or a manual run (Actions -> Release builds ->
+#   Run workflow): builds and tests only; the files are the run's artifacts.
 #
 # Local builds and what is bundled: packaging/README.md.
 name: Release builds
@@ -11,6 +12,10 @@ name: Release builds
 on:
   push:
     tags: ["v*"]
+    branches: ["**"]
+    paths:  # branch pushes only (tag pushes ignore path filters)
+      - "packaging/**"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -22,29 +27,32 @@ concurrency:
 
 jobs:
   appimage:
-    name: Linux AppImage (built on Ubuntu 22.04)
-    # the oldest supported distribution: the AppImage needs at least its glibc
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    name: Linux AppImage (built on Rocky Linux 9)
+    # built on the oldest supported distribution, because the AppImage needs at least its glibc:
+    # RHEL / Rocky 9 has glibc 2.34 (Ubuntu 22.04: 2.35). Python 3.12 and GTK 3 are Rocky's own.
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: System packages (GTK 3 and the headers PyGObject builds against)
+      - name: System packages (Python 3.12, GTK 3 and the headers PyGObject builds against)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgirepository1.0-dev libcairo2-dev pkg-config gir1.2-gtk-3.0 \
-            librsvg2-common adwaita-icon-theme hicolor-icon-theme \
-            xvfb xauth binutils file desktop-file-utils
+          dnf install -y dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf install -y --setopt=install_weak_deps=False \
+            python3.12 python3.12-devel python3.12-pip gcc pkgconf-pkg-config \
+            gobject-introspection-devel cairo-devel cairo-gobject-devel gtk3 \
+            librsvg2 adwaita-icon-theme hicolor-icon-theme dejavu-sans-fonts \
+            xorg-x11-server-Xvfb xorg-x11-xauth binutils file desktop-file-utils \
+            findutils which tar xz
+          python3.12 -m venv /opt/mdatk-build
+          echo /opt/mdatk-build/bin >> "$GITHUB_PATH"
 
       - name: Python packages
         run: |
           python -m pip install --upgrade pip
-          # PyGObject 3.51+ needs girepository-2.0 (GLib 2.80), newer than Ubuntu 22.04's
+          # PyGObject 3.51+ needs girepository-2.0 (GLib 2.80), newer than Rocky 9's GLib 2.68
           python -m pip install "PyGObject>=3.42,<3.51" "pycairo>=1.20" pyinstaller
           python -m pip install .                   # MDATK's dependencies ...
           python -m pip uninstall -y mdatk          # ... the bundle uses the checked-out source
@@ -65,15 +73,12 @@ jobs:
           PYTHON: python
         run: packaging/linux/build_appimage.sh --out dist
 
-      - name: glibc check (RHEL 9 has glibc 2.34)
-        run: |
-          if ! packaging/linux/check_glibc.sh build/appimage/dist/mdatk 2.34; then
-            echo "::warning::bundled files need a glibc newer than 2.34 (RHEL 9); see the list above"
-          fi
+      - name: glibc check (at most 2.34, RHEL 9)
+        run: packaging/linux/check_glibc.sh build/appimage/dist/mdatk 2.34
 
       - name: Smoke test (headless; GUI under Xvfb)
         run: |
-          xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work smoke \
+          xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work /tmp/smoke \
             --render --bundled-ffmpeg --barnaba --gui 20
 
       - name: Upload the AppImage
@@ -85,7 +90,7 @@ jobs:
           compression-level: 0  # already compressed
 
   rhel9:
-    name: AppImage test on Rocky Linux 9 (RHEL 9)
+    name: AppImage test on a clean Rocky Linux 9 (RHEL 9)
     needs: appimage
     runs-on: ubuntu-latest
     container: rockylinux:9
@@ -105,6 +110,30 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           xvfb-run -a python3 packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work /tmp/smoke \
+            --render --bundled-ffmpeg --barnaba --gui 20
+
+  ubuntu2204:
+    name: AppImage test on Ubuntu 22.04
+    needs: appimage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: mdatk-linux-x86_64
+          path: dist
+
+      - name: Test packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth
+
+      - name: Smoke test
+        run: |
+          chmod +x dist/*.AppImage
+          xvfb-run -a python3 packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work smoke \
             --render --bundled-ffmpeg --barnaba --gui 20
 
   windows:
@@ -162,9 +191,9 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [appimage, rhel9, windows]
-    # tags only; the Windows build (beta) and the RHEL 9 test may fail without blocking the AppImage
-    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.appimage.result == 'success'
+    # tags only, and only when every build and test passed: no half-empty releases
+    needs: [appimage, rhel9, ubuntu2204, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -176,9 +205,6 @@ jobs:
           merge-multiple: true
 
       - name: Checksums and release notes
-        env:
-          RHEL9: ${{ needs.rhel9.result }}
-          WINDOWS: ${{ needs.windows.result }}
         run: |
           cd release
           ls -l
@@ -190,22 +216,18 @@ jobs:
             echo "No Python, conda or virtual environment needed. cpptraj (AmberTools) is not included:"
             echo "install AmberTools yourself for trajectory cleaning; MDATK finds it automatically."
             echo
-            echo "**Linux** (x86-64; Ubuntu 22.04 / RHEL 9 or newer): \`MDATK-${version}-x86_64.AppImage\`"
+            echo "**Linux** (x86-64; Ubuntu 22.04, RHEL / Rocky / Alma 9 or newer): \`MDATK-${version}-x86_64.AppImage\`"
             echo '```'
             echo "chmod +x MDATK-${version}-x86_64.AppImage"
             echo "./MDATK-${version}-x86_64.AppImage            # the interface"
             echo "./MDATK-${version}-x86_64.AppImage --help     # the command line"
             echo '```'
-            echo "Tested on Ubuntu 22.04 (build machine); Rocky Linux 9 test: ${RHEL9}."
+            echo "Built on Rocky Linux 9; smoke-tested (CLI, video, GUI start) on clean Rocky Linux 9 and Ubuntu 22.04."
             echo
-            if [ "$WINDOWS" = success ]; then
-              echo "**Windows 10/11 x64 - beta, untested on real machines**: \`MDATK-${version}-windows-x64-setup.exe\`"
-              echo "(installer) or \`MDATK-${version}-windows-x64.zip\` (unzip, run \`mdatk-gui.exe\`)."
-              echo "The generated workflow scripts are bash scripts: run them on Linux, a cluster or in WSL."
-              echo "Only the automated smoke test (CLI demo, analysis and video on a CI machine) has passed."
-            else
-              echo "**Windows**: no build for this release (the Windows build failed: ${WINDOWS})."
-            fi
+            echo "**Windows 10/11 x64 - beta, untested on real machines**: \`MDATK-${version}-windows-x64-setup.exe\`"
+            echo "(installer) or \`MDATK-${version}-windows-x64.zip\` (unzip, run \`mdatk-gui.exe\`)."
+            echo "The generated workflow scripts are bash scripts: run them on Linux, a cluster or in WSL."
+            echo "Only the automated smoke test (CLI demo, analysis and video on a CI machine) has passed."
             echo
             echo "Licences: MDATK is GPL v3. The builds include third-party software (Python, GTK 3,"
             echo "NumPy, SciPy, Matplotlib, MDAnalysis, Barnaba, a GPL build of FFmpeg ...); their"
