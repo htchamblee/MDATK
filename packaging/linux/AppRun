@@ -9,6 +9,26 @@
 HERE="$(dirname "$(readlink -f "$0")")"
 MDATK="$HERE/usr/lib/mdatk/mdatk"
 
+# The Wayland client libraries GTK links against are not bundled with the rest: they must match
+# the host's graphics drivers, and every desktop has them. Hosts without them (minimal or server
+# installs, e.g. a cluster node used over ssh -X) get the copies in _internal/fallback.
+host_has() {
+    { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -qF " $1 " && return 0
+    for d in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib /lib; do
+        [ -e "$d/$1" ] && return 0
+    done
+    return 1
+}
+FALLBACK="$HERE/usr/lib/mdatk/_internal/fallback"
+for lib in "$FALLBACK"/*; do
+    [ -e "$lib" ] || continue
+    if ! host_has "$(basename "$lib")"; then
+        LD_LIBRARY_PATH="$FALLBACK${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export LD_LIBRARY_PATH
+        break
+    fi
+done
+
 case "$(basename "${ARGV0:-$0}")" in
     mdatk-gui*) exec "$MDATK" gui "$@" ;;
 esac

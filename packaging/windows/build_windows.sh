@@ -60,7 +60,10 @@ if [ "$INSTALL_DEPS" = 1 ]; then
         "$PYTHON" -m pip install --break-system-packages pyinstaller pyinstaller-hooks-contrib
     echo "== dependencies (pip)"
     export PIP_BREAK_SYSTEM_PACKAGES=1  # MSYS2's Python is "externally managed"
-    # no wheels for MSYS2's Python: compiled packages build against the MSYS2 NumPy / Cython
+    # no wheels for MSYS2's Python: compiled packages build against the MSYS2 NumPy / Cython.
+    # GCC 14+ turns old-C warnings into errors; MDAnalysis' encore/spe.c calls getpid() without
+    # declaring it on Windows ("implicit declaration"), so keep those warnings warnings.
+    export CFLAGS="${CFLAGS:+$CFLAGS }-Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
     "$PYTHON" -m pip install --no-build-isolation "MDAnalysis>=2.4"
     if [ -z "${MDATK_NO_BARNABA:-}" ]; then
         if ! "$PYTHON" -m pip install --no-build-isolation mdtraj future ||

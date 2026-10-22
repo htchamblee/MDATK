@@ -81,12 +81,13 @@ def setup() -> None:
     """Prepare the environment of a frozen build; does nothing from source."""
     if not is_frozen():
         return
-    # The bootloader extended LD_LIBRARY_PATH for this process (the loader has read it already);
-    # programs started from MDATK (cpptraj, generated scripts) get the user's own value back.
+    # The bootloader (and the AppImage's AppRun, for _internal/fallback) extended LD_LIBRARY_PATH
+    # for this process (the loader has read it already); programs started from MDATK (cpptraj,
+    # generated scripts) get the user's own value back.
     orig = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
     if orig is not None:
         os.environ["LD_LIBRARY_PATH"] = orig
-    elif "LD_LIBRARY_PATH" in os.environ:
+    if "LD_LIBRARY_PATH" in os.environ:
         root = bundle_dir() or ""
         kept = [p for p in os.environ["LD_LIBRARY_PATH"].split(os.pathsep) if p and not _inside(p, root)]
         if kept:

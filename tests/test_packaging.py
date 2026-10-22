@@ -73,6 +73,15 @@ def test_frozen_setup_and_child_env(fake_bundle, monkeypatch):
     frozen.setup()
     assert os.environ["LD_LIBRARY_PATH"] == "/home/me/lib" and "LD_LIBRARY_PATH_ORIG" not in os.environ
 
+    # AppRun's fallback folder (inside the bundle) is not passed on either
+    monkeypatch.setenv("LD_LIBRARY_PATH", internal)
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", f"{internal}/fallback:/home/me/lib")
+    frozen.setup()
+    assert os.environ["LD_LIBRARY_PATH"] == "/home/me/lib"
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", f"{internal}/fallback")
+    frozen.setup()
+    assert "LD_LIBRARY_PATH" not in os.environ
+
 
 def test_runner_guard(monkeypatch, tmp_path):
     script = tmp_path / "step.sh"
@@ -126,6 +135,25 @@ def test_apprun_dispatch(tmp_path, args, argv0, expected):
         env["ARGV0"] = argv0
     out = subprocess.run([str(apprun), *args], capture_output=True, text=True, env=env, check=True).stdout
     assert out.strip() == expected.replace("@project", str(project))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="AppRun is a POSIX shell script")
+@pytest.mark.parametrize("libname, used", [("libmdatk-not-on-any-host.so.0", True), ("libc.so.6", False)])
+def test_apprun_fallback_libraries(tmp_path, libname, used):
+    appdir = tmp_path / "AppDir"
+    exe = appdir / "usr" / "lib" / "mdatk" / "mdatk"
+    fallback = exe.parent / "_internal" / "fallback"
+    fallback.mkdir(parents=True)
+    (fallback / libname).write_text("")
+    exe.write_text('#!/bin/sh\necho "${LD_LIBRARY_PATH:-}"\n')
+    exe.chmod(0o755)
+    apprun = appdir / "AppRun"
+    apprun.write_text(open(os.path.join(PACKAGING, "linux", "AppRun"), encoding="utf-8").read())
+    apprun.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in ("ARGV0", "LD_LIBRARY_PATH")}
+    env["LD_LIBRARY_PATH"] = "/opt/amber/lib"
+    out = subprocess.run([str(apprun), "--version"], capture_output=True, text=True, env=env, check=True).stdout
+    assert out.strip() == (f"{fallback}:/opt/amber/lib" if used else "/opt/amber/lib")
 
 
 def test_trim_lists():

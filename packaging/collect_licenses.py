@@ -9,8 +9,8 @@ Writes ``DIST/mdatk/licenses/``:
 * ``python/<distribution>-<version>/``: the licence files of every bundled Python
   distribution (found through PyInstaller's module lists in the work folder)
 * ``system/<package>/``: copyright files of bundled system libraries (Debian /
-  Ubuntu: ``dpkg -S`` and ``/usr/share/doc/<pkg>/copyright``; MSYS2: ``pacman -Qo``
-  and ``share/licenses/<pkg>``)
+  Ubuntu: ``dpkg -S`` and ``/usr/share/doc/<pkg>/copyright``; RHEL / Rocky: ``rpm -qf``
+  and ``rpm -qL``; MSYS2: ``pacman -Qo`` and ``share/licenses/<pkg>``)
 * ``ffmpeg/``: FFmpeg's licence and where its source code is
 * ``THIRD_PARTY_NOTICES.txt``: one line per component with its licence
 
@@ -166,9 +166,20 @@ def _pacman_owner(path: str) -> Optional[str]:
     return out.splitlines()[0] if out else None
 
 
+def _rpm_owner(path: str) -> Optional[str]:
+    for cand in dict.fromkeys((os.path.realpath(path), path)):
+        out = _run(["rpm", "-qf", "--queryformat", "%{NAME}\n", cand]).strip()
+        if out and " " not in out.splitlines()[0]:  # not "file ... is not owned by any package"
+            return out.splitlines()[0]
+    return None
+
+
 def _owner_function():
-    """Function file -> owning system package (MSYS2 pacman or Debian dpkg), or None."""
-    return _pacman_owner if shutil.which("pacman") else _dpkg_owner if shutil.which("dpkg") else None
+    """Function file -> owning system package (MSYS2 pacman, Debian dpkg or RPM), or None."""
+    for tool, owner in (("pacman", _pacman_owner), ("dpkg", _dpkg_owner), ("rpm", _rpm_owner)):
+        if shutil.which(tool):
+            return owner
+    return None
 
 
 def _system_packages(work: str, sites: List[str]) -> Dict[str, Set[str]]:
@@ -205,6 +216,10 @@ def _system_licence(pkg: str, dest: str) -> Tuple[str, int]:
                 n += _copy([os.path.join(folder, f) for f in os.listdir(folder)
                             if os.path.isfile(os.path.join(folder, f))], dest)
         return (m.group(1).strip() if m else "see package"), n
+    if not shutil.which("dpkg") and shutil.which("rpm"):
+        lic = _run(["rpm", "-q", "--queryformat", "%{LICENSE}", pkg]).strip()
+        files = [f for f in _run(["rpm", "-qL", pkg]).splitlines() if os.path.isfile(f)]
+        return (lic or "see package"), _copy(files, dest)
     copyright_file = f"/usr/share/doc/{pkg.split(':')[0]}/copyright"
     if os.path.isfile(copyright_file):
         _copy([copyright_file], dest)
@@ -222,6 +237,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ffmpeg-dir", help="extracted FFmpeg build (for its LICENSE file)")
     ap.add_argument("--ffmpeg-version", default="", help="first line of 'ffmpeg -version'")
     ap.add_argument("--ffmpeg-url", default="", help="where the FFmpeg build was downloaded from")
+    ap.add_argument("--extra-binary", action="append", default=[], metavar="PATH",
+                    help="a system library copied into the bundle outside PyInstaller (repeatable)")
     args = ap.parse_args(argv)
 
     out = os.path.join(args.dist, "licenses")
@@ -261,7 +278,11 @@ def main(argv=None) -> int:
         else:
             lines.append(f"  {top}: no distribution metadata found  [no licence file found]")
 
+    # python.org builds: LICENSE.txt in the standard library; RHEL / Fedora: /usr/share/licenses
     pylicence = os.path.join(sysconfig.get_paths()["stdlib"], "LICENSE.txt")
+    if not os.path.isfile(pylicence):
+        found = glob.glob(f"/usr/share/licenses/python{sys.version_info[0]}.{sys.version_info[1]}*/LICENSE*")
+        pylicence = found[0] if found else pylicence
     if os.path.isfile(pylicence):
         shutil.copyfile(pylicence, os.path.join(out, "LICENSE-Python.txt"))
     lines += ["", f"Python {sys.version.split()[0]} (interpreter and standard library): "
@@ -273,6 +294,12 @@ def main(argv=None) -> int:
     system = _system_packages(args.work, sites)
     for pkg, tops in system_modules.items():
         system.setdefault(pkg, set()).update(tops)
+    for path in args.extra_binary:  # e.g. the AppImage's fallback Wayland libraries
+        pkg = owner(path) if owner else None
+        if pkg:
+            system.setdefault(pkg, set()).add(os.path.basename(path))
+        else:
+            lines.append(f"  {os.path.basename(path)}: owning package not found  [no licence file found]")
     if system:
         lines.append("System packages (GTK 3, PyGObject and their dependencies; copyright files in system/):")
         for pkg in sorted(system):

@@ -3,14 +3,15 @@
 #
 #   packaging/linux/build_appimage.sh [--out DIR] [--work DIR] [--no-ffmpeg]
 #
-# Steps: application icon -> PyInstaller bundle (packaging/mdatk.spec) -> static FFmpeg into
+# Steps: application icon -> PyInstaller bundle (packaging/mdatk.spec) -> Wayland client
+# libraries into _internal/fallback (used only where the host has none) -> static FFmpeg into
 # _internal/tools -> licence notices -> AppDir (AppRun, desktop file, icon) -> appimagetool.
 # Result: OUT/MDATK-<version>-x86_64.AppImage (default OUT: dist/) plus the unpacked bundle in
 # WORK/dist/mdatk (default WORK: build/appimage/).
 #
 # Requirements: the Python that runs MDATK with its dependencies, PyGObject + GTK 3 (typelibs:
 # gir1.2-gtk-3.0) and PyInstaller; barnaba + mdtraj (unless MDATK_NO_BARNABA=1); curl, tar, xz.
-# Build on the oldest distribution the AppImage must run on (glibc): ubuntu-22.04 for releases.
+# Build on the oldest distribution the AppImage must run on (glibc): Rocky Linux 9 for releases.
 #
 # Environment:
 #   PYTHON          interpreter to use (default: python3)
@@ -57,6 +58,20 @@ MDATK_ICON_DIR="$WORK/icons" "$PYTHON" -m PyInstaller --noconfirm --clean --log-
     --distpath "$WORK/dist" --workpath "$WORK/pyinstaller" "$PKG/mdatk.spec"
 "$PYTHON" "$PKG/trim.py" "$DIST" 1 | head -n 1
 
+echo "== fallback libraries"
+# PyInstaller never bundles the Wayland client libraries (they belong to the host's graphics
+# stack); AppRun puts these copies on the library path only on hosts that lack them.
+FALLBACK_SOURCES=()
+gdk="$(find "$DIST/_internal" -maxdepth 1 -name 'libgdk-3.so*' | head -n 1)"
+if [ -n "$gdk" ]; then
+    mkdir -p "$DIST/_internal/fallback"
+    while read -r name path; do
+        cp -L "$path" "$DIST/_internal/fallback/$name"
+        FALLBACK_SOURCES+=("$path")
+        echo "   $name ($path)"
+    done < <(ldd "$gdk" | awk '$1 ~ /^libwayland-/ && $3 ~ /^\// {print $1, $3}')
+fi
+
 FFMPEG_VERSION=""
 FFMPEG_DIR=""
 FFMPEG_SHA256=""
@@ -90,6 +105,7 @@ fi
 echo "== licences"
 "$PYTHON" "$PKG/collect_licenses.py" --dist "$DIST" --work "$WORK/pyinstaller/mdatk" \
     ${FFMPEG_DIR:+--ffmpeg-dir "$FFMPEG_DIR"} --ffmpeg-version "$FFMPEG_VERSION" \
+    ${FALLBACK_SOURCES[@]+"${FALLBACK_SOURCES[@]/#/--extra-binary=}"} \
     --ffmpeg-url "${FFMPEG_ARCHIVE:-$FFMPEG_URL}${FFMPEG_SHA256:+ (sha256 $FFMPEG_SHA256)}" > "$WORK/licenses.log"
 tail -n 3 "$WORK/licenses.log"
 
