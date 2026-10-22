@@ -229,3 +229,25 @@ def test_planner_delete_and_project_roundtrip(main, tmp_path):
     main.open_path(path)
     pump(0.3)
     assert main.planner is pl and [n.id for n in pl.workflow.nodes] == [n.id for n in loaded.workflow.nodes]
+
+
+def test_selecting_a_step_keeps_the_scroll_position(main):
+    main.open_planner()
+    pl = main.planner
+    pl.resize(1100, 600)
+    nodes = [pl.add_step("note", 60 + 500 * (k % 3), 60 + 450 * k) for k in range(6)]
+    pump(0.5)
+    h, v = pl.scroller.get_hadjustment(), pl.scroller.get_vadjustment()
+    assert v.get_upper() > v.get_page_size() + 1500
+    for node in (nodes[4], nodes[5], nodes[2]):  # first click focuses the canvas, later ones keep it
+        h.set_value(min(node.x * pl.canvas.zoom - 40, h.get_upper() - h.get_page_size()))
+        v.set_value(node.y * pl.canvas.zoom - 40)
+        pump(0.2)
+        before = (h.get_value(), v.get_value())
+        x, y = (node.x + 30) * pl.canvas.zoom, (node.y + 15) * pl.canvas.zoom
+        pl.canvas._on_press(pl.canvas, Ev(x, y))
+        pl.canvas._on_release(pl.canvas, Ev(x, y))
+        pump(0.3)
+        assert pl.canvas.selected == node.id
+        assert (h.get_value(), v.get_value()) == before
+    assert pl.canvas.has_focus()  # the Delete key still reaches the canvas
