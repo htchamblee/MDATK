@@ -40,7 +40,7 @@ lines for the pairs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 KJ_PER_KCAL = 4.184
 TWO_SIXTH = 2.0 ** (1.0 / 6.0)
@@ -389,9 +389,25 @@ def get_set(model: str, water: str) -> MgSet:
     return MG_SETS[(model, water)]
 
 
+# Atom type names the ion unit may carry: AmberTools' atomic_ions.lib types its MG unit Mg2+, while
+# parm10.dat and leaprc.RNA.OL3 know the older type MG. The frcmod defines both, so the published
+# ion terms apply whichever the unit carries (the topology check confirms it after the build).
+ION_TYPES = ("Mg2+", "MG")
+# reference types a non-standard atom type may inherit Mg2+ pair terms from: the parmBSC0chiOL3 types
+# of every set, plus the CP phosphate oxygens (OP = O2, OR = OS)
+CP_ALIASES = {"OP": "O2", "OR": "OS"}
+# Mg2+ pair references of the L-RNA library types (Dudek & Trylska style): bridging phosphate
+# oxygens O3'/O5', sugar ring O4', hydroxyl oxygens O2' / terminal OH
+LRNA_DEFAULT_REFS = {"LD": "OS", "LE": "OS", "LH": "OH"}
+
+
+def reference_types(model: str = "micro", water: str = "tip3p") -> List[str]:
+    return sorted(set(get_set(model, water).rna) | set(CP_ALIASES))
+
+
 def frcmod_text(model: str, water: str, water_label: str, chloride: bool = False) -> str:
-    """frcmod replacing the Li-Merz 12-6 Mg2+ (atom type Mg2+) parameters; ``chloride`` also replaces
-    Cl- by the Cl- model the set was optimised with (used where Amber has no Cl- for the water)."""
+    """frcmod replacing the Li-Merz 12-6 Mg2+ parameters (atom types Mg2+ and MG); ``chloride`` also
+    replaces Cl- by the Cl- model the set was optimised with (used where Amber has no Cl- for the water)."""
     p = get_set(model, water)
     cl_rmin, cl_eps = p.chloride_lj[0] * 10.0 * TWO_SIXTH / 2.0, p.chloride_lj[1] / KJ_PER_KCAL
     return (f"{MODELS[model]} Mg2+ for {water_label} water ({CITATIONS[water]}); "
@@ -399,17 +415,19 @@ def frcmod_text(model: str, water: str, water_label: str, chloride: bool = False
             + (f"; Cl- {p.chloride}: sigma {p.chloride_lj[0]} nm, epsilon {p.chloride_lj[1]} kJ/mol"
                if chloride else "") + "\n"
             "MASS\n"
-            "Mg2+ 24.305\n"
+            + "".join(f"{t:<4} 24.305\n" for t in ION_TYPES)
             + ("Cl-  35.45\n" if chloride else "") +
             "\n"
             "NONB\n"
-            f"  Mg2+     {p.rmin_half:.8f}  {p.eps_kcal:.8f}\n"
+            + "".join(f"  {t:<8} {p.rmin_half:.8f}  {p.eps_kcal:.8f}\n" for t in ION_TYPES)
             + (f"  Cl-      {cl_rmin:.8f}  {cl_eps:.8f}\n" if chloride else "") +
             "\n")
 
 
-def parmed_lines(model: str, water: str, water_label: str, frcmod: str, chloride: bool) -> List[str]:
-    """ParmEd changeLJPair lines for the Mg2+-RNA (and Mg2+-Cl-) pair terms."""
+def parmed_lines(model: str, water: str, water_label: str, frcmod: str, chloride: bool,
+                 extra_types: Optional[Dict[str, str]] = None) -> List[str]:
+    """ParmEd changeLJPair lines for the Mg2+-RNA (and Mg2+-Cl-) pair terms; ``extra_types`` maps
+    non-standard atom types (e.g. of an L-RNA library) onto the reference type whose terms they get."""
     p = get_set(model, water)
     lines = ["#",
              f"# {MODELS[model]} Mg2+ for {water_label} water: {CITATIONS[water]}",
@@ -425,9 +443,14 @@ def parmed_lines(model: str, water: str, water_label: str, frcmod: str, chloride
         lines.append(f"changeLJPair :MG @%{mask} {rmin:.8f} {e:.8f}")
     lines.append("# phosphate oxygens retyped by the CP correction (O2 -> OP, OS -> OR) get the O2 / OS terms;")
     lines.append("# ParmEd skips these two lines when no atom has those types")
-    for ty, src in (("OP", "O2"), ("OR", "OS")):
+    for ty, src in CP_ALIASES.items():
         rmin, e = amber_pair(*p.rna[src])
         lines.append(f"changeLJPair :MG @%{ty} {rmin:.8f} {e:.8f}")
+    if extra_types:
+        lines.append("# non-standard atom types (e.g. an L-RNA library) with the terms of their chemical twin")
+        for ty, ref in extra_types.items():
+            rmin, e = amber_pair(*p.rna[CP_ALIASES.get(ref, ref)])
+            lines += [f"# {ty} as {ref}", f"changeLJPair :MG @%{ty.replace('*', chr(92) + '*')} {rmin:.8f} {e:.8f}"]
     if chloride:
         rmin, e = amber_pair(*p.mg_cl)
         lines += [f"# Mg2+-Cl- pair term (optimised with the {p.chloride} Cl- model)",

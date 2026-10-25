@@ -26,6 +26,7 @@ from .scripts import embed
 from .scripts import helix_dist as _helix_dist
 from .scripts import prep_pdb as _prep_pdb
 from .scripts import tip4p2005 as _tip4p2005
+from .scripts import topcheck as _topcheck
 
 # ---------------------------------------------------------------------------
 # force fields, water models, ions
@@ -349,6 +350,14 @@ class AmberBuildTool(Tool):
                    "rule with the optimised Mg²⁺, which is not a published combination and gives much too "
                    "strong Mg²⁺-Cl⁻ contacts.",
                    requires={"water": SOLVATED, "mg_model": ("micro", "nano")}),
+            Option("mg_types", "Extra Mg²⁺ pair types", "text", "",
+                   "Atom types from extra residue libraries or parameter files that need Mg²⁺ pair terms, "
+                   "each as TYPE:REFERENCE - the published parmBSC0χOL3 type (or CP OP / OR) it is "
+                   "chemically equivalent to, e.g. 'XO:OS XH:OH'. With microMg / nanoMg a solute type "
+                   "without a pair term keeps the combination rule, which binds Mg²⁺ several times too "
+                   "strongly. L-RNA types are covered under L-RNA; the topology check after the build "
+                   "lists any type still missing.",
+                   placeholder="XO:OS XH:OH", requires={"water": SOLVATED, "mg_model": ("micro", "nano")}),
         ], tooltip="Water box and ions (tleap solvateoct / solvatebox and addIonsRand)."),
         Section("parmed", "ParmEd", [
             Option("nbfix19", "NBfix19 (gHBfix19 as LJ pairs)", "bool", True,
@@ -366,8 +375,10 @@ class AmberBuildTool(Tool):
                    "ParmEd HMassRepartition (hydrogens 3.024 Da) so MD can use a 4 fs time step "
                    "with SHAKE."),
             Option("parmed_extra", "Extra ParmEd commands", "multiline", "",
-                   "Added before outparm, e.g. the L-RNA changeLJPair lines.",
-                   placeholder="changeLJPair @%HO @%LD 3.03 0.01"),
+                   "Added after the NBfix19 / 0BPh lines and before the Mg²⁺ pair terms and outparm. "
+                   "The L-RNA NBfix19 / 0BPh pairs and (microMg / nanoMg) the Mg²⁺ pair terms of the "
+                   "L-RNA types are written automatically (L-RNA atom types); use this for anything else.",
+                   placeholder="changeLJPair @%XX @%YY 3.0 0.1"),
         ], tooltip="Topology edits applied with ParmEd after tleap (leap cannot reload a prmtop)."),
         Section("lrna", "L-RNA", [
             Option("lrna", "Name L-nucleotides for leap", "bool", True,
@@ -388,9 +399,12 @@ class AmberBuildTool(Tool):
                    "0BPh pairs for its bridging-oxygen type (HO, H5, H4 against LD, as for OS / OR in "
                    "D-RNA). ParmEd skips them when the structure has no L residues. The CP correction of "
                    "L residues comes with the L-RNA parameter file (e.g. frcmod.LRNA)."),
-            Option("lrna_types", "L-RNA atom types", "text", "LD LH",
-                   "Atom types of the L-RNA library declared as sp3 oxygens before it is loaded; the first "
-                   "one is the bridging phosphate oxygen used in the NBfix19 / 0BPh pairs.",
+            Option("lrna_types", "L-RNA atom types", "text", "LD LH LE",
+                   "Oxygen atom types of the L-RNA library, declared as sp3 oxygens before it is loaded; "
+                   "the first one is the bridging phosphate oxygen used in the NBfix19 / 0BPh pairs. With "
+                   "microMg / nanoMg each type also gets the Mg²⁺ pair term of its D-RNA twin: LD (O3'/O5') "
+                   "and LE (O4') as OS, LH (O2' / terminal OH) as OH; write TYPE:REFERENCE for other "
+                   "types or another twin, e.g. 'LD LH LE LX:OS'.",
                    requires={"lrna_fixes": True}),
             Option("two_pass", "Two-pass build", "bool", False,
                    "L-RNA naming -> dry tleap -> ParmEd -> ambpdb -> solvated tleap -> ParmEd. The ambpdb "
@@ -399,6 +413,11 @@ class AmberBuildTool(Tool):
         Section("outputs", "Outputs", [
             Option("save_pdb", "Also save a PDB of the built system", "bool", True,
                    "tleap savepdb after solvation - handy for a visual check."),
+            Option("check_topology", "Check the final topology", "bool", True,
+                   "After the build, a small Python check reads the final parm7 and stops the script when "
+                   "the box is not neutral, a Mg²⁺ ion does not carry +2, or (microMg / nanoMg) the ion "
+                   "lacks the published Lennard-Jones terms or a solute atom type has no Mg²⁺ pair term.",
+                   requires={"water": SOLVATED}),
         ]),
         env_section("source /opt/amber26/amber.sh   or   module load Amber/24"),
     ]
@@ -473,11 +492,37 @@ class AmberBuildTool(Tool):
         return ", ".join(parts)
 
     @staticmethod
-    def _lrna_types(s) -> List[str]:
-        """L-RNA atom types to declare / pair ([] when the L-RNA fixes are off)."""
+    def _lrna_tokens(s) -> List[Tuple[str, str]]:
+        """(type, reference or '') of the L-RNA types ([] when the L-RNA fixes are off)."""
         if not (s["lrna"] and s["lrna_fixes"]):
             return []
-        return [t for t in re.split(r"[\s,]+", s["lrna_types"].strip()) if t]
+        return [tuple(t.split(":", 1)) if ":" in t else (t, "")
+                for t in re.split(r"[\s,]+", s["lrna_types"].strip()) if t]
+
+    @classmethod
+    def _lrna_types(cls, s) -> List[str]:
+        """L-RNA atom types to declare / pair ([] when the L-RNA fixes are off)."""
+        return [t for t, _ref in cls._lrna_tokens(s)]
+
+    @classmethod
+    def _mg_type_map(cls, s) -> Tuple[Dict[str, str], List[str]]:
+        """Non-standard atom type -> reference type for the Mg2+ pair terms, and the L-RNA types
+        that have no reference (unknown name, none given)."""
+        out: Dict[str, str] = {}
+        missing: List[str] = []
+        for t, ref in cls._lrna_tokens(s):
+            ref = ref or mg_params.LRNA_DEFAULT_REFS.get(t, "")
+            if ref:
+                out[t] = ref
+            else:
+                missing.append(t)
+        for tok in re.split(r"[\s,]+", s["mg_types"].strip()):
+            if tok:
+                t, _, ref = tok.partition(":")
+                out[t] = ref
+                if t in missing:
+                    missing.remove(t)
+        return out, missing
 
     @staticmethod
     def _cp_lib(s) -> bool:
@@ -566,9 +611,11 @@ class AmberBuildTool(Tool):
             out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
                                      "add  addAtomTypes { { \"LD\" \"O\" \"sp3\" } { \"LH\" \"O\" \"sp3\" } }  "
                                      "under 'Leap commands before parameters'", ("leap_before_params",)))
-        bad = [t for t in self._lrna_types(s) if not re.fullmatch(r"[A-Za-z0-9*+-]{1,4}", t)]
+        bad = [f"{t}:{r}" if r else t for t, r in self._lrna_tokens(s)
+               if not re.fullmatch(r"[A-Za-z0-9*+-]{1,4}", t) or (r and not re.fullmatch(r"[A-Za-z0-9*+-]{1,4}", r))]
         if bad:
-            out.append(Issue("error", f"L-RNA atom types {', '.join(bad)}: 1-4 letters / digits each", ("lrna_types",)))
+            out.append(Issue("error", f"L-RNA atom types {', '.join(bad)}: 1-4 letters / digits each (TYPE or "
+                                      "TYPE:REFERENCE)", ("lrna_types",)))
         elif s["lrna"] and s["lrna_fixes"] and not self._lrna_types(s) and (s["nbfix19"] or s["bph0"]):
             out.append(Issue("warning", "no L-RNA atom type given: the NBfix19 / 0BPh pairs miss L residues",
                              ("lrna_types",)))
@@ -663,8 +710,14 @@ class AmberBuildTool(Tool):
         mg_extra = [ln for ln in extra_lines(s["parmed_extra"])
                     if re.search(r":MG\b|Mg2\+", ln, re.IGNORECASE)]
         if mg_extra:
+            mapped = set(self._mg_type_map(s)[0]) | set(mg_params.reference_types(model, water)) \
+                if (model, water) in mg_params.MG_SETS else set()
+            dup = sorted({m.group(1).replace("\\", "") for ln in mg_extra
+                          for m in [re.search(r":MG\s+@%(\S+)", ln)] if m and m.group(1).replace("\\", "") in mapped})
             out.append(Issue("warning", f"the {name} pair terms are applied after the extra ParmEd commands "
-                                        "and replace any Mg²⁺ pair terms set there",
+                                        "and replace any Mg²⁺ pair terms set there"
+                                        + (f"; MDATK now writes the Mg²⁺ pairs of {', '.join(dup)} itself, so "
+                                           "those extra lines can be removed" if dup else ""),
                              ("parmed_extra",)))
         p = mg_params.get_set(model, water)
         has_cl = bool(s["mg_balance"] and s["mg_count"] or s["salt_pairs"])
@@ -677,14 +730,33 @@ class AmberBuildTool(Tool):
                                         f"optimised {name} parameters - not a published combination (the "
                                         f"authors' pair: σ {p.mg_cl[0]:.3f} nm, ε {p.mg_cl[1]:.2f} kJ/mol) and "
                                         "far too strong Mg²⁺-Cl⁻ contacts", ("mg_cl_pair",)))
-        if (extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]) or s["lrna_ranges"].strip()
-                or self._cp_lib(s)):
-            out.append(Issue("warning", f"the {name} pair terms cover the 27 parmBSC0χOL3 RNA atom types; atom "
-                                        "types from extra libraries or parameter files (e.g. L-RNA) keep the "
-                                        "plain combination rule with Mg²⁺. Phosphate oxygens retyped by a CP "
-                                        "library (OP, OR) get the authors' O2 / OS terms - a choice by MDATK, "
-                                        "since the authors fitted Mg²⁺ against plain OL3 phosphate oxygens",
-                             ("mg_model", "extra_libs")))
+        refs = set(mg_params.reference_types(model, water))
+        mapping, missing = self._mg_type_map(s)
+        bad = [f"{t}:{r}" for t, r in mapping.items() if r not in refs or not re.fullmatch(r"[A-Za-z0-9*+-]{1,4}", t)]
+        if bad:
+            out.append(Issue("error", f"Mg²⁺ pair types {', '.join(bad)}: write TYPE:REFERENCE with a reference "
+                                      f"among {', '.join(sorted(refs))}", ("mg_types", "lrna_types")))
+        if missing:
+            out.append(Issue("error", f"L-RNA atom type{'s' if len(missing) > 1 else ''} {', '.join(missing)} "
+                                      f"{'have' if len(missing) > 1 else 'has'} no Mg²⁺ pair reference: without one "
+                                      f"{name} binds those atoms several times too strongly; write e.g. "
+                                      f"{missing[0]}:OS under L-RNA atom types", ("lrna_types",)))
+        if mapping and not bad:
+            out.append(Issue("info", f"Mg²⁺ pair terms for non-standard atom types: "
+                                     f"{', '.join(f'{t} as {r}' for t, r in mapping.items())}",
+                             ("mg_types", "lrna_types")))
+        if self._cp_lib(s):
+            out.append(Issue("info", "phosphate oxygens retyped by the CP library (OP, OR) get the authors' O2 / "
+                                     "OS terms - a choice by MDATK, since the authors fitted Mg²⁺ against plain "
+                                     "OL3 phosphate oxygens", ("mg_model", "cp_source")))
+        if extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]):
+            out.append(Issue("warning" if not s["check_topology"] else "info",
+                             f"atom types from extra libraries or parameter files need Mg²⁺ pair terms "
+                             f"('Extra Mg²⁺ pair types', L-RNA atom types); "
+                             + ("the topology check after the build lists any type still missing"
+                                if s["check_topology"] else
+                                "with the topology check off, a missing one goes unnoticed"),
+                             ("mg_types", "check_topology")))
         out.append(Issue("info", f"{name} ({mg_params.CITATIONS[water]}): Mg²⁺-water uses the "
                                  "Lorentz-Berthelot rule, Mg²⁺-RNA the authors' pair terms; GROMACS "
                                  "conversion keeps them as [ nonbond_params ]", ("mg_model",)))
@@ -800,7 +872,7 @@ class AmberBuildTool(Tool):
             lines += ["#", "# Extra commands"] + extra
         if wet and self._mg_pairs(s):
             lines += mg_params.parmed_lines(s["mg_model"], s["water"], WATERS[s["water"]][0],
-                                            self._mg_frcmod(ctx), s["mg_cl_pair"])
+                                            self._mg_frcmod(ctx), s["mg_cl_pair"], self._mg_type_map(s)[0])
         lines += ["#", f"outparm {out_parm}"]
         return "\n".join(lines) + "\n"
 
@@ -914,6 +986,23 @@ class AmberBuildTool(Tool):
                    f"parmed -O {wet}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                    require_file(f"{pm}.parm7", "ParmEd"), ""]
             final = f"{pm}.parm7"
+        if s["check_topology"] and self._solvated(s):
+            chk = n("check", "py")
+            pairs = self._mg_pairs(s)
+            p = mg_params.get_set(s["mg_model"], s["water"]) if pairs else None
+            neutral = bool(s["neutralize"] and (s["mg_balance"] or not s["mg_count"]))
+            files.append(GeneratedFile(chk, embed(
+                _topcheck, {"MG_RESIDUE": "MG", "NEUTRAL": neutral, "MG_COUNT": s["mg_count"],
+                            "ION_LJ": (round(p.rmin_half, 6), round(p.eps_kcal, 6)) if p else None,
+                            "PAIRS": pairs, "MODEL": mg_params.MODELS.get(s["mg_model"], "")},
+                "main(sys.argv[1:])",
+                f"Checks of the built topology - written by {PROJECT_ABBREV} {__version__}.\n\n"
+                "Usage: python3 THIS_SCRIPT TOPOLOGY.parm7"), "helper",
+                "net charge, Mg2+ charge" + (", Mg2+ Lennard-Jones and pair terms" if pairs else "")))
+            sh += ["# Check the final topology (net charge, Mg2+ charge"
+                   + (", Mg2+ Lennard-Jones and pair coverage" if pairs else "") + ")",
+                   f'python3 {chk} {final} | tee {n("check", "log")} || {{ echo "ERROR: the topology check failed '
+                   f'(see {n("check", "log")}); the topology is not safe to simulate" >&2; exit 1; }}', ""]
         sh += [f'echo "Topology: {final}  Coordinates: {wet}.rst7"', ""]
         files.append(GeneratedFile(script_name, "\n".join(sh), "run", "runs tleap / ParmEd"))
         return files
