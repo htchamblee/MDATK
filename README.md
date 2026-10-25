@@ -33,6 +33,11 @@ structure view. The structure view can be **zoomed and centred** on a residue or
 in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
 file as REMARK 950 records.
 
+In 0.0.5 the Amber build **checks the finished topology** and stops when a box meant to be neutral is not, a
+Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Lennard-Jones terms or a
+solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
+terms of their D-RNA twins (see *Mg²⁺ models*).
+
 Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
 as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
 when the mouse wheel scrolls past them.
@@ -335,8 +340,10 @@ the AmberTools installation, and loads them after `leaprc.RNA.OL3`. The NBfix19 
 address the phosphate oxygens as `@%OP` / `@%OR`, as their authors describe (0BPh: "H5−OR/OS and
 H4−OR/OS atom types", OR in OL3CP). *Own frcmod file* loads a CP parameter file you provide instead
 (masks stay `@%O2` / `@%OS`). Only standard (D-) residues are retyped; L-RNA libraries keep their own
-types (Dudek & Trylska type O5′ and O4′ as LD). With *NBfix19 / 0BPh / CP for L-RNA* (on by default) the
-build declares the L-RNA library's types for tleap (`addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }`)
+types (Dudek & Trylska type O5′ and O4′ as LD; other libraries give O4′ its own type, e.g. LE). With
+*NBfix19 / 0BPh / CP for L-RNA* (on by default, also when the input PDB already has L names) the build
+declares the L-RNA library's types for tleap
+(`addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } { "LE" "O" "sp3" } }`)
 and adds the same pairs for its oxygen type: `changeLJPair @%HO @%LD 3.03 0.01` (NBfix19),
 `@%H5 @%LD 2.8808 0.0505` and `@%H4 @%LD 2.9308 0.0505` (0BPh). ParmEd skips them when the structure has
 no L residues. The CP correction of L residues comes with the L-RNA parameter file (e.g. `frcmod.LRNA`);
@@ -395,10 +402,32 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
 - **Order.** The pair lines come after every `addLJType`, including NBfix19's `addLJType @%NB,NC` and
   *Separate HO and O2 types*, because `addLJType` resets the pair terms of the atoms it moves.
 - **CP library.** With the retyped CP library (the default) the phosphate oxygens are OP / OR; they
-  get the authors' O2 / OS terms, and the build step warns. This is MDATK's choice: the authors fitted
+  get the authors' O2 / OS terms, and the build step says so. This is MDATK's choice: the authors fitted
   against plain OL3 oxygens.
-- **Other types.** Atom types outside the authors' table, for example from an L-RNA library, keep the
-  plain combination rule; the build step warns about this.
+- **Ion atom type.** The frcmod defines the ion's terms for both type names in use: `Mg2+` (the
+  type of the `MG` unit in AmberTools' `atomic_ions.lib`) and `MG` (the older type of `parm10.dat`
+  and `leaprc.RNA.OL3`). In MDATK 0.0.4.1 and earlier only `Mg2+` was defined; if the unit carried
+  `MG`, the ion kept parm10.dat's `MG` (Åqvist) terms next to the Grotz pair terms. The topology check (below)
+  now shows which type the ion has and whether its terms are the published ones.
+- **Other types.** Atom types outside the authors' table get no pair term from the table, and the
+  combination rule with these ions binds Mg²⁺ several times too strongly. Before 0.0.5 that was
+  the case for the oxygens of an L-RNA library. Now each L-RNA atom type gets the term of its D-RNA
+  twin (*L-RNA atom types*: LD and LE as OS, LH as OH; `TYPE:REF` for others, e.g. `LX:OS`), and
+  *Extra Mg²⁺ pair types* does the same for any library (`XO:OS XH:OH`). References: the 27
+  parmBSC0χOL3 types and the CP types OP / OR. Choose the reference with the same Lennard-Jones
+  terms as the type (its LJ twin): tleap merges types with equal LJ terms, and a pair set for one
+  applies to all of them (the topology check reports conflicting maps). The planner reads the extra
+  residue libraries and warns about atom types without a reference.
+- **Topology check.** *Check the final topology* (on by default) runs a small standard-library
+  Python script on the final parm7. It stops the build script when:
+  - the box is not neutral, when it should be (neutralised, and Mg²⁺ balanced with Cl⁻ or none added);
+  - fewer Mg²⁺ than requested are present;
+  - a Mg²⁺ does not carry +2;
+  - with microMg / nanoMg, the ion's own Lennard-Jones terms are not the published ones;
+  - with microMg / nanoMg, a solute atom type with Lennard-Jones terms has no explicit Mg²⁺ pair term.
+
+  The report is written to `…_check_….log`. It reads the stored coefficients, so it also catches a
+  misspelt mask or a later `addLJType` that reset a pair.
 - **ParmEd output.** ParmEd's messages, including skipped masks, go into the step's log.
 - **Cl⁻.** Amber's Cl⁻ is kept (except with TIP4P/2005, where Amber has none and the authors' Cl⁻ is
   used); only the Mg²⁺–Cl⁻ pair takes the authors' value, which was fitted with
