@@ -18,6 +18,7 @@ from mdatk.workflows.base import fortran_float
 from mdatk.workflows.naming import file_name, parse_name, sanitize_project, sanitize_tag, step_folder
 from mdatk.workflows.plan import (Plan, add_node, analysis_inputs, apply_template, connect,
                                   scratch_node, single_step_plan)
+from mdatk.workflows import mg_params
 from mdatk.workflows.schema import Option, requirements_met
 from mdatk.workflows.scripts import amber2gmx, gmx_posre, prep_pdb
 
@@ -338,7 +339,7 @@ def test_amber_build_optimised_mg_files():
     assert st.outputs["topology"].data["mg_pairs"] == "nanoMg" and not st.outputs["topology"].data["c4"]
     files = generated(plan)
     frc = files["apt1_01_mg_20261015-1432.frcmod"].content
-    assert "NONB\n  Mg2+     0.57545262  93.16414946\n" in frc and frc.isascii()
+    assert "MASS\nMg2+ 24.305\nMG   24.305\n" in frc and frc.isascii()
     leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
     assert leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod") < leap.index(
         'mol = loadpdb "apt1_01_lrna_20261015-1432.pdb"')
@@ -349,7 +350,13 @@ def test_amber_build_optimised_mg_files():
     assert all(k < first_mg for k, ln in enumerate(lines) if ln.startswith("addLJType"))
     assert "changeLJPair :MG @%O2 2.55761105 1.10579359" in pm
     assert "changeLJPair :MG @%N\\* " in pm and "changeLJPair :MG :Cl- 5.48171" in pm
-    assert sum(ln.startswith("changeLJPair :MG @%") for ln in lines) == 27 + 2  # + CP types OP, OR
+    # 27 OL3 types + CP types OP, OR + the default L-RNA types LD, LH, LE
+    assert sum(ln.startswith("changeLJPair :MG @%") for ln in lines) == 27 + 2 + 3
+    os_line = next(ln for ln in lines if ln.startswith("changeLJPair :MG @%OS ")).split()[3:]
+    oh_line = next(ln for ln in lines if ln.startswith("changeLJPair :MG @%OH ")).split()[3:]
+    for t, ref in (("LD", os_line), ("LE", os_line), ("LH", oh_line)):
+        assert next(ln for ln in lines if ln.startswith(f"changeLJPair :MG @%{t} ")).split()[3:] == ref
+    assert "NONB\n  Mg2+     0.57545262  93.16414946\n  MG       0.57545262  93.16414946\n" in frc
     assert "doi:10.1021/acs.jctc.0c01281" in pm and pm.isascii()
     no_cl = generated(step("amber-build", {"mg_count": 4, "mg_model": "micro", "water": "spce",
                                            "mg_cl_pair": False}, {"structure": "/x.pdb"})[0])
@@ -864,7 +871,7 @@ def test_mg_pairs_cover_cp_types_and_warn(tmp_path):
     assert "2>&1 | tee apt1_01_parmed_20261015-1432.log" in sh
     _plan, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "extra_libs": "LRNA.lib"},
                      {"structure": "/x.pdb"})
-    assert any("keep the plain combination rule" in m for m in messages(st, "warning"))
+    assert any("need Mg²⁺ pair terms" in m for m in messages(st, "info"))
     _plan, st = step("amber-build", {"mg_count": 2, "mg_model": "nano", "mg_cl_pair": False},
                      {"structure": "/x.pdb"})
     assert any("not a published combination" in m for m in messages(st, "warning"))
@@ -883,7 +890,7 @@ def test_amber_build_cp_library_and_tip4p2005():
     leap = files["apt1_01_tleap_20261015-1432.leap"].content.splitlines()
     assert leap[2:12] == ["source leaprc.RNA.OL3", "source leaprc.water.tip4pew", "loadamberparams frcmod.tip4p2005",
                           "loadOff tip4p2005box.off", "WAT = TIP4P2005", "HOH = TIP4P2005",
-                          'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }',
+                          'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } { "LE" "O" "sp3" } }',
                           'addAtomTypes { { "OR" "O" "sp3" } }', "loadamberparams frcmod.cp", "loadOff RNA_CP.lib"]
     assert leap.index("loadOff RNA_CP.lib") < leap.index("loadamberparams apt1_01_mg_20261015-1432.frcmod")
     assert "solvateoct mol TIP4P2005BOX 15.0" in leap
@@ -978,7 +985,7 @@ def test_lrna_force_field_fixes_are_automatic():
         assert line in parmed
     assert "are not included" not in parmed
     leap = next(f.content for n, f in files.items() if n.endswith(".leap"))
-    assert 'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }' in leap
+    assert 'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } { "LE" "O" "sp3" } }' in leap
     # only NBfix19: no 0BPh pairs; fixes off: the old note, no declaration
     plan, _ = step("amber-build", {"bph0": False}, {"structure": "/x.pdb"})
     parmed = next(f.content for n, f in generated(plan).items() if n.endswith(".in") and "parmed" in n)
@@ -990,3 +997,52 @@ def test_lrna_force_field_fixes_are_automatic():
     assert "LD" not in next(f.content for n, f in files.items() if n.endswith(".leap"))
     _, st = step("amber-build", {"lrna_types": "L?D"}, {"structure": "/x.pdb"})
     assert any("L-RNA atom types" in m for m in messages(st, "error"))
+
+
+@pytest.mark.parametrize("settings, level, expected", [
+    ({"lrna_types": "LD LH LX"}, "error", "LX has no Mg²⁺ pair reference"),
+    ({"lrna_types": "LD LH LX:OS"}, "info", "LX as OS"),
+    ({"lrna_types": "LD LH", "mg_types": "LX:QQ"}, "error", "LX:QQ"),
+    ({"lrna_types": "LD LH LX", "mg_types": "LX:OR"}, "info", "LX as OR"),
+    ({"mg_types": "XO:OS XH:OH"}, "info", "XO as OS, XH as OH"),
+    ({"parmed_extra": "changeLJPair :MG @%LH 2.6 1.1"}, "warning", "Mg²⁺ pairs of LH itself"),
+])
+def test_mg_pair_type_mapping_checks(settings, level, expected):
+    _plan, st = step("amber-build", dict({"mg_count": 2, "mg_model": "micro"}, **settings), {"structure": "/x.pdb"})
+    assert any(expected in m for m in messages(st, level)), messages(st)
+
+
+def test_mg_pair_type_mapping_lines():
+    plan, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "water": "tip3p",
+                                    "lrna_types": "LD LH LE LX:OR", "mg_types": "XO:OS"}, {"structure": "/x.pdb"})
+    assert not messages(st, "error"), messages(st)
+    files = generated(plan)
+    pm = files["apt1_01_parmed_20261015-1432.in"].content
+    ref = mg_params.amber_pair(*mg_params.get_set("micro", "tip3p").rna["OS"])
+    for t in ("LD", "LE", "LX", "XO"):
+        assert f"changeLJPair :MG @%{t} {ref[0]:.8f} {ref[1]:.8f}" in pm
+    assert all("#" not in ln for ln in pm.splitlines() if ln.startswith("changeLJPair"))
+    leap = files["apt1_01_tleap_20261015-1432.leap"].content
+    assert 'addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } { "LE" "O" "sp3" } { "LX" "O" "sp3" } }' in leap
+    assert "changeLJPair @%HO @%LD 3.03 0.01" in pm  # NBfix19 still uses the first (bridging) type
+
+
+def test_amber_build_topology_check_step():
+    plan, st = step("amber-build", {"mg_count": 4, "mg_model": "nano", "water": "tip3p"}, {"structure": "/x.pdb"})
+    files = generated(plan)
+    chk = files["apt1_01_check_20261015-1432.py"].content
+    compile(chk, "check.py", "exec")
+    p = mg_params.get_set("nano", "tip3p")
+    assert f"ION_LJ = ({round(p.rmin_half, 6)!r}, {round(p.eps_kcal, 6)!r})" in chk
+    assert "PAIRS = True" in chk and "NEUTRAL = True" in chk and "MG_COUNT = 4" in chk
+    sh = files["apt1_01_amber-build_20261015-1432.sh"].content
+    assert ("python3 apt1_01_check_20261015-1432.py apt1_01_parmed_20261015-1432.parm7 | tee "
+            "apt1_01_check_20261015-1432.log ||") in sh
+    assert sh.index("parmed -O") < sh.index("python3 apt1_01_check")
+    plain = generated(step("amber-build", {"mg_count": 4, "mg_balance": False}, {"structure": "/x.pdb"})[0])
+    chk = plain["apt1_01_check_20261015-1432.py"].content
+    assert "PAIRS = False" in chk and "ION_LJ = None" in chk and "NEUTRAL = False" in chk
+    off = generated(step("amber-build", {"check_topology": False}, {"structure": "/x.pdb"})[0])
+    assert not any("_check_" in n for n in off)
+    dry = generated(step("amber-build", {"water": "none"}, {"structure": "/x.pdb"})[0])
+    assert not any("_check_" in n for n in dry)
