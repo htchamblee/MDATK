@@ -17,7 +17,8 @@ Everything runs locally; MDATK makes no network calls.
 Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
 wizard and a free-form **Project Planner** generate consistently named control files for Rosetta
 FARFAR2, SimRNA, RNAMake, Amber (tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD
-ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run…*), which logs
+ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run all…* or *Run
+selected steps*), which logs
 every run in the project file.
 
 Since 0.0.3a a project is **one commented TOML file** (`*.mdatk.toml`) holding the settings, the
@@ -37,6 +38,9 @@ In 0.0.5 the Amber build **checks the finished topology** and stops when a box m
 Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Lennard-Jones terms or a
 solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
 terms of their D-RNA twins (see *Mg²⁺ models*).
+
+In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
+steps*.
 
 Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
 as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
@@ -248,7 +252,8 @@ Long jobs run in a background thread and can be cancelled.
 
 The **Workflow** menu in the header bar opens two windows (they also work from the command
 line, see below) and the PDB clean-up window. They write files and scripts; nothing is executed
-unless you ask for it with *Run…* (planner) or *Write and run…* (wizard). MDATK then asks for
+unless you ask for it with *Run all…* / *Run selected steps* (planner), *Run step…* (a planner box's
+details) or *Write and run…* (wizard). MDATK then asks for
 confirmation, runs each step's main script in plan order with `bash`, streams the output into the
 log, stops at the first failure (Cancel stops the running script) and records every run in the
 project file. Scripts marked *run separately* (production runs meant for a cluster queue) are never
@@ -267,7 +272,12 @@ started.
   pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
   VMD; Amber protocol; Amber → GROMACS; ideal helix → Amber build → restraints → MD; model + map →
   restraint dictionaries → Phenix RSR → Coot RSR). *Write all files* writes every step, a master script that
-  runs the steps in order, and a Markdown summary of the plan. *Use for analysis* (on an MDATK
+  runs the steps in order, and a Markdown summary of the plan. Each step box has a check box in its
+  title bar (also Space on the selected box, or the right-click menu; *Tick all steps* / *Untick all
+  steps* on the canvas): *Run selected steps (N)* writes the ticked steps' files and runs their main
+  scripts in plan order, whatever order you ticked them in. Steps they read from are not written or
+  run again, so their outputs must exist already. The ticks are not saved with the project.
+  *Use for analysis* (on an MDATK
   analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
   the project file (`workflow` section), so one file holds the plan and the analysis settings.
   `examples/rna_plan.mdatk.toml` is a complete example plan (open it, set the output folder, and
@@ -1129,7 +1139,8 @@ fog, glow and translucency, thread safety and a render without a display.
 - Very large systems: restrict groups and the structure selection to the region of interest;
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
-- The script wizard and planner write files; they run them only on request (*Run…*). Generated
+- The script wizard and planner write files; they run them only on request (*Run all…*, *Run selected
+  steps*). Generated
   scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.

@@ -14,7 +14,7 @@ from __future__ import annotations
 import copy
 import math
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import gi
 
@@ -37,6 +37,7 @@ from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
 NODE_W = 236
 HEAD_H = 26
 DESC_H = 20
+CHECK = 13  # side of the "run" check box in a step's header
 PORT_H = 18
 PORT_R = 5.0
 GRID = 10
@@ -62,6 +63,12 @@ STATUS_COLORS = {"error": (0.75, 0.11, 0.16), "warning": (0.90, 0.60, 0.05), "in
 
 def _rgb_hex(rgb) -> str:
     return "#{:02x}{:02x}{:02x}".format(*(int(c * 255) for c in rgb))
+
+
+def checkable(node: PlanNode) -> bool:
+    """Steps that write and run scripts (not notes or the MDATK analysis box)."""
+    tool = TOOLS.get(node.tool)
+    return bool(tool is not None and tool.generates)
 
 
 class PlannerCanvas(Gtk.DrawingArea):
@@ -136,6 +143,20 @@ class PlannerCanvas(Gtk.DrawingArea):
         for n in reversed(self.workflow.nodes):
             w, h = self.node_size(n)
             if n.x <= x <= n.x + w and n.y <= y <= n.y + h:
+                return n
+        return None
+
+    @staticmethod
+    def check_rect(node: PlanNode) -> Tuple[float, float, float, float]:
+        return node.x + 8, node.y + (HEAD_H - CHECK) / 2, CHECK, CHECK
+
+    def check_at(self, x: float, y: float) -> Optional[PlanNode]:
+        """The step whose "run" check box is under (x, y) (2 px tolerance)."""
+        for n in reversed(self.workflow.nodes):
+            if not checkable(n):
+                continue
+            bx, by, bw, bh = self.check_rect(n)
+            if bx - 2 <= x <= bx + bw + 2 and by - 2 <= y <= by + bh + 2:
                 return n
         return None
 
@@ -297,7 +318,24 @@ class PlannerCanvas(Gtk.DrawingArea):
         cr.set_source_rgb(*rgb)
         cr.fill()
         cr.restore()
-        self._text(cr, step_title(n), n.x + 9, n.y + 17, 11, True, (1, 1, 1), w - 34)
+        title_x = n.x + 9
+        if checkable(n):
+            bx, by, bw, bh = self.check_rect(n)
+            self._rounded(cr, bx, by, bw, bh, 2.5)
+            cr.set_source_rgb(1, 1, 1)
+            cr.fill_preserve()
+            cr.set_source_rgba(0, 0, 0, 0.35)
+            cr.set_line_width(1.0)
+            cr.stroke()
+            if n.id in self.win.checked:
+                cr.move_to(bx + 3, by + bh * 0.55)
+                cr.line_to(bx + bw * 0.42, by + bh - 3)
+                cr.line_to(bx + bw - 2.5, by + 3)
+                cr.set_source_rgb(*rgb)
+                cr.set_line_width(2.2)
+                cr.stroke()
+            title_x = bx + bw + 7
+        self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1), n.x + w - 25 - title_x)
         step = self.win.plan.steps.get(n.id) if self.win.plan else None
         level = step.level() if step else "ok"
         cr.new_path()
@@ -365,6 +403,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             return True
         if ev.button != 1:
             return False
+        box = self.check_at(x, y)
+        if box is not None:
+            if ev.type == Gdk.EventType.BUTTON_PRESS:  # a double click must not toggle twice
+                self.win.toggle_checked(box.id)
+            return True
         if ev.type == Gdk.EventType._2BUTTON_PRESS:
             n = self.node_at(x, y)
             if n is not None:
@@ -471,6 +514,11 @@ class PlannerCanvas(Gtk.DrawingArea):
         if ev.keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
             self.win.delete_selected()
             return True
+        if ev.keyval == Gdk.KEY_space and self.selected:
+            n = self.win.node(self.selected)
+            if n is not None and checkable(n):
+                self.win.toggle_checked(n.id)
+                return True
         return False
 
     def select(self, node_id: Optional[str]) -> None:
@@ -486,6 +534,8 @@ class PlannerCanvas(Gtk.DrawingArea):
             self.select(n.id)
             if TOOLS.get(n.tool) and TOOLS[n.tool].generates:
                 self._menu_item(menu, "Edit in wizard…", lambda: self.win.open_wizard(n))
+                self._menu_item(menu, "Untick for 'Run selected'" if n.id in self.win.checked
+                                else "Tick for 'Run selected'", lambda: self.win.toggle_checked(n.id))
                 self._menu_item(menu, "Write this step's files", lambda: self.win.write([n.id]))
             elif n.tool == "mdatk":
                 self._menu_item(menu, "Use for MDATK analysis", lambda: self.win.use_for_analysis(n))
@@ -497,6 +547,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 self.selected_edge = k
                 self._menu_item(menu, "Delete connection", self.win.delete_selected)
             else:
+                self._menu_item(menu, "Tick all steps", lambda: self.win.set_checked(
+                    [m.id for m in self.workflow.nodes if checkable(m)]))
+                if self.win.checked:
+                    self._menu_item(menu, "Untick all steps", lambda: self.win.set_checked([]))
+                menu.append(Gtk.SeparatorMenuItem())
                 for category, tools in tools_by_category():
                     sub = Gtk.Menu()
                     for t in tools:
@@ -526,6 +581,7 @@ class PlannerWindow(Gtk.Window):
         self._resolve_id = 0
         self._details_node: Optional[str] = None
         self._loading = False
+        self.checked: Set[str] = set()  # steps ticked for "Run selected" (not saved with the project)
         self.set_default_size(1400, 860)
         if main is not None:
             self.set_transient_for(None)
@@ -577,9 +633,12 @@ class PlannerWindow(Gtk.Window):
         finally:
             self._loading = False
         self.canvas.selected = None
+        self.checked.clear()
         self.changed()
 
     def changed(self, resolve: bool = True) -> None:
+        self.checked &= {n.id for n in self.workflow.nodes if checkable(n)}  # deleted steps
+        self._update_run_selected()
         if resolve:
             self.resolve()
             self._update_status()
@@ -648,7 +707,13 @@ class PlannerWindow(Gtk.Window):
         bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
         bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
-        bar.pack_end(W.button("Run…", lambda: self.write(None, run=True),
+        self.run_selected_btn = W.button("Run selected steps", self.run_selected,
+                                         "Write the ticked steps' files and run their main scripts in plan "
+                                         "order (tick a step with the box in its title bar, Space, or the "
+                                         "right-click menu; steps they read from are not run again)",
+                                         "media-playback-start-symbolic")
+        bar.pack_end(self.run_selected_btn, False, False, 0)
+        bar.pack_end(W.button("Run all…", lambda: self.write(None, run=True),
                               "Write every step's files, then run the main scripts in plan order on this "
                               "computer (scripts marked 'run separately', e.g. production runs, are not "
                               "started); each run is logged in the project file", "media-playback-start-symbolic"),
@@ -1001,6 +1066,33 @@ class PlannerWindow(Gtk.Window):
         if run and hasattr(self.main, "run_scripts"):
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
             self.main.run_scripts(plan_jobs(plan, ok_ids), separate_scripts(plan, ok_ids), parent=self)
+
+    # ------------------------------------------------------- run selected
+    def toggle_checked(self, node_id: str) -> None:
+        self.set_checked(self.checked ^ {node_id})
+
+    def set_checked(self, node_ids) -> None:
+        self.checked = {n for n in node_ids if self.node(n) is not None and checkable(self.node(n))}
+        self._update_run_selected()
+        self.canvas.queue_draw()
+
+    def selected_in_order(self) -> List[str]:
+        plan = self.plan or self.resolve()
+        return [n for n in plan.order if n in self.checked]
+
+    def _update_run_selected(self) -> None:
+        btn = getattr(self, "run_selected_btn", None)
+        if btn is None:
+            return
+        n = len(self.checked)
+        btn.set_label(f"Run selected steps ({n})" if n else "Run selected steps")
+        btn.set_sensitive(bool(n))
+
+    def run_selected(self) -> None:
+        self.resolve()
+        ids = self.selected_in_order()
+        if ids:
+            self.write(ids, run=True)
 
     def open_folder(self) -> None:
         path = self.main.project.workflow_dir

@@ -173,7 +173,7 @@ def test_planner_template_connect_and_write(main, tmp_path):
     # moving a box (positions snap to a 10 px grid)
     node = nodes["amber-md"]
     x0 = node.x
-    p = (node.x + 20, node.y + 10)
+    p = (node.x + 60, node.y + 10)  # the title bar, right of the "run" check box
     canvas._on_press(canvas, at(*p))
     canvas._on_motion(canvas, at(p[0] + 100, p[1] + 50))
     canvas._on_release(canvas, at(p[0] + 100, p[1] + 50))
@@ -251,3 +251,56 @@ def test_selecting_a_step_keeps_the_scroll_position(main):
         assert pl.canvas.selected == node.id
         assert (h.get_value(), v.get_value()) == before
     assert pl.canvas.has_focus()  # the Delete key still reaches the canvas
+
+
+def test_planner_run_selected_steps(main, tmp_path):
+    main.open_planner()
+    pl = main.planner
+    pl.add_template("amber")
+    note = pl.add_step("note", 40, 700)
+    pump(0.3)
+    nodes = {n.tool: n for n in main.project.workflow.nodes}
+    nodes["amber-build"].files["structure"] = str(tmp_path / "model.pdb")
+    nodes["amber-restraints"].settings.update(sequence="GGGCAC GUGCCC", dotbracket="(((((( ))))))")
+    pl.changed()
+    pump(0.2)
+    canvas, btn = pl.canvas, pl.run_selected_btn
+    assert not btn.get_sensitive() and btn.get_label() == "Run selected steps"
+    runs = []
+    main.run_scripts = lambda jobs, separate=(), parent=None: runs.append((jobs, list(separate)))
+
+    def click_box(node):
+        bx, by, bw, bh = canvas.check_rect(node)
+        x, y = (bx + bw / 2) * canvas.zoom, (by + bh / 2) * canvas.zoom
+        canvas._on_press(canvas, Ev(x, y))
+        canvas._on_release(canvas, Ev(x, y))
+        pump(0.1)
+
+    # tick the MD step first, then the build: the run follows the plan order, not the click order
+    click_box(nodes["amber-md"])
+    click_box(nodes["amber-build"])
+    assert pl.checked == {nodes["amber-md"].id, nodes["amber-build"].id}
+    assert btn.get_sensitive() and btn.get_label() == "Run selected steps (2)"
+    assert canvas.check_at(note.x + 14, note.y + 13) is None  # notes have no box
+    assert canvas.selected != nodes["amber-build"].id  # ticking does not select or move the box
+    click_box(nodes["amber-md"])  # untick
+    click_box(nodes["amber-md"])  # tick again
+    pl.run_selected()
+    pump(0.2)
+    assert len(runs) == 1
+    labels = [j.title for j in runs[0][0]]
+    assert len(labels) == 2 and labels == [pl.plan.steps[nodes["amber-build"].id].label,
+                                           pl.plan.steps[nodes["amber-md"].id].label]
+    root = main.project.workflow_dir
+    assert os.path.isdir(os.path.join(root, "01_amber-build"))
+    assert not os.path.isdir(os.path.join(root, "02_amber-restraints"))  # unticked: not written
+    # Space toggles the selected step; deleting a ticked step drops it
+    canvas.select(nodes["amber-restraints"].id)
+    canvas._on_key(canvas, type("K", (), {"keyval": Gdk.KEY_space})())
+    assert nodes["amber-restraints"].id in pl.checked
+    canvas.select(nodes["amber-md"].id)
+    pl.delete_selected()
+    pump(0.1)
+    assert nodes["amber-md"].id not in pl.checked and btn.get_label() == "Run selected steps (2)"
+    pl.set_checked([])
+    assert not btn.get_sensitive()
