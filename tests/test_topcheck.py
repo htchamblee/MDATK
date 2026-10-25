@@ -9,7 +9,8 @@ from mdatk.workflows.scripts import topcheck
 
 SET = mg_params.get_set("micro", "tip3p")
 ION = (SET.rmin_half, SET.eps_kcal)
-OWN = {"MG": ION, "OS": (1.6837, 0.17), "LD": (1.6837, 0.17), "OW": (1.7683, 0.1520), "HO": (0.0, 0.0)}
+OWN = {"MG": ION, "OS": (1.6837, 0.17), "LD": (1.6837, 0.17), "OW": (1.7683, 0.1520), "HO": (0.0, 0.0),
+       "NA": (1.824, 0.17), "Na+": (1.369, 0.0874)}
 
 
 def _fmt(values, per, width, fmt):
@@ -57,7 +58,7 @@ def write_parm7(path, atoms, residues, pairs):
 def system(tmp_path, ld_pair=True, mg_charge=2.0, cl_missing=0.0, ion=ION):
     OWN["MG"] = ion
     atoms = [("OS", -1.0), ("LD", -1.0), ("HO", 0.0), ("OW", cl_missing), ("MG", mg_charge)]
-    residues = [("G5", 1), ("LG3", 2), ("WAT", 4), ("MG", 5)]
+    residues = [("G5", 1), ("WAT", 4), ("MG", 5)]
     ref = mg_params.amber_pair(*SET.rna["OS"])
     pairs = {("MG", "OS"): ref}
     if ld_pair:
@@ -144,3 +145,27 @@ def test_mapped_type_sharing_an_lj_type_is_reported(tmp_path):
     assert run(path, pair_refs={"OS": os_ref, "XO": os_ref}) == []
     problems = run(path, pair_refs={"OS": os_ref, "XO": oh_ref})
     assert any("OS, XO share one Lennard-Jones type" in p for p in problems)
+
+
+def test_shared_solute_water_lj_type_is_noted(tmp_path, capsys):
+    atoms = [("OS", -1.0), ("HO", 0.0), ("HO", 0.0), ("HO", 0.0), ("MG", 2.0), ("OW", -1.0)]
+    # HO of the RNA and the water hydrogens (also zero LJ, typed HW in a real topology) share an LJ type
+    path = write_parm7(tmp_path / "s.parm7", atoms, [("G5", 1), ("WAT", 3), ("MG", 5), ("WAT", 6)],
+                       {("MG", "OS"): mg_params.amber_pair(*SET.rna["OS"])})
+    text = open(path).read().replace("OS  HO  HO  HO  MG", "OS  HO  HW  HW  MG")
+    open(path, "w").write(text)
+    assert run(path, pairs=False, ion_lj=None) == []  # a note, not a failure
+    out = capsys.readouterr().out
+    assert "shared by solute and solvent atoms: HO (1), HW (2)" in out
+
+
+def test_solvent_is_classified_by_residue(tmp_path):
+    # NA is the aromatic ring nitrogen of the RNA (G N1), Na+ the ion: the RNA's NA needs a Mg2+ pair,
+    # the sodium ion (a single-atom residue, whatever its name) does not
+    atoms = [("OS", -1.0), ("NA", 0.0), ("MG", 2.0), ("Na+", 1.0), ("OW", -2.0)]
+    refs = {("MG", "OS"): mg_params.amber_pair(*SET.rna["OS"])}
+    path = write_parm7(tmp_path / "s.parm7", atoms, [("G", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)
+    problems = run(path)
+    assert len(problems) == 1 and "NA (1)" in problems[0] and "Na+" not in problems[0]
+    refs[("MG", "NA")] = mg_params.amber_pair(*SET.rna["NA"])
+    assert run(write_parm7(tmp_path / "t.parm7", atoms, [("G", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)) == []

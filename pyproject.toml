@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdatk"
-version = "0.0.5"
+version = "0.0.5.1"
 description = "Molecular Dynamic Analysis Tool Kit (MDATK): offline analysis and multi-panel video rendering of MD trajectories of RNA systems"
 readme = "README.md"
 license = { file = "LICENSE" }

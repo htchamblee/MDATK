@@ -355,8 +355,9 @@ class AmberBuildTool(Tool):
                    "each as TYPE:REFERENCE - the published parmBSC0χOL3 type (or CP OP / OR) it is "
                    "chemically equivalent to, e.g. 'XO:OS XH:OH'. With microMg / nanoMg a solute type "
                    "without a pair term keeps the combination rule, which binds Mg²⁺ several times too "
-                   "strongly. L-RNA types are covered under L-RNA; the topology check after the build "
-                   "lists any type still missing.",
+                   "strongly. Choose the reference with the same Lennard-Jones terms (its LJ twin): tleap "
+                   "merges types with equal terms and the pair applies to all of them. L-RNA types are "
+                   "covered under L-RNA; the topology check after the build lists any type still missing.",
                    placeholder="XO:OS XH:OH", requires={"water": SOLVATED, "mg_model": ("micro", "nano")}),
         ], tooltip="Water box and ions (tleap solvateoct / solvatebox and addIonsRand)."),
         Section("parmed", "ParmEd", [
@@ -366,7 +367,7 @@ class AmberBuildTool(Tool):
             Option("bph0", "0BPh pairs", "bool", True,
                    "Extra H5/H4 – O5' Lennard-Jones pairs of the 0BPh modification (Mlýnský et al. 2023): "
                    "masks @%OR with the CP library, @%OS otherwise."),
-            Option("split_types", "Separate HO and O2 Lennard-Jones types first", "bool", False,
+            Option("split_types", "Separate HO and O2 Lennard-Jones types first", "bool", True,
                    "addLJType @%HO and @%O2 before the pair changes. tleap merges atom types with equal "
                    "LJ parameters: HO shares its LJ type with water HW and O2 with base carbonyl O, so "
                    "without this the HO-O2 / HO-OS pairs also change water-H and carbonyl-O interactions.",
@@ -377,7 +378,9 @@ class AmberBuildTool(Tool):
             Option("parmed_extra", "Extra ParmEd commands", "multiline", "",
                    "Added after the NBfix19 / 0BPh lines and before the Mg²⁺ pair terms and outparm. "
                    "The L-RNA NBfix19 / 0BPh pairs and (microMg / nanoMg) the Mg²⁺ pair terms of the "
-                   "L-RNA types are written automatically (L-RNA atom types); use this for anything else.",
+                   "L-RNA types are written automatically (L-RNA atom types); use this for anything else. "
+                   "tleap merges atom types with equal Lennard-Jones terms into one LJ type, so a pair set "
+                   "with @%TYPE applies to every type sharing them (addLJType @%TYPE separates one first).",
                    placeholder="changeLJPair @%XX @%YY 3.0 0.1"),
         ], tooltip="Topology edits applied with ParmEd after tleap (leap cannot reload a prmtop)."),
         Section("lrna", "L-RNA", [
@@ -692,10 +695,11 @@ class AmberBuildTool(Tool):
                                      "dt = 0.004 ps", ("hmr",)))
         out += self._check_water(s)
         if s["nbfix19"] and not s["split_types"] and self._solvated(s):
-            out.append(Issue("info", "tleap gives HO the same Lennard-Jones type as water HW (both zero) and "
-                                     "O2 the same as carbonyl O, so 'changeLJPair @%HO ...' also changes "
-                                     "water-H and carbonyl-O pairs; tick 'Separate HO and O2 Lennard-Jones "
-                                     "types first' if that is not intended", ("split_types",)))
+            out.append(Issue("warning", "tleap gives HO the same Lennard-Jones type as water HW (both zero) and "
+                                        "O2 the same as carbonyl O, so the NBfix19 'changeLJPair @%HO ...' lines "
+                                        "also apply to every water hydrogen (and carbonyl O) for the whole run; "
+                                        "tick 'Separate HO and O2 Lennard-Jones types first' unless you reproduce "
+                                        "a protocol that did not separate them", ("split_types",)))
         return out
 
     def _check_mg_pairs(self, s, ctx=None) -> List[Issue]:
@@ -891,6 +895,8 @@ class AmberBuildTool(Tool):
             lines += ["#", "# Hydrogen mass repartitioning (4 fs time steps with SHAKE)",
                       "HMassRepartition"]
         extra = extra_lines(s["parmed_extra"])
+        if not wet:  # the dry topology has no ions: Mg2+ lines would select nothing
+            extra = [ln for ln in extra if not re.search(r":MG\b", ln, re.IGNORECASE)]
         if extra:
             lines += ["#", "# Extra commands"] + extra
         if wet and self._mg_pairs(s):

@@ -362,9 +362,13 @@ Table 2).
 > tleap merges atom types with identical Lennard-Jones parameters: HO (2′-OH hydrogen) shares its LJ
 > type with water HW (both have zero LJ terms) and O2 with base carbonyl O. ParmEd's
 > `changeLJPair @%HO @%O2` / `@%OS` therefore also changes water-H…O2/OS and HO…O interactions. The
-> wizard says so, and *Separate HO and O2 Lennard-Jones types first* (`addLJType @%HO`,
-> `addLJType @%O2`) restricts the pairs to the intended atoms. It is off by default so the reference
-> protocol is reproduced unchanged.
+> wizard warns, and *Separate HO and O2 Lennard-Jones types first* (`addLJType @%HO`,
+> `addLJType @%O2`; with the CP library only `@%HO`, since the phosphate oxygens are already OP)
+> restricts the pairs to the intended atoms. It is on by default for new projects since 0.0.5.1;
+> untick it only to reproduce a protocol that did not separate them (projects saved earlier keep their
+> setting). In a real TIP3P build the HW Lennard-Jones type held 18,716 atoms:
+> 18,700 water hydrogens and 16 hydroxyl hydrogens. The topology check's log lists every
+> Lennard-Jones type shared by solute and water atoms.
 
 **Mg²⁺ models.** *Mg²⁺ Lennard-Jones model* in the build step:
 
@@ -406,9 +410,12 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
   against plain OL3 oxygens.
 - **Ion atom type.** The frcmod defines the ion's terms for both type names in use: `Mg2+` (the
   type of the `MG` unit in AmberTools' `atomic_ions.lib`) and `MG` (the older type of `parm10.dat`
-  and `leaprc.RNA.OL3`). In MDATK 0.0.4.1 and earlier only `Mg2+` was defined; if the unit carried
-  `MG`, the ion kept parm10.dat's `MG` (Åqvist) terms next to the Grotz pair terms. The topology check (below)
-  now shows which type the ion has and whether its terms are the published ones.
+  and `leaprc.RNA.OL3`). On AmberTools 26 the `MG` unit carries `Mg2+` with charge +2, so the
+  published terms applied in earlier MDATK versions too (checked on a built nanoMg / TIP3P topology).
+  The second name only guards against a release that types the unit differently, and the topology
+  check (below) shows the ion's type, charge and terms in every build. tleap's message
+  `MG has a charge of 0. Adding the ions anyway.` during `addIonsRand mol MG` is misleading: the
+  ions carry +2 and MDATK's 2 Cl⁻ per Mg²⁺ leave the box neutral.
 - **Other types.** Atom types outside the authors' table get no pair term from the table, and the
   combination rule with these ions binds Mg²⁺ several times too strongly. Before 0.0.5 that was
   the case for the oxygens of an L-RNA library. Now each L-RNA atom type gets the term of its D-RNA
