@@ -28,8 +28,9 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 CHARGE_SCALE = 18.2223  # parm7 stores charges in units of e / 18.2223
-SOLVENT = {"WAT", "HOH", "TIP3", "SOL", "Na+", "K+", "Cl-", "Li+", "Rb+", "Cs+", "F-", "Br-", "I-", "MG",
-           "CA", "ZN", "NA", "CL", "K"}
+# solvent = water residues (by residue name) and monatomic ions (any single-atom residue). Classified
+# by residue, never by atom type name: NA is Amber's aromatic ring nitrogen (G N1, U N3), sodium is Na+
+WATER = {"WAT", "HOH", "TIP3", "SOL"}
 WANTED = {"POINTERS", "AMBER_ATOM_TYPE", "ATOM_TYPE_INDEX", "NONBONDED_PARM_INDEX",
           "LENNARD_JONES_ACOEF", "LENNARD_JONES_BCOEF", "CHARGE", "RESIDUE_LABEL", "RESIDUE_POINTER"}
 
@@ -91,9 +92,12 @@ class Topology:
         labels = _names(p["RESIDUE_LABEL"])
         ptr = _ints(p["RESIDUE_POINTER"]) + [len(self.atype) + 1]
         self.resname = [""] * len(self.atype)
+        self.solvent = [False] * len(self.atype)
         for r, lab in enumerate(labels):
-            for i in range(ptr[r] - 1, ptr[r + 1] - 1):
+            first, last = ptr[r] - 1, ptr[r + 1] - 1
+            for i in range(first, last):
                 self.resname[i] = lab
+                self.solvent[i] = lab in WATER or last - first == 1
 
     def pair(self, i: int, j: int) -> Tuple[Optional[float], Optional[float]]:
         k = self.ico[self.ntypes * (i - 1) + (j - 1)]
@@ -101,7 +105,8 @@ class Topology:
 
 
 def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0,
-          ion_lj: Optional[Tuple[float, float]] = None, pairs: bool = False, model: str = "") -> List[str]:
+          ion_lj: Optional[Tuple[float, float]] = None, pairs: bool = False, model: str = "",
+          pair_refs: Optional[Dict[str, List[float]]] = None) -> List[str]:
     """Problems found in the topology ([] = all good); prints a report."""
     top = Topology(path)
     problems: List[str] = []
@@ -111,6 +116,20 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
     if neutral and abs(net) > 0.02:
         problems.append(f"the system is not neutral (net charge {net:+.4f} e): PME would add a uniform "
                         "background charge; check the ion counts and the charge of the ion units")
+    # note (not a failure): Lennard-Jones types shared by solute and solvent (water, ion) atoms, e.g. HO
+    # with TIP3P HW (both zero): a changeLJPair @%HO line (NBfix19) then also changes the water hydrogens
+    by_type: Dict[int, Dict[str, int]] = {}
+    solvent_types = {ti for ti, sv in zip(top.tindex, top.solvent) if sv}
+    solute_types = {ti for ti, sv in zip(top.tindex, top.solvent) if not sv}
+    for ti, name in zip(top.tindex, top.atype):
+        if ti in solvent_types and ti in solute_types:
+            by_type.setdefault(ti, {}).setdefault(name, 0)
+            by_type[ti][name] += 1
+    for ti, names in sorted(by_type.items()):
+        if names:
+            print(f"  note: Lennard-Jones type {ti} is shared by solute and solvent atoms: "
+                  + ", ".join(f"{n} ({c})" for n, c in sorted(names.items()))
+                  + "; pair terms set for one apply to all (ParmEd addLJType separates them)")
     mg = [i for i, r in enumerate(top.resname) if r == mg_res]
     print(f"  {len(mg)} {mg_res} atom(s)")
     if mg_count and len(mg) < mg_count:  # more is fine: the input structure may bring its own
@@ -135,7 +154,7 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
             continue
         solute: Dict[int, Dict[str, int]] = {}
         for i, (ti, name) in enumerate(zip(top.tindex, top.atype)):
-            if top.resname[i] not in SOLVENT:
+            if not top.solvent[i]:
                 solute.setdefault(ti, {}).setdefault(name, 0)
                 solute[ti][name] += 1
         bare = []
@@ -149,6 +168,16 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
                                         or abs(e_ij - e_lb) > 1e-4 * max(1.0, e_lb))
             if not explicit:
                 bare.append("/".join(f"{n} ({c})" for n, c in sorted(solute[ti].items())))
+        # tleap merges atom types with equal Lennard-Jones terms into one LJ type, and changeLJPair acts
+        # on LJ types: a mapped type sharing its LJ type with a type meant to get another Mg2+ pair
+        # overwrites that type's pair (whichever line comes last wins)
+        for ti in sorted(solute):
+            wanted = {n: tuple(pair_refs[n]) for n in solute[ti] if pair_refs and n in pair_refs}
+            if len(set(wanted.values())) > 1:
+                problems.append(f"atom types {', '.join(sorted(wanted))} share one Lennard-Jones type but are "
+                                "meant to get different Mg2+ pair terms; only one can apply. Map the "
+                                "non-standard type onto the reference with the same Lennard-Jones terms "
+                                "(its LJ twin)")
         if bare:
             problems.append(f"solute atom types without an explicit Mg2+ pair term (combination rule only, "
                             f"far too strong with {model}): {', '.join(bare)}. Map each type onto the "
@@ -167,7 +196,7 @@ def main(argv: List[str]) -> int:
         print("usage: python3 THIS_SCRIPT TOPOLOGY.parm7", file=sys.stderr)
         return 2
     try:
-        problems = check(argv[0], MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL)
+        problems = check(argv[0], MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL, PAIR_REFS)
     except (OSError, ValueError, IndexError) as exc:
         print(f"topology check: {exc}", file=sys.stderr)
         return 1
@@ -176,3 +205,4 @@ def main(argv: List[str]) -> int:
 
 # defaults when imported (the generated script sets its own)
 MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL = "MG", True, 0, None, False, ""
+PAIR_REFS: Dict[str, List[float]] = {}

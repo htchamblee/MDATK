@@ -274,7 +274,9 @@ def test_amber_build_warnings():
     warn = " ".join(messages(st, "warning"))
     assert "below 10" in warn and "TIP4P-D" in warn
     _plan, st = step("amber-build", {}, {"structure": "/x.pdb"})
-    assert any("HO the same Lennard-Jones type as water HW" in m for m in messages(st, "info"))
+    assert not any("HO the same Lennard-Jones type as water HW" in m for m in messages(st))  # split by default
+    _plan, st = step("amber-build", {"split_types": False}, {"structure": "/x.pdb"})
+    assert any("HO the same Lennard-Jones type as water HW" in m for m in messages(st, "warning"))
 
 
 
@@ -1046,3 +1048,56 @@ def test_amber_build_topology_check_step():
     assert not any("_check_" in n for n in off)
     dry = generated(step("amber-build", {"water": "none"}, {"structure": "/x.pdb"})[0])
     assert not any("_check_" in n for n in dry)
+
+
+def test_mg_pairs_without_lrna_naming_and_library_types(tmp_path):
+    # the input PDB already has L names: the L-RNA types still get their Mg2+ pairs
+    plan, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "lrna": False}, {"structure": "/x.pdb"})
+    pm = generated(plan)["apt1_01_parmed_20261015-1432.in"].content
+    assert "changeLJPair :MG @%LD " in pm and "changeLJPair :MG @%LE " in pm
+    assert "\nchangeLJPair @%HO @%LD 3.03 0.01" in pm  # NBfix19 L pairs too
+    lib = tmp_path / "LRNA.lib"
+    lib.write_text('!!index array str\n "LA"\n!entry.LA.unit.atoms table  str name  str type  int typex  '
+                   'int resx  int flags  int seq  int elmnt  dbl chg\n "P" "P" 0 1 131072 1 15 1.1662\n'
+                   ' "O5\'" "LD" 0 1 131072 2 8 -0.4989\n "O4\'" "LQ" 0 1 131072 3 8 -0.3548\n'
+                   ' "H1\'" "H2" 0 1 131072 4 1 0.2\n!entry.LA.unit.atomspertinfo table  str pname\n "P" "P"\n')
+    _p, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "extra_libs": str(lib)}, {"structure": "/x.pdb"})
+    warn = [m for m in messages(st, "warning") if "no Mg²⁺ pair reference" in m]
+    assert warn and "LQ" in warn[0] and "LD" not in warn[0] and "pname" not in warn[0], messages(st)
+    _p, st = step("amber-build", {"mg_count": 2, "mg_model": "micro", "extra_libs": str(lib), "mg_types": "LQ:OS"},
+                  {"structure": "/x.pdb"})
+    assert not [m for m in messages(st, "warning") if "no Mg²⁺ pair reference" in m]
+    chk = generated(step("amber-build", {"mg_count": 2, "mg_model": "micro", "mg_types": "LQ:OS"},
+                         {"structure": "/x.pdb"})[0])["apt1_01_check_20261015-1432.py"].content
+    ref = [round(v, 6) for v in mg_params.amber_pair(*mg_params.get_set("micro", "spce").rna["OS"])]
+    assert "PAIR_REFS = {" in chk and f"'LQ': {ref!r}" in chk and f"'OS': {ref!r}" in chk
+
+
+def test_dry_pass_drops_mg_lines_and_split_types_warning():
+    plan, st = step("amber-build", {"two_pass": True, "mg_count": 2, "split_types": False, "parmed_extra":
+                                    "changeLJPair :MG @%ZZ 2.5 1.0\nchangeLJPair @%HO @%ZZ 3.0 0.01"},
+                    {"structure": "/x.pdb"})
+    files = generated(plan)
+    dry = files["apt1_01_parmed-dry_20261015-1432.in"].content
+    wet = files["apt1_01_parmed_20261015-1432.in"].content
+    assert ":MG" not in dry and "changeLJPair @%HO @%ZZ 3.0 0.01" in dry
+    assert "changeLJPair :MG @%ZZ 2.5 1.0" in wet
+    assert any("every water hydrogen" in m for m in messages(st, "warning"))
+    _p, st = step("amber-build", {"split_types": True}, {"structure": "/x.pdb"})
+    assert not any("every water hydrogen" in m for m in messages(st))
+
+
+def test_split_types_on_by_default():
+    files = generated(step("amber-build", {}, {"structure": "/x.pdb"})[0])
+    pm = files["apt1_01_parmed_20261015-1432.in"].content.splitlines()
+    assert "addLJType @%HO" in pm and "addLJType @%O2" not in pm  # CP library: phosphate O2 is OP
+    assert pm.index("addLJType @%HO") < pm.index("changeLJPair @%HO @%OP 2.73 0.01")
+
+
+def test_mg_cl_pair_matches_verified_build():
+    # nanoMg / TIP3P Mg2+-Cl- pair from a verified AmberTools 26 build: 5.4817 A, 0.2514 kcal/mol
+    rmin, eps = mg_params.amber_pair(*mg_params.get_set("nano", "tip3p").mg_cl)
+    assert rmin == pytest.approx(5.4817, abs=1e-4) and eps == pytest.approx(0.2514, abs=1e-4)
+    pm = generated(step("amber-build", {"mg_count": 2, "mg_model": "nano", "water": "tip3p"},
+                        {"structure": "/x.pdb"})[0])["apt1_01_parmed_20261015-1432.in"].content
+    assert "changeLJPair :MG :Cl- 5.48171290 0.25139520" in pm

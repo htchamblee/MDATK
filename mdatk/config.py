@@ -455,6 +455,7 @@ class WorkflowParams:
     use_stamp: bool = True  # Put the time stamp into file names
     out_dir: str = ""  # Folder of the generated files ("": <output.out_dir>/<project_name>_workflow)
     step_folders: bool = True  # One sub-folder per step, e.g. 03_amber-build/
+    parallel: int = 1  # Scripts MDATK runs at the same time (Run all / Run selected); steps wait for their inputs
     nodes: List[PlanNode] = field(default_factory=list)  # Planner steps
     edges: List[PlanEdge] = field(default_factory=list)  # Planner connections
     # Stand-alone script wizard settings, one entry per step type

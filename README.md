@@ -17,7 +17,8 @@ Everything runs locally; MDATK makes no network calls.
 Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
 wizard and a free-form **Project Planner** generate consistently named control files for Rosetta
 FARFAR2, SimRNA, RNAMake, Amber (tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD
-ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run…*), which logs
+ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run all…* or *Run
+selected steps*), which logs
 every run in the project file.
 
 Since 0.0.3a a project is **one commented TOML file** (`*.mdatk.toml`) holding the settings, the
@@ -248,11 +249,23 @@ Long jobs run in a background thread and can be cancelled.
 
 The **Workflow** menu in the header bar opens two windows (they also work from the command
 line, see below) and the PDB clean-up window. They write files and scripts; nothing is executed
-unless you ask for it with *Run…* (planner) or *Write and run…* (wizard). MDATK then asks for
-confirmation, runs each step's main script in plan order with `bash`, streams the output into the
-log, stops at the first failure (Cancel stops the running script) and records every run in the
-project file. Scripts marked *run separately* (production runs meant for a cluster queue) are never
-started.
+unless you ask for it with *Run all…* / *Run selected steps* (planner), *Run step…* (a planner box's
+details) or *Write and run…* (wizard). MDATK then asks for
+confirmation and runs each step's main script with `bash`. Each step starts once the steps it
+reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
+up to *Parallel* scripts at a time (planner toolbar, saved with the project; default 1).
+
+- **Output and logging:** the output streams into the log, each line marked with its step number
+  when scripts run side by side. Every run is recorded in the project file.
+- **Failures:** a failed script stops every step that depends on it; independent steps carry on.
+- **Cancel** stops every running script.
+- **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
+  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed) or a
+  dash (cancelled / not started) until the next run.
+- **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
+  *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
+
+Scripts marked *run separately* (production runs meant for a cluster queue) are never started.
 
 - **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
@@ -267,7 +280,12 @@ started.
   pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
   VMD; Amber protocol; Amber → GROMACS; ideal helix → Amber build → restraints → MD; model + map →
   restraint dictionaries → Phenix RSR → Coot RSR). *Write all files* writes every step, a master script that
-  runs the steps in order, and a Markdown summary of the plan. *Use for analysis* (on an MDATK
+  runs the steps in order, and a Markdown summary of the plan. Each step box has a check box in its
+  title bar (also Space on the selected box, or the right-click menu; *Tick all steps* / *Untick all
+  steps* on the canvas): *Run selected steps (N)* writes the ticked steps' files and runs their main
+  scripts in plan order, whatever order you ticked them in. Steps they read from are not written or
+  run again, so their outputs must exist already. The ticks are not saved with the project.
+  *Use for analysis* (on an MDATK
   analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
   the project file (`workflow` section), so one file holds the plan and the analysis settings.
   `examples/rna_plan.mdatk.toml` is a complete example plan (open it, set the output folder, and
@@ -340,8 +358,10 @@ the AmberTools installation, and loads them after `leaprc.RNA.OL3`. The NBfix19 
 address the phosphate oxygens as `@%OP` / `@%OR`, as their authors describe (0BPh: "H5−OR/OS and
 H4−OR/OS atom types", OR in OL3CP). *Own frcmod file* loads a CP parameter file you provide instead
 (masks stay `@%O2` / `@%OS`). Only standard (D-) residues are retyped; L-RNA libraries keep their own
-types (Dudek & Trylska type O5′ and O4′ as LD). With *NBfix19 / 0BPh / CP for L-RNA* (on by default) the
-build declares the L-RNA library's types for tleap (`addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } }`)
+types (Dudek & Trylska type O5′ and O4′ as LD; other libraries give O4′ its own type, e.g. LE). With
+*NBfix19 / 0BPh / CP for L-RNA* (on by default, also when the input PDB already has L names) the build
+declares the L-RNA library's types for tleap
+(`addAtomTypes { { "LD" "O" "sp3" } { "LH" "O" "sp3" } { "LE" "O" "sp3" } }`)
 and adds the same pairs for its oxygen type: `changeLJPair @%HO @%LD 3.03 0.01` (NBfix19),
 `@%H5 @%LD 2.8808 0.0505` and `@%H4 @%LD 2.9308 0.0505` (0BPh). ParmEd skips them when the structure has
 no L residues. The CP correction of L residues comes with the L-RNA parameter file (e.g. `frcmod.LRNA`);
@@ -360,9 +380,13 @@ Table 2).
 > tleap merges atom types with identical Lennard-Jones parameters: HO (2′-OH hydrogen) shares its LJ
 > type with water HW (both have zero LJ terms) and O2 with base carbonyl O. ParmEd's
 > `changeLJPair @%HO @%O2` / `@%OS` therefore also changes water-H…O2/OS and HO…O interactions. The
-> wizard says so, and *Separate HO and O2 Lennard-Jones types first* (`addLJType @%HO`,
-> `addLJType @%O2`) restricts the pairs to the intended atoms. It is off by default so the reference
-> protocol is reproduced unchanged.
+> wizard warns, and *Separate HO and O2 Lennard-Jones types first* (`addLJType @%HO`,
+> `addLJType @%O2`; with the CP library only `@%HO`, since the phosphate oxygens are already OP)
+> restricts the pairs to the intended atoms. It is on by default for new projects since 0.0.5.1;
+> untick it only to reproduce a protocol that did not separate them (projects saved earlier keep their
+> setting). In a real TIP3P build the HW Lennard-Jones type held 18,716 atoms:
+> 18,700 water hydrogens and 16 hydroxyl hydrogens. The topology check's log lists every
+> Lennard-Jones type shared by solute and water atoms.
 
 **Mg²⁺ models.** *Mg²⁺ Lennard-Jones model* in the build step:
 
@@ -400,22 +424,28 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
 - **Order.** The pair lines come after every `addLJType`, including NBfix19's `addLJType @%NB,NC` and
   *Separate HO and O2 types*, because `addLJType` resets the pair terms of the atoms it moves.
 - **CP library.** With the retyped CP library (the default) the phosphate oxygens are OP / OR; they
-  get the authors' O2 / OS terms, and the build step warns. This is MDATK's choice: the authors fitted
+  get the authors' O2 / OS terms, and the build step says so. This is MDATK's choice: the authors fitted
   against plain OL3 oxygens.
 - **Ion atom type.** The frcmod defines the ion's terms for both type names in use: `Mg2+` (the
   type of the `MG` unit in AmberTools' `atomic_ions.lib`) and `MG` (the older type of `parm10.dat`
-  and `leaprc.RNA.OL3`). In MDATK 0.0.4.1 and earlier only `Mg2+` was defined; if the unit carried
-  `MG`, the ion kept the Li & Merz terms next to the Grotz pair terms. The topology check (below)
-  now shows which type the ion has and whether its terms are the published ones.
+  and `leaprc.RNA.OL3`). On AmberTools 26 the `MG` unit carries `Mg2+` with charge +2, so the
+  published terms applied in earlier MDATK versions too (checked on a built nanoMg / TIP3P topology).
+  The second name only guards against a release that types the unit differently, and the topology
+  check (below) shows the ion's type, charge and terms in every build. tleap's message
+  `MG has a charge of 0. Adding the ions anyway.` during `addIonsRand mol MG` is misleading: the
+  ions carry +2 and MDATK's 2 Cl⁻ per Mg²⁺ leave the box neutral.
 - **Other types.** Atom types outside the authors' table get no pair term from the table, and the
   combination rule with these ions binds Mg²⁺ several times too strongly. Before 0.0.5 that was
   the case for the oxygens of an L-RNA library. Now each L-RNA atom type gets the term of its D-RNA
   twin (*L-RNA atom types*: LD and LE as OS, LH as OH; `TYPE:REF` for others, e.g. `LX:OS`), and
   *Extra Mg²⁺ pair types* does the same for any library (`XO:OS XH:OH`). References: the 27
-  parmBSC0χOL3 types and the CP types OP / OR.
+  parmBSC0χOL3 types and the CP types OP / OR. Choose the reference with the same Lennard-Jones
+  terms as the type (its LJ twin): tleap merges types with equal LJ terms, and a pair set for one
+  applies to all of them (the topology check reports conflicting maps). The planner reads the extra
+  residue libraries and warns about atom types without a reference.
 - **Topology check.** *Check the final topology* (on by default) runs a small standard-library
   Python script on the final parm7. It stops the build script when:
-  - the box is not neutral;
+  - the box is not neutral, when it should be (neutralised, and Mg²⁺ balanced with Cl⁻ or none added);
   - fewer Mg²⁺ than requested are present;
   - a Mg²⁺ does not carry +2;
   - with microMg / nanoMg, the ion's own Lennard-Jones terms are not the published ones;
@@ -454,7 +484,7 @@ mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
 mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
-mdatk workflow run -p plan.mdatk.toml [--step 3]           # run the written main scripts (logged)
+mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```
@@ -1117,7 +1147,8 @@ fog, glow and translucency, thread safety and a render without a display.
 - Very large systems: restrict groups and the structure selection to the region of interest;
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
-- The script wizard and planner write files; they run them only on request (*Run…*). Generated
+- The script wizard and planner write files; they run them only on request (*Run all…*, *Run selected
+  steps*). Generated
   scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.

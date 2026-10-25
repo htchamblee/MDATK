@@ -626,6 +626,7 @@ def cmd_workflow_check(args) -> int:
 def cmd_workflow_write(args) -> int:
     from .workflows.plan import Plan
     project = _workflow_project(args)
+    parallel = _parallel(args, project) if args.run else 1  # a bad --parallel fails before writing
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
     ids = None
     if args.step is not None:
@@ -650,7 +651,7 @@ def cmd_workflow_write(args) -> int:
                       "master": report.master, "summary": report.summary}, indent=2))
     if args.run:
         ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
-        return _run_plan_scripts(plan, ok_ids, _project_file(args))
+        return _run_plan_scripts(plan, ok_ids, _project_file(args), parallel)
     return 0
 
 
@@ -663,18 +664,35 @@ def cmd_workflow_run(args) -> int:
         ids = [n.id for n in project.workflow.nodes if n.step == args.step]
         if not ids:
             raise ValueError(f"no step number {args.step} in the plan")
-    return _run_plan_scripts(plan, ids, _project_file(args))
+    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project))
 
 
-def _run_plan_scripts(plan, ids, project_path: Optional[str]) -> int:
+def _parallel(args, project) -> int:
+    """--parallel, else the project's setting (at least 1)."""
+    if getattr(args, "parallel", None) is not None:
+        if args.parallel < 1:
+            raise ValueError("--parallel must be at least 1")
+        return args.parallel
+    return max(1, int(project.workflow.parallel or 1))
+
+
+def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1) -> int:
     """Run the main scripts of ``ids`` (all steps when None); 0 when every script succeeded."""
     from .workflows.runner import ScriptFailed, plan_jobs, run_jobs, separate_scripts
     jobs = plan_jobs(plan, ids)
     if not jobs:
         print("no scripts to run", file=sys.stderr)
         return 1
+    import threading
+    out_lock = threading.Lock()
+
+    def show(line: str) -> None:  # one write per line: lines of parallel scripts never merge
+        with out_lock:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
     try:
-        run_jobs(jobs, project_path, on_line=lambda line: print(line, flush=True))
+        run_jobs(jobs, project_path, on_line=show, parallel=parallel)
     except ScriptFailed as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -956,13 +974,17 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--force", action="store_true", help="write the steps without errors even if others "
                                                        "have errors")
     w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the project")
-    w.add_argument("--run", action="store_true", help="then run the written steps' main scripts in plan "
-                                                     "order (stops at the first failure)")
+    w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
+                                                     "the steps it reads from succeeded)")
+    w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "
+                                                            "time (default: the project's setting, 1)")
     w.set_defaults(func=cmd_workflow_write)
-    w = wsub.add_parser("run", help="run the plan's main scripts (already written) in plan order; each run "
-                                    "is logged in the project file")
+    w = wsub.add_parser("run", help="run the plan's main scripts (already written), each when the steps it "
+                                    "reads from succeeded; each run is logged in the project file")
     naming(w)
     w.add_argument("--step", type=int, help="only this step number")
+    w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (default: "
+                                                            "the project's setting, 1)")
     w.set_defaults(func=cmd_workflow_run)
     w = wsub.add_parser("generate", help="stand-alone wizard: write one step's files")
     w.add_argument("tool", help="step type (see: mdatk workflow tools)")
