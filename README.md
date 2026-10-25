@@ -34,10 +34,14 @@ structure view. The structure view can be **zoomed and centred** on a residue or
 in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
 file as REMARK 950 records.
 
-In 0.0.5 the Amber build **checks the finished topology** and stops when the box is not neutral, a
+In 0.0.5 the Amber build **checks the finished topology** and stops when a box meant to be neutral is not, a
 Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Lennard-Jones terms or a
 solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
 terms of their D-RNA twins (see *Mg²⁺ models*).
+
+In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
+steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
+inputs), and a box shows an animated marker while its script runs.
 
 Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
 as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
