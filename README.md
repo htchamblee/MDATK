@@ -40,7 +40,8 @@ solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom typ
 terms of their D-RNA twins (see *Mg²⁺ models*).
 
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
-steps*.
+steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
+inputs), and a box shows an animated marker while its script runs.
 
 Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
 as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
@@ -254,10 +255,21 @@ The **Workflow** menu in the header bar opens two windows (they also work from t
 line, see below) and the PDB clean-up window. They write files and scripts; nothing is executed
 unless you ask for it with *Run all…* / *Run selected steps* (planner), *Run step…* (a planner box's
 details) or *Write and run…* (wizard). MDATK then asks for
-confirmation, runs each step's main script in plan order with `bash`, streams the output into the
-log, stops at the first failure (Cancel stops the running script) and records every run in the
-project file. Scripts marked *run separately* (production runs meant for a cluster queue) are never
-started.
+confirmation and runs each step's main script with `bash`. Each step starts once the steps it
+reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
+up to *Parallel* scripts at a time (planner toolbar, saved with the project; default 1).
+
+- **Output and logging:** the output streams into the log, each line marked with its step number
+  when scripts run side by side. Every run is recorded in the project file.
+- **Failures:** a failed script stops every step that depends on it; independent steps carry on.
+- **Cancel** stops every running script.
+- **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
+  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed) or a
+  dash (cancelled / not started) until the next run.
+- **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
+  *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
+
+Scripts marked *run separately* (production runs meant for a cluster queue) are never started.
 
 - **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
@@ -476,7 +488,7 @@ mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
 mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
-mdatk workflow run -p plan.mdatk.toml [--step 3]           # run the written main scripts (logged)
+mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```

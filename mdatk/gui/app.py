@@ -34,7 +34,7 @@ from ..render.panels import PANEL_TYPES  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
-from .worker import Worker  # noqa: E402
+from .worker import Worker, call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -1941,8 +1941,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.worker = Worker(job, self.append_log, self._on_progress, done)
         self.worker.start()
 
-    def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None) -> None:
-        """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation."""
+    def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None, parallel: int = 1,
+                    on_state=None, on_finished=None) -> None:
+        """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation.
+        ``on_state(job, state)`` and ``on_finished()`` are called on the GTK main loop."""
         from ..workflows.runner import run_jobs, runner_problem
 
         parent = parent or self
@@ -1955,8 +1957,14 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}" for j in jobs]
         detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
-        detail += ("\n\nThe scripts run one after the other on this computer; the first failure stops "
-                   "the run, Cancel stops the running script. Their output appears in the log.")
+        if parallel > 1 and len(jobs) > 1:
+            detail += (f"\n\nUp to {parallel} scripts run at the same time on this computer; each step starts "
+                       "when the steps it reads from have finished. A failure stops the steps that depend "
+                       "on it, Cancel stops every running script. Their output appears in the log, each line "
+                       "marked with its step number.")
+        else:
+            detail += ("\n\nThe scripts run one after the other on this computer; a failure stops the steps "
+                       "that depend on it, Cancel stops the running script. Their output appears in the log.")
         if separate:
             detail += f"\n\n{len(separate)} script(s) marked 'run separately' are not started."
         if self.project_path:
@@ -1973,8 +1981,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self.log_expander.set_expanded(True)
         project_path = self.project_path
 
+        state_cb = (lambda j, st: call_soon(on_state, j, st)) if on_state else None
+
         def job(rep):
-            return run_jobs(jobs, project_path, on_line=rep.raw_log, cancel=rep.cancel_event)
+            try:
+                return run_jobs(jobs, project_path, on_line=rep.raw_log, cancel=rep.cancel_event,
+                                parallel=parallel, on_state=state_cb)
+            finally:
+                if on_finished:
+                    call_soon(on_finished)
 
         def done(results):
             msg = f"{len(results)} script(s) finished"

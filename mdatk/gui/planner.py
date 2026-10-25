@@ -38,6 +38,7 @@ NODE_W = 236
 HEAD_H = 26
 DESC_H = 20
 CHECK = 13  # side of the "run" check box in a step's header
+MAX_PARALLEL = 64
 PORT_H = 18
 PORT_R = 5.0
 GRID = 10
@@ -82,6 +83,7 @@ class PlannerCanvas(Gtk.DrawingArea):
         self.selected_edge: Optional[int] = None
         self.drag: Optional[dict] = None
         self.hover_port: Optional[Tuple[str, str, bool]] = None
+        self.spin_phase = 0.0  # angle of the running-script spinner
         self.set_can_focus(True)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
                         Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.SCROLL_MASK |
@@ -335,7 +337,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 cr.set_line_width(2.2)
                 cr.stroke()
             title_x = bx + bw + 7
-        self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1), n.x + w - 25 - title_x)
+        run = self.win.run_state.get(n.id)
+        if run:
+            self._draw_run_state(cr, run, n.x + w - 31, n.y + HEAD_H / 2, rgb)
+        self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1),
+                   n.x + w - (43 if run else 25) - title_x)
         step = self.win.plan.steps.get(n.id) if self.win.plan else None
         level = step.level() if step else "ok"
         cr.new_path()
@@ -377,6 +383,51 @@ class PlannerCanvas(Gtk.DrawingArea):
                 else:
                     self._text(cr, label, px + 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
                                w / 2 - 14 if k < len(outs) else w - 24)
+
+    def _draw_run_state(self, cr, state: str, cx: float, cy: float, head_rgb) -> None:
+        """Run marker left of the status dot: a turning arc while the script runs, a ring while it
+        waits, then a tick (ok), a cross (failed) or a dash (cancelled / not started)."""
+        r = 6.0
+        cr.new_path()
+        if state == "running":
+            cr.set_line_width(2.4)
+            cr.set_source_rgba(1, 1, 1, 0.35)
+            cr.arc(cx, cy, r, 0, 2 * math.pi)
+            cr.stroke()
+            cr.set_source_rgb(1, 1, 1)
+            cr.arc(cx, cy, r, self.spin_phase, self.spin_phase + 1.3 * math.pi)
+            cr.stroke()
+            return
+        if state == "queued":
+            cr.set_line_width(1.6)
+            cr.set_dash([2.0, 2.0])
+            cr.set_source_rgb(1, 1, 1)
+            cr.arc(cx, cy, r, 0, 2 * math.pi)
+            cr.stroke()
+            cr.set_dash([])
+            return
+        cr.arc(cx, cy, r + 0.5, 0, 2 * math.pi)
+        cr.set_source_rgb(1, 1, 1)
+        cr.fill()
+        cr.set_line_width(2.0)
+        cr.set_line_cap(1)  # round
+        if state == "ok":
+            cr.set_source_rgb(*STATUS_COLORS["ok"])
+            cr.move_to(cx - 3.2, cy + 0.2)
+            cr.line_to(cx - 0.8, cy + 2.8)
+            cr.line_to(cx + 3.4, cy - 2.6)
+        elif state == "failed":
+            cr.set_source_rgb(*STATUS_COLORS["error"])
+            cr.move_to(cx - 2.8, cy - 2.8)
+            cr.line_to(cx + 2.8, cy + 2.8)
+            cr.move_to(cx + 2.8, cy - 2.8)
+            cr.line_to(cx - 2.8, cy + 2.8)
+        else:  # cancelled / skipped
+            cr.set_source_rgb(0.45, 0.45, 0.45)
+            cr.move_to(cx - 3.0, cy)
+            cr.line_to(cx + 3.0, cy)
+        cr.stroke()
+        cr.set_line_cap(0)
 
     # -------------------------------------------------------------- events
     def _focus_in_place(self) -> None:
@@ -582,6 +633,10 @@ class PlannerWindow(Gtk.Window):
         self._details_node: Optional[str] = None
         self._loading = False
         self.checked: Set[str] = set()  # steps ticked for "Run selected" (not saved with the project)
+        self.run_state: Dict[str, str] = {}  # node id -> queued | running | ok | failed | cancelled | skipped
+        self._spin_id = 0
+        self._closed = False
+        self._run_token = 0  # bumped by each run and by reload: callbacks of an older run are ignored
         self.set_default_size(1400, 860)
         if main is not None:
             self.set_transient_for(None)
@@ -630,10 +685,14 @@ class PlannerWindow(Gtk.Window):
             self.project_entry.set_text(wf.project_name)
             self.stamp_check.set_active(wf.use_stamp)
             self.folders_check.set_active(wf.step_folders)
+            self.parallel_spin.set_value(max(1, wf.parallel))
+            wf.parallel = int(self.parallel_spin.get_value())  # what the run will use (1-64)
         finally:
             self._loading = False
         self.canvas.selected = None
         self.checked.clear()
+        self.run_state.clear()
+        self._run_token += 1
         self.changed()
 
     def changed(self, resolve: bool = True) -> None:
@@ -707,6 +766,17 @@ class PlannerWindow(Gtk.Window):
         bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
         bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
+        par = Gtk.Box(spacing=4)
+        par.pack_start(W.label("Parallel"), False, False, 0)
+        self.parallel_spin = W.spin(1, MAX_PARALLEL, 1, 0)
+        self.parallel_spin.set_tooltip_text(
+            "How many scripts Run all / Run selected start at the same time. Each step still waits for the "
+            "steps it reads from. GPU steps (pmemd.cuda, gmx mdrun) running together share the GPU unless "
+            "their Environment section sets CUDA_VISIBLE_DEVICES; CPU steps share the cores. Saved with "
+            "the project.")
+        self.parallel_spin.connect("value-changed", self._on_parallel)
+        par.pack_start(self.parallel_spin, False, False, 0)
+        bar.pack_end(par, False, False, 0)
         self.run_selected_btn = W.button("Run selected steps", self.run_selected,
                                          "Write the ticked steps' files and run their main scripts in plan "
                                          "order (tick a step with the box in its title bar, Space, or the "
@@ -1065,7 +1135,53 @@ class PlannerWindow(Gtk.Window):
                 self.main.append_log(f"Master script: {report.master}")
         if run and hasattr(self.main, "run_scripts"):
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
-            self.main.run_scripts(plan_jobs(plan, ok_ids), separate_scripts(plan, ok_ids), parent=self)
+            self._run_token += 1
+            token = self._run_token
+            self.main.run_scripts(plan_jobs(plan, ok_ids), separate_scripts(plan, ok_ids), parent=self,
+                                  parallel=int(self.parallel_spin.get_value()),
+                                  on_state=lambda j, st: self._on_run_state(j, st, token),
+                                  on_finished=lambda: self._on_run_finished(token))
+
+    # ------------------------------------------------------- running steps
+    def _on_parallel(self, spin) -> None:
+        if not self._loading:
+            self.workflow.parallel = int(spin.get_value())
+
+    def _on_run_state(self, job, state: str, token: Optional[int] = None) -> None:
+        """A script changed state (main loop); the first 'queued' of a run clears the last run's marks."""
+        if (token is not None and token != self._run_token) or self._closed:
+            return  # a run started before the project was reloaded, or the window is gone
+        if not job.node_id or self.node(job.node_id) is None:
+            return
+        if state == "queued" and not any(v in ("queued", "running") for v in self.run_state.values()):
+            self.run_state.clear()
+        prev = self.run_state.get(job.node_id)
+        # a step with several scripts: keep 'failed' and do not fall back from running/ok to queued
+        if prev == "failed" or (state == "queued" and prev is not None):
+            return
+        self.run_state[job.node_id] = state
+        if state == "running" and not self._spin_id:
+            self._spin_id = GLib.timeout_add(50, self._spin_tick)
+        self.canvas.queue_draw()
+
+    def _on_run_finished(self, token: Optional[int] = None) -> None:
+        if (token is not None and token != self._run_token) or self._closed:
+            return
+        for nid, st in list(self.run_state.items()):
+            if st in ("queued", "running"):  # never started, or the run stopped
+                self.run_state[nid] = "cancelled"
+        self.canvas.queue_draw()
+
+    def _spin_tick(self) -> bool:
+        if self._closed:
+            self._spin_id = 0
+            return False
+        self.canvas.spin_phase = (self.canvas.spin_phase + 0.35) % (2 * math.pi)
+        self.canvas.queue_draw()
+        if any(v == "running" for v in self.run_state.values()):
+            return True
+        self._spin_id = 0
+        return False
 
     # ------------------------------------------------------- run selected
     def toggle_checked(self, node_id: str) -> None:
@@ -1143,6 +1259,10 @@ class PlannerWindow(Gtk.Window):
         if self._resolve_id:
             GLib.source_remove(self._resolve_id)
             self._resolve_id = 0
+        self._closed = True  # the run (if any) goes on; its later callbacks are ignored
+        if self._spin_id:
+            GLib.source_remove(self._spin_id)
+            self._spin_id = 0
         if getattr(self.main, "planner", None) is self:
             self.main.planner = None
         return False

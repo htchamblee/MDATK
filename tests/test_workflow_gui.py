@@ -267,7 +267,7 @@ def test_planner_run_selected_steps(main, tmp_path):
     canvas, btn = pl.canvas, pl.run_selected_btn
     assert not btn.get_sensitive() and btn.get_label() == "Run selected steps"
     runs = []
-    main.run_scripts = lambda jobs, separate=(), parent=None: runs.append((jobs, list(separate)))
+    main.run_scripts = lambda jobs, separate=(), parent=None, **_kw: runs.append((jobs, list(separate)))
 
     def click_box(node):
         bx, by, bw, bh = canvas.check_rect(node)
@@ -304,3 +304,113 @@ def test_planner_run_selected_steps(main, tmp_path):
     assert nodes["amber-md"].id not in pl.checked and btn.get_label() == "Run selected steps (2)"
     pl.set_checked([])
     assert not btn.get_sensitive()
+
+
+def test_planner_running_marks_and_parallel_setting(main, tmp_path):
+    from mdatk.workflows.runner import ScriptJob
+    main.open_planner()
+    pl = main.planner
+    pl.add_template("amber")
+    pump(0.3)
+    nodes = {n.tool: n for n in main.project.workflow.nodes}
+    nodes["amber-build"].files["structure"] = str(tmp_path / "model.pdb")
+    nodes["amber-restraints"].settings.update(sequence="GGGCAC GUGCCC", dotbracket="(((((( ))))))")
+    pl.changed()
+    pl.parallel_spin.set_value(3)
+    assert main.project.workflow.parallel == 3
+    calls = []
+    main.run_scripts = lambda jobs, separate=(), parent=None, **kw: calls.append((jobs, kw))
+    pl.set_checked([nodes["amber-build"].id, nodes["amber-restraints"].id])
+    pl.run_selected()
+    pump(0.2)
+    jobs, kw = calls[0]
+    assert kw["parallel"] == 3 and callable(kw["on_state"]) and callable(kw["on_finished"])
+    assert [j.node_id for j in jobs] == [nodes["amber-build"].id, nodes["amber-restraints"].id]
+    assert jobs[1].after == [nodes["amber-build"].id]
+    # the run reports states on the main loop: queued -> running (spinner) -> ok / failed
+    on_state = kw["on_state"]
+    for j in jobs:
+        on_state(j, "queued")
+    assert set(pl.run_state.values()) == {"queued"}
+    on_state(jobs[0], "running")
+    assert pl._spin_id
+    phase = pl.canvas.spin_phase
+    pump(0.3)
+    assert pl.canvas.spin_phase != phase  # the arc turns
+    on_state(jobs[0], "ok")
+    on_state(jobs[1], "running")
+    on_state(jobs[1], "failed")
+    pump(0.2)
+    assert pl.run_state == {jobs[0].node_id: "ok", jobs[1].node_id: "failed"} and not pl._spin_id
+    # the next run clears the old marks; steps never started end as cancelled
+    on_state(jobs[0], "queued")
+    on_state(jobs[1], "queued")
+    on_state(jobs[0], "running")
+    kw["on_finished"]()
+    assert pl.run_state == {jobs[0].node_id: "cancelled", jobs[1].node_id: "cancelled"}
+    pl.canvas.queue_draw()
+    pump(0.2)  # every marker draws
+    # saved with the project
+    path = str(tmp_path / "p.mdatk.toml")
+    main.project_path = path
+    main.collect(validate=False).save(path)
+    assert Project.load(path).workflow.parallel == 3
+
+
+def test_run_scripts_end_to_end_with_running_marks(main, tmp_path, monkeypatch):
+    import shutil
+    if shutil.which("bash") is None:
+        pytest.skip("needs bash")
+    from mdatk.workflows.runner import ScriptJob
+    main.open_planner()
+    pl = main.planner
+    a, b, c = (pl.add_step("vmd", 60 + 300 * k, 60) for k in range(3))
+    pump(0.2)
+    jobs = []
+    for k, (n, after) in enumerate(((a, []), (b, []), (c, [a.id, b.id]))):
+        path = tmp_path / f"s{k}.sh"
+        path.write_text(f"sleep 0.5\necho done {k}\n")
+        jobs.append(ScriptJob(k + 1, n.tool, str(path), node_id=n.id, after=after))
+    monkeypatch.setattr(Gtk.MessageDialog, "run", lambda self: Gtk.ResponseType.OK)
+    seen = []
+    orig = pl._on_run_state
+    pl._on_run_state = lambda j, st: (seen.append((j.node_id, st)), orig(j, st))
+    main.run_scripts(jobs, parent=pl, parallel=2, on_state=pl._on_run_state,
+                     on_finished=pl._on_run_finished)
+    end = time.time() + 15
+    while time.time() < end and not any(m[1] == "Scripts finished" for m in main.messages):
+        pump(0.1)
+    assert any(m[1] == "Scripts finished" for m in main.messages), main.messages
+    assert pl.run_state == {a.id: "ok", b.id: "ok", c.id: "ok"}
+    running = [n for n, st in seen if st == "running"]
+    assert running.index(c.id) == 2 and set(running[:2]) == {a.id, b.id}
+    log = main.log_buffer.get_text(main.log_buffer.get_start_iter(), main.log_buffer.get_end_iter(), False)
+    assert "[03] done 2" in log
+
+
+def test_planner_ignores_callbacks_of_an_older_run(main, tmp_path):
+    from mdatk.workflows.runner import ScriptJob
+    main.open_planner()
+    pl = main.planner
+    n = pl.add_step("vmd", 60, 60)
+    pump(0.2)
+    calls = []
+    main.run_scripts = lambda jobs, separate=(), parent=None, **kw: calls.append(kw)
+    pl._ask = lambda *_a: True  # the empty VMD step has errors: "write the others anyway?"
+    pl.write([n.id], run=True)
+    kw = calls[-1]
+    j = ScriptJob(1, "vmd", "/x.sh", node_id=n.id)
+    kw["on_state"](j, "queued")
+    kw["on_state"](j, "running")
+    assert pl.run_state == {n.id: "running"} and pl._spin_id
+    pl.reload()  # e.g. another project was opened: the old run's marks must not land on the new boxes
+    kw["on_state"](j, "ok")
+    kw["on_finished"]()
+    assert pl.run_state == {}
+    pl.parallel_spin.set_value(100)
+    assert pl.parallel_spin.get_value() == 64 and main.project.workflow.parallel == 64
+    pl.close()
+    pump(0.3)
+    assert not pl._spin_id
+    kw["on_state"](j, "running")  # a run still going after the window closed
+    assert not pl._spin_id
