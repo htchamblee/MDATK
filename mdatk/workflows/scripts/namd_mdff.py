@@ -24,7 +24,7 @@ needs around that topology:
           a residue whose geometry contradicts its name stops the script.  VMD's ``chirality``
           / ``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used:
           on an L-RNA they would push every sugar towards the inverted centre, silently;
-        - base pairs: flat-bottom colvars on the hydrogen-bond distances of the secondary
+        - base pairs: flat-bottom extraBonds walls on the hydrogen-bond distances of the secondary
           structure (same pairs, atoms and window as MDATK's Amber helix restraints).
 ``final``
     writes the solute of NAMD's last binary coordinates as a PDB in the map's frame.
@@ -405,8 +405,8 @@ def write_dx(path, grid, comment):
                         row = []
         if row:
             fh.write(" ".join(row) + "\n")
-        fh.write('attribute "dep" string "positions"\n')
-        fh.write('object "MDFF potential" class field\n')
+        fh.write('attribute "dep" string "positions"\n')  # the trailer VMD writes (mdff griddx files)
+        fh.write('object "regular positions regular connections" class field\n')
         fh.write('component "positions" value 1\ncomponent "connections" value 2\ncomponent "data" value 3\n')
 
 
@@ -688,9 +688,11 @@ def ss_dihedral_lines(top, xyz, residues, k):
     return lines, problems
 
 
-def basepair_colvars(top, pairs, bonds, offset, walls):
-    """Colvars text: one distance per hydrogen bond with flat-bottom harmonic walls."""
-    lower, upper, k_lower, k_upper = walls
+def basepair_walls(top, pairs, bonds, offset, walls):
+    """extraBonds flat-bottom walls (0-based atoms), one per hydrogen bond of every base pair:
+    U = k (d - upper)^2 above the window, k (d - lower)^2 below it, 0 inside - the form of Amber's
+    restraints (rk2 / rk3) without their linear continuation."""
+    lower, upper, k = walls
     out, count = [], 0
     index = {}
     for i in range(top.natom):
@@ -704,19 +706,14 @@ def basepair_colvars(top, pairs, bonds, offset, walls):
             if residue_base(top.labels[res - 1]) != letter:
                 raise PrepError(f"residue {res} is {top.labels[res - 1]} in the topology but the secondary "
                                 f"structure expects {letter}: check the sequence and residue offset")
+        out.append(f"# pair {ra} {top.labels[ra - 1]} - {rb} {top.labels[rb - 1]} ({kind})")
         for an, bn in bonds[kind]:
             ia, ib = index.get((ra - 1, an)), index.get((rb - 1, bn))
             if ia is None or ib is None:
                 raise PrepError(f"atom {an} of residue {ra} or {bn} of residue {rb} is missing")
             count += 1
-            name = f"bp{count}_{ra}{an}_{rb}{bn}".replace("'", "p")
-            out += [f"colvar {{", f"  name {name}", "  distance {",
-                    f"    group1 {{ atomNumbers {ia + 1} }}", f"    group2 {{ atomNumbers {ib + 1} }}", "  }",
-                    "}",
-                    "harmonicWalls {", f"  name {name}_walls", f"  colvars {name}",
-                    f"  lowerWalls {lower:.3f}", f"  upperWalls {upper:.3f}",
-                    f"  lowerWallConstant {k_lower:.3f}", f"  upperWallConstant {k_upper:.3f}", "}", ""]
-    return "\n".join(out), count
+            out.append(f"wall {ia} {ib} {k:.3f} {lower:.3f} {upper:.3f}")
+    return out, count
 
 
 # ------------------------------------------------------------------------------------------- output
@@ -984,12 +981,12 @@ def prep(cfg, write=True):
               f"{len(set(ssd['residues']))} paired residues)")
     if cfg["basepairs"]["enabled"]:
         bp = cfg["basepairs"]
-        text, count = basepair_colvars(top, bp["pairs"], bp["bonds"], bp["offset"], bp["walls"])
-        with open(cfg["colvars"], "w", encoding="ascii") as fh:
-            fh.write("# Base-pair hydrogen-bond restraints (MDATK): flat-bottom harmonic walls on each donor -\n"
-                     "# acceptor distance; Colvars atom numbers are 1-based.\n")
-            fh.write(f"colvarsTrajFrequency {bp['traj_frequency']}\n\n" + text)
-        print(f"wrote {cfg['colvars']} ({count} hydrogen-bond distances)")
+        lines, count = basepair_walls(top, bp["pairs"], bp["bonds"], bp["offset"], bp["walls"])
+        with open(bp["file"], "w", encoding="ascii") as fh:
+            fh.write("# Base-pair hydrogen-bond restraints (MDATK): flat-bottom walls, U = k (d - upper)^2 above,\n"
+                     "# k (d - lower)^2 below, 0 inside (extraBonds 'wall'). Atom numbers are 0-based.\n")
+            fh.write("\n".join(lines) + "\n")
+        print(f"wrote {bp['file']} ({count} hydrogen-bond distances)")
     if vectors is not None:
         cx = tuple(sum(p[a] for p in xyz) / len(xyz) for a in range(3))
         write_xsc(cfg["xsc"], vectors, cx)

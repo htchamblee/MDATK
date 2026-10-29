@@ -5,9 +5,10 @@ the L-RNA dihedrals, every off-diagonal Lennard-Jones pair (NBfix19, 0BPh, micro
 masses are used exactly as Amber uses them.  Before fitting, a single-point energy comparison with
 sander proves it for the topology at hand.
 
-Restraints are L-RNA-safe and written by MDATK (scripts/namd_mdff.py): chirality impropers with the
-target of each residue's own hand, flat-bottom base-pair colvars, positional restraints.  VMD's
-``chirality`` / ``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used.
+Restraints are L-RNA-safe and written by MDATK (scripts/namd_mdff.py), all as NAMD extraBonds or
+positional restraints: chirality impropers with the target of each residue's own hand, the MDFF paper's
+dihedral restraints of paired residues, flat-bottom base-pair walls.  VMD's ``chirality`` /
+``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used.
 """
 
 from __future__ import annotations
@@ -162,8 +163,8 @@ class NamdMDFFTool(Tool):
             Option("bp_upper", "Flat bottom to", "float", 3.2, "Upper wall (Å).", minimum=0.0, maximum=20.0,
                    digits=2, unit="Å"),
             Option("bp_k", "Wall force constant", "float", 10.0,
-                   "k in E = k (d − wall)² beyond the walls (kcal/mol/Å², as rk2 / rk3 of Amber restraints).",
-                   minimum=0.0, maximum=1000.0, digits=2),
+                   "k in E = k (d − wall)² beyond the walls (kcal/mol/Å², as rk2 / rk3 of Amber restraints; NAMD "
+                   "extraBonds 'wall').", minimum=0.0, maximum=1000.0, digits=2),
             Option("positional_atoms", "Positional restraints on", "radio", "backbone",
                    "Atoms restrained to the starting coordinates in stages with positional restraints.",
                    choices=[("backbone", "RNA backbone (P O5' C5' C4' C3' O3')"), ("heavy", "RNA heavy atoms")]),
@@ -247,7 +248,6 @@ class NamdMDFFTool(Tool):
         pairs, _issues, _src = self.pairs(s, ctx)
         paired = self.paired_residues(s, ctx)
         bonds = {k: v for k, v in rna.HBOND_ATOMS.items() if any(p[2] == k for p in pairs)}
-        k2 = 2.0 * s["bp_k"]  # Colvars walls: E = k/2 (d - wall)^2, Amber-style input: E = k (d - wall)^2
         return {
             "topology": ctx.inp("topology"), "coordinates": n("start", "rst7"), "model": ctx.inp("model"),
             "map": ctx.inp("map"), "periodic": s["solvent"] == "solvated",
@@ -256,13 +256,13 @@ class NamdMDFFTool(Tool):
             "couple": s["couple"], "couple_ions": s["couple_ions"], "min_overlap": s["min_overlap"],
             "max_frame_rmsd": s["max_frame_rmsd"], "resample_divisor": s["resample_divisor"],
             "potential": n("potential", "dx"), "grid_pdb": n("coupling", "pdb"), "restraint_pdb": n("posres", "pdb"),
-            "extrabonds": n("chirality", "txt"), "colvars": n("basepairs", "colvars"), "xsc": n("cell", "xsc"),
+            "extrabonds": n("chirality", "txt"), "xsc": n("cell", "xsc"),
             "prep_json": n("prep", "json"), "final_pdb": n("fitted", "pdb"),
             "final_coor": self.runs(s, ctx)[-1]["out"] + ".coor" if s["stages"] else "",
             "chirality": {"enabled": self.uses(s, "chirality"), "k": s["chirality_k"], "targets": dict(D_IMPROPERS)},
             "basepairs": {"enabled": self.uses(s, "basepairs") and bool(pairs), "pairs": [list(p) for p in pairs],
                           "bonds": {k: [list(b) for b in v] for k, v in bonds.items()}, "offset": s["res_offset"],
-                          "walls": [s["bp_lower"], s["bp_upper"], k2, k2], "traj_frequency": 0},
+                          "walls": [s["bp_lower"], s["bp_upper"], s["bp_k"]], "file": n("basepairs", "txt")},
             "positional": {"selection": s["positional_atoms"] if self.uses(s, "positional") else "none",
                            "k": s["positional_k"]},
             "ssdihedrals": {"enabled": self.uses(s, "ssdihedrals") and bool(paired), "k": s["ss_k"],
@@ -274,18 +274,7 @@ class NamdMDFFTool(Tool):
         return {"fitted": PortValue([ctx.own("fitted", "pdb")], "pdb", {"map_frame": True})}
 
     def resources(self, s):
-        out = ["namd", "mdff"]
-        if self.uses(s, "basepairs") and (s.get("dotbracket") or "").strip():
-            out.append("colvars")
-        if s["energy_check"]:
-            out.append("ambertools")
-        return out
-
-    def step_resources(self, s, ctx):
-        out = [r for r in self.resources(s) if r != "colvars"]
-        if ctx is not None and self.uses(s, "basepairs") and self.pairs(s, ctx)[0]:
-            out.insert(2, "colvars")  # Colvars only when base-pair restraints are written
-        return out
+        return ["namd", "mdff"] + (["ambertools"] if s["energy_check"] else [])
 
     def describe(self, s):
         gs = [st["gscale"] for st in s["stages"]]
@@ -510,12 +499,12 @@ class NamdMDFFTool(Tool):
             extra.append(f"extraBondsFile   {n('chirality', 'txt')}")
         if st["ssdihedrals"] and settings["ssdihedrals"]["enabled"]:
             extra.append(f"extraBondsFile   {n('ssdihedrals', 'txt')}")
-        if extra:
-            lines += ["", "# L-RNA-safe restraints written by MDATK (chirality impropers, secondary-structure dihedrals)",
-                      "extraBonds       on", *extra]
         if st["basepairs"] and settings["basepairs"]["enabled"]:
-            lines += ["", "# base-pair hydrogen-bond restraints (Colvars)", "colvars          on",
-                      f"colvarsConfig    {n('basepairs', 'colvars')}"]
+            extra.append(f"extraBondsFile   {n('basepairs', 'txt')}")
+        if extra:
+            lines += ["", "# L-RNA-safe restraints written by MDATK: chirality impropers, secondary-structure dihedrals,",
+                      "# base-pair walls (extraBonds; never VMD's chirality / ssrestraints)",
+                      "extraBonds       on", *extra]
         if st["positional"]:
             lines += ["", "# positional restraints to the starting coordinates", "constraints      on",
                       f"consref          {n('posres', 'pdb')}", f"conskfile        {n('posres', 'pdb')}",

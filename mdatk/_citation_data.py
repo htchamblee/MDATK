@@ -1034,19 +1034,6 @@ REFERENCE_DATA = [
         "verified": 'repo:https://github.com/Colvars/colvars (src/colvarmodule_refs.h, Phillips2020, "NAMD engine")',
     },
     {
-        "key": 'fiorin2013colvars',
-        "text": 'Fiorin G., Klein M. L., Hénin J. Mol. Phys. 2013, 111, 3345-3362. doi:10.1080/00268976.2013.813594',
-        "bibtex": (
-            '@article{fiorin2013colvars,\n  author = {Fiorin, G. and Klein, M. L. and Hénin, J.},\n  title = '
-            '{{Using collective variables to drive molecular dynamics simulations}},\n  journal = {Molecular '
-            'Physics},\n  year = {2013},\n  volume = {111},\n  number = {22-23},\n  pages = {3345--3362},\n  '
-            'doi = {10.1080/00268976.2013.813594}\n}'
-        ),
-        "doi": '10.1080/00268976.2013.813594',
-        "url": '',
-        "verified": 'repo:https://github.com/Colvars/colvars (src/colvarmodule_refs.h, Fiorin2013)',
-    },
-    {
         "key": 'trabuco2008mdff',
         "text": (
             'Trabuco L. G., Villa E., Mitra K., Frank J., Schulten K. Structure 2008, 16, 673-683. '
@@ -1416,11 +1403,5 @@ RESOURCE_DATA = [
         "name": 'Molecular dynamics flexible fitting (MDFF)',
         "keys": ['trabuco2008mdff'],
         "note": 'The MDFF method; MDATK writes the potential with the mdff griddx formula.',
-    },
-    {
-        "id": 'colvars',
-        "name": 'Colvars',
-        "keys": ['fiorin2013colvars'],
-        "note": 'Base-pair restraints of the NAMD MDFF step.',
     },
 ]

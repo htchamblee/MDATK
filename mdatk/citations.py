@@ -62,7 +62,7 @@ def step_resources(step) -> List[str]:
     """Resources one resolved planner step uses (its tool decides from its settings)."""
     if step.tool is None:
         return []
-    return unique(step.tool.step_resources(step.settings, getattr(step, "ctx", None)))
+    return unique(step.tool.resources(step.settings))
 
 
 def step_citations(step) -> List[str]:

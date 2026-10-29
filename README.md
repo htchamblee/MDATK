@@ -1019,7 +1019,7 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
   *Amber · MD stages*. NetCDF restarts are converted with cpptraj; vacuum runs take the dry PDB.
 - **Map:** the density map (MRC / CCP4, or an OpenDX density).
 - **Map-frame model:** the PDB that was fitted into the map, usually the input of the Amber build.
-- **Secondary structure** (optional), for the base-pair restraints.
+- **Secondary structure** (optional), for the dihedral and base-pair restraints.
 - **Output:** the fitted model, solute only, in the map's frame, ready for *Phenix* / *Coot*
   real-space refinement.
 
@@ -1103,21 +1103,22 @@ VMD and writes its own restraints:
   - The paper's authors discourage softening these restraints: they are what prevents overfitting.
   - The paper also restrains two inter-base distances per pair and stacked residues. MDATK uses the
     flat-bottom hydrogen-bond walls below for the pairs and does not restrain stacking.
-- **Base pairs** (`…_basepairs_….colvars`, NAMD Colvars): the hydrogen-bond atom pairs of
+- **Base pairs** (`…_basepairs_….txt`, NAMD `extraBonds` `wall`): the hydrogen-bond atom pairs of
   *Amber · helix restraints* from the connected or typed secondary structure.
-  - Each distance has flat-bottom walls at 2.7 and 3.2 Å, with E = k (d − wall)² and k = 10
-    kcal/mol/Å² outside them (the Colvars force constant is 2k).
+  - Each distance is flat between 2.7 and 3.2 Å, with U = k (d − wall)² outside, k = 10 kcal/mol/Å²:
+    the form of Amber's restraints (rk2 / rk3).
   - Unlike Amber's restraints, the walls stay harmonic far from the window; they have no linear
     part.
 - **Positional** (`…_posres_….pdb`, NAMD `constraints`): the RNA backbone or all heavy atoms,
   restrained to the start coordinates, in stages that ask for it.
 
-Every setting is stored with the project, and the step cites NAMD, MDFF, Colvars (only when
-base-pair restraints are written) and AmberTools (for the energy comparison).
+All restraint files are NAMD `extraBonds` files (comments on lines of their own, 0-based atoms) plus
+the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF
+and AmberTools (for the energy comparison).
 
-**What NAMD does with an Amber topology.** These settings were checked against the NAMD 2.14 user's
-guide and source code; the NAMD web pages, including the 3.0 guide, could not be reached while this was
-written.
+**What NAMD does with an Amber topology.** These settings were checked against the NAMD 3.0 user's guide
+(section 3.3, AMBER file and force field support; grid forces; extra bonded terms; GPU-resident features)
+and the NAMD 2.14 guide and source code.
 
 - NAMD copies the parm7 Lennard-Jones A/B table pair by pair. Every off-diagonal pair is kept, and 1-4
   pairs are divided by `scnb`.
@@ -1126,10 +1127,12 @@ written.
 - The box is never read from the parm7 or coordinates; the step writes it as an `.xsc` file.
 - NAMD finds waters (for SETTLE) by an oxygen of 14–18 amu. A mass-repartitioned water would not be
   rigid, so the step stops if it finds one; repartition the solute only (ParmEd's default).
-- NAMD 3.0 has a new parm7 reader. The energy comparison checks each topology with the NAMD that will
-  run it.
-- The runs use NAMD's classic mode, not the GPU-resident mode (`CUDASOAintegrate`), where grid forces
-  are not known to work.
+- NAMD 3.0 has a new parm7 reader (`oldParmReader` selects the old one). The energy comparison checks
+  each topology with the NAMD that will run it.
+- `1-4scaling` is written as in the guide's own examples; NAMD 3.0 also calls it `oneFourScaling`. The
+  old name is deprecated only for NAMD's Python interface.
+- The runs use NAMD's classic mode. The 3.0 guide's table of GPU-resident features lists neither grid
+  forces nor extra bonded terms, so the GPU-resident mode (`CUDASOAintegrate`) would not run MDFF.
 
 **Limits.**
 

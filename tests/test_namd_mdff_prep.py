@@ -23,12 +23,12 @@ def config(tmp_path, **kw):
            "threshold": 0.0, "pad": 6.0, "couple": "heavy", "couple_ions": False, "min_overlap": 0.3,
            "max_frame_rmsd": 2.0, "potential": str(tmp_path / "pot.dx"), "grid_pdb": str(tmp_path / "grid.pdb"),
            "restraint_pdb": str(tmp_path / "ref.pdb"), "extrabonds": str(tmp_path / "chir.txt"),
-           "colvars": str(tmp_path / "bp.colvars"), "xsc": str(tmp_path / "cell.xsc"),
+           "xsc": str(tmp_path / "cell.xsc"),
            "prep_json": str(tmp_path / "prep.json"), "final_pdb": str(tmp_path / "final.pdb"),
            "final_coor": str(tmp_path / "final.coor"),
            "chirality": {"enabled": True, "k": 200.0, "targets": D_TARGETS},
-           "basepairs": {"enabled": False, "pairs": [], "bonds": {}, "offset": 0, "walls": (2.7, 3.2, 20.0, 20.0),
-                         "traj_frequency": 0},
+           "basepairs": {"enabled": False, "pairs": [], "bonds": {}, "offset": 0, "walls": (2.7, 3.2, 10.0),
+                         "file": str(tmp_path / "bp.txt")},
            "positional": {"selection": "none", "k": 1.0},
            "ssdihedrals": {"enabled": False, "k": 200.0, "residues": [], "file": str(tmp_path / "ssd.txt")}}
     cfg.update(kw)
@@ -250,19 +250,19 @@ def test_netcdf_restart_is_refused_with_a_hint(tmp_path, system):
         nm.prep(config(tmp_path), write=False)
 
 
-def test_basepair_colvars(tmp_path, system):
+def test_basepair_walls(tmp_path, system):
     top = nm.Topology(str(tmp_path / "sys.parm7"))
     model = rna.build_model("GCGC GCGC", "(((( ))))")
     pairs = [p for p in rna.classify_pairs(model, False)[0]]
-    text, count = nm.basepair_colvars(top, pairs, rna.HBOND_ATOMS, 0, (2.7, 3.2, 20.0, 15.0))
+    lines, count = nm.basepair_walls(top, pairs, rna.HBOND_ATOMS, 0, (2.7, 3.2, 10.0))
     assert count == 12  # four G-C pairs x three hydrogen bonds
-    first = text.split("harmonicWalls")[0]
-    num = [int(v) for v in first.split("atomNumbers")[1:3] for v in [v.split("}")[0]]]
-    assert top.names[num[0] - 1] == "O6" and top.residue[num[0] - 1] == 0  # 1-based atom numbers
-    assert top.names[num[1] - 1] == "N4" and top.residue[num[1] - 1] == 7
-    assert "lowerWalls 2.700" in text and "upperWallConstant 15.000" in text
+    walls = [ln.split() for ln in lines if ln.startswith("wall")]
+    assert len(walls) == 12 and all(len(w) == 6 for w in walls)  # nothing after the values
+    a, b = int(walls[0][1]), int(walls[0][2])  # 0-based atom numbers
+    assert top.names[a] == "O6" and top.residue[a] == 0 and top.names[b] == "N4" and top.residue[b] == 7
+    assert walls[0][3:] == ["10.000", "2.700", "3.200"]  # k lower upper
     with pytest.raises(nm.PrepError, match="residue 9 is LG5"):
-        nm.basepair_colvars(top, [(1, 9, "GC")], rna.HBOND_ATOMS, 0, (2.7, 3.2, 20.0, 20.0))
+        nm.basepair_walls(top, [(1, 9, "GC")], rna.HBOND_ATOMS, 0, (2.7, 3.2, 10.0))
 
 
 def test_superpose_and_cell_helpers():

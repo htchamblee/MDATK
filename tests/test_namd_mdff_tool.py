@@ -71,7 +71,8 @@ def test_generated_configuration_uses_the_amber_topology_natively():
                  "rigidBonds       all", "timestep         4.0", "mgridforce       on",
                  f"mgridforcepotfile mdff apt1_02_potential_{STAMP}.dx", "mgridforcescale  mdff 0.3 0.3 0.3",
                  "extraBonds       on", f"extraBondsFile   apt1_02_chirality_{STAMP}.txt",
-                 f"extraBondsFile   apt1_02_ssdihedrals_{STAMP}.txt", "colvars          on", "run 250000"):
+                 f"extraBondsFile   apt1_02_ssdihedrals_{STAMP}.txt",
+                 f"extraBondsFile   apt1_02_basepairs_{STAMP}.txt", "run 250000"):
         assert line in fit, line
     assert "structure" not in fit.split("\n# MDFF")[0].lower().replace("structure.", "")  # no PSF / CHARMM files
     assert "paraTypeCharmm" not in fit and "parameters " not in fit
@@ -90,19 +91,18 @@ def test_generated_configuration_uses_the_amber_topology_natively():
     sh = files[f"apt1_02_namd-mdff_{STAMP}.sh"].content
     assert sh.index("prep |") < sh.index("sander -O") < sh.index("_min_") < sh.index("_fit_") < sh.index(" final")
     head = sh.split("set -eo pipefail")[0]
-    assert "Phillips J. C." in head and "Trabuco L. G." in head and "Fiorin G., Klein M. L." in head
+    assert "Phillips J. C." in head and "Trabuco L. G." in head  # NAMD, MDFF
+    assert "colvars" not in fit.lower()  # base pairs are extraBonds walls
     for f in files.values():  # never VMD's D-only stereochemistry tools (nor its MDFF plugin)
         assert not STOCK_VMD.search(f.content), f.name
 
 
-def test_no_colvars_citation_without_base_pairs():
+def test_no_base_pair_files_without_secondary_structure():
     plan, st = built_after_amber({"water": "tip3p"})
-    sh = [f for f in plan.generate(["m"])["m"] if f.role == "run"][0].content
-    head = sh.split("set -eo pipefail")[0]
-    assert "Trabuco" in head and "Klein M. L." not in head
     assert any("no secondary structure" in m for m in messages(st, "warning"))
     files = {f.name: f.content for f in plan.generate(["m"])["m"]}
-    assert "colvars" not in files[f"apt1_02_fit_{STAMP}.namd"]
+    fit = files[f"apt1_02_fit_{STAMP}.namd"]
+    assert "basepairs" not in fit and "ssdihedrals" not in fit and f"apt1_02_chirality_{STAMP}.txt" in fit
 
 
 @pytest.mark.parametrize("build, mdff, level, text", [
@@ -174,7 +174,7 @@ for line in text.splitlines():
         key, _, value = line.partition(" ")
         opts.setdefault(key.lower(), []).append(value.strip())
 assert opts["amber"] == ["on"] and os.path.isfile(opts["parmfile"][0]) and os.path.isfile(opts["ambercoor"][0])
-for key in ("extendedsystem", "bincoordinates", "binvelocities", "extrabondsfile", "colvarsconfig", "consref"):
+for key in ("extendedsystem", "bincoordinates", "binvelocities", "extrabondsfile", "consref"):
     for v in opts.get(key, []):
         assert os.path.isfile(v), (key, v)
 for v in opts.get("mgridforcepotfile", []) + opts.get("mgridforcefile", []):
