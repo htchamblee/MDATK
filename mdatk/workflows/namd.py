@@ -51,6 +51,9 @@ STAGE_OPTIONS = [
            "one step per segment.", minimum=1, maximum=1000, requires={"kind": "md"}),
     Option("chirality", "Chirality restraints", "bool", True,
            "L-RNA-safe impropers at C1' C2' C3' C4' (each residue keeps its own hand)."),
+    Option("ssdihedrals", "Secondary-structure dihedrals", "bool", True,
+           "α β γ δ ε ζ χ of the base-paired residues held at their starting values, the RNA restraints of "
+           "Trabuco et al. (2008); measured on the model itself, so L residues keep their own values."),
     Option("basepairs", "Base-pair restraints", "bool", True,
            "Flat-bottom hydrogen-bond distance restraints from the secondary structure (Restraints page)."),
     Option("positional", "Positional restraints", "bool", False,
@@ -118,8 +121,9 @@ class NamdMDFFTool(Tool):
         ], tooltip="How NAMD treats the Amber system."),
         Section("map", "Density map", [
             Option("threshold", "Density threshold", "float", 0.0,
-                   "Densities at or below this value give no force (VMD mdff griddx -threshold, default 0).",
-                   step=0.01, digits=4),
+                   "Densities at or below this value give no force (VMD mdff griddx -threshold, default 0). Trabuco "
+                   "et al. (2008) take the minimum between the solvent and the biomolecule peaks of the density "
+                   "histogram, or the map's average when the peaks are not resolved.", step=0.01, digits=4),
             Option("couple", "Atoms coupled to the map", "radio", "heavy",
                    "Every coupled atom feels the map in proportion to its (standard) mass.",
                    choices=[("heavy", "RNA heavy atoms"), ("all", "All RNA atoms, with hydrogens")]),
@@ -141,6 +145,10 @@ class NamdMDFFTool(Tool):
             Option("chirality_k", "Chirality force constant", "float", 200.0,
                    "Improper restraints at C1' C2' C3' C4' (kcal/mol/rad²); the targets have the sign of each "
                    "residue's own hand, so L sugars are kept L.", minimum=0.0, maximum=10000.0, digits=1),
+            Option("ss_k", "Dihedral force constant", "float", 200.0,
+                   "Secondary-structure dihedral restraints (kcal/mol/rad², E = k (θ − θ₀)²). Trabuco et al. (2008) "
+                   "use 200 and discourage softening them: they are what prevents overfitting.",
+                   minimum=0.0, maximum=10000.0, digits=1),
             Option("sequence", "Sequence", "multiline", "",
                    "For a typed secondary structure: RNA sequence in topology order, chains separated by spaces.",
                    placeholder="GGGCAC GUGCCC"),
@@ -223,12 +231,21 @@ class NamdMDFFTool(Tool):
                                         f"({', '.join(sorted({k for _i, _j, k in skip}))})", ("wobble",)))
         return keep, issues, source
 
+    def paired_residues(self, s, ctx) -> List[int]:
+        """Topology residue numbers of every base-paired residue (all pair kinds) of the secondary structure."""
+        model, _source, _issues = secondary_structure(s, ctx)
+        if model is None:
+            return []
+        keep, skip = rna.classify_pairs(model, True)
+        return sorted({p + s["res_offset"] for i, j, _k in keep + skip for p in (i, j)})
+
     def uses(self, s, key: str) -> bool:
         return any(st[key] for st in s["stages"])
 
     def prep_settings(self, s, ctx) -> Dict[str, Any]:
         n = ctx.name
         pairs, _issues, _src = self.pairs(s, ctx)
+        paired = self.paired_residues(s, ctx)
         bonds = {k: v for k, v in rna.HBOND_ATOMS.items() if any(p[2] == k for p in pairs)}
         k2 = 2.0 * s["bp_k"]  # Colvars walls: E = k/2 (d - wall)^2, Amber-style input: E = k (d - wall)^2
         return {
@@ -248,6 +265,8 @@ class NamdMDFFTool(Tool):
                           "walls": [s["bp_lower"], s["bp_upper"], k2, k2], "traj_frequency": 0},
             "positional": {"selection": s["positional_atoms"] if self.uses(s, "positional") else "none",
                            "k": s["positional_k"]},
+            "ssdihedrals": {"enabled": self.uses(s, "ssdihedrals") and bool(paired), "k": s["ss_k"],
+                            "residues": paired, "file": n("ssdihedrals", "txt")},
         }
 
     # ----------------------------------------------------------------- planner
@@ -332,6 +351,17 @@ class NamdMDFFTool(Tool):
                 out.append(Issue("info", "no map-frame model: the coordinates are used in their own frame, which "
                                          "must be the map's (true for a dry tleap build of a fitted PDB)",
                                  ("input:model",)))
+        if self.uses(s, "ssdihedrals"):
+            paired = self.paired_residues(s, ctx)
+            if paired:
+                out.append(Issue("info", f"{len(paired)} base-paired residues: their backbone and χ dihedrals are held "
+                                         "at their starting values (Trabuco et al. 2008)", ("ss_k",)))
+            elif not self.uses(s, "basepairs"):
+                out.append(Issue("warning", "stages use secondary-structure dihedral restraints but there is no "
+                                            "secondary structure: none are written", ("dotbracket",)))
+            if 0 < s["ss_k"] < 200.0:
+                out.append(Issue("info", "Trabuco et al. (2008) discourage softening their 200 kcal/mol/rad² "
+                                         "restraints: weaker ones let the model overfit the map", ("ss_k",)))
         if self.uses(s, "basepairs"):
             pairs, issues, source = self.pairs(s, ctx)
             out += issues
@@ -368,7 +398,7 @@ class NamdMDFFTool(Tool):
         except OSError:
             return []
         key = (top_path, crd_path, stamp, cfg["periodic"], cfg["four_site"], cfg["timestep"],
-               cfg["chirality"]["enabled"])
+               cfg["chirality"]["enabled"], cfg["ssdihedrals"]["enabled"], tuple(cfg["ssdihedrals"]["residues"]))
         if key not in _FILE_CHECKS:
             if len(_FILE_CHECKS) > 32:
                 _FILE_CHECKS.clear()
@@ -395,6 +425,8 @@ class NamdMDFFTool(Tool):
                 if cfg["chirality"]["enabled"]:
                     _lines, bad, _more = _namd_mdff.chirality_lines(top, xyz, 1.0, D_IMPROPERS)
                     problems += bad
+                if cfg["ssdihedrals"]["enabled"]:
+                    problems += _namd_mdff.ss_dihedral_lines(top, xyz, cfg["ssdihedrals"]["residues"], 1.0)[1]
         except (OSError, ValueError, _namd_mdff.PrepError) as exc:
             return [Issue("error", f"cannot check the topology: {exc}", ("input:topology",))]
         return [Issue("error", p, ("input:topology",)) for p in problems]
@@ -473,9 +505,14 @@ class NamdMDFFTool(Tool):
                   f"mgridforcescale  mdff {g} {g} {g}",
                   "mgridforcecont1  mdff no", "mgridforcecont2  mdff no", "mgridforcecont3  mdff no"]
         settings = self.prep_settings(s, ctx)
+        extra = []
         if st["chirality"] and settings["chirality"]["enabled"]:
-            lines += ["", "# L-RNA-safe chirality restraints (MDATK, not VMD)", "extraBonds       on",
-                      f"extraBondsFile   {n('chirality', 'txt')}"]
+            extra.append(f"extraBondsFile   {n('chirality', 'txt')}")
+        if st["ssdihedrals"] and settings["ssdihedrals"]["enabled"]:
+            extra.append(f"extraBondsFile   {n('ssdihedrals', 'txt')}")
+        if extra:
+            lines += ["", "# L-RNA-safe restraints written by MDATK (chirality impropers, secondary-structure dihedrals)",
+                      "extraBonds       on", *extra]
         if st["basepairs"] and settings["basepairs"]["enabled"]:
             lines += ["", "# base-pair hydrogen-bond restraints (Colvars)", "colvars          on",
                       f"colvarsConfig    {n('basepairs', 'colvars')}"]

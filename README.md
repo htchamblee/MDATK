@@ -1040,7 +1040,9 @@ already in the plan and their files do not change.
      rotation is resampled on a grid twice as fine as the map. It stops if less than 30 % of the
      coupled atoms lie on density above the map's mean + 1σ, which catches a missing or wrong frame.
    - **MDFF potential** (`…_potential_….dx`): V = (ρmax − max(ρ, threshold)) / (ρmax − threshold),
-     the formula of VMD's `mdff griddx`. It is cropped to the coupled atoms plus a margin and must
+     Equation 3 of Trabuco et al. (2008) and the formula of VMD's `mdff griddx`. The paper sets the
+     threshold at the minimum between the solvent and biomolecule peaks of the density histogram, or at
+     the map's average when they are not resolved; the default is 0, as in `mdff griddx`. It is cropped to the coupled atoms plus a margin and must
      fit into the periodic cell.
    - **Coupling** (`…_coupling_….pdb`, as VMD's `mdff gridpdb`: occupancy 1 couples an atom, beta is its
      mass): the RNA heavy atoms by default, weighted by standard masses, so HMR does not change the map
@@ -1092,6 +1094,15 @@ VMD and writes its own restraints:
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
     agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run;
     the planner reports it as soon as the files exist.
+- **Secondary-structure dihedrals** (`…_ssdihedrals_….txt`, NAMD `extraBonds`), the RNA restraints
+  of the MDFF paper (Trabuco et al. 2008).
+  - α, β, γ, δ, ε, ζ and χ of every base-paired residue in the secondary structure are held at their
+    starting values, k = 200 kcal/mol/rad².
+  - The targets are measured on the model itself, so an L residue keeps its own mirror-image values.
+  - α, ε and ζ reach into a neighbour only when it is bonded, never across a chain break.
+  - The paper's authors discourage softening these restraints: they are what prevents overfitting.
+  - The paper also restrains two inter-base distances per pair and stacked residues. MDATK uses the
+    flat-bottom hydrogen-bond walls below for the pairs and does not restrain stacking.
 - **Base pairs** (`…_basepairs_….colvars`, NAMD Colvars): the hydrogen-bond atom pairs of
   *Amber · helix restraints* from the connected or typed secondary structure.
   - Each distance has flat-bottom walls at 2.7 and 3.2 Å, with E = k (d − wall)² and k = 10

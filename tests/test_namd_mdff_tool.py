@@ -70,7 +70,8 @@ def test_generated_configuration_uses_the_amber_topology_natively():
                  "scnb             2.0", "switching        off", "PME              yes", "LJcorrection     on",
                  "rigidBonds       all", "timestep         4.0", "mgridforce       on",
                  f"mgridforcepotfile mdff apt1_02_potential_{STAMP}.dx", "mgridforcescale  mdff 0.3 0.3 0.3",
-                 "extraBonds       on", "colvars          on", "run 250000"):
+                 "extraBonds       on", f"extraBondsFile   apt1_02_chirality_{STAMP}.txt",
+                 f"extraBondsFile   apt1_02_ssdihedrals_{STAMP}.txt", "colvars          on", "run 250000"):
         assert line in fit, line
     assert "structure" not in fit.split("\n# MDFF")[0].lower().replace("structure.", "")  # no PSF / CHARMM files
     assert "paraTypeCharmm" not in fit and "parameters " not in fit

@@ -1061,8 +1061,8 @@ REFERENCE_DATA = [
         "doi": '10.1016/j.str.2008.03.005',
         "url": '',
         "verified": (
-            'ref-list:6ec2b6e4-Applications_of_the_molecular_dynamics_flexible_fitting_method.pdf (Trabuco et al., '
-            'J. Struct. Biol. 2011, 173, 420-427: authors, title, journal, year, volume, pages); doi: memory'
+            'pdf:452b6414-Flexible_fitting_of_atomic_structures_into_electron_microscopy_maps_using_molecular_'
+            'dynamics.pdf (authors, title, journal, volume, pages, May 2008, DOI on the first page)'
         ),
     },
 ]

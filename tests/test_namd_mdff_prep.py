@@ -29,7 +29,8 @@ def config(tmp_path, **kw):
            "chirality": {"enabled": True, "k": 200.0, "targets": D_TARGETS},
            "basepairs": {"enabled": False, "pairs": [], "bonds": {}, "offset": 0, "walls": (2.7, 3.2, 20.0, 20.0),
                          "traj_frequency": 0},
-           "positional": {"selection": "none", "k": 1.0}}
+           "positional": {"selection": "none", "k": 1.0},
+           "ssdihedrals": {"enabled": False, "k": 200.0, "residues": [], "file": str(tmp_path / "ssd.txt")}}
     cfg.update(kw)
     return cfg
 
@@ -278,3 +279,40 @@ def test_superpose_and_cell_helpers():
     assert widths == pytest.approx([60 * math.sqrt(2 / 3) * 1.0] * 3, rel=0.02) or min(widths) > 45
     assert nm.residue_hand("LG5") == "L" and nm.residue_hand("0C") == "L" and nm.residue_hand("RA3") == "D"
     assert nm.residue_hand("G") == "D" and nm.residue_hand("WAT") is None
+
+
+def test_secondary_structure_dihedrals_keep_each_hand(tmp_path, system):
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    xyz = [a[5] for a in system]
+    lines, problems = nm.ss_dihedral_lines(top, xyz, range(1, 17), 200.0)
+    assert not problems
+    torsions = [ln for ln in lines if ln.startswith("dihedral")]
+    # gamma delta chi for all 16; alpha and beta need the 5' phosphate (the four chain starts are 5'-OH);
+    # epsilon and zeta need a bonded next residue (not the four 3' ends)
+    assert len(torsions) == 16 * 3 + 12 * 2 + 12 * 2
+    values = {}
+    for ln in torsions:
+        a, b, c, d = (int(v) for v in ln.split()[1:5])
+        target = float(ln.split()[6])
+        assert target == pytest.approx(nm.dihedral(xyz[a], xyz[b], xyz[c], xyz[d]), abs=0.01)
+        assert len(ln.split()) == 7  # nothing after the values (extraBonds would read a periodic form)
+        values[(top.residue[b], top.names[a], top.names[b], top.names[c], top.names[d])] = target
+        # never across a chain break: all four atoms in this residue or bonded neighbours
+        assert max(top.residue[i] for i in (a, b, c, d)) - min(top.residue[i] for i in (a, b, c, d)) <= 1
+    # the L duplex (residues 9-16) is the mirror image of the D duplex (1-8): every dihedral flips sign
+    for (r, *names), v in values.items():
+        if r < 8:
+            assert values[(r + 8, *names)] == pytest.approx(-v, abs=0.02)
+    # chain starts have no alpha into the previous chain's last residue
+    starts = [0, 4, 8, 12]
+    assert not any(k[0] in starts and k[1] == "O3'" for k in values)
+    lines, problems = nm.ss_dihedral_lines(top, xyz, [99], 200.0)
+    assert problems and "does not exist" in problems[0]
+
+
+def test_prep_writes_secondary_structure_dihedrals(tmp_path, system):
+    cfg = config(tmp_path, ssdihedrals={"enabled": True, "k": 200.0, "residues": [1, 2, 9, 10],
+                                        "file": str(tmp_path / "ssd.txt")})
+    assert nm.prep(cfg) == 0
+    text = (tmp_path / "ssd.txt").read_text()
+    assert text.count("\ndihedral ") > 4 * 4 and "Trabuco" in text

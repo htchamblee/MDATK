@@ -636,6 +636,58 @@ def chirality_lines(top, xyz, k, targets):
     return lines, problems, notes
 
 
+def _bonded(xyz, a, b, limit=2.0):
+    d = sub(xyz[a], xyz[b])
+    return dot(d, d) < limit * limit
+
+
+def ss_dihedral_lines(top, xyz, residues, k):
+    """extraBonds dihedrals (0-based atoms) holding alpha .. zeta and chi of the given residues (1-based
+    topology numbers) at their values in ``xyz``, as the secondary-structure restraints of Trabuco et al.
+    (2008).  The targets are measured on the model itself, so L residues keep their own (mirror-image)
+    values.  alpha, epsilon and zeta reach into the neighbouring residue only when it is bonded
+    (O3'-P below 2 A), never across a chain break."""
+    lines, problems = [], []
+    names = [{top.names[i]: i for i in top.residue_atoms(r)} for r in range(top.nres)]
+    for resnum in sorted(set(residues)):
+        r = resnum - 1
+        if not 0 <= r < top.nres:
+            problems.append(f"residue {resnum} of the secondary structure does not exist (the topology has "
+                            f"{top.nres} residues): check the residue offset")
+            continue
+        at = names[r]
+        if not all(n in at for n in ("C1'", "C4'", "O4'", "C3'")):
+            problems.append(f"residue {resnum} ({top.labels[r]}) is not a nucleotide")
+            continue
+        prev = names[r - 1] if r > 0 else {}
+        nxt = names[r + 1] if r + 1 < top.nres else {}
+        has_prev = "O3'" in prev and "P" in at and _bonded(xyz, prev["O3'"], at["P"])
+        has_next = "O3'" in at and "P" in nxt and _bonded(xyz, at["O3'"], nxt["P"])
+        base = residue_base(top.labels[r]) or ("A" if "N9" in at else "C")
+        chi = ("O4'", "C1'", "N9", "C4") if base in ("A", "G") else ("O4'", "C1'", "N1", "C2")
+        torsions = []
+        if has_prev:
+            torsions.append(("alpha", [(prev, "O3'"), (at, "P"), (at, "O5'"), (at, "C5'")]))
+        torsions += [("beta", [(at, "P"), (at, "O5'"), (at, "C5'"), (at, "C4'")]),
+                     ("gamma", [(at, "O5'"), (at, "C5'"), (at, "C4'"), (at, "C3'")]),
+                     ("delta", [(at, "C5'"), (at, "C4'"), (at, "C3'"), (at, "O3'")])]
+        if has_next:
+            torsions += [("epsilon", [(at, "C4'"), (at, "C3'"), (at, "O3'"), (nxt, "P")]),
+                         ("zeta", [(at, "C3'"), (at, "O3'"), (nxt, "P"), (nxt, "O5'")])]
+        torsions.append(("chi", [(at, n) for n in chi]))
+        kept = []
+        for name, quad in torsions:
+            if any(n not in res for res, n in quad):
+                continue  # e.g. a 5'-OH end without P
+            idx = [res[n] for res, n in quad]
+            value = dihedral(*(xyz[i] for i in idx))
+            kept.append(f"dihedral {idx[0]} {idx[1]} {idx[2]} {idx[3]} {k:.3f} {value:.2f}")
+        if kept:
+            lines.append(f"# residue {resnum} {top.labels[r]}: alpha beta gamma delta epsilon zeta chi as built")
+            lines += kept
+    return lines, problems
+
+
 def basepair_colvars(top, pairs, bonds, offset, walls):
     """Colvars text: one distance per hydrogen bond with flat-bottom harmonic walls."""
     lower, upper, k_lower, k_upper = walls
@@ -842,6 +894,9 @@ def prep(cfg, write=True):
         _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
         problems += bad
         notes += more
+    ssd = cfg.get("ssdihedrals") or {"enabled": False}
+    if ssd["enabled"]:
+        problems += ss_dihedral_lines(top, xyz, ssd["residues"], ssd["k"])[1]
     for n in notes:
         print(f"note: {n}")
     if problems:
@@ -918,6 +973,15 @@ def prep(cfg, write=True):
             fh.write("\n".join(lines) + "\n")
         print(f"wrote {cfg['extrabonds']} ({sum(1 for ln in lines if ln.startswith('improper'))} chirality "
               "impropers)")
+    if ssd["enabled"]:
+        lines, _bad = ss_dihedral_lines(top, xyz, ssd["residues"], ssd["k"])
+        with open(ssd["file"], "w", encoding="ascii") as fh:
+            fh.write("# Secondary-structure restraints (MDATK, after Trabuco et al. 2008): backbone and glycosidic\n"
+                     "# dihedrals of the base-paired residues held at their starting values (L residues keep their\n"
+                     "# own mirror-image values). Atom numbers are 0-based; angles in degrees, k in kcal/mol/rad^2.\n")
+            fh.write("\n".join(lines) + "\n")
+        print(f"wrote {ssd['file']} ({sum(1 for ln in lines if ln.startswith('dihedral'))} dihedrals of "
+              f"{len(set(ssd['residues']))} paired residues)")
     if cfg["basepairs"]["enabled"]:
         bp = cfg["basepairs"]
         text, count = basepair_colvars(top, bp["pairs"], bp["bonds"], bp["offset"], bp["walls"])
