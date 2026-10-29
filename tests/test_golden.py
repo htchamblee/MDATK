@@ -1,0 +1,39 @@
+"""Released behaviour stays put: every file the planner writes, and every planner message, matches
+what MDATK 0.0.7 produced for the same cases (see tests/golden.py for the cases and for the two
+things normalised before comparing: the "written by MDATK x.y.z" version and dates).
+
+New step types are not part of the comparison; a step type that existed in 0.0.7 must not change
+its output unless that change is intended and the reference is re-recorded from the release that
+introduces it."""
+
+import json
+import os
+
+import pytest
+
+import golden
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REFERENCE = os.path.join(HERE, "data", "golden_v0.0.7.json")
+
+
+@pytest.fixture(scope="module")
+def reference():
+    with open(REFERENCE, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_released_output_unchanged(reference):
+    from mdatk.workflows import TOOLS
+    assert reference["mdatk_version"] == "0.0.7"
+    assert set(reference["tools"]) <= set(TOOLS), "a step type of 0.0.7 was removed"
+    now = golden.collect(os.path.join(os.path.dirname(HERE), "examples"), reference["tools"])
+    ref = reference["cases"]
+    assert set(ref) <= set(now), f"cases no longer generated: {sorted(set(ref) - set(now))[:10]}"
+    changed = {}
+    for case, files in ref.items():
+        diff = sorted(k for k in set(files) | set(now[case]) if files.get(k) != now[case].get(k))
+        if diff:
+            changed[case] = diff
+    assert not changed, (f"{len(changed)} case(s) differ from 0.0.7, e.g. "
+                         + "; ".join(f"{c}: {', '.join(d[:4])}" for c, d in list(changed.items())[:6]))
