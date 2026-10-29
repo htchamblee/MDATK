@@ -1055,12 +1055,15 @@ REFERENCE_DATA = [
         "bibtex": (
             '@article{trabuco2008mdff,\n  author = {Trabuco, L. G. and Villa, E. and Mitra, K. and Frank, J. and '
             'Schulten, K.},\n  title = {{Flexible fitting of atomic structures into electron microscopy maps using '
-            'molecular dynamics}},\n  journal = {Structure},\n  year = {2008},\n  volume = {16},\n  number = {5},\n  '
+            'molecular dynamics}},\n  journal = {Structure},\n  year = {2008},\n  volume = {16},\n  '
             'pages = {673--683},\n  doi = {10.1016/j.str.2008.03.005}\n}'
         ),
         "doi": '10.1016/j.str.2008.03.005',
         "url": '',
-        "verified": 'memory',
+        "verified": (
+            'ref-list:6ec2b6e4-Applications_of_the_molecular_dynamics_flexible_fitting_method.pdf (Trabuco et al., '
+            'J. Struct. Biol. 2011, 173, 420-427: authors, title, journal, year, volume, pages); doi: memory'
+        ),
     },
 ]
 
