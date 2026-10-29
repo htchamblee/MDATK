@@ -1042,8 +1042,9 @@ already in the plan and their files do not change.
    - **MDFF potential** (`…_potential_….dx`): V = (ρmax − max(ρ, threshold)) / (ρmax − threshold),
      the formula of VMD's `mdff griddx`. It is cropped to the coupled atoms plus a margin and must
      fit into the periodic cell.
-   - **Coupling** (`…_coupling_….pdb`): the RNA heavy atoms by default, each weighted by its
-     standard mass, so HMR does not change the map forces.
+   - **Coupling** (`…_coupling_….pdb`, as VMD's `mdff gridpdb`: occupancy 1 couples an atom, beta is its
+     mass): the RNA heavy atoms by default, weighted by standard masses, so HMR does not change the map
+     forces.
    - **Restraints** (below) and the periodic cell (`…_cell_….xsc`, triclinic boxes included).
 3. **Energy comparison** (on by default). sander and NAMD evaluate the start coordinates once, with
    the same cutoff, no rigid bonds, no long-range LJ correction and no map or restraints. The terms
@@ -1057,8 +1058,8 @@ already in the plan and their files do not change.
 4. **Stages.** Each stage is a NAMD run, or several segments, restarting from the previous one:
    - minimisation at ξ = 0.3;
    - MD with the map coupling ξ ramped 0.05 → 0.3 over five segments;
-   - MDFF at ξ = 0.3;
-   - a final minimisation at ξ = 10, as in the MDFF protocol.
+   - MDFF at ξ = 0.3 (the default of VMD's `mdff setup`);
+   - a final minimisation with strong coupling (ξ = 10).
 
    ξ is in kcal/mol per amu: each atom feels ξ × its mass × the potential gradient. Runs that
    finished are skipped when the script is run again.
@@ -1076,8 +1077,9 @@ already in the plan and their files do not change.
   verified NAMD's handling of Amber extra points, so the planner warns: trust such a run only when
   the energy comparison passes.
 
-**L-RNA-safe restraints.** VMD's stereochemistry restraints (`chirality`, `ssrestraints`,
-`cispeptide`, as `mdff setup` would add them) validate against D-nucleotide libraries. On an
+**L-RNA-safe restraints.** VMD's stereochemistry plugins (`chirality`, `cispeptide`, `ssrestraints`,
+whose restraint files `mdff setup -extrab` and the MDFF GUI add to a run) validate against D-nucleotide
+libraries. On an
 L-RNA they push every L sugar towards the inverted centre, and the model still looks fine
 afterwards: the error would be silent. **Do not use them on these systems.** The step never calls
 VMD and writes its own restraints:
@@ -1101,6 +1103,22 @@ VMD and writes its own restraints:
 
 Every setting is stored with the project, and the step cites NAMD, MDFF, Colvars (only when
 base-pair restraints are written) and AmberTools (for the energy comparison).
+
+**What NAMD does with an Amber topology.** These settings were checked against the NAMD 2.14 user's
+guide and source code; the NAMD web pages, including the 3.0 guide, could not be reached while this was
+written.
+
+- NAMD copies the parm7 Lennard-Jones A/B table pair by pair. Every off-diagonal pair is kept, and 1-4
+  pairs are divided by `scnb`.
+- NAMD silently ignores 12-6-4 C4 terms and per-dihedral 1-4 scaling factors, which is why the step
+  refuses topologies that have them.
+- The box is never read from the parm7 or coordinates; the step writes it as an `.xsc` file.
+- NAMD finds waters (for SETTLE) by an oxygen of 14–18 amu. A mass-repartitioned water would not be
+  rigid, so the step stops if it finds one; repartition the solute only (ParmEd's default).
+- NAMD 3.0 has a new parm7 reader. The energy comparison checks each topology with the NAMD that will
+  run it.
+- The runs use NAMD's classic mode, not the GPU-resident mode (`CUDASOAintegrate`), where grid forces
+  are not known to work.
 
 **Limits.**
 

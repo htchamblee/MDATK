@@ -58,8 +58,9 @@ def test_chirality_targets_follow_each_residue_hand(tmp_path, system):
     top = nm.Topology(str(tmp_path / "sys.parm7"))
     xyz = [a[5] for a in system]
     lines, problems, _notes = nm.chirality_lines(top, xyz, 200.0, D_TARGETS)
-    assert not problems and len(lines) == 16 * 4
-    for line in lines:
+    assert not problems and len(lines) == 16 * 5  # a comment line and four impropers per nucleotide
+    assert all(ln.startswith("# ") or len(ln.split()) == 7 for ln in lines)  # nothing after the values
+    for line in (ln for ln in lines if ln.startswith("improper")):
         parts = line.split()
         i, j, k, l = (int(v) for v in parts[1:5])
         target = float(parts[6])
@@ -220,6 +221,26 @@ def test_topology_problems(tmp_path, system):
     ms.write_topology(str(tmp_path / "sys.parm7"), ms.with_solvent(atoms), hmr=True)
     ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in ms.with_solvent(atoms)])
     assert nm.prep(config(tmp_path, timestep=4.0), write=False) == 0  # water H stay light
+
+
+def test_mass_repartitioned_water_is_refused(tmp_path, system):
+    # NAMD finds waters (for SETTLE) by an oxygen of 14-18 amu: repartitioned water would not be rigid
+    solvated = ms.with_solvent(system)
+    ms.write_topology(str(tmp_path / "sys.parm7"), solvated)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in solvated])
+    assert nm.prep(config(tmp_path), write=False) == 0
+    text = (tmp_path / "sys.parm7").read_text()
+    head, mass = text.split("%FLAG MASS\n")
+    fmt, rest = mass.split("\n", 1)
+    body, tail = rest.split("%FLAG", 1)
+    values = body.split()
+    oxygens = [k for k, a in enumerate(solvated) if a[2] == "WAT" and a[4] == "O"]
+    for k in oxygens:
+        values[k] = "1.19750000E+01"
+    lines = ["".join(f"{float(v):16.8E}" for v in values[i:i + 5]) for i in range(0, len(values), 5)]
+    (tmp_path / "sys.parm7").write_text(head + "%FLAG MASS\n" + fmt + "\n" + "\n".join(lines) + "\n%FLAG" + tail)
+    with pytest.raises(nm.PrepError, match="water was mass-repartitioned"):
+        nm.prep(config(tmp_path), write=False)
 
 
 def test_netcdf_restart_is_refused_with_a_hint(tmp_path, system):

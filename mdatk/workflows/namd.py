@@ -39,9 +39,10 @@ STAGE_OPTIONS = [
     Option("steps", "Steps", "int", 50000, "Minimisation steps, or MD steps of the whole stage (all segments).",
            minimum=1, maximum=1_000_000_000),
     Option("gscale", "Map coupling ξ", "float", 0.3,
-           "gridforce scale ξ (kcal/mol per amu): the force on an atom is ξ × its mass × the gradient of the MDFF "
-           "potential (0 at the strongest density, 1 at the threshold). MDFF uses 0.3 for fitting and about 10 for a "
-           "final minimisation.", minimum=0.0, maximum=10000.0, step=0.05, digits=3),
+           "mgridforcescale ξ (kcal/mol per amu): the force on an atom is ξ × its mass × the gradient of the MDFF "
+           "potential (0 at the strongest density, 1 at the threshold). 0.3 is the default of VMD's mdff setup; a "
+           "strong coupling such as 10 in a final minimisation pulls the atoms into the density.",
+           minimum=0.0, maximum=10000.0, step=0.05, digits=3),
     Option("gscale_end", "Map coupling ξ at the end", "float", None,
            "MD only: ξ changes linearly from the start value to this one over the segments (empty: constant).",
            optional=True, minimum=0.0, maximum=10000.0, digits=3, requires={"kind": "md"}),
@@ -165,7 +166,9 @@ class NamdMDFFTool(Tool):
                 default_items=("min", "ramp", "fit", "final-min"),
                 tooltip="Stages run in order, each from the previous one's coordinates."),
         Section("engine", "Engine", [
-            Option("namd", "NAMD program", "text", "namd3", "NAMD 3.0 (namd3) or 2.14 (namd2).", placeholder="namd3"),
+            Option("namd", "NAMD program", "text", "namd3",
+                   "NAMD 3.0 (namd3) or 2.14 (namd2). The runs use the classic (not the GPU-resident, "
+                   "CUDASOAintegrate) mode: grid forces are not known to work there.", placeholder="namd3"),
             Option("cores", "CPU cores", "int", 8, "+p for multicore NAMD builds.", minimum=1, maximum=100000),
             Option("gpu", "GPU (+devices)", "text", "", "GPU index for CUDA builds (empty: no +devices).",
                    placeholder="0"),
@@ -460,11 +463,12 @@ class NamdMDFFTool(Tool):
         if st["kind"] == "md" and st["dcdfreq"]:
             lines.append(f"dcdfreq          {st['dcdfreq']}")
         g = f"{run['gscale']:.6g}"
-        lines += ["", "# MDFF: the map's potential, atoms coupled by mass (scripts/namd_mdff.py prep)",
+        lines += ["", "# MDFF (as VMD's mdff template): occupancy 1 couples an atom, beta = its mass; force = -scale x "
+                  "mass x grad(potential)",
                   "mgridforce       on",
                   f"mgridforcefile   mdff {n('coupling', 'pdb')}",
-                  "mgridforcecol    mdff B",
-                  "mgridforcechargecol mdff O",
+                  "mgridforcecol    mdff O",
+                  "mgridforcechargecol mdff B",
                   f"mgridforcepotfile mdff {n('potential', 'dx')}",
                   f"mgridforcescale  mdff {g} {g} {g}",
                   "mgridforcecont1  mdff no", "mgridforcecont2  mdff no", "mgridforcecont3  mdff no"]
@@ -524,8 +528,11 @@ class NamdMDFFTool(Tool):
                                        f"NAMD stage {run['tag']}"))
             prev = run
         if s["energy_check"]:
+            tolerances = dict(_namd_energy.TOLERANCES)
+            if s["solvent"] != "solvated":  # NAMD shifts cutoff electrostatics, sander truncates: 1 %
+                tolerances["ELECT"] = (2.0, 1e-2)
             files.append(GeneratedFile(energy_py, embed(
-                _namd_energy, {}, "main(sys.argv[1:], TOLERANCES)",
+                _namd_energy, {"TOLERANCES": tolerances}, "main(sys.argv[1:], TOLERANCES)",
                 f"sander / NAMD single-point energy comparison - written by {PROJECT_ABBREV} {__version__}.\n\n"
                 "Usage: python3 THIS_SCRIPT SANDER.mdout NAMD.log"), "helper", "compares the energy terms"))
             files.append(GeneratedFile(n("energy", "namd"), self._energy_conf(s, ctx), "input",

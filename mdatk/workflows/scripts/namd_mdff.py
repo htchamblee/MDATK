@@ -623,14 +623,16 @@ def chirality_lines(top, xyz, k, targets):
         base = residue_base(label)
         glyco = "N9" if base in ("A", "G") or (base is None and "N9" in atoms) else "N1"
         sign = 1.0 if use == "D" else -1.0
+        # comments on lines of their own: extraBonds reads "improper a b c d k n ref" when a line has
+        # one field more, so trailing text after the values must never appear
+        lines.append(f"# residue {r + 1} {label} ({use}): C1' C2' C3' C4'")
         for centre, partners in SUGAR_CENTRES:
             names = [centre] + [glyco if p == "N" else p for p in partners]
             if any(n not in atoms for n in names):
                 continue
             idx = [atoms[n] for n in names]
             target = sign * targets[centre]
-            lines.append(f"improper {idx[0]} {idx[1]} {idx[2]} {idx[3]} {k:.3f} {target:.2f}"
-                         f"   # {label}{r + 1} {centre} ({use})")
+            lines.append(f"improper {idx[0]} {idx[1]} {idx[2]} {idx[3]} {k:.3f} {target:.2f}")
     return lines, problems, notes
 
 
@@ -738,6 +740,11 @@ def topology_problems(top, cfg):
                         "hydrogen mass repartitioning); use 2 fs or repartition the masses")
     if heavy_h:
         notes.append(f"{heavy_h} of {len(h_mass)} hydrogens carry repartitioned masses (HMR)")
+    light_o = sorted({round(top.mass[i], 3) for i in range(top.natom) if top.solvent(i) and top.number[i] == 8
+                      and not 14.0 <= top.mass[i] <= 18.0})
+    if light_o:
+        problems.append(f"water oxygens with masses {light_o[:3]}: the water was mass-repartitioned; NAMD recognises "
+                        "waters (for SETTLE) by an oxygen of 14-18 amu - repartition the solute only")
     return problems, notes
 
 
@@ -909,7 +916,8 @@ def prep(cfg, write=True):
                      "# Atom numbers are 0-based. Never replace these with VMD's chirality / ssrestraints tools,\n"
                      "# which assume D-nucleotides.\n")
             fh.write("\n".join(lines) + "\n")
-        print(f"wrote {cfg['extrabonds']} ({len(lines)} chirality impropers)")
+        print(f"wrote {cfg['extrabonds']} ({sum(1 for ln in lines if ln.startswith('improper'))} chirality "
+              "impropers)")
     if cfg["basepairs"]["enabled"]:
         bp = cfg["basepairs"]
         text, count = basepair_colvars(top, bp["pairs"], bp["bonds"], bp["offset"], bp["walls"])
