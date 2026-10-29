@@ -185,6 +185,46 @@ def read_rst7(path, natom):
     return xyz, box, count >= 6 * n
 
 
+def is_pdb(path):
+    if path.lower().endswith((".pdb", ".ent")):
+        return True
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        head = fh.read(4096)
+    return any(ln.startswith(("ATOM  ", "HETATM", "CRYST1", "REMARK", "MODEL ")) for ln in head.splitlines())
+
+
+def write_rst7(path, xyz, box=None, title="MDATK"):
+    values = [c for p in xyz for c in p]
+    with open(path, "w", encoding="ascii") as fh:
+        fh.write(f"{title[:80]}\n{len(xyz):6d}\n")
+        for k in range(0, len(values), 6):
+            fh.write("".join(f"{v:12.7f}" for v in values[k:k + 6]) + "\n")
+        if box:
+            fh.write("".join(f"{v:12.7f}" for v in box) + "\n")
+
+
+def start_coordinates(cfg, source):
+    """The ASCII Amber coordinates NAMD starts from (``ambercoor``): an ASCII rst7 is checked and copied,
+    a PDB in topology atom order (e.g. the dry PDB of the Amber build) converted."""
+    top = Topology(cfg["topology"])
+    if is_pdb(source):
+        atoms = read_pdb_atoms(source)
+        if len(atoms) != top.natom:
+            raise PrepError(f"{source} has {len(atoms)} atoms, the topology {top.natom}: use the PDB written from "
+                            "this topology (Amber build: dry PDB)")
+        mismatch = [k for k, a in enumerate(atoms) if _canonical(a[2]) != _canonical(top.names[k])][:3]
+        if mismatch:
+            k = mismatch[0]
+            raise PrepError(f"atom {k + 1} is {atoms[k][2]} in {source} but {top.names[k]} in the topology: the PDB "
+                            "is not in the topology's atom order")
+        write_rst7(cfg["coordinates"], [a[3] for a in atoms], title=f"from {os.path.basename(source)} (MDATK)")
+    else:
+        xyz, box, _vel = read_rst7(source, top.natom)
+        write_rst7(cfg["coordinates"], xyz, box, title=f"from {os.path.basename(source)} (MDATK)")
+    print(f"start coordinates: {cfg['coordinates']} from {source}")
+    return 0
+
+
 def read_pdb_atoms(path):
     """[(residue key, residue name, atom name, (x, y, z), element)] of the first model."""
     out = []
@@ -909,8 +949,15 @@ def final(cfg):
 def main(argv, cfg):
     if argv[:1] == ["is-netcdf"] and len(argv) == 2:  # exit status 0: NetCDF, 1: not (ASCII)
         return 0 if is_netcdf(argv[1]) else 1
+    if argv[:1] == ["coordinates"] and len(argv) == 2:
+        try:
+            return start_coordinates(cfg, argv[1])
+        except (PrepError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     if not argv or argv[0] not in ("prep", "final", "check-only"):
-        print("usage: python3 THIS_SCRIPT prep | final | check-only | is-netcdf FILE", file=sys.stderr)
+        print("usage: python3 THIS_SCRIPT prep | final | check-only | is-netcdf FILE | coordinates FILE",
+              file=sys.stderr)
         return 2
     try:
         if argv[0] == "final":

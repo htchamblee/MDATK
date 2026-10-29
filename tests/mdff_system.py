@@ -149,3 +149,131 @@ def model_pdb(atoms) -> str:
         lines.append(f"ATOM  {k + 1:5d} {nm} {resname:>3s} {chain}{num:4d}    {x:8.3f}{y:8.3f}{z:8.3f}"
                      f"  1.00  0.00          {el:>2s}")
     return "\n".join(lines) + "\nEND\n"
+
+
+# ------------------------------------------------------------------------------------------ example
+EXAMPLE_README = """# NAMD MDFF example: a D-RNA and an L-RNA duplex
+
+Files for the `namd-mdff` planner step (NAMD reading the Amber topology natively), made by
+`python3 tests/mdff_system.py --example examples/namd_mdff` from the MDATK source tree.
+
+| File | What it is |
+|---|---|
+| `mixed_dl_model.pdb` | the model in the map's frame: a D duplex (chains A/B, GCGC) next to its L mirror image (chains C/D, LG/LC), MDATK helices |
+| `mixed_dl_4A.mrc` | a 4 Å map simulated from that model |
+| `namd_mdff.mdatk.toml` | a project: model → Amber build (OL3 + CP, NBfix19, 0BPh, L-RNA fixes, nanoMg, TIP3P, HMR) → NAMD MDFF, map and model connected |
+| `generated/02_namd-mdff/` | what `mdatk workflow write` writes for the MDFF step: one NAMD configuration per stage (`amber on`, `mgridforce`, `extraBonds`, `colvars`), the energy comparison with sander, the preparation helper and the run script |
+| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the L-RNA-safe chirality impropers (`extraBonds`), the base-pair Colvars walls, positional restraints, the periodic cell (`.xsc`) and its log |
+| `prepared/stand-in/` | the topology and coordinates `prepared/` was made from |
+
+**`prepared/stand-in/` is not a force field.** Without AmberTools in the build environment the
+example cannot contain a real tleap topology, so `prepared/` was computed from a parm7 that holds
+only atom names, residue labels, atomic numbers, masses and atom types (its title says so), solvated
+and moved the way tleap moves a solute, to show the frame recovery. Never simulate it. With
+AmberTools and NAMD installed, write the project (`mdatk workflow write -p namd_mdff.mdatk.toml`)
+and run the two step scripts: the Amber build makes the real topology, the MDFF script prepares the
+same files from it, compares sander and NAMD energies and runs the stages.
+
+In `prepared/*_chirality_*.txt` every D residue has the D targets (C1' -35.01, C2' 40.03, C3' 38.30,
+C4' 33.31 degrees) and every L residue (LG / LC) their mirror image: nothing pulls an L sugar towards
+the D centre, which is what VMD's `chirality` / `ssrestraints` restraints would do (they assume
+D-nucleotides; MDATK never uses them).
+"""
+
+
+def make_example(out: str) -> None:
+    """examples/namd_mdff: model, map, project, generated step files and prepared files."""
+    import io
+    import shutil
+    from contextlib import redirect_stdout
+
+    from mdatk.config import PlanEdge, PlanNode, Project
+    from mdatk.workflows import TOOLS
+    from mdatk.workflows.plan import Plan
+    from mdatk.workflows.scripts import namd_mdff as nm
+
+    os.makedirs(out, exist_ok=True)
+    for sub in ("generated", "prepared"):
+        shutil.rmtree(os.path.join(out, sub), ignore_errors=True)
+    atoms = atoms_of(mixed_pdb())
+    heavy = [a for a in atoms if a[4] != "H"]
+    model = os.path.join(out, "mixed_dl_model.pdb")
+    with open(model, "w") as fh:
+        fh.write(model_pdb(heavy))
+    mapfile = os.path.join(out, "mixed_dl_4A.mrc")
+    write_map(mapfile, atoms, resolution=4.0, spacing=1.5)
+    with open(os.path.join(out, "README.md"), "w") as fh:
+        fh.write(EXAMPLE_README)
+
+    # the project: model -> Amber build -> NAMD MDFF
+    p = Project()
+    wf = p.workflow
+    wf.project_name, wf.stamp = "mixeddl", "20261029-1200"
+    seq, db = "GCGC GCGC GCGC GCGC", "(((( )))) (((( ))))"
+    nodes = [
+        PlanNode(id="model", tool="input-file", step=0, x=40, y=40,
+                 settings={"path": "mixed_dl_model.pdb", "kind": "pdb"}),
+        PlanNode(id="map", tool="input-file", step=0, x=40, y=260,
+                 settings={"path": "mixed_dl_4A.mrc", "kind": "map"}),
+        PlanNode(id="build", tool="amber-build", step=1, x=320, y=40, settings=TOOLS["amber-build"].normalise(
+            {"water": "tip3p", "mg_model": "nano", "mg_count": 4, "hmr": True})),
+        PlanNode(id="mdff", tool="namd-mdff", step=2, x=620, y=40, settings=TOOLS["namd-mdff"].normalise(
+            {"sequence": seq, "dotbracket": db})),
+    ]
+    wf.nodes = nodes
+    wf.edges = [PlanEdge("model", "file", "build", "structure"), PlanEdge("build", "topology", "mdff", "topology"),
+                PlanEdge("build", "coordinates", "mdff", "coordinates"), PlanEdge("map", "file", "mdff", "map"),
+                PlanEdge("model", "file", "mdff", "model")]
+    project_path = os.path.join(out, "namd_mdff.mdatk.toml")
+    p.save(project_path)
+    loaded = Project.load(project_path)
+    plan = Plan(loaded.workflow, os.path.join(out, "generated"))
+    plan.write(["mdff"], master=False)
+    for root, _dirs, files in os.walk(os.path.join(out, "generated")):
+        for f in files:  # absolute paths of this machine -> relative to the example folder
+            path = os.path.join(root, f)
+            text = open(path).read()
+            new = text.replace(os.path.abspath(out) + "/", "../../")
+            if new != text:
+                open(path, "w").write(new)
+
+    # prepared files, from a stand-in topology solvated and moved as tleap would
+    prep = os.path.join(out, "prepared")
+    stand = os.path.join(prep, "stand-in")
+    os.makedirs(stand)
+    rot = rotation((0.2, 0.3, 1.0), 23.0)
+    solvated = with_solvent(moved(atoms, rot, (36.0, 33.0, 31.0)), waters=8, mg=4, start=(18.0, 12.0, 58.0))
+    box = (84.0, 84.0, 84.0, 90.0, 90.0, 90.0)
+    write_topology(os.path.join(stand, "mixed_dl_stand-in.parm7"), solvated, box=box, hmr=True)
+    write_rst7(os.path.join(stand, "mixed_dl_stand-in.rst7"), [a[5] for a in solvated], box=box)
+    step = plan.steps["mdff"]
+    cfg = TOOLS["namd-mdff"].prep_settings(step.settings, step.ctx)
+    names = {k: os.path.basename(v) for k, v in cfg.items() if isinstance(v, str) and v}
+    cfg.update({k: os.path.join(prep, names[k]) for k in ("potential", "grid_pdb", "restraint_pdb", "extrabonds",
+                                                          "colvars", "xsc", "prep_json", "coordinates")})
+    cfg["topology"] = os.path.join(stand, "mixed_dl_stand-in.parm7")
+    cfg["model"], cfg["map"] = model, mapfile
+    cfg["positional"] = {"selection": "backbone", "k": 1.0}
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        nm.start_coordinates(cfg, os.path.join(stand, "mixed_dl_stand-in.rst7"))
+        nm.prep(cfg)
+    log = buf.getvalue().replace(os.path.abspath(out) + "/", "")
+    with open(os.path.join(prep, names["prep_json"].replace(".json", ".log")), "w") as fh:
+        fh.write(log)
+    for f in os.listdir(prep):  # no absolute paths of this machine in the example
+        path = os.path.join(prep, f)
+        if os.path.isfile(path):
+            text = open(path).read()
+            new = text.replace(os.path.abspath(out) + "/", "")
+            if new != text:
+                open(path, "w").write(new)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) == 3 and sys.argv[1] == "--example":
+        make_example(sys.argv[2])
+    else:
+        print("usage: python3 tests/mdff_system.py --example OUTPUT_FOLDER", file=sys.stderr)
+        sys.exit(2)

@@ -242,6 +242,10 @@ class Tool:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
 
+    def step_resources(self, s: Dict[str, Any], ctx: Optional["StepContext"]) -> List[str]:
+        """Resources of a resolved step, which may also depend on its inputs; by default :meth:`resources`."""
+        return self.resources(s)
+
 
 # ---------------------------------------------------------------------------
 # helpers shared by the generators
