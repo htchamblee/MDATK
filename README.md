@@ -47,6 +47,13 @@ keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. The A
 the same energy) and checks that tleap really loaded L units for the L residues. Steps that existed in
 0.0.7 write the same files as before (tested against the 0.0.7 output).
 
+In 0.0.10:
+
+- With an own L-RNA library, the Amber build script checks the L residue names against the library's
+  units and the `addPdbResMap` lines **before tleap runs** and stops on a name tleap would read as the
+  lanthanum or lutetium ion (LA / LU); the planner warns about the names even when an earlier step makes
+  the structure. In the Windows build the mouse pointer no longer disappears over the structure panel.
+
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
 steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
 inputs), and a box shows an animated marker while its script runs.
@@ -322,7 +329,7 @@ anywhere. Each script's header cites what that step uses (see [Citations](#citat
 | **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
-| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming, CP library, TIP4P/2005 files) and the build script | see below |
+| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming and name check, CP library, TIP4P/2005 files) and the build script | see below |
 | **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
@@ -392,9 +399,17 @@ error.
 > A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
 > `addPdbResMap` lines under *Leap commands before loadpdb*. Without them tleap invents
 > parameterless units for LC and LG, and, without any warning, builds LA and LU as the lanthanum
-> and lutetium ions of AmberTools' `atomic_ions.lib`. The planner reads the library's unit names
-> and the map, reports every unmapped L name as an error, and suggests the map lines. The
-> topology check (below) is the second net.
+> and lutetium ions of AmberTools' `atomic_ions.lib`; the atoms it cannot place land near the origin,
+> and the solvent box grows to fill the gap (in one case 13 times the volume and an hour of tleap).
+> The planner reads the library's unit names and the map, reports every unmapped L name as an
+> error, and suggests the map lines; when an earlier step makes the structure, it checks every name
+> MDATK may write (LA LC LG LU, with *5′/3′ terminal names* also LA5 / LA3 …) and warns. Since 0.0.10
+> the build script also checks before the first tleap, for builds with own libraries (listed under
+> *Extra residue libraries* or loaded with `loadOff` in the leap commands): a small standard-library
+> helper reads the L names of the renamed PDB, the units of every library the tleap input loads
+> before `loadpdb` (a name in leap's search path is looked up in `$AMBERHOME/dat/leap`) and its
+> `addPdbResMap` lines, and stops the script on a name that is neither a unit nor mapped. A library
+> it cannot read gives a warning and the build goes on. The topology check (below) is the last net.
 
 The optional
 **two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue

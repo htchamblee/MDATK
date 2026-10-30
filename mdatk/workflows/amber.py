@@ -27,6 +27,7 @@ from .scripts import helix_dist as _helix_dist
 from .scripts import prep_pdb as _prep_pdb
 from .scripts import tip4p2005 as _tip4p2005
 from .scripts import lrna_lib as _lrna_lib
+from .scripts import lrna_names as _lrna_names
 from .scripts import topcheck as _topcheck
 
 # ---------------------------------------------------------------------------
@@ -633,6 +634,13 @@ class AmberBuildTool(Tool):
                     or AmberBuildTool._frcmods_define_l(s, ctx))
 
     @staticmethod
+    def _own_libs(s) -> List[str]:
+        """Residue libraries of the user's own: listed under Force field or loaded with loadOff by the leap
+        commands before loadpdb."""
+        libs = _lrna_names.leap_sources(s["leap_before_params"] + "\n" + s["leap_before_load"])[0]
+        return [f.strip() for f in extra_lines(s["extra_libs"])] + libs
+
+    @staticmethod
     def _frcmods_define_l(s, ctx) -> bool:
         """An extra parameter file that defines one of the generated types (LD LH LE) - an own L-RNA set."""
         for f in extra_lines(s["extra_frcmod"]):
@@ -655,39 +663,42 @@ class AmberBuildTool(Tool):
         return out
 
     def _check_lrna_names(self, s, ctx, path) -> List[Issue]:
-        """The residue names written for the L residues must be units of the extra libraries or mapped onto
+        """The residue names written for the L residues must be units of the own libraries or mapped onto
         them (addPdbResMap): tleap resolves an unknown name to any unit of that name, and AmberTools'
-        atomic_ions.lib defines LA (lanthanum) and LU (lutetium) - silently."""
-        try:
-            named = pdbtools.clean(path, scheme="amber", l_ranges=s["lrna_ranges"] or None,
-                                   terminal_names=s["lrna_terminals"]).structure
-        except (OSError, pdbtools.PDBError):
-            return []
-        names = sorted({r.name for r in named.residues() if r.chirality == "L"})
-        units, unread = _lib_units(extra_lines(s["extra_libs"]), ctx)
-        maps = _pdb_res_maps(s["leap_before_params"] + "\n" + s["leap_before_load"])
-        missing = [m for m in names if m not in units and not (maps.get(m, set()) & units)]
-        if not missing:
+        atomic_ions.lib defines LA (lanthanum) and LU (lutetium) - silently.  Without the input PDB (``path``
+        empty: an earlier step makes it) every name MDATK may write is checked, as a warning; the build
+        script then checks the names it wrote before tleap runs."""
+        if path:
+            try:
+                named = pdbtools.clean(path, scheme="amber", l_ranges=s["lrna_ranges"] or None,
+                                       terminal_names=s["lrna_terminals"]).structure
+            except (OSError, pdbtools.PDBError):
+                return []
+            names = sorted({r.name for r in named.residues() if r.chirality == "L"})
+        else:
+            terms = ("", "5", "3", "N") if s["lrna_terminals"] else ("",)
+            names = sorted({pdbtools.scheme_name(b, "L", t, "amber") for b in "ACGU" for t in terms})
+        leap = s["leap_before_params"] + "\n" + s["leap_before_load"]
+        units, unread = _lib_units(self._own_libs(s), ctx)
+        units |= _lrna_names.leap_sources(leap)[3]  # units the leap commands assign (LA = copy A0)
+        missing = _lrna_names.unmapped(names, units, _lrna_names.pdb_res_maps(leap))
+        if not missing or (unread and not path):  # (no input PDB: the build script reads them where it runs)
             return []
         if unread:
             return [Issue("warning", f"cannot check that the L residue names ({', '.join(names)}) are units of "
                                      f"{', '.join(unread)} until the file can be read (a name in leap's search path "
                                      "is not read)", ("extra_libs",))]
-        silent = [m for m in missing if m in ("LA", "LU")]
-        guess = []
-        for m in missing:  # A0-style libraries: LG5 -> G05, LA -> A0
-            g = f"{m[1]}0{m[2:]}"
-            if g in units:
-                guess.append(f'{{ "{m}" "{g}" }}')
+        fix = f"Add under 'Leap commands before loadpdb': {_lrna_names.map_suggestion(missing, units)}"
+        if not path:
+            return [Issue("warning", f"the L-RNA library does not define {', '.join(missing)}, names MDATK "
+                                     "writes for L residues, and no addPdbResMap maps them onto its units "
+                                     f"({_lrna_names.unit_list(units)}). The structure comes from an earlier "
+                                     f"step; if it has L residues, {_lrna_names.consequence(missing)}. {fix} "
+                                     "(the build script also checks the names it writes, before tleap runs)",
+                          ("leap_before_load", "extra_libs"))]
         return [Issue("error", f"the L-RNA library does not define {', '.join(missing)}, the names MDATK writes for "
                                f"the L residues, and no addPdbResMap maps them onto its units "
-                               f"({', '.join(sorted(units)[:12])}{' ...' if len(units) > 12 else ''}). tleap "
-                               + (f"would silently read {' and '.join(silent)} as the "
-                                  f"{' and '.join({'LA': 'lanthanum', 'LU': 'lutetium'}[x] for x in silent)} ion of "
-                                  "AmberTools' atomic_ions.lib and " if silent else "would ")
-                               + "invent parameterless units for the rest. Add under 'Leap commands before loadpdb': "
-                               + (f"addPdbResMap {{ {' '.join(guess)} }}" if guess else
-                                  'addPdbResMap { { "LG" "<the library\'s L-G unit>" } ... }'),
+                               f"({_lrna_names.unit_list(units)}). {_lrna_names.consequence(missing)}. {fix}",
                       ("leap_before_load", "extra_libs"))]
 
     def _check_lrna(self, s, ctx) -> List[Issue]:
@@ -743,8 +754,10 @@ class AmberBuildTool(Tool):
                              "L-RNA residues need their library and parameters: choose 'Generated by MDATK' "
                              "under L-RNA library, or add your own under Force field (e.g. Dudek & Trylska's "
                              "nucleic12_LRNA.lib with parm10_LRNA.dat)", ("lrna_library", "extra_libs", "extra_frcmod")))
-        elif n_l and path and extra_lines(s["extra_libs"]):
+        elif n_l and path and self._own_libs(s):
             out += self._check_lrna_names(s, ctx, path)
+        elif not path and ctx.has("structure") and self._own_libs(s):
+            out += self._check_lrna_names(s, ctx, "")
         if n_l and "LD" not in s["leap_before_params"] and not s["lrna_fixes"] and not self.lrna_generated(s, ctx):
             out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
                                      "add  addAtomTypes { { \"LD\" \"O\" \"sp3\" } { \"LH\" \"O\" \"sp3\" } }  "
@@ -1034,6 +1047,22 @@ class AmberBuildTool(Tool):
         lines += ["#", f"outparm {out_parm}"]
         return "\n".join(lines) + "\n"
 
+    def _lrna_names_check(self, s, ctx, files: List[GeneratedFile], named: str) -> List[str]:
+        """The helper that checks the L residue names of ``named`` against the libraries the first tleap
+        input loads and its addPdbResMap lines, and the script lines that run it."""
+        names_py = ctx.name("lrna-names", "py")
+        leap_in = ctx.name("tleap-dry" if s["two_pass"] else "tleap", "leap")
+        files.append(GeneratedFile(names_py, embed(
+            _lrna_names, {}, "main(sys.argv[1:])",
+            f"L residue names against the residue libraries tleap loads - written by {PROJECT_ABBREV} "
+            f"{__version__}.\n\nUsage: python3 THIS_SCRIPT NAMED.pdb TLEAP_INPUT.leap"), "helper",
+            "checks that the L residue names are units of the own libraries or mapped onto them"))
+        return ["# The L residue names must be units of the libraries loaded before loadpdb or mapped onto",
+                "# them (addPdbResMap): tleap would read LA / LU as lanthanum / lutetium (atomic_ions.lib)",
+                "# and solvate around the atoms it invents near the origin",
+                f"python3 {names_py} {named} {leap_in} || {{ echo \"ERROR: the L residue names do not match "
+                "the residue libraries (see above); tleap was not run\" >&2; exit 1; }", ""]
+
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []
         n = ctx.name
@@ -1103,6 +1132,8 @@ class AmberBuildTool(Tool):
             sh += ["# L-RNA residue names from the sugar chirality (C1'/C3'/C4'): LA/LC/LG/LU, LA5/LA3 ...",
                    f"python3 {tools_py} {self._lrna_args(s, pdb_in, named)}", require_file(named, "pdbtools"), ""]
             pdb_in = named
+            if not gen and self._own_libs(s):  # before the first tleap, so a mismatch costs seconds
+                sh += self._lrna_names_check(s, ctx, files, named)
         lj = self._lj_mods(s)
         mods = " + ".join(m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]),
                                           ("extra commands", bool(extra_lines(s["parmed_extra"]))))
@@ -1200,7 +1231,8 @@ def _lib_paths(paths: List[str], ctx) -> Tuple[List[str], List[str]]:
     found, unread = [], []
     for path in paths:
         path = path.strip()
-        for cand in (path, os.path.join(ctx.folder, path) if getattr(ctx, "folder", "") else ""):
+        here = os.path.join(ctx.root, ctx.folder, path) if getattr(ctx, "root", "") else ""  # script's folder
+        for cand in (path, os.path.join(ctx.folder, path) if getattr(ctx, "folder", "") else "", here):
             if cand and os.path.isfile(cand):
                 found.append(cand)
                 break
@@ -1216,20 +1248,10 @@ def _lib_units(paths: List[str], ctx) -> Tuple[set, List[str]]:
     for cand in found:
         try:
             with open(cand, encoding="utf-8", errors="replace") as fh:
-                units |= set(re.findall(r"^!entry\.([^.\s]+)\.unit\.atoms table", fh.read(), re.MULTILINE))
+                units |= _lrna_names.lib_units(fh.read())
         except OSError:
             unread.append(cand)
     return units, unread
-
-
-def _pdb_res_maps(text: str) -> Dict[str, set]:
-    """PDB residue name -> unit names from addPdbResMap entries ({ "LG" "G0" } and { 0 "LG" "G05" })."""
-    out: Dict[str, set] = {}
-    for line in extra_lines(text):
-        if line.lower().startswith("addpdbresmap"):
-            for name, unit in re.findall(r'\{\s*(?:\d\s+)?"([^"]+)"\s+"([^"]+)"\s*\}', line):
-                out.setdefault(name, set()).add(unit)
-    return out
 
 
 def _lib_types(paths: List[str], ctx) -> List[str]:

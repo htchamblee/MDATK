@@ -50,6 +50,7 @@ _DROP = [re.compile(p) for p in (
     r"(^|/)mpl-data/sample_data/", r"(^|/)mpl-data/images/",  # toolbar images: no matplotlib toolbar
     r"(^|/)mpl-data/fonts/afm/", r"(^|/)mpl-data/fonts/pdfcorefonts/",  # core-font metrics: TTF fonts are used
     r"(^|/)icons/Adwaita/(64x64|96x96|128x128|256x256|512x512)/",  # icon sizes GTK 3 widgets never request
+    # cursor files: Windows uses system cursors (mdatk/gui/cursors.py), Linux the desktop's cursor theme
     r"(^|/)icons/Adwaita/cursors/",
     r"(^|/)icons/hicolor/.+/",  # other applications' icons from the build machine (index.theme stays)
     r"(^|/)scipy/misc/", r"(^|/)scipy/datasets/",
