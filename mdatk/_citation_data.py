@@ -1014,6 +1014,44 @@ REFERENCE_DATA = [
         "url": '',
         "verified": 'pdf:352ef031-Angew_Chem_Int_Ed_-_2013_-_Safaee_-_Structure_of_the_Parallel_Duplex_of_Poly_A__RNA__Evaluation_of_a_50_Year_Old_Prediction.pdf',
     },
+    {
+        "key": 'phillips2020namd',
+        "text": (
+            'Phillips J. C., Hardy D. J., Maia J. D. C., Stone J. E., Ribeiro J. V., Bernardi R. C., Buch R., '
+            'Fiorin G., Hénin J., Jiang W., et al. J. Chem. Phys. 2020, 153, 044130. doi:10.1063/5.0014475'
+        ),
+        "bibtex": (
+            '@article{phillips2020namd,\n  author = {Phillips, J. C. and Hardy, D. J. and Maia, J. D. C. and '
+            'Stone, J. E. and Ribeiro, J. V. and Bernardi, R. C. and Buch, R. and Fiorin, G. and Hénin, J. and '
+            'Jiang, W. and McGreevy, R. and Melo, M. C. R. and Radak, B. K. and Skeel, R. D. and Singharoy, A. and '
+            'Wang, Y. and Roux, B. and Aksimentiev, A. and Luthey-Schulten, Z. and Kalé, L. V. and Schulten, K. and '
+            'Chipot, C. and Tajkhorshid, E.},\n  title = {{Scalable molecular dynamics on CPU and GPU architectures '
+            'with NAMD}},\n  journal = {The Journal of Chemical Physics},\n  year = {2020},\n  volume = {153},\n  '
+            'number = {4},\n  pages = {044130},\n  doi = {10.1063/5.0014475}\n}'
+        ),
+        "doi": '10.1063/5.0014475',
+        "url": '',
+        "verified": 'repo:https://github.com/Colvars/colvars (src/colvarmodule_refs.h, Phillips2020, "NAMD engine")',
+    },
+    {
+        "key": 'trabuco2008mdff',
+        "text": (
+            'Trabuco L. G., Villa E., Mitra K., Frank J., Schulten K. Structure 2008, 16, 673-683. '
+            'doi:10.1016/j.str.2008.03.005'
+        ),
+        "bibtex": (
+            '@article{trabuco2008mdff,\n  author = {Trabuco, L. G. and Villa, E. and Mitra, K. and Frank, J. and '
+            'Schulten, K.},\n  title = {{Flexible fitting of atomic structures into electron microscopy maps using '
+            'molecular dynamics}},\n  journal = {Structure},\n  year = {2008},\n  volume = {16},\n  '
+            'pages = {673--683},\n  doi = {10.1016/j.str.2008.03.005}\n}'
+        ),
+        "doi": '10.1016/j.str.2008.03.005',
+        "url": '',
+        "verified": (
+            'pdf:452b6414-Flexible_fitting_of_atomic_structures_into_electron_microscopy_maps_using_molecular_'
+            'dynamics.pdf (authors, title, journal, volume, pages, May 2008, DOI on the first page)'
+        ),
+    },
 ]
 
 RESOURCE_DATA = [
@@ -1353,5 +1391,17 @@ RESOURCE_DATA = [
         "name": 'Parallel poly(A) duplex, PDB 4JRD (MDATK parallel helices and triplexes)',
         "keys": ['safaee2013'],
         "note": 'Nucleotide conformation and helix of the parallel / Hoogsteen pairings in the structure builder.',
+    },
+    {
+        "id": 'namd',
+        "name": 'NAMD',
+        "keys": ['phillips2020namd'],
+        "note": 'Runs the MDFF stages, reading the Amber topology natively.',
+    },
+    {
+        "id": 'mdff',
+        "name": 'Molecular dynamics flexible fitting (MDFF)',
+        "keys": ['trabuco2008mdff'],
+        "note": 'The MDFF method; MDATK writes the potential with the mdff griddx formula.',
     },
 ]

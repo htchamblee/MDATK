@@ -1,0 +1,28 @@
+# Single-point energy for the comparison with sander - written by MDATK 0.0.8
+# no map, no restraints, no rigid bonds, no long-range LJ correction: the force field alone
+
+# Amber force field read natively from the parm7 (nothing converted)
+amber            on
+parmfile         ../01_amber-build/mixeddl_01_parmed_20261029-1200.parm7
+ambercoor        mixeddl_02_start_20261029-1200.rst7
+readexclusions   yes
+exclude          scaled1-4
+1-4scaling       0.833333
+scnb             2.0
+switching        off
+cutoff           10.0
+pairlistdist     12.0
+
+# periodic cell of the Amber box, PME
+PME              yes
+PMEGridSpacing   1.0
+LJcorrection     off
+
+rigidBonds       none
+
+temperature      0
+extendedSystem   mixeddl_02_cell_20261029-1200.xsc
+outputName       mixeddl_02_energy_20261029-1200
+outputEnergies   1
+
+run 0

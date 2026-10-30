@@ -1,0 +1,115 @@
+# Secondary-structure restraints (MDATK, after Trabuco et al. 2008): backbone and glycosidic
+# dihedrals of the base-paired residues held at their starting values (L residues keep their
+# own mirror-image values). Atom numbers are 0-based; angles in degrees, k in kcal/mol/rad^2.
+# residue 1 G5: alpha beta gamma delta epsilon zeta chi as built
+dihedral 0 1 2 4 200.000 47.43
+dihedral 1 2 4 5 200.000 83.45
+dihedral 2 4 5 32 200.000 -151.72
+dihedral 4 5 32 35 200.000 -73.62
+dihedral 3 8 9 19 200.000 -165.81
+# residue 2 C: alpha beta gamma delta epsilon zeta chi as built
+dihedral 5 32 35 36 200.000 -62.09
+dihedral 32 35 36 37 200.000 -179.88
+dihedral 35 36 37 39 200.000 47.44
+dihedral 36 37 39 40 200.000 83.46
+dihedral 37 39 40 63 200.000 -151.71
+dihedral 39 40 63 66 200.000 -73.59
+dihedral 38 43 44 45 200.000 -166.05
+# residue 3 G: alpha beta gamma delta epsilon zeta chi as built
+dihedral 40 63 66 67 200.000 -62.11
+dihedral 63 66 67 68 200.000 -179.87
+dihedral 66 67 68 70 200.000 47.41
+dihedral 67 68 70 71 200.000 83.48
+dihedral 68 70 71 97 200.000 -151.70
+dihedral 70 71 97 100 200.000 -73.62
+dihedral 69 74 75 85 200.000 -165.81
+# residue 4 C3: alpha beta gamma delta epsilon zeta chi as built
+dihedral 71 97 100 101 200.000 -62.09
+dihedral 97 100 101 102 200.000 -179.88
+dihedral 100 101 102 104 200.000 47.41
+dihedral 101 102 104 105 200.000 83.48
+dihedral 103 108 109 110 200.000 -166.06
+# residue 5 G5: alpha beta gamma delta epsilon zeta chi as built
+dihedral 129 130 131 133 200.000 47.44
+dihedral 130 131 133 134 200.000 83.46
+dihedral 131 133 134 161 200.000 -151.68
+dihedral 133 134 161 164 200.000 -73.65
+dihedral 132 137 138 148 200.000 -165.82
+# residue 6 C: alpha beta gamma delta epsilon zeta chi as built
+dihedral 134 161 164 165 200.000 -62.07
+dihedral 161 164 165 166 200.000 -179.88
+dihedral 164 165 166 168 200.000 47.44
+dihedral 165 166 168 169 200.000 83.46
+dihedral 166 168 169 192 200.000 -151.68
+dihedral 168 169 192 195 200.000 -73.65
+dihedral 167 172 173 174 200.000 -166.07
+# residue 7 G: alpha beta gamma delta epsilon zeta chi as built
+dihedral 169 192 195 196 200.000 -62.10
+dihedral 192 195 196 197 200.000 -179.87
+dihedral 195 196 197 199 200.000 47.44
+dihedral 196 197 199 200 200.000 83.45
+dihedral 197 199 200 226 200.000 -151.68
+dihedral 199 200 226 229 200.000 -73.66
+dihedral 198 203 204 214 200.000 -165.81
+# residue 8 C3: alpha beta gamma delta epsilon zeta chi as built
+dihedral 200 226 229 230 200.000 -62.08
+dihedral 226 229 230 231 200.000 -179.87
+dihedral 229 230 231 233 200.000 47.43
+dihedral 230 231 233 234 200.000 83.45
+dihedral 232 237 238 239 200.000 -166.06
+# residue 9 LG5: alpha beta gamma delta epsilon zeta chi as built
+dihedral 258 259 260 262 200.000 -47.43
+dihedral 259 260 262 263 200.000 -83.45
+dihedral 260 262 263 290 200.000 151.72
+dihedral 262 263 290 293 200.000 73.62
+dihedral 261 266 267 277 200.000 165.81
+# residue 10 LC: alpha beta gamma delta epsilon zeta chi as built
+dihedral 263 290 293 294 200.000 62.09
+dihedral 290 293 294 295 200.000 179.88
+dihedral 293 294 295 297 200.000 -47.44
+dihedral 294 295 297 298 200.000 -83.46
+dihedral 295 297 298 321 200.000 151.71
+dihedral 297 298 321 324 200.000 73.59
+dihedral 296 301 302 303 200.000 166.05
+# residue 11 LG: alpha beta gamma delta epsilon zeta chi as built
+dihedral 298 321 324 325 200.000 62.11
+dihedral 321 324 325 326 200.000 179.87
+dihedral 324 325 326 328 200.000 -47.41
+dihedral 325 326 328 329 200.000 -83.48
+dihedral 326 328 329 355 200.000 151.70
+dihedral 328 329 355 358 200.000 73.62
+dihedral 327 332 333 343 200.000 165.81
+# residue 12 LC3: alpha beta gamma delta epsilon zeta chi as built
+dihedral 329 355 358 359 200.000 62.09
+dihedral 355 358 359 360 200.000 179.88
+dihedral 358 359 360 362 200.000 -47.41
+dihedral 359 360 362 363 200.000 -83.48
+dihedral 361 366 367 368 200.000 166.06
+# residue 13 LG5: alpha beta gamma delta epsilon zeta chi as built
+dihedral 387 388 389 391 200.000 -47.44
+dihedral 388 389 391 392 200.000 -83.46
+dihedral 389 391 392 419 200.000 151.68
+dihedral 391 392 419 422 200.000 73.65
+dihedral 390 395 396 406 200.000 165.82
+# residue 14 LC: alpha beta gamma delta epsilon zeta chi as built
+dihedral 392 419 422 423 200.000 62.07
+dihedral 419 422 423 424 200.000 179.88
+dihedral 422 423 424 426 200.000 -47.44
+dihedral 423 424 426 427 200.000 -83.46
+dihedral 424 426 427 450 200.000 151.68
+dihedral 426 427 450 453 200.000 73.65
+dihedral 425 430 431 432 200.000 166.07
+# residue 15 LG: alpha beta gamma delta epsilon zeta chi as built
+dihedral 427 450 453 454 200.000 62.10
+dihedral 450 453 454 455 200.000 179.87
+dihedral 453 454 455 457 200.000 -47.44
+dihedral 454 455 457 458 200.000 -83.45
+dihedral 455 457 458 484 200.000 151.68
+dihedral 457 458 484 487 200.000 73.66
+dihedral 456 461 462 472 200.000 165.81
+# residue 16 LC3: alpha beta gamma delta epsilon zeta chi as built
+dihedral 458 484 487 488 200.000 62.08
+dihedral 484 487 488 489 200.000 179.87
+dihedral 487 488 489 491 200.000 -47.43
+dihedral 488 489 491 492 200.000 -83.45
+dihedral 490 495 496 497 200.000 166.06

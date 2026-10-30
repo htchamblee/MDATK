@@ -74,10 +74,14 @@ def test_optional_values_and_round_trip(tmp_path):
 def test_examples_load_and_rewrite_identically(tmp_path):
     root = os.path.join(os.path.dirname(__file__), "..", "examples")
     for name in ("aptamer_target.mdatk.toml", "rna_plan.mdatk.toml"):
+        # 0.0.4 to 0.0.7 shipped both files empty, which loads as the defaults and passed unnoticed
+        assert os.path.getsize(os.path.join(root, name)) > 1000, name
         q = Project.load(os.path.join(root, name))
         out = tmp_path / name
         q.save(str(out))
         assert Project.load(str(out)).to_dict() == q.to_dict()
+    plan = Project.load(os.path.join(root, "rna_plan.mdatk.toml")).workflow
+    assert len(plan.nodes) >= 8 and len(plan.edges) >= 10
 
 
 def test_step_log_append_keep_and_split(tmp_path, monkeypatch):

@@ -799,7 +799,8 @@ class AmberBuildTool(Tool):
                 "mg_pairs": mg_params.MODELS[s["mg_model"]] if self._mg_pairs(s) else "",
                 "box": self._solvated(s), "solute_residues": nres,
                 "forcefield": s["rna_ff"], "water": s["water"],
-                "four_site_water": s["water"] in FOUR_SITE_WATERS}
+                "four_site_water": s["water"] in FOUR_SITE_WATERS,
+                "box_shape": s["box"] if self._solvated(s) else ""}
         out = {"topology": PortValue([ctx.from_own(self._final_topology(s, ctx))], "parm7", dict(data)),
                "coordinates": PortValue([ctx.own("tleap", "rst7")], "rst7", dict(data, velocities=False))}
         if s["save_pdb"]:

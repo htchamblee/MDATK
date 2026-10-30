@@ -1,0 +1,84 @@
+# L-RNA-safe chirality restraints (MDATK): harmonic impropers at C1' C2' C3' C4' with the
+# target of each residue's own hand (D value, or its mirror image for L residues).
+# Atom numbers are 0-based. Never replace these with VMD's chirality / ssrestraints tools,
+# which assume D-nucleotides.
+# residue 1 G5 (D): C1' C2' C3' C4'
+improper 8 3 9 6 200.000 -35.01
+improper 6 8 7 4 200.000 40.03
+improper 4 6 5 2 200.000 38.30
+improper 2 4 3 1 200.000 33.31
+# residue 2 C (D): C1' C2' C3' C4'
+improper 43 38 44 41 200.000 -35.01
+improper 41 43 42 39 200.000 40.03
+improper 39 41 40 37 200.000 38.30
+improper 37 39 38 36 200.000 33.31
+# residue 3 G (D): C1' C2' C3' C4'
+improper 74 69 75 72 200.000 -35.01
+improper 72 74 73 70 200.000 40.03
+improper 70 72 71 68 200.000 38.30
+improper 68 70 69 67 200.000 33.31
+# residue 4 C3 (D): C1' C2' C3' C4'
+improper 108 103 109 106 200.000 -35.01
+improper 106 108 107 104 200.000 40.03
+improper 104 106 105 102 200.000 38.30
+improper 102 104 103 101 200.000 33.31
+# residue 5 G5 (D): C1' C2' C3' C4'
+improper 137 132 138 135 200.000 -35.01
+improper 135 137 136 133 200.000 40.03
+improper 133 135 134 131 200.000 38.30
+improper 131 133 132 130 200.000 33.31
+# residue 6 C (D): C1' C2' C3' C4'
+improper 172 167 173 170 200.000 -35.01
+improper 170 172 171 168 200.000 40.03
+improper 168 170 169 166 200.000 38.30
+improper 166 168 167 165 200.000 33.31
+# residue 7 G (D): C1' C2' C3' C4'
+improper 203 198 204 201 200.000 -35.01
+improper 201 203 202 199 200.000 40.03
+improper 199 201 200 197 200.000 38.30
+improper 197 199 198 196 200.000 33.31
+# residue 8 C3 (D): C1' C2' C3' C4'
+improper 237 232 238 235 200.000 -35.01
+improper 235 237 236 233 200.000 40.03
+improper 233 235 234 231 200.000 38.30
+improper 231 233 232 230 200.000 33.31
+# residue 9 LG5 (L): C1' C2' C3' C4'
+improper 266 261 267 264 200.000 35.01
+improper 264 266 265 262 200.000 -40.03
+improper 262 264 263 260 200.000 -38.30
+improper 260 262 261 259 200.000 -33.31
+# residue 10 LC (L): C1' C2' C3' C4'
+improper 301 296 302 299 200.000 35.01
+improper 299 301 300 297 200.000 -40.03
+improper 297 299 298 295 200.000 -38.30
+improper 295 297 296 294 200.000 -33.31
+# residue 11 LG (L): C1' C2' C3' C4'
+improper 332 327 333 330 200.000 35.01
+improper 330 332 331 328 200.000 -40.03
+improper 328 330 329 326 200.000 -38.30
+improper 326 328 327 325 200.000 -33.31
+# residue 12 LC3 (L): C1' C2' C3' C4'
+improper 366 361 367 364 200.000 35.01
+improper 364 366 365 362 200.000 -40.03
+improper 362 364 363 360 200.000 -38.30
+improper 360 362 361 359 200.000 -33.31
+# residue 13 LG5 (L): C1' C2' C3' C4'
+improper 395 390 396 393 200.000 35.01
+improper 393 395 394 391 200.000 -40.03
+improper 391 393 392 389 200.000 -38.30
+improper 389 391 390 388 200.000 -33.31
+# residue 14 LC (L): C1' C2' C3' C4'
+improper 430 425 431 428 200.000 35.01
+improper 428 430 429 426 200.000 -40.03
+improper 426 428 427 424 200.000 -38.30
+improper 424 426 425 423 200.000 -33.31
+# residue 15 LG (L): C1' C2' C3' C4'
+improper 461 456 462 459 200.000 35.01
+improper 459 461 460 457 200.000 -40.03
+improper 457 459 458 455 200.000 -38.30
+improper 455 457 456 454 200.000 -33.31
+# residue 16 LC3 (L): C1' C2' C3' C4'
+improper 495 490 496 493 200.000 35.01
+improper 493 495 494 491 200.000 -40.03
+improper 491 493 492 489 200.000 -38.30
+improper 489 491 490 488 200.000 -33.31

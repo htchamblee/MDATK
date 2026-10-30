@@ -34,10 +34,20 @@ structure view. The structure view can be **zoomed and centred** on a residue or
 in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
 file as REMARK 950 records.
 
-In 0.0.5 the Amber build **checks the finished topology** and stops when the box is not neutral, a
+In 0.0.5 the Amber build **checks the finished topology** and stops when a box meant to be neutral is not, a
 Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Lennard-Jones terms or a
 solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
 terms of their D-RNA twins (see *Mg²⁺ models*).
+
+In 0.0.8 a new planner step runs **MDFF in NAMD on the Amber topology** (`namd-mdff`): NAMD reads the
+parm7 as built, so CP, NBfix19, 0BPh, the L-RNA types and dihedrals, the Mg²⁺ pair terms and HMR are kept,
+and a sander / NAMD energy comparison proves it before fitting. Its chirality and base-pair restraints
+keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. Steps that existed in 0.0.7
+write the same files as before (tested against the 0.0.7 output).
+
+In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
+steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
+inputs), and a box shows an animated marker while its script runs.
 
 Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
 as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
@@ -66,7 +76,7 @@ Phenix 1.21 / 2.x and Coot 0.9 / 1.x (batch). microMg is now available with TIP4
 - [Caching and reproducibility](#caching-and-reproducibility)
 - [PDB clean-up](#pdb-clean-up)
 - [Structure builder](#structure-builder)
-- [Restraint dictionaries and real-space refinement](#restraint-dictionaries-and-real-space-refinement)
+- [Restraint dictionaries, real-space refinement and MDFF](#restraint-dictionaries-real-space-refinement-and-mdff)
 - [Citations](#citations)
 - [Command line reference](#command-line-reference)
 - [Project files](#project-files)
@@ -902,7 +912,7 @@ Add `-p project.mdatk.toml` to log the step (the fit logs its correlation). The 
 short script calling `python3 -m mdatk build …` (MDATK must be importable by that Python); its inputs
 are the model (mutate, fit) and the map (fit), its output the PDB.
 
-## Restraint dictionaries and real-space refinement
+## Restraint dictionaries, real-space refinement and MDFF
 
 MDATK writes the scripts; acedrg, Phenix and Coot run on your machine. These command lines were
 written from the programs' documentation and checked with stand-in executables only (none of the three
@@ -987,6 +997,187 @@ mdatk workflow generate phenix-rsr -i model=model_ccd.pdb -i map=emd_1234.map \
     --set run_simulated_annealing=true -o refine
 mdatk workflow generate coot-rsr -i model=model_ccd.pdb -i map=emd_1234.map --set coot_version=0.9 \
     --set residues="A:1-40" --set zone_size=8 -o refine
+```
+
+### MDFF with NAMD on the Amber topology (`namd-mdff`)
+
+**NAMD · MDFF (Amber topology)** (category *Refinement*) fits the Amber system into a density map by
+molecular dynamics flexible fitting (MDFF; Trabuco et al. 2008) in NAMD. NAMD reads the parm7 of the
+*Amber build* natively (`amber on`, `parmfile`, `ambercoor`), so nothing is converted or
+re-parameterised. Everything the build put into the topology is used exactly as built:
+
+- the OL3 + CP and L-RNA atom types (LD / LE / LH ...) and the L-RNA dihedrals;
+- every off-diagonal Lennard-Jones pair of the parm7 table: NBfix19, 0BPh, the microMg / nanoMg
+  Mg²⁺ pair terms and the `addLJType` splits;
+- the HMR masses.
+
+A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer one.
+
+**Inputs and output.**
+
+- **Topology and coordinates:** the topology and coordinates of the Amber build, or a restart of
+  *Amber · MD stages*. NetCDF restarts are converted with cpptraj; vacuum runs take the dry PDB. A
+  PDB of a solvated system must be in the topology's atom order and carry the box (CRYST1; the
+  angles are taken from the topology, so a truncated octahedron keeps its exact 109.4712°).
+- **Map:** the density map (MRC / CCP4, or an OpenDX density).
+- **Map-frame model:** the PDB that was fitted into the map, usually the input of the Amber build.
+- **Secondary structure** (optional), for the dihedral and base-pair restraints.
+- **Output:** the fitted model, solute only, in the map's frame, ready for *Phenix* / *Coot*
+  real-space refinement. It keeps the chains and residue numbers of the map-frame model (without
+  one, every strand gets its own chain), with TER between strands, so renaming tools such as
+  `mdatk pdb clean --scheme ccd` find every strand end.
+
+Drop the step after an existing *Amber build* (or MD) step. It adds new files only; the steps
+already in the plan and their files do not change.
+
+**What the script does.**
+
+1. **Start coordinates** (`…_start_….rst7`): NetCDF restarts are converted with cpptraj.
+2. **Preparation** (`…_mdff_….py prep`, standard-library Python):
+   - **Checks, before anything runs:**
+     - 12-6-4 C4 terms (NAMD cannot apply them; use 12-6, microMg or nanoMg for NAMD);
+     - per-dihedral 1-4 scaling different from 1.2 / 2.0;
+     - a polarisable topology;
+     - box, four-site water and time step that do not fit the topology (4 fs needs HMR);
+     - bonds longer than 3 Å: strands a PDB numbered as one chain, which tleap joined.
+   - **Map frame:** tleap moves (and may rotate) the solute when it solvates it. The script
+     superposes the coordinates on the map-frame model and moves the potential with them; a
+     rotation is resampled on a grid twice as fine as the map. It stops if less than 30 % of the
+     coupled RNA atoms lie on density above the map's mean + 1σ (read from the map itself, whatever the
+     threshold), which catches a missing or wrong frame.
+   - **MDFF potential** (`…_potential_….dx`): V = (ρmax − max(ρ, threshold)) / (ρmax − threshold),
+     Equation 3 of Trabuco et al. (2008) and the formula of VMD's `mdff griddx`. The paper sets the
+     threshold at the minimum between the solvent and biomolecule peaks of the density histogram, or at
+     the map's average when they are not resolved; the default is 0, as in `mdff griddx`. It is cropped to
+     the RNA plus a margin and must fit into the periodic cell the way NAMD checks it: padded by one
+     voxel and wrapped about its centre, no corner may reach half a cell vector. A truncated
+     octahedron, the Amber build's default box, takes a grid only about half as wide as the box, so
+     the usual 8 Å margin rarely fits; the *amber-mdff* template therefore builds a rectangular box.
+     The script stops with an explanation before NAMD would.
+   - **Coupling** (`…_coupling_….pdb`, as VMD's `mdff gridpdb`: occupancy 1 couples an atom, beta is its
+     mass): the RNA heavy atoms by default, weighted by standard masses, so HMR does not change the map
+     forces. *Couple ions too* adds the ions that start within the margin around the RNA; the
+     counterions spread through the box are left alone.
+   - **Restraints** (below) and the periodic cell (`…_cell_….xsc`, triclinic boxes included).
+3. **Energy comparison** (on by default). sander and NAMD evaluate the start coordinates once, with
+   the same cutoff, no rigid bonds, no long-range LJ correction and no map or restraints. The terms
+   must agree:
+   - bonds, angles and torsions within 0.01 %;
+   - van der Waals within 0.1 %; this term holds every off-diagonal pair;
+   - electrostatics within 0.2 %. In vacuum both programs sum plain Coulomb terms without a cutoff
+     (NAMD with `switching off` and a 999 Å cutoff, sander with `cut=999`).
+
+   On a mismatch nothing is fitted. This is how the step proves, for each topology, that NAMD kept
+   the force field.
+4. **Stages.** Each stage is a NAMD run, or several segments, restarting from the previous one:
+   - minimisation at ξ = 0.3;
+   - MD with the map coupling ξ ramped 0.05 → 0.3 over five segments;
+   - MDFF at ξ = 0.3 (the default of VMD's `mdff setup`);
+   - a final minimisation with strong coupling (ξ = 10).
+
+   ξ is in kcal/mol per amu: each atom feels ξ × its mass × the potential gradient. A ramp needs at
+   least two segments. Stage names must differ from each other and from the step's own files
+   (`energy`, `prep`, `cell` ...).
+
+   When the script is run again, finished runs are skipped as long as their inputs (topology, start
+   coordinates, potential, coupling and restraint files) and the stage files up to them are unchanged.
+   A change reruns that stage and every stage after it. The date line that tleap and ParmEd write into
+   a topology does not count. A rebuild of a solvated system still restarts the fit: tleap places the
+   ions anew at random (`addIonsRand`), which gives new start coordinates. To keep finished runs, run
+   only the MDFF step (*Run selected steps*, or its own script), not the whole plan.
+5. **Final model** (`…_mdff_….py final`): NAMD's last coordinates, back in the map's frame.
+
+**Amber settings in NAMD.**
+
+- Always: `exclude scaled1-4`, `1-4scaling 0.833333`, `scnb 2.0`, `readexclusions yes`,
+  `switching off`, `cutoff` 10 Å (as MDATK's Amber MD), `rigidBonds all` with SETTLE.
+- Time step: 4 fs when the topology has HMR masses, else 2 fs.
+- Solvated runs (the default): PME and `LJcorrection on` in the build's periodic box, NVT with a
+  Langevin thermostat. The map is fixed in space, so the box must not change.
+- Vacuum runs: the dry topology, optionally with NAMD's GBIS implicit solvent.
+- Four-site waters (OPC, TIP4P-Ew, TIP4P-D, TIP4P/2005) get `watermodel tip4`. For a topology chosen
+  as a file, the step reads the extra points (and HMR masses) from the parm7. MDATK has not verified
+  NAMD's handling of Amber extra points, so the planner warns: trust such a run only when the energy
+  comparison passes.
+
+**L-RNA-safe restraints.** VMD's stereochemistry plugins (`chirality`, `cispeptide`, `ssrestraints`,
+whose restraint files `mdff setup -extrab` and the MDFF GUI add to a run) validate against D-nucleotide
+libraries. On an
+L-RNA they push every L sugar towards the inverted centre, and the model still looks fine
+afterwards: the error would be silent. **Do not use them on these systems.** The step never calls
+VMD and writes its own restraints:
+
+- **Chirality** (`…_chirality_….txt`, NAMD `extraBonds`): one harmonic improper per ribose centre
+  (C1′ O4′ N C2′, C2′ C1′ O2′ C3′, C3′ C2′ O3′ C4′, C4′ C3′ O4′ C5′), default
+  200 kcal/mol/rad². N is the base atom bonded to C1′: N9 or N1, or C5 for C-nucleosides such as
+  pseudouridine.
+  - The targets come from the C3'-endo Arnott A-RNA fiber nucleotide of MDATK's helix builder:
+    −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
+    residues.
+  - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
+    agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run.
+    So does any clearly defined sugar centre of the other hand, even in a residue whose overall
+    geometry is ambiguous: its restraint would invert it. The planner reports these as soon as the
+    files exist (for a NetCDF restart, the script does once it has converted the restart).
+- **Secondary-structure dihedrals** (`…_ssdihedrals_….txt`, NAMD `extraBonds`), the RNA restraints
+  of the MDFF paper (Trabuco et al. 2008).
+  - α, β, γ, δ, ε, ζ and χ of every base-paired residue in the secondary structure are held at their
+    starting values, k = 200 kcal/mol/rad².
+  - The targets are measured on the model itself, so an L residue keeps its own mirror-image values.
+  - α, ε and ζ reach into a neighbour only when it is bonded, never across a chain break.
+  - The paper's authors discourage softening these restraints: they are what prevents overfitting.
+  - The paper also restrains two inter-base distances per pair and stacked residues. MDATK uses the
+    flat-bottom hydrogen-bond walls below for the pairs and does not restrain stacking.
+- **Base pairs** (`…_basepairs_….txt`, NAMD `extraBonds` `wall`): the hydrogen-bond atom pairs of
+  *Amber · helix restraints* from the connected or typed secondary structure.
+  - Each distance is flat between 2.7 and 3.2 Å, with U = k (d − wall)² outside, k = 10 kcal/mol/Å²:
+    the form of Amber's restraints (rk2 / rk3). The lower wall must be at least 0.1 Å: NAMD reads a
+    lower wall of 0 as a bond of zero length.
+  - Unlike Amber's restraints, the walls stay harmonic far from the window; they have no linear
+    part.
+- **Positional** (`…_posres_….pdb`, NAMD `constraints`): the RNA backbone or all heavy atoms,
+  restrained to the start coordinates, in stages that ask for it.
+
+All restraint files are NAMD `extraBonds` files (comments on lines of their own, 0-based atoms) plus
+the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF,
+CPPTRAJ (it converts NetCDF restarts) and AmberTools (for the energy comparison).
+
+**What NAMD does with an Amber topology.** These settings were checked against the NAMD 3.0 user's guide
+(section 3.3, AMBER file and force field support; grid forces; extra bonded terms; GPU-resident features)
+and the NAMD 2.14 guide and source code.
+
+- NAMD copies the parm7 Lennard-Jones A/B table pair by pair. Every off-diagonal pair is kept, and 1-4
+  pairs are divided by `scnb`.
+- NAMD silently ignores 12-6-4 C4 terms and per-dihedral 1-4 scaling factors, which is why the step
+  refuses topologies that have them.
+- The box is never read from the parm7 or coordinates; the step writes it as an `.xsc` file.
+- NAMD finds waters (for SETTLE) by an oxygen of 14–18 amu. A mass-repartitioned water would not be
+  rigid, so the step stops if it finds one; repartition the solute only (ParmEd's default).
+- NAMD 3.0 has a new parm7 reader (`oldParmReader` selects the old one). The energy comparison checks
+  each topology with the NAMD that will run it.
+- `1-4scaling` is written as in the guide's own examples; NAMD 3.0 also calls it `oneFourScaling`. The
+  old name is deprecated only for NAMD's Python interface.
+- The runs use NAMD's classic mode. The 3.0 guide's table of GPU-resident features lists neither grid
+  forces nor extra bonded terms, so the GPU-resident mode (`CUDASOAintegrate`) would not run MDFF.
+
+**Limits.**
+
+- 12-6-4 topologies cannot be used; per-dihedral 1-4 scaling is refused.
+- Four-site water is unverified, as described above.
+- NPT is not offered.
+- The potential must fit into the periodic cell as NAMD checks it (see above): use a rectangular box,
+  a larger buffer or a smaller margin.
+- If NAMD ever disagrees with sander on a topology (energy comparison), the fallback would be a
+  conversion that keeps the Lennard-Jones pair table. ParmEd's `chamber` / CHARMM writers do not
+  do that, so MDATK does not generate one; ask before planning around it.
+
+`examples/namd_mdff/` holds a small D + L test case: the model, a simulated map, a project, the
+generated step files and the files the preparation writes. Its stand-in topology carries names and
+masses only and is not a force field (see its README).
+
+```bash
+mdatk workflow generate namd-mdff -i topology=sys.parm7 -i coordinates=sys.rst7 -i map=emd_1234.map \
+    -i model=fitted_model.pdb --set sequence="GGGCAC GUGCCC" --set dotbracket="(((((( ))))))" -o mdff
 ```
 
 ## Citations
