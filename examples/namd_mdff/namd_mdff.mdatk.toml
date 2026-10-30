@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.8"
 # When the settings were last saved.
-saved = 2026-10-30T05:11:23
+saved = 2026-10-30T08:57:42
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -757,6 +757,11 @@ chirality_k = 200.0
 # Dihedral force constant: Secondary-structure dihedral restraints (kcal/mol/rad², E = k (θ − θ₀)²).
 # Trabuco et al. (2008) use 200 and discourage softening them: they are what prevents overfitting.
 ss_k = 200.0
+# L residues: Topology residue numbers of the L residues, e.g. 45-73 - for topologies whose residue
+# names do not tell the hand (an L-RNA library that writes D names). Every other nucleotide is then
+# D, and each residue's sugar geometry must agree, or the run stops. Empty: the hand comes from the
+# residue names (LA, LG5 ...).
+l_residues = ""
 # Sequence: For a typed secondary structure: RNA sequence in topology order, chains separated by
 # spaces.
 sequence = "GCGC GCGC GCGC GCGC"

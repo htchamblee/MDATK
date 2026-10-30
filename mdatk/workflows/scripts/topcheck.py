@@ -10,6 +10,10 @@ something is wrong:
 * microMg / nanoMg: the ion's own Lennard-Jones terms are the published ones (they come
   from a frcmod keyed on an atom type name; if the ion carries another type they never
   apply);
+* every residue named as a nucleotide (A, G5, LA, LU3 ...) has a nucleotide's atoms: tleap
+  resolves a name the residue libraries do not define to whatever unit has it, and AmberTools'
+  atomic_ions.lib defines LA (lanthanum) and LU (lutetium) - an L-RNA library with other unit
+  names silently turns L-adenosines and L-uridines into one-atom ions;
 * microMg / nanoMg: every solute atom type with Lennard-Jones terms has an explicit Mg2+
   pair term. With these models the ion's own LJ is a fitted effective potential that only
   reproduces Mg2+-water by the combination rule; a solute type without a pair term (e.g. a
@@ -24,6 +28,7 @@ Based on the checker in the Mg bug report for MDATK 0.0.4.1.
 from __future__ import annotations
 
 import math
+import re
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -31,6 +36,8 @@ CHARGE_SCALE = 18.2223  # parm7 stores charges in units of e / 18.2223
 # solvent = water residues (by residue name) and monatomic ions (any single-atom residue). Classified
 # by residue, never by atom type name: NA is Amber's aromatic ring nitrogen (G N1, U N3), sodium is Na+
 WATER = {"WAT", "HOH", "TIP3", "SOL"}
+NUCLEOTIDE = re.compile(r"[RLD0]?[ACGU][53N]?")  # residue names of RNA nucleotides, D and L
+MIN_NUCLEOTIDE_ATOMS = 10
 WANTED = {"POINTERS", "AMBER_ATOM_TYPE", "ATOM_TYPE_INDEX", "NONBONDED_PARM_INDEX",
           "LENNARD_JONES_ACOEF", "LENNARD_JONES_BCOEF", "CHARGE", "RESIDUE_LABEL", "RESIDUE_POINTER"}
 
@@ -93,6 +100,7 @@ class Topology:
         ptr = _ints(p["RESIDUE_POINTER"]) + [len(self.atype) + 1]
         self.resname = [""] * len(self.atype)
         self.solvent = [False] * len(self.atype)
+        self.residues = [(lab, ptr[r + 1] - ptr[r]) for r, lab in enumerate(labels)]
         for r, lab in enumerate(labels):
             first, last = ptr[r] - 1, ptr[r + 1] - 1
             for i in range(first, last):
@@ -130,6 +138,17 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
             print(f"  note: Lennard-Jones type {ti} is shared by solute and solvent atoms: "
                   + ", ".join(f"{n} ({c})" for n, c in sorted(names.items()))
                   + "; pair terms set for one apply to all (ParmEd addLJType separates them)")
+    short = [(r + 1, lab, size) for r, (lab, size) in enumerate(top.residues)
+             if NUCLEOTIDE.fullmatch(lab) and size < MIN_NUCLEOTIDE_ATOMS]
+    if short:
+        r, lab, size = short[0]
+        problems.append(f"{len(short)} residue(s) named as nucleotides have fewer than {MIN_NUCLEOTIDE_ATOMS} atoms, "
+                        f"e.g. residue {r} {lab} with {size}: tleap matched the name to another unit (AmberTools' "
+                        "atomic_ions.lib defines LA = lanthanum and LU = lutetium). The L-RNA library does not "
+                        "define the names MDATK writes (LA LC LG LU, LA5 LA3 ...): map them onto its units "
+                        "with addPdbResMap ('Leap commands before loadpdb') and rebuild")
+    else:
+        print(f"  every residue named as a nucleotide has at least {MIN_NUCLEOTIDE_ATOMS} atoms")
     mg = [i for i, r in enumerate(top.resname) if r == mg_res]
     print(f"  {len(mg)} {mg_res} atom(s)")
     if mg_count and len(mg) < mg_count:  # more is fine: the input structure may bring its own

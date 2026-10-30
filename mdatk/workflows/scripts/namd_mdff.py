@@ -692,8 +692,23 @@ def geometry_hand(coords, base):
     return "L" if votes["L"] else "D"
 
 
-def nucleotides(top, xyz):
-    """[(residue index, label, hand from the name, hand from the coordinates, {name: atom index})]."""
+def parse_residues(text):
+    """Residue numbers from '45-73, 80' (1-based); None for an empty text."""
+    if not text or not text.strip():
+        return None
+    out = set()
+    for part in re.split(r"[,\s]+", text.strip()):
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not m or (m.group(2) and int(m.group(2)) < int(m.group(1))):
+            raise PrepError(f"cannot read the residue range {part!r} (e.g. 45-73, 80)")
+        out.update(range(int(m.group(1)), int(m.group(2) or m.group(1)) + 1))
+    return out
+
+
+def nucleotides(top, xyz, declared=None):
+    """[(residue index, label, hand from the name, hand from the coordinates, {name: atom index})].
+    ``declared``: 1-based residue numbers that are L (every other nucleotide is D) - for topologies whose
+    residue names do not tell the hand; it replaces the name, and the geometry still has to agree."""
     out = []
     for r in range(top.nres):
         if top.solvent_residue[r]:
@@ -702,21 +717,23 @@ def nucleotides(top, xyz):
         if not all(n in atoms for n in ("C1'", "C3'", "C4'", "O4'")):
             continue
         base = residue_base(top.labels[r])
-        hand = residue_hand(top.labels[r])
+        hand = residue_hand(top.labels[r]) if declared is None else ("L" if r + 1 in declared else "D")
         geo = geometry_hand({n: xyz[i] for n, i in atoms.items()}, base)
         out.append((r, top.labels[r], hand, geo, atoms))
     return out
 
 
-def chirality_lines(top, xyz, k, targets):
+def chirality_lines(top, xyz, k, targets, declared=None):
     """extraBonds impropers (0-based atoms) restraining every ribose centre to its own hand."""
     lines, problems, notes = [], [], []
-    for r, label, hand, geo, atoms in nucleotides(top, xyz):
+    how = "named as" if declared is None else "declared"
+    fix = "the residue name" if declared is None else "the declared L residues"
+    for r, label, hand, geo, atoms in nucleotides(top, xyz, declared):
         if hand is None and geo is None:
             problems.append(f"residue {r + 1} ({label}): neither its name nor its geometry tells D from L")
             continue
         if hand is not None and geo is not None and hand != geo:
-            problems.append(f"residue {r + 1} ({label}) is named as {hand} but its sugar has {geo} geometry")
+            problems.append(f"residue {r + 1} ({label}) is {how} {hand} but its sugar has {geo} geometry")
             continue
         use = hand or geo
         if hand is None:
@@ -741,8 +758,8 @@ def chirality_lines(top, xyz, k, targets):
         if other_hand:
             centres = f"{', '.join(other_hand)} {'has' if len(other_hand) == 1 else 'have'} the other hand"
             if hand:
-                problems.append(f"residue {r + 1} ({label}) is named as {use} but its {centres}: the restraints "
-                                "would invert it - correct the model or the residue name")
+                problems.append(f"residue {r + 1} ({label}) is {how} {use} but its {centres}: the restraints "
+                                f"would invert it - correct the model or {fix}")
             else:  # the hand is the vote of C1' C3' C4', so only C2' can disagree and no name would help
                 problems.append(f"residue {r + 1} ({label}): its sugar is {use} by C1' C3' C4' but its {centres}: "
                                 "the restraints would invert it - correct the model")
@@ -1066,9 +1083,11 @@ def prep(cfg, write=True):
     if cfg["periodic"] and box is None:
         problems.append(f"{cfg['coordinates']} has no box line; the solvated run needs one")
     problems += bond_problems(top, xyz)
-    nts = nucleotides(top, xyz)
+    declared = cfg["chirality"].get("l_residues")
+    declared = set(declared) if declared is not None else None
+    nts = nucleotides(top, xyz, declared)
     if cfg["chirality"]["enabled"]:
-        _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
+        _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"], declared)
         problems += bad
         notes += more
     ssd = cfg.get("ssdihedrals") or {"enabled": False}
@@ -1155,7 +1174,7 @@ def prep(cfg, write=True):
                   "positional restraints: beta = force constant (kcal/mol/A^2), reference = these coordinates")
         print(f"wrote {cfg['restraint_pdb']} ({len(chosen)} restrained atoms)")
     if cfg["chirality"]["enabled"]:
-        lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
+        lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"], declared)
         with open(cfg["extrabonds"], "w", encoding="ascii", errors="replace") as fh:
             fh.write("# L-RNA-safe chirality restraints (MDATK): harmonic impropers at C1' C2' C3' C4' with the\n"
                      "# target of each residue's own hand (D value, or its mirror image for L residues).\n"

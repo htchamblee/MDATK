@@ -589,6 +589,42 @@ class AmberBuildTool(Tool):
             args.append("--no-terminal-names")
         return " ".join(shell_quote(a) for a in args)
 
+    def _check_lrna_names(self, s, ctx, path) -> List[Issue]:
+        """The residue names written for the L residues must be units of the extra libraries or mapped onto
+        them (addPdbResMap): tleap resolves an unknown name to any unit of that name, and AmberTools'
+        atomic_ions.lib defines LA (lanthanum) and LU (lutetium) - silently."""
+        try:
+            named = pdbtools.clean(path, scheme="amber", l_ranges=s["lrna_ranges"] or None,
+                                   terminal_names=s["lrna_terminals"]).structure
+        except (OSError, pdbtools.PDBError):
+            return []
+        names = sorted({r.name for r in named.residues() if r.chirality == "L"})
+        units, unread = _lib_units(extra_lines(s["extra_libs"]), ctx)
+        maps = _pdb_res_maps(s["leap_before_params"] + "\n" + s["leap_before_load"])
+        missing = [m for m in names if m not in units and not (maps.get(m, set()) & units)]
+        if not missing:
+            return []
+        if unread:
+            return [Issue("warning", f"cannot check that the L residue names ({', '.join(names)}) are units of "
+                                     f"{', '.join(unread)} until the file can be read (a name in leap's search path "
+                                     "is not read)", ("extra_libs",))]
+        silent = [m for m in missing if m in ("LA", "LU")]
+        guess = []
+        for m in missing:  # A0-style libraries: LG5 -> G05, LA -> A0
+            g = f"{m[1]}0{m[2:]}"
+            if g in units:
+                guess.append(f'{{ "{m}" "{g}" }}')
+        return [Issue("error", f"the L-RNA library does not define {', '.join(missing)}, the names MDATK writes for "
+                               f"the L residues, and no addPdbResMap maps them onto its units "
+                               f"({', '.join(sorted(units)[:12])}{' ...' if len(units) > 12 else ''}). tleap "
+                               + (f"would silently read {' and '.join(silent)} as the "
+                                  f"{' and '.join({'LA': 'lanthanum', 'LU': 'lutetium'}[x] for x in silent)} ion of "
+                                  "AmberTools' atomic_ions.lib and " if silent else "would ")
+                               + "invent parameterless units for the rest. Add under 'Leap commands before loadpdb': "
+                               + (f"addPdbResMap {{ {' '.join(guess)} }}" if guess else
+                                  'addPdbResMap { { "LG" "<the library\'s L-G unit>" } ... }'),
+                      ("leap_before_load", "extra_libs"))]
+
     def _check_lrna(self, s, ctx) -> List[Issue]:
         out: List[Issue] = []
         if not s["lrna"]:
@@ -621,6 +657,8 @@ class AmberBuildTool(Tool):
                              "L-RNA residues need their library and parameters: add them under Force field "
                              "(e.g. Dudek & Trylska's nucleic12_LRNA.lib with parm10_LRNA.dat, or your own "
                              "LRNA.lib + frcmod.LRNA)", ("extra_libs", "extra_frcmod")))
+        elif n_l and path and extra_lines(s["extra_libs"]):
+            out += self._check_lrna_names(s, ctx, path)
         if n_l and "LD" not in s["leap_before_params"] and not s["lrna_fixes"]:
             out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
                                      "add  addAtomTypes { { \"LD\" \"O\" \"sp3\" } { \"LH\" \"O\" \"sp3\" } }  "
@@ -1016,11 +1054,11 @@ class AmberBuildTool(Tool):
                    f"parmed -O {wet}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                    require_file(f"{pm}.parm7", "ParmEd"), ""]
             final = f"{pm}.parm7"
-        if s["check_topology"] and self._solvated(s):
+        if s["check_topology"] and (self._solvated(s) or s["lrna"]):  # dry L-RNA builds: the residue check
             chk = n("check", "py")
             pairs = self._mg_pairs(s)
             p = mg_params.get_set(s["mg_model"], s["water"]) if pairs else None
-            neutral = bool(s["neutralize"] and (s["mg_balance"] or not s["mg_count"]))
+            neutral = bool(self._solvated(s) and s["neutralize"] and (s["mg_balance"] or not s["mg_count"]))
             files.append(GeneratedFile(chk, embed(
                 _topcheck, {"MG_RESIDUE": "MG", "NEUTRAL": neutral, "MG_COUNT": s["mg_count"],
                             "ION_LJ": (round(p.rmin_half, 6), round(p.eps_kcal, 6)) if p else None,
@@ -1047,6 +1085,43 @@ def _cp_masks(lines: List[str]) -> List[str]:
 
 RNA_LIB_TYPES = {"C", "C4", "C5", "CA", "CB", "CI", "CP", "CQ", "CS", "CT", "H", "H1", "H2", "H4", "H5",
                  "HA", "HO", "N*", "N2", "NA", "NB", "NC", "O", "O2", "OH", "OS", "P"}
+
+
+def _lib_paths(paths: List[str], ctx) -> Tuple[List[str], List[str]]:
+    """(readable files, entries that could not be read) of library lines."""
+    found, unread = [], []
+    for path in paths:
+        path = path.strip()
+        for cand in (path, os.path.join(ctx.folder, path) if getattr(ctx, "folder", "") else ""):
+            if cand and os.path.isfile(cand):
+                found.append(cand)
+                break
+        else:
+            unread.append(path)
+    return found, unread
+
+
+def _lib_units(paths: List[str], ctx) -> Tuple[set, List[str]]:
+    """Unit names defined by OFF libraries (the readable ones), and the entries that could not be read."""
+    found, unread = _lib_paths(paths, ctx)
+    units = set()
+    for cand in found:
+        try:
+            with open(cand, encoding="utf-8", errors="replace") as fh:
+                units |= set(re.findall(r"^!entry\.([^.\s]+)\.unit\.atoms table", fh.read(), re.MULTILINE))
+        except OSError:
+            unread.append(cand)
+    return units, unread
+
+
+def _pdb_res_maps(text: str) -> Dict[str, set]:
+    """PDB residue name -> unit names from addPdbResMap entries ({ "LG" "G0" } and { 0 "LG" "G05" })."""
+    out: Dict[str, set] = {}
+    for line in extra_lines(text):
+        if line.lower().startswith("addpdbresmap"):
+            for name, unit in re.findall(r'\{\s*(?:\d\s+)?"([^"]+)"\s+"([^"]+)"\s*\}', line):
+                out.setdefault(name, set()).add(unit)
+    return out
 
 
 def _lib_types(paths: List[str], ctx) -> List[str]:

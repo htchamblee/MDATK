@@ -354,7 +354,17 @@ for* (e.g. `C:45-73`) overrides the detection, and *5′/3′ terminal names* ca
 libraries that map chain ends with `addPdbResMap` (plain LG, as `to_lrna.sh` wrote). This replaces
 `to_lrna.sh`. The L-RNA library and parameters themselves go under *Force field* (Dudek & Trylska's
 `nucleic12_LRNA.lib` + `parm10_LRNA.dat`, or your own `LRNA.lib` + `frcmod.LRNA`); when the input PDB
-exists the build step checks it and reports L residues without a library as an error. The optional
+exists the build step checks it and reports L residues without a library as an error.
+
+> **L residue names must match the library.** MDATK writes the Dudek names (LA LC LG LU, LA5/LA3 …).
+> A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
+> `addPdbResMap` lines under *Leap commands before loadpdb*. Without them tleap invents
+> parameterless units for LC and LG, and, without any warning, builds LA and LU as the lanthanum
+> and lutetium ions of AmberTools' `atomic_ions.lib`. The planner reads the library's unit names
+> and the map, reports every unmapped L name as an error, and suggests the map lines. The
+> topology check (below) is the second net.
+
+The optional
 **two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue
 names → solvated tleap → ParmEd) is kept for set-ups that need the dry intermediate files.
 
@@ -459,7 +469,9 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
   - fewer Mg²⁺ than requested are present;
   - a Mg²⁺ does not carry +2;
   - with microMg / nanoMg, the ion's own Lennard-Jones terms are not the published ones;
-  - with microMg / nanoMg, a solute atom type with Lennard-Jones terms has no explicit Mg²⁺ pair term.
+  - with microMg / nanoMg, a solute atom type with Lennard-Jones terms has no explicit Mg²⁺ pair term;
+  - a residue named as a nucleotide (A, G5, LA, LU3 …) has fewer than 10 atoms: tleap matched the name to
+    another unit, such as the lanthanum ion LA (since 0.0.8; also for dry L-RNA builds).
 
   The report is written to `…_check_….log`. It reads the stored coefficients, so it also catches a
   misspelt mask or a later `addLJType` that reset a pair.
@@ -1115,7 +1127,9 @@ VMD and writes its own restraints:
     −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
     residues.
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
-    agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run.
+    agree with its coordinates. Some L-RNA libraries write D names (G5, C3 …) into their units; for
+    such a topology, list the L residues under *L residues* (topology numbers, e.g. `45-73`). Every
+    other nucleotide is then D, and the geometry must still agree with the declaration. A residue named D whose sugar is L, or the reverse, stops the run.
     So does any clearly defined sugar centre of the other hand, even in a residue whose overall
     geometry is ambiguous: its restraint would invert it. The planner reports these as soon as the
     files exist (for a NetCDF restart, the script does once it has converted the restart).
