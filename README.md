@@ -39,6 +39,14 @@ Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Len
 solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
 terms of their D-RNA twins (see *Mg²⁺ models*).
 
+In 0.0.10:
+
+- **Custom scripts as planner steps** (`user-script`, under *Custom*): type a bash or Python script
+  into a step, or pick a script file, declare the files it reads and writes, and connect them to other
+  steps like any program's files. MDATK copies the script into the step folder, passes the file names
+  as `MDATK_IN_<NAME>` / `MDATK_OUT_<NAME>` and `{in:…}` / `{out:…}` arguments, and stops the step when
+  a declared output is missing (see [Custom scripts](#custom-scripts)).
+
 In 0.0.8 a new planner step runs **MDFF in NAMD on the Amber topology** (`namd-mdff`): NAMD reads the
 parm7 as built, so CP, NBfix19, 0BPh, the L-RNA types and dihedrals, the Mg²⁺ pair terms and HMR are kept,
 and a sander / NAMD energy comparison proves it before fitting. Its chirality and base-pair restraints
@@ -388,6 +396,7 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see Restraint dictionaries |
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see Real-space refinement |
 | **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see Real-space refinement |
+| **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see Custom scripts |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
 **Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
@@ -597,6 +606,60 @@ converted. Checks cover grompp warnings that stop a run with
 (no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
 (GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
 
+### Custom scripts
+
+A **Custom script** step (`user-script`, *Add step → Custom*) runs a script of your own as part of a
+plan, for whatever the built-in steps do not cover: renaming residues, a quick analysis, converting a
+file for another program.
+
+- **Script.** Type it into the step (*typed here*) or choose a file (*from a file*). Either way its text
+  is copied into the step folder each time the step's files are written, so the plan folder stays
+  self-contained; after editing the original file, write the step again. *Name in the step folder*
+  names the copy (default `<project>_<step>_script_<time>.sh` / `.py`, or the file's own name), e.g.
+  when a program wants an extension (`.pml` for PyMOL).
+- **Run with** bash, python3 or another command (`Rscript`, `python3.12 -u`,
+  `vmd -dispdev text -e {script} -args`: the script's name goes where `{script}` is, otherwise at the
+  end). *Arguments* follow, in shell syntax.
+- **Input files** and **Output files** are lists (*+* adds one from a template): a name and a file
+  type each, *Optional* and *Several connections* for inputs, and a file name for outputs (empty:
+  `<project>_<step>_<name>_<time>.<ext>`). Each one becomes a port of the box. An input of type *any
+  file* accepts every output; a typed input only outputs of its type, as for other steps.
+- **Environment.** A conda environment and setup lines (`module load …`), as for the other steps.
+
+The step's run script (`<project>_<step>_custom_<time>.sh`, the one *Run* starts) changes into the
+step folder and exports these variables (`<NAME>` is the declared name in upper case, `-` as `_`):
+
+| Variable | Value |
+|---|---|
+| `MDATK_IN_<NAME>` | the input's path, relative to the step folder; one path per line when it carries several files, empty for an optional input without a file |
+| `MDATK_OUT_<NAME>` | the name of the file the script must write into the step folder |
+| `MDATK_PROJECT`, `MDATK_STEP`, `MDATK_STAMP` | the parts of the plan's file names |
+
+It then replaces `{in:<name>}`, `{out:<name>}` and `{script}` in the arguments with the names, quoted
+for the shell (one word per file; do not put quotes around them), runs the script, and checks that
+every declared output exists and is not empty. A script that fails (non-zero exit status) or misses an
+output fails the step, so the steps that read from it are not started. For example, a python3 step
+with the input `structure` (PDB), the output `fixed` (PDB, file `fixed.pdb`) and the arguments
+`--model {in:structure} -o {out:fixed}` writes
+
+```bash
+export MDATK_IN_STRUCTURE=../01_build/apt1_01_helix_20261015-1432.pdb
+export MDATK_OUT_FIXED=fixed.pdb
+
+python3 apt1_02_script_20261015-1432.py --model ../01_build/apt1_01_helix_20261015-1432.pdb -o fixed.pdb
+
+[ -s "fixed.pdb" ] || { echo "ERROR: apt1_02_script_20261015-1432.py did not write fixed.pdb" >&2; exit 1; }
+```
+
+and an Amber build connected to `fixed` reads `../02_custom/fixed.pdb`.
+
+The planner reports as errors: a missing, unreadable or empty script; a placeholder that names no
+declared input or output, or a misspelt one (`{input:x}`); two inputs or two outputs with the same
+name; output file names that are not plain file names (letters, digits, `.`, `_`, `-` and `+`; no
+folders or spaces). A `#!` line that does not match *Run with* is a warning. The plan summary shows the
+command line. MDATK cites nothing for this step and downloads nothing for it; what the script itself
+does is up to you, so review it like any other script before running it.
+
 ### Command line
 
 ```bash
@@ -604,6 +667,11 @@ mdatk workflow tools                       # step types; `mdatk workflow tools a
 mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
     -i topology=sys.parm7 -i coordinates=sys.rst7 -i restraints=helix.dist \
     --set engine=pmemd.MPI --set nproc=32 --set stages.5.nstlim=150000000
+mdatk workflow generate user-script -o out --step 2 -i model=model.pdb \
+    --set source=file --set script_file=fix.py --set interpreter=python3 \
+    --set 'inputs=[{"name": "model", "kind": "pdb"}]' \
+    --set 'outputs=[{"name": "fixed", "kind": "pdb", "file": "fixed.pdb"}]' \
+    --set 'arguments={in:model} {out:fixed}'          # a custom script step
 mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
@@ -1399,7 +1467,8 @@ mdatk/
   density.py, io/mrc.py   density maps: MRC / CCP4 I/O, simulated maps, rigid-body fitting
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
-                     SimRNA, RNAMake, Amber, GROMACS, VMD; plan.py resolves the Project Planner
+                     SimRNA, RNAMake, Amber, GROMACS, VMD and custom scripts (userscript.py);
+                     plan.py resolves the Project Planner
                      graph and names files; scripts/ holds self-contained helper programs that
                      are embedded in generated workflows
   cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas,

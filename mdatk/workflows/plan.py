@@ -463,6 +463,9 @@ class Plan:
             lines.append("")
             if step.adopted:
                 lines += [f"Uses the outputs of its run of `{step.adopted}` (not written or run again).", ""]
+            extra = step.tool.summary_lines(step.settings, step.ctx) if step.ctx is not None else []
+            if extra:
+                lines += extra + [""]
             if step.ctx and step.ctx.inputs:
                 lines.append("Inputs:")
                 for port, value in step.ctx.inputs.items():

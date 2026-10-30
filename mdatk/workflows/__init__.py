@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Callable
 
 from . import amber, buildstep, dictstep, farfar2, gromacs, misc, namd, refine, rnamake, simrna, vmd  # noqa: F401
+from . import userscript  # noqa: F401
 from .base import PortValue, StepContext, Tool
 from .registry import TOOLS, get_tool, tools_by_category
 from .schema import GeneratedFile, Issue, Option, Port, Section

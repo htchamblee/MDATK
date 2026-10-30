@@ -132,7 +132,7 @@ class OptionForm(Gtk.Grid):
             buf.connect("changed", lambda *_: self._changed(opt.key))
             sw = Gtk.ScrolledWindow()
             sw.set_shadow_type(Gtk.ShadowType.IN)
-            sw.set_min_content_height(64)
+            sw.set_min_content_height(max(64, 18 * opt.rows))
             sw.set_hexpand(True)
             sw.add(tv)
             w = sw
@@ -366,6 +366,7 @@ class WizardWindow(Gtk.Window):
         self.forms: Dict[str, Any] = {}  # section key -> OptionForm / RecordEditor
         self.section_pages: Dict[str, int] = {}
         self.input_widgets: Dict[str, Gtk.Widget] = {}
+        self._ports_shown: List[Tuple] = []  # input ports on the Files page (see _port_signature)
         self.plan: Optional[Plan] = None
         self.files = []
         self._refresh_id = 0
@@ -634,10 +635,16 @@ class WizardWindow(Gtk.Window):
                                f"→ {e.output}"
         return out
 
+    def _port_signature(self) -> List[Tuple]:
+        """What the Files page shows of the input ports (records edit them in place, e.g. custom scripts)."""
+        return [(p.name, p.label, p.kinds, p.optional, p.multiple)
+                for p in self.tool.input_ports(self.node.settings)]
+
     def _fill_inputs(self) -> None:
         for child in list(self.inputs_grid.get_children()):
             self.inputs_grid.remove(child)
         self.input_widgets.clear()
+        self._ports_shown = self._port_signature()
         ports = self.tool.input_ports(self.node.settings)
         connected = self._connected()
         if not ports:
@@ -680,7 +687,6 @@ class WizardWindow(Gtk.Window):
     def _on_option_change(self, key: str) -> None:
         if self._loading:
             return
-        before = [p.name for p in self.tool.input_ports(self.node.settings)]
         values = dict(self.node.settings)
         for section in self.tool.sections:
             form = self.forms.get(section.key)
@@ -691,7 +697,7 @@ class WizardWindow(Gtk.Window):
             form = self.forms.get(section.key)
             if isinstance(form, OptionForm):
                 form.update_sensitivity(values)
-        if before != [p.name for p in self.tool.input_ports(self.node.settings)]:
+        if self._port_signature() != self._ports_shown:
             self._fill_inputs()
         self.schedule_refresh()
 

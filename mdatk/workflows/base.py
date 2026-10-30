@@ -245,6 +245,10 @@ class Tool:
         """Short summary shown on planner boxes."""
         return self.description.split(".")[0]
 
+    def summary_lines(self, s: Dict[str, Any], ctx: StepContext) -> List[str]:
+        """Extra Markdown lines for the plan summary (e.g. what a custom script runs)."""
+        return []
+
     def resources(self, s: Dict[str, Any]) -> List[str]:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
