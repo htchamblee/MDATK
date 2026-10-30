@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -21,11 +22,28 @@ import os
 import re
 import typing
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Sequence
 
 from . import PROJECT_ABBREV
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GroupUse:
+    """How a string field uses residue-group names, so a renamed group can be followed everywhere
+    (:meth:`Project.rename_group`): ``"name"`` holds a group name, ``"selection"`` a selection (a bare
+    group name, comma-separated group names or ``group:<name>`` tokens), ``"key"`` a data key whose
+    analysis instance may name groups (``contacts@Aptamer+Target/atom_pairs``) and ``"text"`` free text
+    that is never rewritten.  Every other string is searched for ``group:<name>`` tokens only."""
+
+    kind: str
+
+
+GroupName = Annotated[str, GroupUse("name")]
+Selection = Annotated[str, GroupUse("selection")]
+DataKey = Annotated[str, GroupUse("key")]
+FreeText = Annotated[str, GroupUse("text")]
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +128,8 @@ class CleaningParams:
 class RMSDTarget:
     label: str = "Complex"  # Name of the series (data key rmsd/<label>)
     # Atoms whose RMSD is computed (selection; group:<name> allowed)
-    selection: str = "(group:Aptamer or group:Target) and not name H*"
-    fit_selection: str = ""  # Atoms superposed before computing the RMSD ("": the same atoms)
+    selection: Selection = "(group:Aptamer or group:Target) and not name H*"
+    fit_selection: Selection = ""  # Atoms superposed before computing the RMSD ("": the same atoms)
 
 
 def _default_rmsd_targets() -> List[RMSDTarget]:
@@ -131,8 +149,8 @@ class RMSDParams:
 @dataclass
 class ContactParams:
     enabled: bool = True  # Count heavy-atom contacts between two groups
-    group_a: str = "Aptamer"  # First residue group
-    group_b: str = "Target"  # Second residue group
+    group_a: GroupName = "Aptamer"  # First residue group
+    group_b: GroupName = "Target"  # Second residue group
     cutoff: float = 4.5  # Contact distance cutoff (Å)
     heavy_only: bool = True  # Ignore hydrogens
 
@@ -140,8 +158,8 @@ class ContactParams:
 @dataclass
 class HBondParams:
     enabled: bool = True  # Count hydrogen bonds between two groups
-    group_a: str = "Aptamer"  # First residue group
-    group_b: str = "Target"  # Second residue group
+    group_a: GroupName = "Aptamer"  # First residue group
+    group_b: GroupName = "Target"  # Second residue group
     distance_cutoff: float = 3.5  # Maximum donor-acceptor distance (Å)
     use_angle: bool = True  # Also require a minimum D-H...A angle (needs hydrogens in the topology)
     angle_cutoff: float = 135.0  # Minimum D-H...A angle (degrees)
@@ -152,27 +170,27 @@ class HBondParams:
 @dataclass
 class MgParams:
     enabled: bool = True  # Analyse Mg2+ coordination: inner/outer-sphere contacts, bridges and occupancy
-    mg_selection: str = "resname MG Mg MG2 or name MG Mg"  # Selection of the Mg2+ ions
-    ligand_selection: str = "group:Aptamer or group:Target"  # Atoms that can coordinate Mg2+
+    mg_selection: Selection = "resname MG Mg MG2 or name MG Mg"  # Selection of the Mg2+ ions
+    ligand_selection: Selection = "group:Aptamer or group:Target"  # Atoms that can coordinate Mg2+
     ligand_elements: str = "O"  # Elements of the coordinating atoms (comma separated)
-    group_a: str = "Aptamer"  # First group of a Mg2+ bridge
-    group_b: str = "Target"  # Second group of a Mg2+ bridge
+    group_a: GroupName = "Aptamer"  # First group of a Mg2+ bridge
+    group_b: GroupName = "Target"  # Second group of a Mg2+ bridge
     inner_cutoff: float = 2.6  # Inner-sphere Mg-O distance cutoff (Å)
     outer_cutoff: float = 4.5  # Outer-sphere (water-mediated) Mg-O distance cutoff (Å)
     bridge_shell: str = "inner"  # Shell that counts as a bridge: "inner" or "outer"
     geometry: bool = False  # Require octahedral O-Mg-O angles (about 90 or 180 degrees)
     angle_tolerance: float = 25.0  # Allowed deviation from the octahedral angles (degrees)
-    occupancy_selection: str = ""  # Atoms whose Mg2+ occupancy is reported ("": the ligand selection)
+    occupancy_selection: Selection = ""  # Atoms whose Mg2+ occupancy is reported ("": the ligand selection)
     occupancy_elements: str = "N,O"  # Elements counted for the occupancy (comma separated)
 
 
 @dataclass
 class StackingParams:
     enabled: bool = True  # Detect base stacking from ring geometry
-    selection: str = "group:Aptamer or group:Target"  # Residues whose rings are considered
+    selection: Selection = "group:Aptamer or group:Target"  # Residues whose rings are considered
     scope: str = "all"  # "all" ring pairs, or "inter" (group A against group B only)
-    group_a: str = "Aptamer"  # First group for scope = "inter"
-    group_b: str = "Target"  # Second group for scope = "inter"
+    group_a: GroupName = "Aptamer"  # First group for scope = "inter"
+    group_b: GroupName = "Target"  # Second group for scope = "inter"
     distance_cutoff: float = 4.5  # Maximum ring-centroid distance (Å)
     angle_cutoff: float = 30.0  # Maximum angle between the ring normals (degrees)
     offset_cutoff: float = 2.5  # Maximum lateral displacement of the centroids (Å)
@@ -193,8 +211,8 @@ class BasePairParams:
 @dataclass
 class EnergyParams:
     enabled: bool = True  # Non-bonded interaction energy between two groups
-    group_a: str = "Aptamer"  # First residue group
-    group_b: str = "Target"  # Second residue group
+    group_a: GroupName = "Aptamer"  # First residue group
+    group_b: GroupName = "Target"  # Second residue group
     cutoff: float = 12.0  # Pair distance cutoff (Å)
     dielectric: float = 1.0  # Relative dielectric constant
     distance_dependent: bool = False  # Distance-dependent dielectric (epsilon = dielectric x r)
@@ -227,7 +245,7 @@ class RepSpec:
     """One 3D representation drawn in the structural view (VMD-like)."""
 
     style: str = "cartoon"  # Representation: cartoon, ribbon, tube, licorice, vdw, surf or trace
-    groups: List[str] = field(default_factory=list)  # Residue groups drawn (empty: every shown group)
+    groups: List[GroupName] = field(default_factory=list)  # Residue groups drawn (empty: every shown group)
     color: str = "auto"  # Colouring: auto, residue, element or nucleotide
     size: float = 1.0  # Scales widths and radii
     opacity: float = 1.0  # Opacity, 0 (invisible) to 1
@@ -237,7 +255,7 @@ class RepSpec:
 @dataclass
 class VisualParams:
     # Residue groups shown in the structure view (empty: all)
-    structure_groups: List[str] = field(default_factory=list)
+    structure_groups: List[GroupName] = field(default_factory=list)
     # Atom used for each residue's 2D trace point, first one found wins (P, C4', C1', CA ...)
     trace_atoms: str = "C4',CA"
     # 3D representations (empty: the 2D backbone trace)
@@ -258,7 +276,8 @@ class VisualParams:
     color_mode: str = "groups"  # Residue colouring: "chain", "groups" or "proximity"
     base_color: str = "#b5b3ad"  # Colour of residues no group or proximity colour applies to
     chain_palette: str = "tab10"  # Matplotlib palette for chain colouring
-    proximity_set: str = "Target"  # Group (or sel:<selection>) whose proximity colours and glows residues
+    # Group (or sel:<selection>) whose proximity colours and glows residues
+    proximity_set: Selection = "Target"
     proximity_cutoff: float = 4.0  # Distance that counts as proximity (Å)
     proximity_color: str = "#e34948"  # Colour of residues in proximity
     # Glow of residues near the proximity set: "none", "ever" (whole movie), "fade" or "current"
@@ -314,7 +333,7 @@ class PanelSpec:
 
     type: str = "structure"  # Panel type: structure, timeseries, dual_axis, heatmap or contact_map
     # Data keys shown, e.g. rmsd/Complex or contacts/per_residue_a
-    series: List[str] = field(default_factory=list)
+    series: List[DataKey] = field(default_factory=list)
     title: str = ""  # Panel title ("": automatic)
     # Panel-specific options, e.g. axis limits or the contact-map mode
     options: Dict[str, Any] = field(default_factory=dict)
@@ -370,7 +389,7 @@ class VideoParams:
 @dataclass
 class ChartParams:
     enabled: bool = True  # Write high-resolution time charts
-    series: List[str] = field(default_factory=list)  # Data keys to chart (empty: every scalar series)
+    series: List[DataKey] = field(default_factory=list)  # Data keys to chart (empty: every scalar series)
     include_heatmaps: bool = False  # Also chart per-residue heatmaps
     formats: List[str] = field(default_factory=lambda: ["png"])  # File formats, e.g. png, pdf, svg
     dpi: int = 300  # Raster resolution
@@ -392,7 +411,7 @@ class PDBParams:
     enabled: bool = False  # Export selected frames as PDB files
     frames: str = ""  # Frames to export, e.g. "0, 10, 20-50:10, last"
     times: str = ""  # Times to export, e.g. "1.5ns, 2000ps" (no unit: inputs.time_unit)
-    selection: str = ""  # Group names (comma separated) or a selection ("": everything)
+    selection: Selection = ""  # Group names (comma separated) or a selection ("": everything)
     prefix: str = f"{PROJECT_ABBREV}_frame"  # File name prefix
 
 
@@ -474,7 +493,7 @@ def _default_groups() -> List[ResidueGroup]:
 class Project:
     """Complete MDATK parameter set."""
 
-    notes: str = ""  # Free-text notes about the project (what, why, decisions, to-dos)
+    notes: FreeText = ""  # Free-text notes about the project (what, why, decisions, to-dos)
     inputs: InputParams = field(default_factory=InputParams)  # Input files and frame range
     cleaning: CleaningParams = field(default_factory=CleaningParams)  # Trajectory cleaning with cpptraj
     groups: List[ResidueGroup] = field(default_factory=_default_groups)  # Residue groups
@@ -552,6 +571,52 @@ class Project:
 
     def group_names(self) -> List[str]:
         return [g.name for g in self.groups]
+
+    def rename_group(self, old: str, new: str) -> List[str]:
+        """Rename residue group ``old`` to ``new`` and every reference to it in the project.
+
+        The whole parameter tree is searched, planner steps included (see :class:`GroupUse`): a field
+        holding a group name and a selection that is just the name change when they equal ``old``,
+        analysis instances in data keys (``contacts@old+B/atom_pairs``) and ``group:old`` tokens in any
+        text change too, while ``group:older`` or ``group:old_2`` stay.  Returns the changed locations,
+        e.g. ``analyses.contacts.group_a`` (the group's own name not counted).  Raises KeyError for an
+        unknown group and ValueError for an empty, invalid or taken new name."""
+        group = self.group(old)
+        new = new.strip()
+        if new == old:
+            return []
+        names = self.group_names()
+        if names.count(old) > 1:
+            raise ValueError(f"several residue groups are named {old!r}; give them distinct names first")
+        problem = group_name_problem(new, [n for n in names if n != old])
+        if problem:
+            raise ValueError(problem)
+        changed: List[str] = []
+        known = set(names)
+
+        def rename(path: str, kind: str, text: str) -> str:
+            out = _renamed_text(kind, text, old, new, known)
+            if out != text:
+                changed.append(path)
+            return out
+
+        _walk_strings(self, "", "", rename)
+        group.name = new
+        return changed
+
+    def group_references(self, name: str) -> List[str]:
+        """Locations that refer to residue group ``name``, found by the rules of :meth:`rename_group`
+        (e.g. what still uses a group that was deleted)."""
+        found: List[str] = []
+        names = set(self.group_names()) | {name}
+
+        def visit(path: str, kind: str, text: str) -> str:
+            if _renamed_text(kind, text, name, "\0", names) != text:
+                found.append(path)
+            return text
+
+        _walk_strings(self, "", "", visit)
+        return found
 
     @property
     def out_dir(self) -> str:
@@ -759,6 +824,97 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
             return ""
         return str(value)
     return value
+
+
+# ---------------------------------------------------------------------------
+# Residue-group references (rename, find)
+# ---------------------------------------------------------------------------
+
+_GROUP_NAME = re.compile(r"[A-Za-z0-9_.\-]+")  # the names validate() accepts
+# an analysis instance in a data key: base@GroupA+GroupB/output (see mdatk.analysis.base.parse_instance)
+_INSTANCE_KEY = re.compile(r"(?P<base>[^@/]+)@(?P<groups>[^/]*)(?P<rest>/.*)?", re.DOTALL)
+
+
+def group_name_problem(name: str, taken: Sequence[str] = ()) -> str:
+    """Why ``name`` cannot name a residue group ("" when it can); ``taken``: the other groups' names."""
+    if not name.strip():
+        return "A residue group needs a name."
+    if not _GROUP_NAME.fullmatch(name):
+        return f"Group name {name!r} may only contain letters, digits, '_', '.' and '-' (no spaces)."
+    if name in taken:
+        return f"There is already a residue group named {name!r}."
+    return ""
+
+
+def _use_of(tp: Any) -> str:
+    """The :class:`GroupUse` kind of a type hint, looking inside List[...] / Optional[...] ("" for none)."""
+    if typing.get_origin(tp) is Annotated:
+        for meta in tp.__metadata__:
+            if isinstance(meta, GroupUse):
+                return meta.kind
+        tp = typing.get_args(tp)[0]
+    for arg in typing.get_args(tp):
+        kind = _use_of(arg)
+        if kind:
+            return kind
+    return ""
+
+
+@functools.lru_cache(maxsize=None)
+def _field_uses(cls: type) -> Dict[str, str]:
+    hints = typing.get_type_hints(cls, include_extras=True)
+    return {f.name: _use_of(hints.get(f.name)) for f in dataclasses.fields(cls)}
+
+
+def _walk_strings(obj: Any, path: str, kind: str, fn) -> None:
+    """Replace every string below ``obj`` by ``fn(location, kind, text)``: dataclass fields (with the
+    kind of their :class:`GroupUse` marker), list items and the values of free-form tables (planner
+    step settings, panel options: kind "")."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        uses = _field_uses(type(obj))
+        for f in dataclasses.fields(obj):
+            where = f"{path}.{f.name}" if path else f.name
+            value = getattr(obj, f.name)
+            if isinstance(value, str):
+                new = fn(where, uses[f.name], value)
+                if new != value:
+                    setattr(obj, f.name, new)
+            else:
+                _walk_strings(value, where, uses[f.name], fn)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            if isinstance(value, str):
+                obj[i] = fn(f"{path}[{i}]", kind, value)
+            else:
+                _walk_strings(value, f"{path}[{i}]", kind, fn)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, str):
+                obj[key] = fn(f"{path}.{key}", "", value)
+            else:
+                _walk_strings(value, f"{path}.{key}", "", fn)
+
+
+def _renamed_text(kind: str, text: str, old: str, new: str, names) -> str:
+    """``text`` with residue group ``old`` renamed to ``new``, read as a field of ``kind`` uses it;
+    ``names``: the project's group names (a comma-separated list of them counts as group names)."""
+    from .selections import rename_group_tokens  # lazy: keeps this module free of numpy
+
+    if kind == "text":
+        return text
+    if kind == "name":
+        return new if text.strip() == old else text
+    if kind == "key":
+        m = _INSTANCE_KEY.fullmatch(text)
+        groups = m.group("groups").split("+") if m else []
+        if old not in groups:
+            return text
+        return f"{m.group('base')}@{'+'.join(new if g == old else g for g in groups)}{m.group('rest') or ''}"
+    if kind == "selection":
+        items = text.split(",")
+        if any(t.strip() == old for t in items) and all(t.strip() in names for t in items):
+            return ",".join(t.replace(old, new) if t.strip() == old else t for t in items)
+    return rename_group_tokens(text, old, new)
 
 
 # ---------------------------------------------------------------------------

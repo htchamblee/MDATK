@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import warnings
 from typing import Dict, List, Optional
 
@@ -19,12 +20,14 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from .. import PROJECT_ABBREV, PROJECT_TITLE, __version__  # noqa: E402
+from .. import chaingroups  # noqa: E402
 from ..analysis import expected_keys  # noqa: E402
 from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E402
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
 from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeries,  # noqa: E402
-                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, layout_warnings)
+                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, group_name_problem,
+                      layout_warnings)
 from ..progress import Cancelled  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
 from ..render.example import example_dataset  # noqa: E402
@@ -94,6 +97,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._syncing = False
         self._loading = False
         self.group_combos: List[Gtk.ComboBoxText] = []
+        self._group_names: List[str] = []  # group names as last shown (a missing one was deleted)
+        self._name_edit: Optional[dict] = None  # state of the group-name cell being edited
+        self._chain_request = 0  # newest chain-group request (older answers are dropped)
+        self._chains_offered = ""  # topology whose chain groups were last offered automatically
+        self._topology_timer = 0
         self.slot_rows: List[dict] = []
         self.busy_widgets: List[Gtk.Widget] = []
         self.pages: Dict[str, Gtk.Widget] = {}
@@ -129,6 +137,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._install_actions()
         self.load_project(self.project, project_path)
         self.connect("delete-event", self._on_close)
+        self.connect("destroy", lambda *_: self._stop_topology_timer())
         self.append_log(f"{PROJECT_TITLE} {__version__} ready. Everything runs locally and offline.")
 
     # ================================================================ chrome
@@ -440,6 +449,8 @@ class MainWindow(Gtk.ApplicationWindow):
         top = W.file_chooser_button("Select topology", patterns=[TOPOLOGY_FILES])
         b.path_entry("inputs.topology", files.add("Topology", top,
                      "Amber .parm7 (preferred), cleaned PDB or another MDAnalysis topology"))
+        self.topology_entry = top.entry
+        top.entry.connect("changed", lambda *_: self._on_topology_changed())
         self.traj_editor = W.ListEditor([("Trajectory file(s), in order", 300)], height=70)
         self.traj_editor.buttons.pack_start(
             W.button("Browse…", self._browse_trajectories, icon="document-open-symbolic"),
@@ -574,12 +585,25 @@ class MainWindow(Gtk.ApplicationWindow):
                                                       icon="applications-graphics-symbolic"),
                                              False, False, 0)
         self.group_editor.on_change = self._groups_changed
+        self.group_editor.on_edit = self._on_group_cell_edit
+        name_cell = self.group_editor.view.get_column(0).get_cells()[0]
+        name_cell.connect("editing-started", self._on_group_name_editing)
         form.add_wide(self.group_editor)
+        row = Gtk.Box(spacing=6)
+        row.pack_start(W.button("Groups from chains", self.groups_from_chains,
+                                "Add one group per chain of the topology (water and ions left out); "
+                                "existing groups are kept", "list-add-symbolic"), False, False, 0)
+        form.add_wide(row)
+        self.group_status = W.label("", wrap=True)
+        self.group_status.set_selectable(True)
+        form.add_wide(self.group_status)
         form.add_wide(W.hint(
             "Residues accept ranges such as “1-40, 45, 50-60” or chain/segment-qualified "
             "“A:1-40”. A selection is a raw MDAnalysis selection string. Anywhere a selection is "
             "expected you can refer to a group as group:<Name> (e.g. “group:Aptamer and name P”). "
-            "Group names must not contain spaces."))
+            "Group names must not contain spaces. Renaming a group (Enter or leaving the cell) "
+            "renames it everywhere the project uses it. Choosing a topology fills empty or untouched "
+            "default groups with one group per chain."))
         self.binder._add("groups", self.group_editor, self._get_groups, self._set_groups)
         box.pack_start(W.frame("Residue groups", form), False, False, 0)
         return W.scrolled(box)
@@ -622,6 +646,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _groups_changed(self):
         names = [r[0].strip() for r in self.group_editor.rows() if r[0].strip()]
+        gone = [n for n in self._group_names if n not in names]
+        self._group_names = names
+        if gone and not self._loading:
+            self._report_removed_groups(gone)
         for c in self.group_combos:
             W.set_combo_entry_items(c, names)
         if self.slot_rows and not self._loading:
@@ -634,6 +662,198 @@ class MainWindow(Gtk.ApplicationWindow):
         c = W.combo_entry()
         self.group_combos.append(c)
         return self.binder.combo_text(path, c)
+
+    def _group_message(self, text: str, error: bool = False, detail: str = "") -> None:
+        """Status line under the group table (logged too; ``detail`` goes to the log and the tooltip)."""
+        self.group_status.set_text(text)
+        self.group_status.set_tooltip_text(detail or None)
+        ctx = self.group_status.get_style_context()
+        (ctx.add_class if error else ctx.remove_class)("error")
+        self.append_log(("WARNING: " if error else "") + text + (f"\n  {detail}" if detail else ""))
+
+    def _group_name_problem(self, name: str, k: int) -> str:
+        others = [r[0].strip() for i, r in enumerate(self.group_editor.store) if i != k]
+        return group_name_problem(name.strip(), others)
+
+    def _flag_group_name(self, entry: Gtk.Entry, k: int) -> None:
+        """Mark the name being typed when it cannot name a group (red, with the reason)."""
+        problem = self._group_name_problem(entry.get_text(), k)
+        ctx = entry.get_style_context()
+        (ctx.add_class if problem else ctx.remove_class)("error")
+        icon = Gtk.EntryIconPosition.SECONDARY
+        entry.set_icon_from_icon_name(icon, "dialog-error-symbolic" if problem else None)
+        entry.set_icon_tooltip_text(icon, problem or None)
+
+    def _on_group_name_editing(self, _cell, editable, path) -> None:
+        """A name cell opened: flag invalid names while typing.  Leaving the cell commits the name
+        (GTK 3 itself would drop the edit), Escape cancels it."""
+        k = int(path)
+        state = {"done": False}
+        self._name_edit = state
+        before = self.group_editor.store[k][0].strip()
+
+        def finish(commit: bool) -> bool:
+            if not state["done"]:
+                state["done"] = True
+                if commit:
+                    self.commit_group_name(k, editable.get_text(), before)
+            return False
+
+        editable.connect("changed", lambda e: self._flag_group_name(e, k))
+        editable.connect("key-press-event", lambda _e, ev: ev.keyval == Gdk.KEY_Escape and finish(False))
+        editable.connect("focus-out-event", lambda *_: finish(True))
+        self._flag_group_name(editable, k)
+
+    def _on_group_cell_edit(self, k: int, col: int, _old: str, text: str) -> bool:
+        if col != 0:
+            return False
+        if self._name_edit is not None:
+            self._name_edit["done"] = True
+        self.commit_group_name(k, text)
+        return True
+
+    def commit_group_name(self, k: int, text: str, before: Optional[str] = None) -> bool:
+        """Rename the group of row ``k`` (the name it had before the edit) to ``text``, and every
+        reference to it in the project; empty, invalid and taken names are refused.  ``before``: the
+        name when the edit began (nothing happens if the table changed since).  True if renamed."""
+        store = self.group_editor.store
+        if not 0 <= k < len(store) or (before is not None and store[k][0].strip() != before):
+            return False
+        old, new = store[k][0].strip(), text.strip()
+        if new == old:
+            return False
+        problem = self._group_name_problem(new, k)
+        if problem:
+            self._group_message(f"Group {old or '(unnamed)'} not renamed: {problem}", error=True)
+            return False
+        if not old or [r[0].strip() for r in store].count(old) > 1:
+            store[k][0] = new  # not a group yet, or one of several of that name: no references to follow
+            self._groups_changed()
+            self._group_message(f"Renamed {old} → {new}" if old else f"Named the new group {new}")
+            return True
+        try:
+            project = self.collect(validate=False)
+            refs = project.rename_group(old, new)
+        except ValueError as exc:
+            self._group_message(f"Group {old} not renamed; fix these settings first: {exc}", error=True)
+            return False
+        refs = self._adopt_project(project, refs, rows_in_place=True)
+        self._group_message(f"Renamed {old} → {new} in {len(refs)} place{'' if len(refs) == 1 else 's'}",
+                            detail=", ".join(refs))
+        return True
+
+    def _adopt_project(self, project: Project, changed: List[str], rows_in_place: bool = False) -> List[str]:
+        """Make ``project`` (the settings collected from the widgets, then changed at the locations
+        ``changed``) current and reload the widgets of those settings only.  ``rows_in_place`` updates
+        the group rows without rebuilding the table, where a name cell may still be open.  Automatic
+        panel titles follow their data; returns ``changed`` with those titles."""
+        changed = list(changed)
+        for k, (row, spec) in enumerate(zip(self.slot_rows, project.layout.panels)):
+            if spec.series and row["auto"] and spec.title == row["auto"]:
+                title = key_label(spec.series[0], project)
+                if title != spec.title:
+                    spec.title = title
+                    changed.append(f"layout.panels[{k}].title")
+        self.project = project
+        loading, self._loading = self._loading, True
+        try:
+            if rows_in_place:
+                named = [row for row in self.group_editor.store if row[0].strip()]
+                for row, g in zip(named, project.groups):
+                    if row[0].strip() != g.name:
+                        row[0] = g.name
+                    if row[2].strip() != g.selection:
+                        row[2] = g.selection
+            for b in self.binder.bindings:
+                if rows_in_place and b.path == "groups":
+                    continue
+                if any(c == b.path or c.startswith((b.path + ".", b.path + "[")) for c in changed):
+                    b.set(W.get_path(project, b.path))
+        finally:
+            self._loading = loading
+        self._group_names = [r[0].strip() for r in self.group_editor.rows() if r[0].strip()]
+        self._groups_changed()
+        if self.planner is not None and any(c.startswith("workflow.") for c in changed):
+            self.planner.reload()
+        self.refresh_canvas()
+        return changed
+
+    def _report_removed_groups(self, names: List[str]) -> None:
+        """Say where deleted groups are still used: those settings now name a group that is gone."""
+        try:
+            project = self.collect(validate=False)
+        except ValueError:
+            project = self.project
+        uses = [(n, project.group_references(n)) for n in names]
+        uses = [(n, refs) for n, refs in uses if refs]
+        if uses:
+            self._group_message(
+                "Removed group still in use, change these settings: " +
+                "; ".join(f"{n} in {', '.join(refs)}" for n, refs in uses), error=True)
+
+    def groups_from_chains(self, auto: bool = False) -> None:
+        """'Groups from chains': add one group per chain of the topology (read in the background).
+        ``auto`` (a topology was just chosen) only fills empty or untouched default groups; otherwise
+        it names the chains that have no group yet."""
+        path = self.topology_entry.get_text().strip()
+        if not os.path.isfile(path):
+            if not auto:
+                self._group_message("Choose a topology file on the Input page first.", error=True)
+            return
+        self._chain_request += 1
+        request, existing = self._chain_request, self._get_groups()
+        if not auto:
+            self.group_status.set_text(f"Reading the chains of {os.path.basename(path)} …")
+
+        def work():
+            try:
+                chains, error = chaingroups.topology_chain_groups(path, existing), None
+            except Exception as exc:  # noqa: BLE001 - every reader problem is reported
+                chains, error = [], exc
+            call_soon(self._chains_ready, request, path, auto, chains, error)
+
+        threading.Thread(target=work, name="mdatk-chains", daemon=True).start()
+
+    def _chains_ready(self, request: int, path: str, auto: bool, chains, error) -> None:
+        if request != self._chain_request or self._topology_timer < 0:
+            return  # superseded by a newer request, or the window is gone
+        name = os.path.basename(path)
+        if error is not None:
+            self._group_message(f"Could not read the chains of {name}: {error}", error=True)
+            return
+        try:
+            project = self.collect(validate=False)
+        except ValueError as exc:
+            if not auto:
+                self._group_message(f"Groups not changed; fix these settings first: {exc}", error=True)
+            return
+        merge = chaingroups.merge_chain_groups(project, chains, auto=auto)
+        if merge.changed:
+            merge.references = [c for c in self._adopt_project(project, merge.references + ["groups"])
+                                if c != "groups"]
+        if merge.changed or merge.pending or not auto:
+            self._group_message(merge.summary(name), detail=", ".join(merge.references))
+
+    def _on_topology_changed(self) -> None:
+        """A topology was typed or chosen: offer its chain groups once the name stops changing."""
+        if self._loading or self._topology_timer < 0:
+            return
+        if self._topology_timer:
+            GLib.source_remove(self._topology_timer)
+        self._topology_timer = GLib.timeout_add(500, self._topology_settled)
+
+    def _topology_settled(self) -> bool:
+        self._topology_timer = 0
+        path = self.topology_entry.get_text().strip()
+        if path != self._chains_offered and os.path.isfile(path):
+            self._chains_offered = path
+            self.groups_from_chains(auto=True)
+        return False
+
+    def _stop_topology_timer(self) -> None:
+        if self._topology_timer > 0:
+            GLib.source_remove(self._topology_timer)
+        self._topology_timer = -1  # the window is gone: no more chain look-ups
 
     # --------------------------------------------------------------- analyses
     def _tab_analyses(self):
@@ -1189,6 +1409,9 @@ class MainWindow(Gtk.ApplicationWindow):
             base_key = f"{base}/{out}"
         tcombo.set_active_id(spec.type)
         self._fill_data(row, spec.type, project, base_key)
+        for c, name in zip((ga, gb), groups):
+            if name not in project.group_names():  # a deleted group stays visible until it is replaced
+                c.append(name, f"{name} (missing)")
         ga.set_active_id(groups[0] if len(groups) > 0 else DEFAULT_GROUP)
         gb.set_active_id(groups[1] if len(groups) > 1 else DEFAULT_GROUP)
         if ga.get_active_id() is None:
@@ -1625,6 +1848,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.load_project(project, self.project_path)
         finally:
             self.planner, self.wizard = planner, wizard
+        self._on_topology_changed()  # chain groups for empty or untouched default groups
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
                         f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))

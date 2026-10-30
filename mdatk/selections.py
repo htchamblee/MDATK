@@ -90,6 +90,12 @@ def expand_groups(text: str, groups: Sequence, universe=None, _depth: int = 0) -
     return _GROUP_TOKEN.sub(repl, text)
 
 
+def rename_group_tokens(text: str, old: str, new: str) -> str:
+    """``text`` with every ``group:<old>`` token renamed to ``group:<new>``; a token naming another
+    group (``group:<old>er``, ``group:<old>_2``) is read whole, as :func:`expand_groups` reads it."""
+    return _GROUP_TOKEN.sub(lambda m: f"group:{new}" if m.group(1) == old else m.group(0), text)
+
+
 def resolve_selection(text: str, groups: Sequence, universe=None) -> str:
     """Resolve a selection that may be a bare group name, ``sel:...`` or a selection."""
     text = (text or "").strip()

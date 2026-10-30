@@ -450,8 +450,13 @@ class ListEditor(Gtk.Box):
             self.buttons.pack_start(btn, False, False, 0)
         self.pack_start(self.buttons, False, False, 0)
         self.on_change: Optional[Callable[[], None]] = None
+        # on_edit(row, column, old, new) runs before a typed value is stored; returning True means it
+        # dealt with the edit itself (applied or refused it)
+        self.on_edit: Optional[Callable[[int, int, str, str], bool]] = None
 
     def _edited(self, _rend, path, text, col):
+        if self.on_edit is not None and self.on_edit(int(path), col, self.store[path][col], text):
+            return
         self.store[path][col] = text
         if self.on_change:
             self.on_change()
