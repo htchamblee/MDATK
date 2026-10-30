@@ -640,6 +640,13 @@ class AmberBuildTool(Tool):
         libs = _lrna_names.leap_sources(s["leap_before_params"] + "\n" + s["leap_before_load"])[0]
         return [f.strip() for f in extra_lines(s["extra_libs"])] + libs
 
+    def _lrna_setup(self, s, ctx) -> bool:
+        """Whether the L residue names are worth checking against the own libraries (planner warning for a
+        structure from an earlier step, check in the build script): 'My own files' chosen, an own library
+        that looks like an L-RNA one, or a structure known to have L residues.  A D build with, say, a
+        ligand library is written as before 0.0.10."""
+        return s["lrna_library"] == "own" or self._has_l(s, ctx) or _lrna_like_libs(self._own_libs(s), ctx)
+
     @staticmethod
     def _frcmods_define_l(s, ctx) -> bool:
         """An extra parameter file that defines one of the generated types (LD LH LE) - an own L-RNA set."""
@@ -756,7 +763,7 @@ class AmberBuildTool(Tool):
                              "nucleic12_LRNA.lib with parm10_LRNA.dat)", ("lrna_library", "extra_libs", "extra_frcmod")))
         elif n_l and path and self._own_libs(s):
             out += self._check_lrna_names(s, ctx, path)
-        elif not path and ctx.has("structure") and self._own_libs(s):
+        elif not path and ctx.has("structure") and self._own_libs(s) and self._lrna_setup(s, ctx):
             out += self._check_lrna_names(s, ctx, "")
         if n_l and "LD" not in s["leap_before_params"] and not s["lrna_fixes"] and not self.lrna_generated(s, ctx):
             out.append(Issue("info", "L-RNA libraries use the atom types LD / LH; if leap reports unknown types, "
@@ -1132,7 +1139,8 @@ class AmberBuildTool(Tool):
             sh += ["# L-RNA residue names from the sugar chirality (C1'/C3'/C4'): LA/LC/LG/LU, LA5/LA3 ...",
                    f"python3 {tools_py} {self._lrna_args(s, pdb_in, named)}", require_file(named, "pdbtools"), ""]
             pdb_in = named
-            if not gen and self._own_libs(s):  # before the first tleap, so a mismatch costs seconds
+            # before the first tleap, so a mismatch costs seconds
+            if not gen and self._own_libs(s) and self._lrna_setup(s, ctx):
                 sh += self._lrna_names_check(s, ctx, files, named)
         lj = self._lj_mods(s)
         mods = " + ".join(m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]),
@@ -1252,6 +1260,32 @@ def _lib_units(paths: List[str], ctx) -> Tuple[set, List[str]]:
         except OSError:
             unread.append(cand)
     return units, unread
+
+
+_D_UNIT = re.compile(r"[RD]?[ACGTU][53N]?")  # D nucleotide units: A C G U, DA ... DT (older RA ...), ends
+_L_TYPES = {"LD", "LH", "LE"}  # the L-RNA oxygen types (Dudek & Trylska, MDATK's generated library)
+
+
+def _lrna_like_libs(paths: List[str], ctx) -> bool:
+    """Whether a readable OFF library looks like an L-RNA one: it uses an L-RNA atom type, or it has
+    nucleotide units (sugar atoms C1' and O4') under other names than the D ones (LA, A0, 0A ...).
+    A ligand library has neither; one that cannot be read tells nothing."""
+    for cand in _lib_paths(paths, ctx)[0]:
+        try:
+            with open(cand, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        units = re.findall(r"^!entry\.([^.\s]+)\.unit\.atoms table[^\n]*\n(.*?)(?=^!)", text + "\n!",
+                           re.MULTILINE | re.DOTALL)
+        for unit, block in units:
+            atoms = re.findall(r'^\s*"([^"]*)"\s+"([^"]+)"', block, re.MULTILINE)
+            if any(t in _L_TYPES for _a, t in atoms):
+                return True
+            sugar = {a.replace("*", "'") for a, _t in atoms} >= {"C1'", "O4'"}  # (C1* in older libraries)
+            if sugar and not _D_UNIT.fullmatch(unit):
+                return True
+    return False
 
 
 def _lib_types(paths: List[str], ctx) -> List[str]:
