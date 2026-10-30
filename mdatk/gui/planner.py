@@ -24,7 +24,7 @@ from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanEdge, PlanNode  # noqa: E402
 from ..projectfile import logged  # noqa: E402
-from ..workflows import TOOLS, tools_by_category  # noqa: E402
+from ..workflows import TOOLS, runstate, tools_by_category  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
                               connect, next_step, remove_node, step_title)
@@ -38,6 +38,7 @@ NODE_W = 236
 HEAD_H = 26
 DESC_H = 20
 CHECK = 13  # side of the "run" check box in a step's header
+FOOT_H = 18  # row under the ports: the step's previous run (Check previous runs) or the run it uses
 MAX_PARALLEL = 64
 PORT_H = 18
 PORT_R = 5.0
@@ -60,6 +61,8 @@ KIND_COLORS = {
 }
 STATUS_COLORS = {"error": (0.75, 0.11, 0.16), "warning": (0.90, 0.60, 0.05), "info": (0.20, 0.65, 0.35),
                  "ok": (0.20, 0.65, 0.35)}
+RUN_COLORS = {"done": (0.20, 0.65, 0.35), "partial": (0.90, 0.60, 0.05), "missing": (0.60, 0.60, 0.60),
+              "none": (0.60, 0.60, 0.60)}
 
 
 def _rgb_hex(rgb) -> str:
@@ -113,7 +116,23 @@ class PlannerCanvas(Gtk.DrawingArea):
             lines = max(1, len((node.settings.get("text") or "").splitlines()))
             return NODE_W, HEAD_H + 14 * min(lines, 12) + 12
         ins, outs = self.ports(node)
-        return NODE_W, HEAD_H + DESC_H + max(len(ins), len(outs), 1) * PORT_H + 8
+        foot = FOOT_H if self.run_info(node) else 0
+        return NODE_W, HEAD_H + DESC_H + max(len(ins), len(outs), 1) * PORT_H + 8 + foot
+
+    def run_info(self, node: PlanNode) -> Optional[Tuple[str, Tuple[float, float, float]]]:
+        """Text and colour of the step's footer: what 'Check previous runs' found, or the run it uses."""
+        run = self.win.prev_runs.get(node.id)
+        if run is not None:
+            text = {"done": f"done · {run.stamp or 'no stamp'} · {run.date}",
+                    "partial": f"partial · {run.stamp or 'no stamp'} · {len(run.found)} of "
+                               f"{len(run.found) + len(run.missing)} files",
+                    "missing": "missing · no outputs yet", "none": "no output files to look for"}[run.state]
+            if node.adopted:
+                text = ("uses " if run.adopted else f"uses {node.adopted} · found ") + text
+            return text, RUN_COLORS[run.state]
+        if node.adopted and checkable(node):
+            return f"uses the run of {node.adopted}", (0.10, 0.37, 0.71)
+        return None
 
     def port_pos(self, node: PlanNode, name: str, output: bool) -> Optional[Tuple[float, float]]:
         ins, outs = self.ports(node)
@@ -383,10 +402,20 @@ class PlannerCanvas(Gtk.DrawingArea):
                 else:
                     self._text(cr, label, px + 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
                                w / 2 - 14 if k < len(outs) else w - 24)
+        info = self.run_info(n)
+        if info is not None:  # footer: the previous run found, or the run the step uses
+            text, frgb = info
+            fy = n.y + h - FOOT_H / 2 - 3
+            cr.new_path()
+            cr.arc(n.x + 14, fy, 4.0, 0, 2 * math.pi)
+            cr.set_source_rgb(*frgb)
+            cr.fill()
+            self._text(cr, text, n.x + 23, fy + 3.5, 9.0, bool(n.adopted), (0.25, 0.25, 0.25), w - 32)
 
     def _draw_run_state(self, cr, state: str, cx: float, cy: float, head_rgb) -> None:
         """Run marker left of the status dot: a turning arc while the script runs, a ring while it
-        waits, then a tick (ok), a cross (failed) or a dash (cancelled / not started)."""
+        is queued, then a tick (ok), a cross (failed), two bars (waiting for a separately run script)
+        or a dash (cancelled / not started)."""
         r = 6.0
         cr.new_path()
         if state == "running":
@@ -422,6 +451,12 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.line_to(cx + 2.8, cy + 2.8)
             cr.move_to(cx + 2.8, cy - 2.8)
             cr.line_to(cx - 2.8, cy + 2.8)
+        elif state == "waiting":  # "pause": its separately run script has not finished
+            cr.set_source_rgb(*STATUS_COLORS["warning"])
+            cr.move_to(cx - 1.8, cy - 3.0)
+            cr.line_to(cx - 1.8, cy + 3.0)
+            cr.move_to(cx + 1.8, cy - 3.0)
+            cr.line_to(cx + 1.8, cy + 3.0)
         else:  # cancelled / skipped
             cr.set_source_rgb(0.45, 0.45, 0.45)
             cr.move_to(cx - 3.0, cy)
@@ -588,6 +623,16 @@ class PlannerCanvas(Gtk.DrawingArea):
                 self._menu_item(menu, "Untick for 'Run selected'" if n.id in self.win.checked
                                 else "Tick for 'Run selected'", lambda: self.win.toggle_checked(n.id))
                 self._menu_item(menu, "Write this step's files", lambda: self.win.write([n.id]))
+                ids = self.win.selected_in_order() if n.id in self.win.checked else [n.id]
+                self._menu_item(menu, f"Check previous runs ({len(ids)} ticked steps)" if len(ids) > 1
+                                else "Check previous runs", lambda: self.win.check_runs(ids))
+                run = self.win.prev_runs.get(n.id)
+                if run is not None and run.state == "done" and run.stamp and not run.adopted:
+                    self._menu_item(menu, f"Use the outputs of its run of {run.stamp}",
+                                    lambda: self.win.adopt_runs([n.id]))
+                if n.adopted:
+                    self._menu_item(menu, f"Stop using the run of {n.adopted} (run the step again)",
+                                    lambda: self.win.forget_runs([n.id]))
             elif n.tool == "mdatk":
                 self._menu_item(menu, "Use for MDATK analysis", lambda: self.win.use_for_analysis(n))
             self._menu_item(menu, "Duplicate", lambda: self.win.duplicate(n))
@@ -602,6 +647,8 @@ class PlannerCanvas(Gtk.DrawingArea):
                     [m.id for m in self.workflow.nodes if checkable(m)]))
                 if self.win.checked:
                     self._menu_item(menu, "Untick all steps", lambda: self.win.set_checked([]))
+                    self._menu_item(menu, "Check previous runs of the ticked steps",
+                                    lambda: self.win.check_runs(self.win.selected_in_order()))
                 menu.append(Gtk.SeparatorMenuItem())
                 for category, tools in tools_by_category():
                     sub = Gtk.Menu()
@@ -633,7 +680,9 @@ class PlannerWindow(Gtk.Window):
         self._details_node: Optional[str] = None
         self._loading = False
         self.checked: Set[str] = set()  # steps ticked for "Run selected" (not saved with the project)
-        self.run_state: Dict[str, str] = {}  # node id -> queued | running | ok | failed | cancelled | skipped
+        # node id -> queued | running | ok | failed | cancelled | skipped | waiting
+        self.run_state: Dict[str, str] = {}
+        self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
         self._spin_id = 0
         self._closed = False
         self._run_token = 0  # bumped by each run and by reload: callbacks of an older run are ignored
@@ -692,6 +741,7 @@ class PlannerWindow(Gtk.Window):
         self.canvas.selected = None
         self.checked.clear()
         self.run_state.clear()
+        self.prev_runs.clear()
         self._run_token += 1
         self.changed()
 
@@ -764,6 +814,12 @@ class PlannerWindow(Gtk.Window):
             b.connect("clicked", lambda *_, f=f: self.canvas.set_zoom(self.canvas.zoom * f))
             bar.pack_start(b, False, False, 0)
         bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
+        bar.pack_start(W.button("Check previous runs", lambda: self.check_runs(None),
+                                "Look in each step's folder for the output files of an earlier run (under "
+                                "the plan's time stamp, else an earlier one) and mark the step done, partial "
+                                "or missing. A step can then use the outputs it found: the steps after it "
+                                "read them, and it is not written or run again", "edit-find-symbolic"),
+                       False, False, 0)
         bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
         par = Gtk.Box(spacing=4)
@@ -877,6 +933,22 @@ class PlannerWindow(Gtk.Window):
         self.d_files.set_selectable(True)
         self.d_files.set_line_wrap_mode(Pango.WrapMode.CHAR)
         box.pack_start(self.d_files, False, False, 0)
+        self.d_prev = W.label("", wrap=True)  # the previous run found, or the one the step uses
+        self.d_prev.set_selectable(True)
+        self.d_prev.set_line_wrap_mode(Pango.WrapMode.CHAR)
+        box.pack_start(self.d_prev, False, False, 0)
+        prev = Gtk.Box(spacing=4)
+        self.d_check = W.button("Check previous run", lambda: self.check_runs([self._details_node]),
+                                "Look in the step's folder for the output files of an earlier run")
+        prev.pack_start(self.d_check, False, False, 0)
+        self.d_adopt = W.button("Use this run", lambda: self.adopt_runs([self._details_node]),
+                                "Use the outputs found: the steps after this one read them, and this step is "
+                                "not written or run again (saved with the project)")
+        prev.pack_start(self.d_adopt, False, False, 0)
+        self.d_forget = W.button("Stop using it", lambda: self.forget_runs([self._details_node]),
+                                 "Write and run this step again; the steps after it read its new outputs")
+        prev.pack_start(self.d_forget, False, False, 0)
+        box.pack_start(prev, False, False, 0)
         self.d_issues = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         box.pack_start(self.d_issues, False, False, 0)
         sw = Gtk.ScrolledWindow()
@@ -904,10 +976,12 @@ class PlannerWindow(Gtk.Window):
                     self.d_title.set_markup("<b>Nothing selected</b>")
                     self.d_desc.set_text("Select a box to see its files and checks. Double-click it to edit "
                                          "it in the wizard. Right-click the canvas to add steps.")
-                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_run, self.d_use):
+                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_run, self.d_use,
+                          self.d_check, self.d_adopt, self.d_forget):
                     w.set_sensitive(False)
                 self.d_note_sw.hide()
                 self.d_files.set_text("")
+                self.d_prev.set_text("")
                 return
             tool = TOOLS.get(n.tool)
             self.d_title.set_markup(f"<b>{GLib.markup_escape_text(step_title(n))}</b>")
@@ -940,6 +1014,12 @@ class PlannerWindow(Gtk.Window):
                     for port, v in step.outputs.items():
                         lines.append(f"  {port}: {', '.join(v.paths[:2])}{' …' if len(v.paths) > 2 else ''}")
             self.d_files.set_text("\n".join(lines))
+            self.d_prev.set_text(self._previous_run_text(n) if gen else "")
+            run = self.prev_runs.get(n.id)
+            self.d_check.set_sensitive(gen)
+            self.d_adopt.set_sensitive(bool(gen and run is not None and run.state == "done" and run.stamp
+                                            and not run.adopted))
+            self.d_forget.set_sensitive(bool(gen and n.adopted))
             if step is not None:
                 for issue in step.issues:
                     lab = W.label(f'<span foreground="{LEVEL_COLORS[issue.level]}">'
@@ -1106,7 +1186,11 @@ class PlannerWindow(Gtk.Window):
     def write(self, node_ids: Optional[List[str]], run: bool = False) -> None:
         plan = self.resolve()
         ids = node_ids if node_ids is not None else list(plan.steps)
-        bad = [(plan.steps[n].label, i.message) for n in ids if n in plan.steps
+        if run:
+            plan = self._ask_adopted(plan, ids)
+            if plan is None:
+                return
+        bad = [(plan.steps[n].label, i.message) for n in ids if n in plan.steps and not plan.steps[n].adopted
                for i in plan.steps[n].issues if i.level == "error"]
         if bad:
             text = "\n".join(f"• {label}: {msg}" for label, msg in bad[:15])
@@ -1128,6 +1212,8 @@ class PlannerWindow(Gtk.Window):
         msg = f"Wrote {len(report.written)} files to {report.root}"
         if report.skipped:
             msg += f" ({len(report.skipped)} steps skipped)"
+        if report.kept:
+            msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
         self.set_status(msg)
         if hasattr(self.main, "append_log"):
             self.main.append_log("Project Planner: " + msg)
@@ -1135,12 +1221,114 @@ class PlannerWindow(Gtk.Window):
                 self.main.append_log(f"Master script: {report.master}")
         if run and hasattr(self.main, "run_scripts"):
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
+            jobs = plan_jobs(plan, ok_ids)
+            if not jobs and report.kept:
+                self.set_status(msg + "; nothing else to run")
+                return
             self._run_token += 1
             token = self._run_token
-            self.main.run_scripts(plan_jobs(plan, ok_ids), separate_scripts(plan, ok_ids), parent=self,
-                                  parallel=int(self.parallel_spin.get_value()),
+            separate = separate_scripts(plan, ok_ids)
+            self.main.run_scripts(jobs, separate, parent=self, parallel=int(self.parallel_spin.get_value()),
                                   on_state=lambda j, st: self._on_run_state(j, st, token),
-                                  on_finished=lambda: self._on_run_finished(token))
+                                  on_finished=lambda: self._on_run_finished(token),
+                                  with_separate=plan_jobs(plan, ok_ids, include_separate=True) if separate
+                                  else None)
+
+    # ------------------------------------------------------- previous runs
+    def _previous_run_text(self, n: PlanNode) -> str:
+        lines = []
+        if n.adopted:
+            lines.append(f"Uses the outputs of its run of {n.adopted}: the steps after it read them; it is "
+                         "not written or run again.")
+        run = self.prev_runs.get(n.id)
+        if run is not None:
+            lines.append("Previous run: " + run.summary())
+            if run.state == "partial":
+                lines += [f"  missing or unfinished: {p}" for p in run.missing[:6]]
+                if len(run.missing) > 6:
+                    lines.append(f"  … and {len(run.missing) - 6} more")
+        elif not n.adopted:
+            lines.append("Previous run: not checked ('Check previous runs')")
+        return "\n".join(lines)
+
+    def check_runs(self, node_ids: Optional[List[str]] = None) -> Dict[str, runstate.RunStatus]:
+        """'Check previous runs': look for the output files of earlier runs of every step (or ``node_ids``),
+        mark them on the boxes and offer to use complete runs the steps do not use yet."""
+        plan = self.resolve()
+        runs = runstate.check_runs(plan, node_ids)
+        if node_ids is None:
+            self.prev_runs = dict(runs)
+        else:
+            self.prev_runs.update(runs)
+        counts = {s: sum(1 for r in runs.values() if r.state == s) for s in ("done", "partial", "missing")}
+        self.set_status(f"Previous runs: {counts['done']} done, {counts['partial']} partial, "
+                        f"{counts['missing']} missing (folder {plan.root})")
+        self.changed(resolve=False)
+        offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
+        if offer:
+            text = "\n".join(f"• {plan.steps[n].label}: run {runs[n].stamp}, finished {runs[n].date}"
+                             for n in offer[:15])
+            if len(offer) > 15:
+                text += f"\n… and {len(offer) - 15} more"
+            if self._ask(f"Use the outputs of {len(offer)} finished run(s)?",
+                         text + "\n\nThe steps after them then read these files, and these steps are not "
+                                "written or run again (until 'Stop using it'). Saved with the project."):
+                self.adopt_runs(offer)
+        return runs
+
+    def adopt_runs(self, node_ids: List[str]) -> None:
+        """Let steps use the complete runs 'Check previous runs' found for them."""
+        plan = self.plan or self.resolve()
+        changed = runstate.adopt(plan, {n: self.prev_runs[n] for n in node_ids if n in self.prev_runs})
+        for nid in changed:
+            self.prev_runs[nid].adopted = True
+        if changed:
+            self.set_status(f"{len(changed)} step(s) use the outputs of an earlier run")
+        self.changed()
+
+    def forget_runs(self, node_ids: List[str]) -> None:
+        """Stop using earlier runs: those steps are written and run again."""
+        changed = runstate.forget(self.workflow, node_ids)
+        for nid in changed:
+            self.prev_runs.pop(nid, None)
+        if changed:
+            self.set_status(f"{len(changed)} step(s) will be written and run again")
+        self.changed()
+
+    def _adopted_choice(self, text: str, detail: str) -> str:
+        """'skip', 'rerun' or 'cancel' for steps of a run that use the outputs of an earlier run."""
+        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                buttons=Gtk.ButtonsType.NONE, text=text)
+        dlg.format_secondary_text(detail)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Run them again", Gtk.ResponseType.REJECT,
+                        "Skip them", Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        response = dlg.run()
+        dlg.destroy()
+        return {Gtk.ResponseType.OK: "skip", Gtk.ResponseType.REJECT: "rerun"}.get(response, "cancel")
+
+    def _ask_adopted(self, plan: Plan, ids: List[str]) -> Optional[Plan]:
+        """Before a run: steps among ``ids`` that use an earlier run are skipped, or (on request) run again
+        (they stop using it).  Returns the plan to run, or None when the user cancels."""
+        kept = [n for n in ids if n in plan.steps and plan.steps[n].adopted]
+        if not kept:
+            return plan
+        lines = []
+        for nid in kept[:15]:
+            step = plan.steps[nid]
+            run = runstate.run_status(plan, nid, step.adopted)
+            state = "complete" if run.state == "done" else f"{run.state}: {len(run.missing)} file(s) missing"
+            lines.append(f"• {step.label}: run {step.adopted} ({state})")
+        choice = self._adopted_choice(
+            f"{len(kept)} step(s) use the outputs of an earlier run",
+            "\n".join(lines) + "\n\nSkip them (the steps after them read those outputs), or run them again "
+                               "(they stop using the earlier run)?")
+        if choice == "cancel":
+            return None
+        if choice == "rerun":
+            self.forget_runs(kept)
+            return self.resolve()
+        return plan
 
     # ------------------------------------------------------- running steps
     def _on_parallel(self, spin) -> None:

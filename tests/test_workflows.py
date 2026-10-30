@@ -213,7 +213,8 @@ def test_amber_plan_chains_file_names():
     assert 'TOP="../01_amber-build/apt1_01_parmed_20261015-1432.parm7"' in script
     assert "-c ../01_amber-build/apt1_01_tleap_20261015-1432.rst7 -ref ../01_amber-build/" in script
     assert "-c apt1_03_min1_20261015-1432.rst7 -ref apt1_03_min1_20261015-1432.rst7" in script
-    assert "prod" not in script.split("cpptraj")[0].split("# eq-free")[0]
+    assert "-i apt1_03_prod" not in script  # production runs in its own script ...
+    assert script.rstrip().endswith("exit 75\nfi")  # ... and the main one waits for it (WAITING_STATUS)
     prod = files["apt1_03_amber-prod_20261015-1432.sh"]
     assert prod.role == "run-separate" and "-c apt1_03_eq-free_20261015-1432.rst7" in prod.content
     assert plan.steps[m.id].outputs["trajectory"].paths == ["03_amber-md/apt1_03_prod_20261015-1432.nc"]

@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .. import PROJECT_ABBREV, __version__
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
-                   script_header)
+                   script_header, separate_check)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -336,6 +336,11 @@ class GromacsTool(Tool):
             L += ["", "; extra"] + extra
         return "\n".join(L) + "\n"
 
+    @staticmethod
+    def _prod_split(s) -> bool:
+        return bool(s["separate_production"] and any(st["production"] and st["integrator"] != "steep"
+                                                     for st in s["stages"]))
+
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []
         n = ctx.name
@@ -352,6 +357,14 @@ class GromacsTool(Tool):
             return lines + [f'GMX="{s["gmx"].strip() or "gmx"}"', ""]
 
         main = preamble("GROMACS: conversion and MD stages", script)
+        waiting: List[str] = []
+        if self._prod_split(s):  # the main script must not report success while production has not run
+            # (mdrun writes a stage's .gro last); without per-stage resume, the first lines also keep a re-run
+            # from redoing the conversion and stages production started from
+            done = [f"[ -s {n(tags[k], 'gro')} ]" for k, st in enumerate(s["stages"])
+                    if st["production"] and st["integrator"] != "steep"]
+            head, waiting = separate_check(prod_script, done, "the production stages")
+            main += head
         need_posres = any(st["posres"] for st in s["stages"])
         if s["convert"] == "parmed":
             conv = n("convert", "py")
@@ -379,8 +392,7 @@ class GromacsTool(Tool):
                 "adds POSRES includes"))
             main += ["# Position restraints for the RNA (used by stages with define = -DPOSRES)",
                      f"python3 {posre} {top}", ""]
-        prod_split = s["separate_production"] and any(
-            st["production"] and st["integrator"] != "steep" for st in s["stages"])
+        prod_split = self._prod_split(s)
         prod = preamble("GROMACS production", prod_script) if prod_split else main
         mdrun_flags = []
         if s["gpu"]:
@@ -414,6 +426,7 @@ class GromacsTool(Tool):
                        require_file(n(tag, "gro"), f"mdrun ({tag})"), ""]
             prev_gro, prev_cpt = n(tag, "gro"), n(tag, "cpt")
             prev_kind = "md" if dyn else "min"
+        main += waiting
         files.append(GeneratedFile(script, "\n".join(main), "run", "runs the GROMACS stages"))
         if prod_split:
             files.append(GeneratedFile(prod_script, "\n".join(prod), "run-separate", "production stages"))

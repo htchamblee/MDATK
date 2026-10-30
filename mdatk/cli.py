@@ -9,6 +9,7 @@ Every GUI action is available here, driven by the same TOML project file::
     mdatk workflow generate amber-md -i topology=sys.parm7 -i coordinates=sys.rst7 --set engine=pmemd.MPI
     mdatk workflow write -p plan.mdatk.toml
     mdatk workflow run -p plan.mdatk.toml --step 3
+    mdatk workflow status -p plan.mdatk.toml --adopt
     mdatk pdb clean model.pdb -o model_amber.pdb --scheme amber --chain-reference start.pdb
     mdatk build helix --seq GGCAU --chirality L -o helix.pdb
     mdatk dict finish acedrg_out/ --code 0A5 -o 0A5.cif
@@ -647,11 +648,14 @@ def cmd_workflow_write(args) -> int:
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
         _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
-    print(json.dumps({"folder": report.root, "written": report.written, "skipped": report.skipped,
-                      "master": report.master, "summary": report.summary}, indent=2))
+    out = {"folder": report.root, "written": report.written, "skipped": report.skipped,
+           "master": report.master, "summary": report.summary}
+    if report.kept:  # steps that use the outputs of an earlier run: not written
+        out["kept"] = report.kept
+    print(json.dumps(out, indent=2))
     if args.run:
         ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
-        return _run_plan_scripts(plan, ok_ids, _project_file(args), parallel)
+        return _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate)
     return 0
 
 
@@ -664,7 +668,65 @@ def cmd_workflow_run(args) -> int:
         ids = [n.id for n in project.workflow.nodes if n.step == args.step]
         if not ids:
             raise ValueError(f"no step number {args.step} in the plan")
-    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project))
+    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate)
+
+
+def cmd_workflow_status(args) -> int:
+    """Look for the outputs of earlier runs of the plan's steps; --adopt / --forget store the choice."""
+    from .workflows import runstate
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    ids = None
+    if args.step is not None:
+        ids = [n.id for n in project.workflow.nodes if n.step == args.step]
+        if not ids:
+            raise ValueError(f"no step number {args.step} in the plan")
+    if (args.adopt or args.forget) and not args.params:
+        raise ValueError("give the project file (--project) that stores which runs the steps use")
+    if args.adopt and args.forget:
+        raise ValueError("--adopt and --forget exclude each other")
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    changed: List[str] = []
+    if args.forget:
+        changed = runstate.forget(project.workflow, ids)
+    runs = runstate.check_runs(plan, ids)
+    if args.adopt:
+        changed = runstate.adopt(plan, runs)
+    if changed:
+        use = {n.id: n.adopted for n in project.workflow.nodes if n.id in changed}
+
+        def store(wf):
+            for node in wf.nodes:
+                if node.id in use:
+                    node.adopted = use[node.id]
+
+        _edit_project_workflow(args.params, store)
+        plan = Plan(project.workflow, project.workflow_dir, project.groups)
+        runs = runstate.check_runs(plan, ids)
+    if args.json:
+        steps = [{"step": plan.steps[n].node.step, "title": plan.steps[n].label, "state": r.state,
+                  "stamp": r.stamp, "current": r.current, "adopted": r.adopted, "finished": r.date,
+                  "found": r.found, "missing": r.missing} for n, r in runs.items()]
+        print(json.dumps({"folder": plan.root, "stamp": plan.stamp, "changed": changed, "steps": steps},
+                         indent=2, ensure_ascii=False))
+        return 0
+    print(f"plan folder {plan.root}, time stamp {plan.stamp or '(none)'}")
+    for nid, r in runs.items():
+        print(f"{plan.steps[nid].label}: {r.summary()}")
+        if r.state == "partial" and not args.quiet:
+            for path in r.missing[:5]:
+                print(f"    missing or unfinished: {path}")
+            if len(r.missing) > 5:
+                print(f"    ... and {len(r.missing) - 5} more")
+    for nid in changed:
+        stamp = next(n.adopted for n in project.workflow.nodes if n.id == nid)
+        print(f"{plan.steps[nid].label}: " + (f"now uses the outputs of its run of {stamp}" if stamp
+                                               else "runs again (no longer uses an earlier run)"))
+    offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
+    if offer and not args.adopt:
+        print(f"{len(offer)} step(s) have a complete run they do not use yet: --adopt lets them use it "
+              "(they are then not written or run again)")
+    return 0
 
 
 def _parallel(args, project) -> int:
@@ -676,11 +738,22 @@ def _parallel(args, project) -> int:
     return max(1, int(project.workflow.parallel or 1))
 
 
-def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1) -> int:
-    """Run the main scripts of ``ids`` (all steps when None); 0 when every script succeeded."""
-    from .workflows.runner import ScriptFailed, plan_jobs, run_jobs, separate_scripts
-    jobs = plan_jobs(plan, ids)
+def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
+                      include_separate: bool = False) -> int:
+    """Run the main scripts of ``ids`` (all steps when None), with ``include_separate`` also the scripts
+    marked 'run separately'; 0 when every script succeeded, WAITING_STATUS when a step waits for a
+    separately run script (its dependents were not started), 1 when a script failed."""
+    from .workflows.base import WAITING_STATUS
+    from .workflows.runner import ScriptFailed, adopted_steps, plan_jobs, run_jobs
+    kept = adopted_steps(plan, ids)
+    for nid in kept:
+        step = plan.steps[nid]
+        print(f"{step.label} uses the outputs of its run of {step.adopted}: "
+              f"not run again (to run it: mdatk workflow status --forget --step {step.node.step})")
+    jobs = plan_jobs(plan, ids, include_separate)
     if not jobs:
+        if kept:
+            return 0
         print("no scripts to run", file=sys.stderr)
         return 1
     import threading
@@ -692,12 +765,20 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1)
             sys.stdout.flush()
 
     try:
-        run_jobs(jobs, project_path, on_line=show, parallel=parallel)
+        results = run_jobs(jobs, project_path, on_line=show, parallel=parallel)
     except ScriptFailed as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    for path in separate_scripts(plan, ids):
-        print(f"not started (run separately): {path}")
+    waiting = [r for r in results if r.status == "waiting"]
+    for r in waiting:
+        print(f"waiting: {r.job.title} is complete once its separately run script "
+              "has finished; run it, then this step again (or use --include-separate): "
+              + " ".join(r.job.separate))
+    if waiting:
+        skipped = sum(1 for r in results if r.status == "skipped")
+        if skipped:
+            print(f"{skipped} script(s) of later steps not started")
+        return WAITING_STATUS
     return 0
 
 
@@ -978,14 +1059,34 @@ def build_parser() -> argparse.ArgumentParser:
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "
                                                             "time (default: the project's setting, 1)")
+    w.add_argument("--include-separate", action="store_true",
+                   help="with --run: also run the scripts marked 'run separately' (e.g. production), each "
+                        "after its step's main script")
     w.set_defaults(func=cmd_workflow_write)
     w = wsub.add_parser("run", help="run the plan's main scripts (already written), each when the steps it "
-                                    "reads from succeeded; each run is logged in the project file")
+                                    "reads from succeeded; each run is logged in the project file. A step "
+                                    "whose separately run script has not finished is reported as waiting "
+                                    "(exit status 75) and the steps after it are not started")
     naming(w)
     w.add_argument("--step", type=int, help="only this step number")
     w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (default: "
                                                             "the project's setting, 1)")
+    w.add_argument("--include-separate", action="store_true",
+                   help="also run the scripts marked 'run separately' (e.g. production runs meant for a "
+                        "cluster), each after its step's main script and before the steps that read from it")
     w.set_defaults(func=cmd_workflow_run)
+    w = wsub.add_parser("status", help="look in each step's folder for the output files of earlier runs "
+                                       "(under the plan's time stamp or an earlier one): done, partial or "
+                                       "missing")
+    naming(w)
+    w.add_argument("--step", type=int, help="only this step number")
+    w.add_argument("--adopt", action="store_true",
+                   help="let steps with a complete run use its outputs: later steps read them and the step "
+                        "is not written or run again (stored in the project file)")
+    w.add_argument("--forget", action="store_true",
+                   help="stop using earlier runs (all steps, or --step): they are written and run again")
+    w.add_argument("--json", action="store_true", help="print the result as JSON")
+    w.set_defaults(func=cmd_workflow_status)
     w = wsub.add_parser("generate", help="stand-alone wizard: write one step's files")
     w.add_argument("tool", help="step type (see: mdatk workflow tools)")
     naming(w)

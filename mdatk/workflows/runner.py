@@ -4,7 +4,12 @@ Generated scripts are meant to be reviewed and normally run by hand.  On
 request, MDATK runs each step's main scripts (role ``run``) with ``bash``, streams
 their output to a callback and appends one entry per script to the project file's
 step log.  Scripts marked "run separately" (production runs meant for a cluster
-queue, long sampling runs) are never started here.
+queue, long sampling runs) are started only when asked for (``include_separate``).
+The main script of a step that has such a script exits with
+:data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished: the step
+is then *waiting*, which is not a failure, but the steps that depend on it are not
+started either.  Steps that use the outputs of an earlier run (``PlanNode.adopted``)
+are not run again.
 
 A step starts when every step it reads from (directly or through other steps of the
 plan) that is part of the same run has finished; up to ``parallel`` scripts run at
@@ -27,9 +32,12 @@ from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
+from .base import WAITING_STATUS
 
 LineFn = Callable[[str], None]
-StateFn = Callable[["ScriptJob", str], None]  # job, queued | running | ok | failed | cancelled | skipped
+# job, queued | running | ok | failed | cancelled | skipped | waiting (for a separately run script)
+StateFn = Callable[["ScriptJob", str], None]
+STOPPED = ("failed", "cancelled", "skipped", "waiting")  # the steps that depend on such a script do not start
 
 
 class ScriptFailed(RuntimeError):
@@ -82,19 +90,29 @@ class ScriptJob:
     citations: List[str] = field(default_factory=list)
     node_id: str = ""  # the plan step ("" = unknown: waits for every job before it)
     after: List[str] = field(default_factory=list)  # steps (node ids) of this run it must wait for
+    # the step's scripts marked 'run separately' (absolute): a main script waits for them to finish
+    separate: List[str] = field(default_factory=list)
+    role: str = "run"  # "run-separate": one of those, run on request after its step's main script
+
+    def waiting_message(self) -> str:
+        names = ", ".join(os.path.basename(p) for p in self.separate) or "a separately run script"
+        return f"waiting for a separately run script: {names}"
 
 
 @dataclass
 class ScriptResult:
     job: ScriptJob
-    status: str  # ok | failed | cancelled
+    status: str  # ok | failed | cancelled | skipped | waiting
     returncode: Optional[int]
     duration_s: float
-    message: str = ""  # why it failed (exit status, script missing, bash missing)
+    message: str = ""  # why it failed (exit status, script missing, bash missing) or what it waits for
 
 
-def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None) -> List[ScriptJob]:
-    """The main scripts of the plan's steps, in plan order (written or not)."""
+def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
+              include_separate: bool = False) -> List[ScriptJob]:
+    """The main scripts of the plan's steps, in plan order (written or not); with ``include_separate``
+    each step's scripts marked 'run separately' follow its main scripts.  Steps that use the outputs of an
+    earlier run (``PlanNode.adopted``) have no jobs: they are not run again."""
     from ..citations import step_citations
     from .plan import generate_step
 
@@ -116,28 +134,35 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None) -> List[ScriptJob]
     jobs: List[ScriptJob] = []
     for nid in chosen:
         step = plan.steps[nid]
-        if step.tool is None or not step.tool.generates or not step.ok:
+        if step.tool is None or not step.tool.generates or not step.ok or step.adopted:
             continue
         if not step.files:
             step.files = generate_step(step)
-        for f in step.files:
-            if f.role == "run":
-                jobs.append(ScriptJob(step.node.step, step.label,
-                                      os.path.join(plan.root, step.ctx.from_own(f.name)),
-                                      step_citations(step), nid,
-                                      [a for a in chosen if a in ancestors(nid)]))
+        path = {f.name: os.path.join(plan.root, step.ctx.from_own(f.name)) for f in step.files}
+        separate = [path[f.name] for f in step.files if f.role == "run-separate"]
+        after = [a for a in chosen if a in ancestors(nid)]
+        for role in ("run", "run-separate") if include_separate else ("run",):
+            for f in step.files:
+                if f.role == role:
+                    jobs.append(ScriptJob(step.node.step, step.label, path[f.name], step_citations(step), nid,
+                                          after, separate, role))
     return jobs
 
 
 def separate_scripts(plan, node_ids: Optional[Sequence[str]] = None) -> List[str]:
-    """Scripts the plan marks 'run separately' (listed, never started by MDATK)."""
+    """Scripts the plan marks 'run separately' (listed; started only with ``include_separate``)."""
     out = []
     for nid in plan.order:
         step = plan.steps[nid]
-        if (node_ids is None or nid in node_ids) and step.ctx is not None:
+        if (node_ids is None or nid in node_ids) and step.ctx is not None and not step.adopted:
             out += [os.path.join(plan.root, step.ctx.from_own(f.name)) for f in step.files
                     if f.role == "run-separate"]
     return out
+
+
+def adopted_steps(plan, node_ids: Optional[Sequence[str]] = None) -> List[str]:
+    """Steps (node ids, plan order) that use the outputs of an earlier run and are not run again."""
+    return [nid for nid in plan.order if (node_ids is None or nid in node_ids) and plan.steps[nid].adopted]
 
 
 def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = None) -> "tuple[int, str]":
@@ -183,6 +208,16 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = N
     return code, "\n".join(captured)
 
 
+def _checks_separate(path: str) -> bool:
+    """Whether a step's main script checks that its separately run scripts have finished (see
+    base.separate_check); older ones exit 0 having run only the part before production."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return f"exit {WAITING_STATUS}" in fh.read()
+    except OSError:
+        return False
+
+
 def _dependencies(jobs: Sequence[ScriptJob]) -> List[Set[int]]:
     """Job index -> indices of the jobs it waits for."""
     deps: List[Set[int]] = []
@@ -201,7 +236,12 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     """Run ``jobs``: each when the jobs it depends on succeeded, at most ``parallel`` at a time,
     otherwise in the given (plan) order.  Raises ScriptFailed when a script failed (after the
     independent ones finished) and ScriptCancelled when the run was cancelled.  An error of
-    ``on_line`` itself (e.g. a closed output pipe) stops every script and is re-raised."""
+    ``on_line`` itself (e.g. a closed output pipe) stops every script and is re-raised.
+
+    A main script that exits with WAITING_STATUS leaves its step *waiting* (result status
+    "waiting", not an exception) and its dependents not started - unless the step's separate
+    scripts are among ``jobs``: they then run next.  A separate script whose main script found
+    it finished (exit status 0) is not run again."""
     parallel = max(1, int(parallel))
     stop = cancel if cancel is not None else threading.Event()
     deps = _dependencies(jobs)
@@ -209,6 +249,9 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     results: List[ScriptResult] = []
     fatal: List[BaseException] = []  # an error of on_line / on_state: ends the whole run
     cond = threading.Condition()
+    with_main = {j.node_id for j in jobs if j.role == "run" and j.node_id}
+    separate_next = {j.node_id for j in jobs if j.role == "run-separate" and j.node_id}
+    waited: Set[str] = set()  # steps whose main script waits for their separate scripts (they run next)
 
     def state(i: int, value: str) -> None:
         if on_state is not None:
@@ -225,6 +268,10 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
         t0 = time.monotonic()
         outcome, code, message = "failed", None, ""
         try:
+            if job.role == "run-separate" and job.node_id in with_main and job.node_id not in waited:
+                line_fn(f"{rel} has already finished (its step's main script says so) - not run again")
+                outcome = "ok"
+                return
             with logged(project_path, f"{job.step:02d}", job.title, job.citations) as entry:
                 entry.command = f"bash {rel}"
                 entry.folder = os.path.dirname(job.path)
@@ -236,10 +283,26 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                     raise
                 entry.output = output
                 entry.summary = f"exit status {code}"
-                if code != 0:
+                main = job.role == "run" and bool(job.separate)
+                # a main script written by MDATK 0.0.8 or older "succeeds" whether or not production ran
+                legacy = main and code == 0 and not _checks_separate(job.path)
+                if main and (code == WAITING_STATUS or legacy):
+                    if job.node_id in separate_next:  # asked for: its separate scripts run next
+                        waited.add(job.node_id)
+                        entry.summary += " (its separately run scripts run next)"
+                        outcome = "ok"
+                    else:  # not a failure, but the step is not complete
+                        message = job.waiting_message() + (
+                            f" ({rel} was written by an older {PROJECT_ABBREV} and cannot tell whether that "
+                            "script has finished: write the step again)" if legacy else "")
+                        entry.status, entry.summary = "waiting", f"exit status {code}: {message}"
+                        line_fn(f"==== step {job.step:02d}: {job.title} - {message}")
+                        outcome = "waiting"
+                elif code != 0:
                     message = f"exit status {code}"
                     raise ScriptFailed(f"{rel} (step {job.step:02d}) exited with status {code}")
-                outcome = "ok"
+                else:
+                    outcome = "ok"
         except ScriptCancelled:
             stop.set()  # interrupted inside the script's thread (Ctrl-C in on_line): cancel the whole run
         except ScriptFailed as exc:  # non-zero exit, or the script / bash missing
@@ -269,13 +332,15 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                 for i in range(len(jobs)):
                     if i in status or stop.is_set():
                         continue
-                    bad = [k for k in deps[i] if status.get(k) in ("failed", "cancelled", "skipped")]
+                    bad = [k for k in deps[i] if status.get(k) in STOPPED]
                     if bad:
                         status[i] = "skipped"
                         results.append(ScriptResult(jobs[i], "skipped", None, 0.0))
                         state(i, "skipped")
+                        why = ("waits for a separately run script" if status[bad[0]] == "waiting"
+                               else "did not succeed")
                         on_line(f"==== step {jobs[i].step:02d}: {jobs[i].title} - not started (step "
-                                f"{jobs[bad[0]].step:02d} did not succeed)")
+                                f"{jobs[bad[0]].step:02d} {why})")
                         continue
                     if running < parallel and all(status.get(k) == "ok" for k in deps[i]):
                         status[i] = "running"

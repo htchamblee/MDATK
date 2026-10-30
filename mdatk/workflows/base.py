@@ -63,6 +63,13 @@ class StepContext:
         self.groups = list(groups or [])
         self.preview = False  # True while the wizard previews the files: no network or slow work
 
+    def with_stamp(self, stamp: str) -> "StepContext":
+        """The same step with another time stamp in its own file names (e.g. one of its earlier runs)."""
+        other = copy.copy(self)
+        other.stamp = stamp
+        other.inputs = dict(self.inputs)
+        return other
+
     # ------------------------------------------------------------- naming
     def name(self, tag: str, ext: str = "") -> str:
         """File name of one of this step's own files."""
@@ -242,6 +249,12 @@ class Tool:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
 
+    def finish_marks(self, s: Dict[str, Any], ctx: StepContext) -> List[Tuple[str, str]]:
+        """(plan-relative path, regular expression) pairs: a run of this step is complete only when each
+        file exists and its end matches (e.g. a program's closing timing lines), besides its output files.
+        Used when looking for earlier runs (mdatk.workflows.runstate)."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # helpers shared by the generators
@@ -291,6 +304,34 @@ def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
 def require_file(path: str, what: str) -> str:
     """Shell line that stops the script when a program did not produce ``path``."""
     return f'[ -s "{path}" ] || {{ echo "ERROR: {what} did not write {path}" >&2; exit 1; }}'
+
+
+# Exit status of a step's main script while part of the step runs in a separate script (e.g. production on
+# a cluster) that has not finished: "run that one, then this one again" (sysexits' EX_TEMPFAIL).  MDATK's
+# runner reports it as waiting, not as a failure, and does not start the steps that depend on the step.
+WAITING_STATUS = 75
+
+
+def separate_check(script: str, finished: Sequence[str], what: str) -> Tuple[List[str], List[str]]:
+    """Shell lines for the main script of a step that leaves ``what`` to the separate ``script``.
+
+    ``finished`` are shell tests that all succeed once that script has finished.  The first lines (placed
+    before the step's own work) end the main script at once when it has: the step is complete and nothing
+    is run again.  The last lines (placed at its very end) exit with :data:`WAITING_STATUS` and name the
+    script to run while it has not, so a step never reports success with its production missing."""
+    tests = [f"  {t} &&" for t in finished[:-1]] + [f"  {finished[-1]}"]
+    head = [f"# {what[:1].upper() + what[1:]} run in a separate script, e.g. on a cluster: this step is "
+            f"complete once", f"# bash {script} has finished",
+            "separate_done() {", *tests, "}",
+            "if separate_done; then",
+            f'  echo "{script} has finished: nothing left to run in this step"', "  exit 0", "fi", ""]
+    tail = [f"# The step is not complete before {what} have finished",
+            "if ! separate_done; then",
+            f'  echo "WAITING: {what} have not finished. Run them (e.g. on a cluster) with:" >&2',
+            f'  echo "  bash $PWD/{script}" >&2',
+            '  echo "then run this script again." >&2',
+            f"  exit {WAITING_STATUS}", "fi", ""]
+    return head, tail
 
 
 def fortran_float(x: float) -> str:

@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
-                   require_file, script_header, shell_quote)
+                   require_file, script_header, separate_check, shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import cp_retype as _cp_retype
@@ -1372,6 +1372,11 @@ class AmberRestraintsTool(Tool):
 
 _MD_KIND = {"kind": "md"}
 _MIN_KIND = {"kind": "min"}
+FINISHED_PATTERN = r"Total wall time|Run +done at"  # pmemd / sander print it when a run has finished
+# the shell test of 'Skip finished stages' (and of a step waiting for its separately run production)
+FINISHED_FN = ["# a stage counts as finished when its output has the final timing lines",
+               '# (pmemd: "Total wall time", sander: "Run   done at")',
+               f'finished() {{ [ -s "$1" ] && grep -qE "{FINISHED_PATTERN}" "$1"; }}', ""]
 
 STAGE_OPTIONS = [
     Option("name", "Name", "text", "stage", "Short stage name used in file names (letters, digits, "
@@ -1830,6 +1835,17 @@ class AmberMDTool(Tool):
     def resources(self, s):
         return ["ambertools", "pmemd"] + (["cpptraj"] if s.get("dry_pdb") or s.get("dry_traj") else [])
 
+    def _production_done(self, s, ctx, runs) -> List[str]:
+        """Shell tests that succeed once the separate production script has finished."""
+        prod = [r for r in runs if r["stage"]["production"]]
+        tests = [f"finished {r['out']}" for r in prod]
+        if s["dry_traj"] and any(r["nc"] for r in prod):
+            tests.append(f'[ -s {ctx.name("dry-prod", "nc")} ]')
+        return tests
+
+    def finish_marks(self, s, ctx):
+        return [(ctx.own(r["rtag"], "out"), FINISHED_PATTERN) for r in self._segments(s, ctx)]
+
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []
         runs = self._segments(s, ctx)
@@ -1870,15 +1886,18 @@ class AmberMDTool(Tool):
                 lines += [f"export CUDA_VISIBLE_DEVICES={s['gpu'].strip()}", ""]
             lines += [f'PMEMD="{pmemd}"', f'TOP="{top}"', ""]
             if s["resume"]:
-                lines += ["# a stage counts as finished when its output has the final timing lines",
-                          '# (pmemd: "Total wall time", sander: "Run   done at")',
-                          'finished() { [ -s "$1" ] && grep -qE "Total wall time|Run +done at" "$1"; }', ""]
+                lines += FINISHED_FN
             return lines
 
         main_name = ctx.name(self.tag, "sh")
         prod_name = ctx.name("amber-prod", "sh")
         main = preamble("Amber MD stages", main_name)
         prod = preamble("Amber production", prod_name) if prod_split else main
+        waiting: List[str] = []
+        if prod_split:  # the main script must not report success while production has not run
+            head, waiting = separate_check(prod_name, self._production_done(s, ctx, runs),
+                                           "the production stages")
+            main += ([] if s["resume"] else FINISHED_FN) + head
         prev_rst = crd
         for r in runs:
             st = r["stage"]
@@ -1914,6 +1933,7 @@ class AmberMDTool(Tool):
                 "autoimage", f"strip {mask} parmout {ctx.name('dry', 'parm7')}",
                 f"trajout {ctx.name('dry-prod', 'nc')} netcdf", "run", "EOF",
                 require_file(ctx.name("dry-prod", "nc"), "cpptraj"), ""]
+        main += waiting
         files.append(GeneratedFile(main_name, "\n".join(main), "run", "runs the MD stages"))
         if prod_split:
             files.append(GeneratedFile(prod_name, "\n".join(prod), "run-separate",
