@@ -82,7 +82,7 @@ def test_phenix_script_for_both_versions(version):
     assert f"# {R.PHENIX_VERSIONS[version]['label']}" in text
     assert "phenix.real_space_refine \\\n    /data/m.pdb \\\n    /data/emd_1.map \\\n" in text
     assert "    /data/0A5.cif \\\n    /data/0G3.cif \\\n" in text
-    assert "resolution=3.5 \\" in text and "macro_cycles=3 \\" in text
+    assert "\n    resolution=3.5 \\\n" in text and "macro_cycles=3 \\" in text  # not e.g. map_resolution=
     assert "run=minimization_global+rigid_body+local_grid_search \\" in text
     assert "pdb_interpretation.secondary_structure.enabled=True \\" in text
     assert "nproc=8 \\" in text and "random_seed=42 \\" in text

@@ -163,8 +163,8 @@ Files for the `namd-mdff` planner step (NAMD reading the Amber topology natively
 | `mixed_dl_model.pdb` | the model in the map's frame: a D duplex (chains A/B, GCGC) next to its L mirror image (chains C/D, LG/LC), MDATK helices |
 | `mixed_dl_4A.mrc` | a 4 Å map simulated from that model |
 | `namd_mdff.mdatk.toml` | a project: model → Amber build (OL3 + CP, NBfix19, 0BPh, L-RNA fixes, nanoMg, TIP3P, HMR) → NAMD MDFF, map and model connected |
-| `generated/02_namd-mdff/` | what `mdatk workflow write` writes for the MDFF step: one NAMD configuration per stage (`amber on`, `mgridforce`, `extraBonds`, `colvars`), the energy comparison with sander, the preparation helper and the run script |
-| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the L-RNA-safe chirality impropers (`extraBonds`), the base-pair Colvars walls, positional restraints, the periodic cell (`.xsc`) and its log |
+| `generated/02_namd-mdff/` | what `mdatk workflow write` writes for the MDFF step: one NAMD configuration per stage (`amber on`, `mgridforce`, `extraBonds`), the energy comparison with sander, the preparation helper and the run script |
+| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the `extraBonds` restraint files (L-RNA-safe chirality impropers, secondary-structure dihedrals of the paired residues, base-pair hydrogen-bond walls), the positional restraints, the periodic cell (`.xsc`) and its log |
 | `prepared/stand-in/` | the topology and coordinates `prepared/` was made from |
 
 **`prepared/stand-in/` is not a force field.** Without AmberTools in the build environment the
@@ -251,7 +251,9 @@ def make_example(out: str) -> None:
     cfg = TOOLS["namd-mdff"].prep_settings(step.settings, step.ctx)
     names = {k: os.path.basename(v) for k, v in cfg.items() if isinstance(v, str) and v}
     cfg.update({k: os.path.join(prep, names[k]) for k in ("potential", "grid_pdb", "restraint_pdb", "extrabonds",
-                                                          "colvars", "xsc", "prep_json", "coordinates")})
+                                                          "xsc", "prep_json", "coordinates")})
+    for key in ("ssdihedrals", "basepairs"):  # restraint files named inside their own settings
+        cfg[key]["file"] = os.path.join(prep, os.path.basename(cfg[key]["file"]))
     cfg["topology"] = os.path.join(stand, "mixed_dl_stand-in.parm7")
     cfg["model"], cfg["map"] = model, mapfile
     cfg["positional"] = {"selection": "backbone", "k": 1.0}

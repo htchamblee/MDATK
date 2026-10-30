@@ -29,8 +29,8 @@
    "05_amber-md/apt1_05_min2_20261015-1432.in": "7a5f76189cde2f8f3972",
    "05_amber-md/apt1_05_prod_20261015-1432.in": "2810973938366928401b",
    "06_vmd/apt1_06_vmd_20261015-1432.sh": "ee0d72b86e42d648b0a2",
-   "06_vmd/apt1_06_vmd_20261015-1432.tcl": "d20ac88b0284be01c875",
-   ":issues": "e22e173ad6478573c39e",
+   "06_vmd/apt1_06_vmd_20261015-1432.tcl": "977918f97b1b31f8f284",
+   ":issues": "1a7704800636c0399299",
    "apt1_00_plan_20261015-1432.md": "730f7fbb7ae9aea706c0",
    "apt1_00_plan_20261015-1432.sh": "9263e80daa31fe6bebaf"
   },
@@ -135,11 +135,11 @@
    "05_amber-md/golden_05_min2_20261015-1432.in": "033a897bdc509f7e7710",
    "05_amber-md/golden_05_prod_20261015-1432.in": "5df16431d2179ff073b2",
    "06_vmd/golden_06_vmd_20261015-1432.sh": "be256d44a50484c9d40b",
-   "06_vmd/golden_06_vmd_20261015-1432.tcl": "682ef2a0fd3b33c96753",
+   "06_vmd/golden_06_vmd_20261015-1432.tcl": "4f1b2353dd9f3c6c6df0",
    ":forced:n1:golden_01_farfar2_20261015-1432.fasta": "01ba4719c80b6fe911b0",
    ":forced:n1:golden_01_farfar2_20261015-1432.flags": "b2d7ebc4ee07cdf4bfe8",
    ":forced:n1:golden_01_farfar2_20261015-1432.sh": "381bdb162c405cdb5452",
-   ":issues": "629bd1c5b1d3f968a261",
+   ":issues": "a3eb50a1618afb56c534",
    "golden_00_plan_20261015-1432.md": "ac5db0de1a53be7b14b9",
    "golden_00_plan_20261015-1432.sh": "f8583eb45ee6ba25ae70"
   },
@@ -1492,26 +1492,33 @@
   },
   "tool:vmd:align=False": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "031ab21fec6f46621f8f",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "50cae743c7b15d72ef3c",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:background=black": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "01568a43d6b56eaae5ee",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "d18d6bcc629a1e990cea",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:bases=False": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "ccf4b66854f5144549a8",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "d11ecc5cd5b8b26673db",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:default": {
+   "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
+   "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
+   "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
+  },
+  "tool:vmd:default:no-groups": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
    "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
    ":issues": "c83b7c7f0a8a4ea08793",
@@ -1520,8 +1527,8 @@
   },
   "tool:vmd:depthcue=True": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "4e60ca083197ca179bbe",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "98e130b7ec27614187dc",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
@@ -1534,183 +1541,183 @@
   },
   "tool:vmd:ions=False": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "160240f7de9912599280",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "86298cd3f5e2e7e281c6",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:material=AOShiny": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "279add2fc73f70e7efff",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "421664c8e8c79f3056ac",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:material=Diffuse": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "9c7e269a2932e7ca9b06",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "6b9643374aee3a06cd22",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:material=Glossy": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "3d75b33a03aebf7b37b7",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "2b5d0295080f9f97ad5b",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:material=Opaque": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "52877d12f2d639bfbb76",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "3d3ec67fd1de6eb7ef33",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:material=Transparent": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "43e4dadff529a2d7490d",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "1693adf9eeafd1823010",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:projection=Perspective": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "75bca6e36dc6ade0bd42",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "7c2d6fedc8789eea284b",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:render=movie": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "81fb8c3931cf26f892bc",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c8af11c61e314eefb0e1",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "588153116e94566ef2c5",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "35e1699b48311a236a59",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:render=snapshot": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "22c202b8df81d2828ea8",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "295d863968e002e66aa6",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "f32a92ee729f9916252f",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "91a819c6b6d91020dfc0",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:renderer=snapshot": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=CPK": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "4e9e81465ff5315442a4",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "2f43d737d42be56962f0",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=Licorice": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "ce3925b4081c63fe9c62",
-   ":issues": "36ebba006843ef0d7db6",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "b5cb72870badf6eeb1c5",
+   ":issues": "181f1acbeba07785c022",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=Lines": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "473c0f67c8aee2e6fdef",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "24c15dca442d778ae09a",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=QuickSurf": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "3fa8e9e65830a18e22c0",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "55e7b0f5fe436800093f",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=Ribbons": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "16118f1fca35767fb278",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "4efd10f64dca573fe79a",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=Surf": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "63aa75a73b96d66ea570",
-   ":issues": "ec3f795298cc2f5db934",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "877a383bf4a253a992c8",
+   ":issues": "993fcdedeb82bd94740a",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=Tube": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "3b569eeffa5edbc6233e",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "66a3b4eb4adee858f7b1",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:rna_style=VDW": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "404f2bdd96de4cbde84b",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "15d6a7d34e8e92808bbf",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=CPK": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=Lines": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=NewCartoon": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=QuickSurf": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=Ribbons": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=Surf": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=Tube": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   },
   "tool:vmd:selection_style=VDW": {
    "03_vmd/golden_03_vmd_20261015-1432.sh": "8ec3a9bae8912eb1ae04",
-   "03_vmd/golden_03_vmd_20261015-1432.tcl": "34e17f84cfb083354336",
-   ":issues": "c83b7c7f0a8a4ea08793",
+   "03_vmd/golden_03_vmd_20261015-1432.tcl": "c12cc46f06207279f2fd",
+   ":issues": "80037db7a76e322bce44",
    "golden_00_plan_20261015-1432.md": "71a51119ea0ee40737c5",
    "golden_00_plan_20261015-1432.sh": "1cb908ad5b4934d1adf2"
   }

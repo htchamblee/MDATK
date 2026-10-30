@@ -9,6 +9,9 @@ planner message for:
   combo choice selected, one at a time (all inputs connected to dummy paths);
 * the example projects in ``examples/``.
 
+Every case is planned with residue groups, as the app plans it: the example projects with their own,
+the others with those of a new project.  One VMD case without groups keeps the fallback pinned.
+
 ``test_released_output_unchanged`` (tests/test_golden.py) regenerates the same cases with the
 current code and compares.  Two things are normalised before hashing, because they change with
 every release or every day by design: the MDATK version in "written by MDATK x.y.z" texts and
@@ -60,12 +63,13 @@ def _variants(tool) -> Iterator[Tuple[str, Dict]]:
                         yield f"{opt.key}={value}", {opt.key: value}
 
 
-def cases(tool_names=None) -> Iterator[Tuple[str, object]]:
-    """(case id, WorkflowParams) for every case; ``tool_names`` limits the per-tool cases."""
-    from mdatk.config import PlanNode, WorkflowParams
+def cases(tool_names=None) -> Iterator[Tuple[str, object, list]]:
+    """(case id, WorkflowParams, residue groups) for every case; ``tool_names`` limits the per-tool cases."""
+    from mdatk.config import PlanNode, Project, WorkflowParams
     from mdatk.workflows import TOOLS
     from mdatk.workflows.plan import TEMPLATES, apply_template
 
+    groups = Project().groups  # what every new project starts with
     for name in sorted(TEMPLATES):
         wf = WorkflowParams(project_name="golden", stamp=STAMP)
         apply_template(wf, name)
@@ -75,7 +79,7 @@ def cases(tool_names=None) -> Iterator[Tuple[str, object]]:
                 if not port.optional and not any(e.target == node.id and e.input == port.name
                                                  for e in wf.edges):
                     node.files.setdefault(port.name, _dummy(port))
-        yield f"template:{name}", wf
+        yield f"template:{name}", wf, groups
     for name in sorted(tool_names if tool_names is not None else TOOLS):
         tool = TOOLS[name]
         if not tool.generates:
@@ -84,14 +88,17 @@ def cases(tool_names=None) -> Iterator[Tuple[str, object]]:
             settings = tool.normalise(copy.deepcopy(change))
             node = PlanNode(id="x", tool=name, step=3, settings=settings,
                             files={p.name: _dummy(p) for p in tool.input_ports(settings)})
-            yield f"tool:{name}:{label}", WorkflowParams(project_name="golden", stamp=STAMP, nodes=[node])
+            wf = WorkflowParams(project_name="golden", stamp=STAMP, nodes=[node])
+            yield f"tool:{name}:{label}", wf, groups
+            if name == "vmd" and label == "default":  # the fallback when a project has no groups
+                yield f"tool:{name}:{label}:no-groups", copy.deepcopy(wf), []
 
 
-def run_case(wf, root: str) -> Dict[str, str]:
+def run_case(wf, root: str, groups=()) -> Dict[str, str]:
     """Hashes of the planner messages and of every written file (paths relative to the plan folder)."""
     from mdatk.workflows.plan import Plan
 
-    plan = Plan(wf, root)
+    plan = Plan(wf, root, list(groups))
     out: Dict[str, str] = {}
     messages = [f"plan {i.level}: {i.message}" for i in plan.issues]
     for nid in plan.order:
@@ -117,21 +124,21 @@ def run_case(wf, root: str) -> Dict[str, str]:
     return out
 
 
-def example_cases(examples_dir: str) -> Iterator[Tuple[str, object]]:
+def example_cases(examples_dir: str) -> Iterator[Tuple[str, object, list]]:
     from mdatk.config import Project
     for fname in sorted(os.listdir(examples_dir)):
         if fname.endswith(".mdatk.toml"):
             project = Project.load(os.path.join(examples_dir, fname))
             project.workflow.stamp = project.workflow.stamp or STAMP
-            yield f"example:{fname}", project.workflow
+            yield f"example:{fname}", project.workflow, project.groups
 
 
 def collect(examples_dir: str, tool_names=None) -> Dict[str, Dict[str, str]]:
     result: Dict[str, Dict[str, str]] = {}
-    for case, wf in list(cases(tool_names)) + list(example_cases(examples_dir)):
+    for case, wf, groups in list(cases(tool_names)) + list(example_cases(examples_dir)):
         with tempfile.TemporaryDirectory(prefix="mdatk-golden-") as tmp:
             root = os.path.join(tmp, "plan")
-            result[case] = run_case(wf, root)
+            result[case] = run_case(wf, root, groups)
     return result
 
 

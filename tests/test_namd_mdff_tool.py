@@ -499,3 +499,25 @@ def test_cpptraj_is_cited():
     assert TOOLS["namd-mdff"].resources(st.settings) == ["namd", "mdff", "cpptraj"]
     sh = {f.name: f.content for f in plan.generate(["m"])["m"]}[f"apt1_02_namd-mdff_{STAMP}.sh"]
     assert "cpptraj -p" in sh and "Roe D. R." in sh.split("set -eo pipefail")[0]
+
+
+def test_example_generator(tmp_path, monkeypatch):
+    # examples/namd_mdff is made by this generator: it must run, keep everything in its folder and leave
+    # no path of the machine it ran on
+    from mdatk.config import Project
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "example"
+    ms.make_example(str(out))
+    assert os.listdir(tmp_path) == ["example"]
+    prepared = os.listdir(out / "prepared")
+    for tag in ("potential", "coupling", "posres", "chirality", "ssdihedrals", "basepairs", "cell", "prep", "start"):
+        assert any(f"_{tag}_" in f for f in prepared), tag
+    for root, _dirs, files in os.walk(out):
+        for f in files:
+            if not f.endswith(".mrc"):
+                assert str(tmp_path) not in open(os.path.join(root, f), errors="replace").read(), f
+    log = next(f for f in prepared if f.endswith(".log"))
+    assert "16 nucleotides, 8 L" in (out / "prepared" / log).read_text()
+    project = Project.load(str(out / "namd_mdff.mdatk.toml"))
+    plan = Plan(project.workflow, str(out / "generated"))
+    assert not messages(plan.steps["mdff"], "error"), messages(plan.steps["mdff"])
