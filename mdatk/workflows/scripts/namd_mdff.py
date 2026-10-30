@@ -43,6 +43,7 @@ import os
 import re
 import struct
 import sys
+import zlib
 
 WATER = {"WAT", "HOH", "TIP3", "TIP4", "TIP5", "SOL", "SPC", "OPC", "T3P", "T4P", "T4E"}
 STANDARD_MASS = {0: 0.0, 1: 1.008, 3: 6.94, 6: 12.011, 7: 14.007, 8: 15.999, 9: 18.998, 11: 22.990,
@@ -57,6 +58,7 @@ SUGAR_CENTRES = (("C1'", ("O4'", "N", "C2'")), ("C2'", ("C1'", "O2'", "C3'")),
 L_CHIRAL_SIGNS = (("C4'", ("O4'", "C3'", "C5'"), 1.0), ("C3'", ("O3'", "C4'", "C2'"), -1.0),
                   ("C1'", ("O4'", "N", "C2'"), 1.0))
 MIN_CHIRAL_VOLUME = 0.5
+CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 BACKBONE = ("P", "O5'", "C5'", "C4'", "C3'", "O3'")
 _FMT_RE = re.compile(r"\(\s*(\d+)\s*([aAiIeEfF])\s*(\d+)")
 _NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
@@ -111,7 +113,13 @@ class Topology:
             raise PrepError(f"{path}: not an Amber topology (missing {', '.join(missing)})")
         ptr = s["POINTERS"]
         self.path = path
+        if len(ptr) < 12:
+            raise PrepError(f"{path}: truncated topology (POINTERS)")
         self.natom, self.nres = ptr[0], ptr[11]
+        short = [k for k, n in (("ATOM_NAME", self.natom), ("MASS", self.natom), ("RESIDUE_LABEL", self.nres),
+                                ("RESIDUE_POINTER", self.nres)) if len(s[k]) < n]
+        if short:
+            raise PrepError(f"{path}: truncated topology ({', '.join(short)} shorter than the atom / residue counts)")
         self.ifbox = ptr[27] if len(ptr) > 27 else 0
         self.numextra = ptr[30] if len(ptr) > 30 else 0
         self.names = s["ATOM_NAME"][:self.natom]
@@ -211,20 +219,27 @@ def start_coordinates(cfg, source):
     top = Topology(cfg["topology"])
     if is_pdb(source):
         atoms = read_pdb_atoms(source)
-        if len(atoms) != top.natom:
-            raise PrepError(f"{source} has {len(atoms)} atoms, the topology {top.natom}: use the PDB written from "
-                            "this topology (Amber build: dry PDB)")
-        mismatch = [k for k, a in enumerate(atoms) if _canonical(a[2]) != _canonical(top.names[k])][:3]
-        if mismatch:
-            k = mismatch[0]
-            raise PrepError(f"atom {k + 1} is {atoms[k][2]} in {source} but {top.names[k]} in the topology: the PDB "
-                            "is not in the topology's atom order")
+        problem = pdb_order_problem(top, atoms, source)
+        if problem:
+            raise PrepError(problem)
         write_rst7(cfg["coordinates"], [a[3] for a in atoms], title=f"from {os.path.basename(source)} (MDATK)")
     else:
         xyz, box, _vel = read_rst7(source, top.natom)
         write_rst7(cfg["coordinates"], xyz, box, title=f"from {os.path.basename(source)} (MDATK)")
     print(f"start coordinates: {cfg['coordinates']} from {source}")
     return 0
+
+
+def pdb_order_problem(top, atoms, source):
+    """Why a PDB's atoms are not the topology's atoms in the topology's order (None when they are)."""
+    if len(atoms) != top.natom:
+        return (f"{source} has {len(atoms)} atoms, the topology {top.natom}: use the PDB written from this "
+                "topology (Amber build: dry PDB)")
+    for k, a in enumerate(atoms):
+        if _canonical(a[2]) != _canonical(top.names[k]):
+            return (f"atom {k + 1} is {a[2]} in {source} but {top.names[k]} in the topology: the PDB is not in "
+                    "the topology's atom order")
+    return None
 
 
 def read_pdb_atoms(path):
@@ -322,6 +337,8 @@ def read_mrc(path):
         if len(buf) < count * data.itemsize:
             raise PrepError(f"{path}: file is shorter than its header says")
         data.frombytes(buf)
+        if gz:
+            fh.read()  # to the end of the stream, where gzip checks its CRC
     if (e == "<") != (sys.byteorder == "little") and data.itemsize > 1:
         data.byteswap()
     values = array.array("f", data) if mode != 2 else data
@@ -576,9 +593,22 @@ def residue_base(label):
     return m.group(2) if m else None
 
 
+def glycosidic(coords, base):
+    """The base atom bonded to C1': N9 (purines), N1 (pyrimidines) or C5 (C-nucleosides such as
+    pseudouridine), found by distance; from the base letter when none is within bonding distance."""
+    c1 = coords.get("C1'")
+    if c1 is not None:
+        for name in ("N9", "N1", "C5"):
+            if name in coords:
+                d = sub(coords[name], c1)
+                if dot(d, d) < 1.7 * 1.7:
+                    return name
+    return "N9" if base in ("A", "G") or (base not in ("C", "U", "T") and "N9" in coords) else "N1"
+
+
 def geometry_hand(coords, base):
     """'D', 'L' or None (no usable or contradicting centres) from the ribose chiral volumes."""
-    glyco = "N9" if base in ("A", "G") or (base not in ("C", "U", "T") and "N9" in coords) else "N1"
+    glyco = glycosidic(coords, base)
     votes = {"D": 0, "L": 0, "flat": 0}
     for centre, partners, l_sign in L_CHIRAL_SIGNS:
         names = [glyco if p == "N" else p for p in partners]
@@ -625,8 +655,7 @@ def chirality_lines(top, xyz, k, targets):
             notes.append(f"residue {r + 1} ({label}): hand {geo} taken from the geometry (name not recognised)")
         elif geo is None:
             notes.append(f"residue {r + 1} ({label}): geometry gives no clear hand; {hand} from the name")
-        base = residue_base(label)
-        glyco = "N9" if base in ("A", "G") or (base is None and "N9" in atoms) else "N1"
+        glyco = glycosidic({n: xyz[i] for n, i in atoms.items()}, residue_base(label))
         sign = 1.0 if use == "D" else -1.0
         quads, other_hand = [], []
         for centre, partners in SUGAR_CENTRES:
@@ -642,10 +671,13 @@ def chirality_lines(top, xyz, k, targets):
                 other_hand.append(centre)
             quads.append((idx, target))
         if other_hand:
-            how = "named as" if hand else "from its geometry"
-            problems.append(f"residue {r + 1} ({label}) is {how} {use} but its {', '.join(other_hand)} "
-                            f"{'has' if len(other_hand) == 1 else 'have'} the other hand: the restraints would "
-                            "invert it - correct the model or the residue name")
+            centres = f"{', '.join(other_hand)} {'has' if len(other_hand) == 1 else 'have'} the other hand"
+            if hand:
+                problems.append(f"residue {r + 1} ({label}) is named as {use} but its {centres}: the restraints "
+                                "would invert it - correct the model or the residue name")
+            else:  # the hand is the vote of C1' C3' C4', so only C2' can disagree and no name would help
+                problems.append(f"residue {r + 1} ({label}): its sugar is {use} by C1' C3' C4' but its {centres}: "
+                                "the restraints would invert it - correct the model")
             continue
         # comments on lines of their own: extraBonds reads "improper a b c d k n ref" when a line has
         # one field more, so trailing text after the values must never appear
@@ -682,8 +714,8 @@ def ss_dihedral_lines(top, xyz, residues, k):
         nxt = names[r + 1] if r + 1 < top.nres else {}
         has_prev = "O3'" in prev and "P" in at and _bonded(xyz, prev["O3'"], at["P"])
         has_next = "O3'" in at and "P" in nxt and _bonded(xyz, at["O3'"], nxt["P"])
-        base = residue_base(top.labels[r]) or ("A" if "N9" in at else "C")
-        chi = ("O4'", "C1'", "N9", "C4") if base in ("A", "G") else ("O4'", "C1'", "N1", "C2")
+        glyco = glycosidic({n: xyz[i] for n, i in at.items()}, residue_base(top.labels[r]))
+        chi = ("O4'", "C1'", glyco, {"N9": "C4", "N1": "C2", "C5": "C4"}[glyco])
         torsions = []
         if has_prev:
             torsions.append(("alpha", [(prev, "O3'"), (at, "P"), (at, "O5'"), (at, "C5'")]))
@@ -746,14 +778,16 @@ def _fixed(value, width, decimals):
     raise PrepError(f"{value:g} does not fit a {width}-column PDB field")
 
 
-def pdb_line(i, top, xyz, occupancy, beta):
-    """ATOM record in the standard columns (1-based): name 13-16, residue 18-21, chain 22, number 23-26,
-    x y z 31-54, occupancy 55-60, beta 61-66, element 77-78 - where NAMD and VMD read them."""
+def pdb_line(i, top, xyz, occupancy, beta, chain="A", number=None):
+    """ATOM record in the standard columns (1-based): name 13-16, residue 18-21, chain 22, number 23-26 (+ the
+    insertion code 27), x y z 31-54, occupancy 55-60, beta 61-66, element 77-78 - where NAMD and VMD read
+    them.  ``number``: residue number and insertion code (5 columns); the topology's residue number if None."""
     r = top.residue[i]
     name = top.names[i][:4]
     name = f" {name:<3s}" if len(name) < 4 else name
     x, y, z = xyz[i]
-    return (f"ATOM  {(i + 1) % 100000:5d} {name} {top.labels[r][:4]:<4s}A{(r + 1) % 10000:4d}    "
+    number = number if number is not None else f"{(r + 1) % 10000:4d} "
+    return (f"ATOM  {(i + 1) % 100000:5d} {name} {top.labels[r][:4]:<4s}{chain[:1] or ' '}{number[:5]:>5s}   "
             f"{_fixed(x, 8, 3)}{_fixed(y, 8, 3)}{_fixed(z, 8, 3)}{_fixed(occupancy, 6, 2)}{_fixed(beta, 6, 2)}"
             f"{'':10s}{SYMBOL.get(top.number[i], ''):>2s}\n")
 
@@ -831,13 +865,11 @@ def topology_problems(top, cfg):
     return problems, notes
 
 
-def frame_transform(top, xyz, model_path):
-    """(R, t, rmsd, matched) with simulation = R map + t; identity without a model."""
-    if not model_path:
-        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], (0.0, 0.0, 0.0), None, 0
-    atoms = read_pdb_atoms(model_path)
+def model_residues(model_path):
+    """[(residue key (chain, resSeq + iCode), {heavy atom name: position})] of the model's solute, in order:
+    without water, ions and lone atoms - the residues the topology's solute residues are matched to."""
     residues, order = {}, []
-    for key, resname, name, pos, element in atoms:
+    for key, resname, name, pos, element in read_pdb_atoms(model_path):
         if resname.upper() in WATER:
             continue
         if key not in residues:
@@ -846,7 +878,14 @@ def frame_transform(top, xyz, model_path):
         heavy = element != "H" and not (element == "" and name.lstrip("0123456789").startswith("H"))
         if heavy:
             residues[key][_canonical(name)] = pos
-    model_res = [residues[k] for k in order if len(residues[k]) > 1]  # ions and lone atoms are not solute
+    return [(k, residues[k]) for k in order if len(residues[k]) > 1]
+
+
+def frame_transform(top, xyz, model_path):
+    """(R, t, rmsd, matched) with simulation = R map + t; identity without a model."""
+    if not model_path:
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], (0.0, 0.0, 0.0), None, 0
+    model_res = [names for _key, names in model_residues(model_path)]
     sim_res = [r for r in range(top.nres) if not top.solvent_residue[r]]
     if len(model_res) != len(sim_res):
         raise PrepError(f"the map-frame model has {len(model_res)} residues (without water and ions), the "
@@ -912,6 +951,13 @@ def coupled(top, i, cfg):
     return top.number[i] > 1 or cfg["couple"] == "all"
 
 
+def near(xyz, i, atoms, distance):
+    """Whether atom ``i`` lies within ``distance`` of any of ``atoms``."""
+    d2 = distance * distance
+    x, y, z = xyz[i]
+    return any((xyz[j][0] - x) ** 2 + (xyz[j][1] - y) ** 2 + (xyz[j][2] - z) ** 2 <= d2 for j in atoms)
+
+
 def positional(top, i, selection):
     if selection == "none" or top.solvent(i) or top.number[i] <= 1:
         return False
@@ -953,12 +999,12 @@ def prep(cfg, write=True):
     solute = [i for i in range(top.natom) if coupled(top, i, cfg) and not top.solvent(i)]
     if not solute:
         raise PrepError("no atoms to couple to the map")
-    # the potential covers the RNA plus the margin; of the ions only those inside it are coupled (the
-    # counterions of a solvated build are spread through the whole box)
+    # the potential covers the RNA plus the margin; of the ions only those within the margin of an RNA atom
+    # are coupled (the counterions of a solvated build are spread through the whole box)
     lo = [min(xyz[i][a] for i in solute) - cfg["pad"] for a in range(3)]
     hi = [max(xyz[i][a] for i in solute) + cfg["pad"] for a in range(3)]
     ions = [i for i in range(top.natom) if top.solvent(i) and coupled(top, i, cfg)
-            and all(lo[a] <= xyz[i][a] <= hi[a] for a in range(3))]
+            and all(lo[a] <= xyz[i][a] <= hi[a] for a in range(3)) and near(xyz, i, solute, cfg["pad"])]
     sel = solute + ions
     density = read_map(cfg["map"])
     grid, rho_max, angle, rot, t = potential_in_simulation_frame(density, cfg, rot, t, (lo, hi))
@@ -1042,20 +1088,51 @@ def prep(cfg, write=True):
     return 0
 
 
+def solute_chains(top, xyz, model_path):
+    """{solute residue: (chain id, resSeq + iCode, starts a segment)}.  A segment starts wherever the
+    backbone is not bonded to the previous residue (O3'-P, or C-N of a protein).  Chain ids and numbers
+    are those of the map-frame model when it has the same residues, else A, B ... per segment from 1."""
+    sim_res = [r for r in range(top.nres) if not top.solvent_residue[r]]
+    keys = [key for key, _names in model_residues(model_path)] if model_path else []
+    out, chain, number, prev = {}, -1, 0, None
+    for k, r in enumerate(sim_res):
+        names = {top.names[i]: i for i in top.residue_atoms(r)}
+        linked = prev is not None and any(a in prev and b in names and _bonded(xyz, prev[a], names[b])
+                                          for a, b in (("O3'", "P"), ("C", "N")))
+        if not linked:
+            chain, number = chain + 1, 0
+        number += 1
+        if len(keys) == len(sim_res):
+            out[r] = (keys[k][0], keys[k][1], not linked)
+        else:
+            out[r] = (CHAIN_IDS[chain % len(CHAIN_IDS)], f"{number % 10000:4d} ", not linked)
+        prev = names
+    return out
+
+
 def final(cfg):
-    """The solute of NAMD's final coordinates as a PDB in the map's frame."""
+    """The solute of NAMD's final coordinates as a PDB in the map's frame, with the chains (TER between
+    segments) and residue numbers of the map-frame model - what refinement and renaming tools need."""
     top = Topology(cfg["topology"])
     xyz = read_namd_coor(cfg["final_coor"], top.natom)
     with open(cfg["prep_json"], "r", encoding="utf-8") as fh:
         info = json.load(fh)
     rot_t, t = transpose(info["rotation"]), info["translation"]
     back = [mat_vec(rot_t, sub(p, t)) for p in xyz]
+    chains = solute_chains(top, back, cfg.get("model"))
     with open(cfg["final_pdb"], "w", encoding="ascii", errors="replace") as fh:
         fh.write("REMARK   MDFF result (NAMD), solute only, in the frame of the map - MDATK\n")
-        for i in range(top.natom):
-            if not top.solvent(i):
-                fh.write(pdb_line(i, top, back, 1.0, 0.0))
-        fh.write("END\n")
+        last = None
+        for r in range(top.nres):
+            if r not in chains:
+                continue
+            chain, number, starts = chains[r]
+            if last is not None and (starts or chain != last):
+                fh.write("TER\n")
+            for i in top.residue_atoms(r):
+                fh.write(pdb_line(i, top, back, 1.0, 0.0, chain, number))
+            last = chain
+        fh.write("TER\nEND\n")
     print(f"wrote {cfg['final_pdb']}")
     return 0
 
@@ -1071,7 +1148,7 @@ def main(argv, cfg):
     if argv[:1] == ["coordinates"] and len(argv) == 2:
         try:
             return start_coordinates(cfg, argv[1])
-        except (PrepError, OSError, ValueError) as exc:
+        except (PrepError, OSError, ValueError, EOFError, zlib.error) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
     if not argv or argv[0] not in ("prep", "final", "check-only"):
@@ -1082,8 +1159,8 @@ def main(argv, cfg):
         if argv[0] == "final":
             return final(cfg)
         return prep(cfg, write=argv[0] == "prep")
-    except (PrepError, OSError, ValueError) as exc:  # ValueError: unreadable numbers, encodings
-        print(f"ERROR: {exc}", file=sys.stderr)
+    except (PrepError, OSError, ValueError, EOFError, zlib.error) as exc:  # unreadable numbers, encodings,
+        print(f"ERROR: {exc}", file=sys.stderr)                           # damaged or truncated gzip files
         return 1
 
 

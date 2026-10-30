@@ -185,10 +185,19 @@ def test_frame_recovered_after_tleap_style_move(tmp_path, system):
     with open(cfg["final_coor"], "wb") as fh:
         fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *[c for p in xyz for c in p]))
     assert nm.final(cfg) == 0
-    out = [ln for ln in (tmp_path / "final.pdb").read_text().splitlines() if ln.startswith("ATOM")]
+    text = (tmp_path / "final.pdb").read_text()
+    out = [ln for ln in text.splitlines() if ln.startswith("ATOM")]
     assert len(out) == len(system)
     back = np.array([[float(ln[30:38]), float(ln[38:46]), float(ln[46:54])] for ln in out])
     assert np.abs(back - np.array([a[5] for a in system])).max() < 0.002
+    # chains and residue numbers of the map-frame model, TER between strands: CCD renaming (which the
+    # refinement steps recommend for Amber names) then gives every strand its own terminal variants, the
+    # same as for the model itself
+    from mdatk import pdbtools
+    fitted = list(pdbtools.clean(text, scheme="ccd").structure.residues())
+    model = list(pdbtools.clean((tmp_path / "model.pdb").read_text(), scheme="ccd").structure.residues())
+    assert [(r.chain, r.resseq, r.name) for r in fitted] == [(r.chain, r.resseq, r.name) for r in model]
+    assert [r.name for r in fitted if r.chain == "C"][0] == "0G5" and text.count("\nTER\n") == 4
 
 
 def test_pure_translation_moves_the_grid_without_resampling(tmp_path, system):
@@ -345,14 +354,17 @@ def test_pdb_records_use_the_standard_columns(tmp_path, system):
     # a force constant of 1000 still fits the six beta columns
     line = nm.pdb_line(0, top, [p[5] for p in far], 1.0, 1000.0)
     assert _standard_columns(line)["beta"] == 1000.0 and len(line) == 79
-    # the fitted model (the step's output) keeps residue names, chain and coordinates for any reader
+    # the fitted model (the step's output) keeps residue names and coordinates for any reader, and one chain
+    # per strand with TER between them (no map-frame model connected here: chains from the backbone breaks)
     n = top.natom
     with open(cfg["final_coor"], "wb") as fh:
         fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *[c for a in far for c in a[5]]))
     assert nm.final(cfg) == 0
     from mdatk import pdbtools
-    residues = list(pdbtools.read_pdb((tmp_path / "final.pdb").read_text()).residues())
-    assert [res.name for res in residues] == top.labels and {res.chain for res in residues} == {"A"}
+    text = (tmp_path / "final.pdb").read_text()
+    residues = list(pdbtools.read_pdb(text).residues())
+    assert [res.name for res in residues] == top.labels and text.count("\nTER\n") == 4
+    assert [(res.chain, res.resseq) for res in residues] == [(c, k) for c in "ABCD" for k in (1, 2, 3, 4)]
     assert residues[0].atoms[0].xyz[0] == pytest.approx(far[0][5][0], abs=0.001)
     assert residues[0].atoms[0].xyz[0] < -100
 
@@ -374,8 +386,10 @@ def test_frame_check_reads_the_density_whatever_the_threshold(tmp_path, system):
 def test_only_ions_near_the_rna_are_coupled(tmp_path, system):
     # counterions of a solvated build are spread through the box: they must neither size the potential
     # nor be coupled far from the RNA
-    near, far = (0.0, 0.0, 14.0), (40.0, 40.0, 40.0)
-    ions = [("M", 1, "MG", "MG", "MG", near), ("M", 2, "MG", "MG", "MG", far),
+    phosphate = np.array(next(a[5] for a in system if a[3] == "P"))
+    near = tuple(phosphate + (0.0, 0.0, 4.0))  # 4 A from a phosphorus: within the 6 A margin
+    in_box = (0.0, 0.0, 14.0)  # inside the RNA's bounding box + margin, but 13.8 A from any RNA heavy atom
+    ions = [("M", 1, "MG", "MG", "MG", near), ("M", 2, "MG", "MG", "MG", in_box),
             ("N", 1, "Na+", "Na+", "NA", (-40.0, -38.0, 35.0))]
     atoms = list(system) + ions
     box = (90.0, 90.0, 90.0, 90.0, 90.0, 90.0)
@@ -487,3 +501,54 @@ def test_inverted_c2_of_a_d_residue_stops(tmp_path, system):
     ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in atoms])
     with pytest.raises(nm.PrepError, match=r"residue 2 \(C\) is named as D but its C2' has the other hand"):
         nm.prep(config(tmp_path), write=False)
+
+
+def test_c_nucleoside_restraints_use_the_atom_bonded_to_c1(tmp_path, system):
+    # pseudouridine and other C-nucleosides bond C1' to C5, not N1: the C1' improper and chi must use the
+    # bonded atom.  Stand-in: residue 2 (C) with its ring renamed as pseudouridine names it (N1 <-> C5,
+    # C2 <-> C4), so the atom bonded to C1' is called C5
+    swap = {"N1": "C5", "C5": "N1", "C2": "C4", "C4": "C2"}
+    atoms = [a[:2] + ("PSU", swap.get(a[3], a[3])) + a[4:] if a[0] == "A" and a[1] == 2 else a for a in system]
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms)
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    xyz = [a[5] for a in atoms]
+    res = {top.names[i]: i for i in top.residue_atoms(1)}
+    assert nm.glycosidic({n: xyz[i] for n, i in res.items()}, None) == "C5"
+    lines, problems, _notes = nm.chirality_lines(top, xyz, 200.0, D_TARGETS)
+    assert not problems
+    centre = res["C1'"]
+    c1 = [ln.split() for ln in lines if ln.startswith(f"improper {centre} ")][0]
+    assert int(c1[3]) == res["C5"]  # C1' O4' C5 C2'
+    torsions, _problems = nm.ss_dihedral_lines(top, xyz, [2], 200.0)
+    chi = [ln.split() for ln in torsions if ln.startswith("dihedral")][-1]
+    assert [int(v) for v in chi[1:5]] == [res["O4'"], res["C1'"], res["C5"], res["C4"]]
+
+
+def test_geometry_hand_message_does_not_suggest_a_rename(tmp_path, system):
+    # a residue name without a hand (a modified nucleotide): the hand is the C1' C3' C4' vote, so only C2'
+    # can disagree, and no name would fix that
+    atoms = _flatten(system, "A", 2, "C2'", ("C1'", "O2'", "C3'"), 2.0)
+    atoms = [a[:2] + ("5MC",) + a[3:] if a[0] == "A" and a[1] == 2 else a for a in atoms]
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms)
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    _lines, problems, _notes = nm.chirality_lines(top, [a[5] for a in atoms], 200.0, D_TARGETS)
+    assert problems == ["residue 2 (5MC): its sugar is D by C1' C3' C4' but its C2' has the other hand: the "
+                        "restraints would invert it - correct the model"]
+
+
+def test_damaged_inputs_end_with_an_error_line(tmp_path, system, capsys):
+    import gzip
+    data = (tmp_path / "map.mrc").read_bytes()
+    packed = gzip.compress(data)
+    (tmp_path / "cut.mrc.gz").write_bytes(packed[:len(packed) // 2])  # an interrupted download
+    assert nm.main(["prep"], config(tmp_path, map=str(tmp_path / "cut.mrc.gz"))) == 1
+    assert capsys.readouterr().err.startswith("ERROR: ")
+    bad = bytearray(packed)
+    bad[len(bad) // 2] ^= 0x01  # one flipped bit: inflates, but the CRC no longer matches
+    (tmp_path / "flip.mrc.gz").write_bytes(bytes(bad))
+    assert nm.main(["prep"], config(tmp_path, map=str(tmp_path / "flip.mrc.gz"))) == 1
+    assert capsys.readouterr().err.startswith("ERROR: ")
+    text = (tmp_path / "sys.parm7").read_text()
+    (tmp_path / "sys.parm7").write_text(text[:text.index("%FLAG RESIDUE_POINTER") + 120])
+    with pytest.raises(nm.PrepError, match="truncated topology"):
+        nm.Topology(str(tmp_path / "sys.parm7"))
