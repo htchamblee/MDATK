@@ -166,7 +166,7 @@ def test_missing_frame_model_is_flagged_for_solvated_runs():
 
 # ------------------------------------------------------------------------------- full run, stand-ins
 FAKE_NAMD = r'''#!/usr/bin/env python3
-import json, os, re, struct, sys
+import json, math, os, re, struct, sys
 sys.path.insert(0, os.environ["MDATK_SRC"])
 from mdatk.workflows.scripts import namd_mdff as nm
 conf = [a for a in sys.argv[1:] if not a.startswith("+")][-1]
@@ -188,6 +188,25 @@ for key in ("extendedsystem", "bincoordinates", "binvelocities", "extrabondsfile
         assert os.path.isfile(v), (key, v)
 for v in opts.get("mgridforcepotfile", []) + opts.get("mgridforcefile", []):
     assert os.path.isfile(v.split()[1]), v
+for v in opts.get("mgridforcepotfile", []):  # gridforcechecksize (GridForceGrid.C fits_lattice), written anew
+    if "extendedsystem" not in opts:
+        continue
+    head = open(v.split()[1]).read(4000)
+    n = [int(x) for x in re.search(r"counts\s+(\d+)\s+(\d+)\s+(\d+)", head).groups()]
+    o = [float(x) for x in re.search(r"\norigin\s+(\S+)\s+(\S+)\s+(\S+)", head).groups()]
+    d = [float(row.split()[k + 1]) for k, row in enumerate(re.findall(r"\ndelta[^\n]*", head))]
+    c = [float(x) for x in open(opts["extendedsystem"][0]).read().split("\n")[2].split()[1:10]]
+    a1, a2, a3 = c[0:3], c[3:6], c[6:9]
+    cross = lambda u, w: (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+    vol = sum(x * y for x, y in zip(a1, cross(a2, a3)))
+    recip = [[x / vol for x in cross(a2, a3)], [x / vol for x in cross(a3, a1)], [x / vol for x in cross(a1, a2)]]
+    centre = [o[k] + d[k] * (n[k] - 1) / 2 for k in range(3)]
+    ends = [(o[k] - d[k], o[k] + n[k] * d[k]) for k in range(3)]  # one border voxel on every side
+    for corner in ((x, y, z) for x in ends[0] for y in ends[1] for z in ends[2]):
+        diff = [corner[k] - centre[k] for k in range(3)]
+        if any(math.floor(0.5 + sum(b[k] * diff[k] for k in range(3))) for b in recip):
+            print("FATAL ERROR: Periodic cell basis too small for Gridforce grid 0.")
+            sys.exit(1)
 top = nm.Topology(opts["parmfile"][0])
 out = opts["outputname"][0]
 if "run" in opts and opts["run"][0] == "0":
@@ -522,6 +541,10 @@ def test_example_generator(tmp_path, monkeypatch):
     project = Project.load(str(out / "namd_mdff.mdatk.toml"))
     plan = Plan(project.workflow, str(out / "generated"))
     assert not messages(plan.steps["mdff"], "error"), messages(plan.steps["mdff"])
+    # the one thing the user must add, as the example's README says: the L-RNA library and parameters
+    build_errors = messages(plan.steps["build"], "error")
+    assert len(build_errors) == 1 and build_errors[0].startswith("L-RNA residues need their library"), build_errors
+    assert "L-RNA residue library" in (out / "README.md").read_text()
     # the shipped example is what the generator makes now: the same files, and the same text wherever it does
     # not depend on floating-point results (maps, potential, coordinates may differ in the last digit elsewhere)
     shipped = os.path.join(ROOT, "examples", "namd_mdff")
@@ -596,3 +619,30 @@ def test_stage_names_differing_in_letter_case():
     _plan, st = single({"stages": [ramp, dict(ramp)]})
     assert [m for m in messages(st, "error") if "stage names" in m or "repeat" in m] == [
         "stage names must differ, letter case aside (ramp)"]
+
+
+def test_planner_warns_about_octahedral_boxes_and_needs_cryst1_for_solvated_pdbs(tmp_path):
+    atoms = ms.atoms_of(ms.mixed_pdb())
+    oct_box = (64.0, 64.0, 64.0, 109.4712206, 109.4712206, 109.4712206)
+    ms.write_topology(str(tmp_path / "oct.parm7"), atoms, box=oct_box)
+    ms.write_rst7(str(tmp_path / "oct.rst7"), [a[5] for a in atoms], box=oct_box)
+    files = {"topology": str(tmp_path / "oct.parm7"), "coordinates": str(tmp_path / "oct.rst7"),
+             "map": "/d/map.mrc", "model": "/d/model.pdb"}
+    _plan, st = single(files=files)
+    assert any("truncated octahedron" in m and "Rectangular" in m for m in messages(st, "warning")), messages(st)
+    # the same system as a PDB in topology order: a periodic run needs its CRYST1 box
+    (tmp_path / "plain.pdb").write_text(ms.model_pdb(atoms))
+    _plan, st = single(files=dict(files, coordinates=str(tmp_path / "plain.pdb")))
+    assert any("has no CRYST1 record" in m for m in messages(st, "error")), messages(st)
+    (tmp_path / "boxed.pdb").write_text("CRYST1   64.000   64.000   64.000 109.47 109.47 109.47 P 1           1\n"
+                                        + ms.model_pdb(atoms))
+    _plan, st = single(files=dict(files, coordinates=str(tmp_path / "boxed.pdb")))
+    assert not any("CRYST1" in m for m in messages(st, "error"))
+
+
+def test_amber_mdff_template_builds_a_rectangular_box():
+    from mdatk.workflows.plan import apply_template
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    apply_template(wf, "amber-mdff")
+    build = next(n for n in wf.nodes if n.tool == "amber-build")
+    assert TOOLS["amber-build"].normalise(build.settings)["box"] == "rect"

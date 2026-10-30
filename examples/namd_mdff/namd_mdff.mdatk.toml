@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.8"
 # When the settings were last saved.
-saved = 2026-10-30T01:51:58
+saved = 2026-10-30T03:59:23
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -597,7 +597,7 @@ leap_after_load = ""
 water = "tip3p"
 # Box shape: Truncated octahedron (solvateoct) needs ~30 % less water than a rectangular box.
 # Choices: oct, rect, cubic.
-box = "oct"
+box = "rect"
 # Buffer: Minimum distance between the RNA and the box edge.
 buffer = 15.0
 # Neutralise with monovalent cations: addIonsRand <cation> 0 neutralises the RNA's phosphate charge.
@@ -739,7 +739,8 @@ couple = "heavy"
 # (bulk counterions are left alone).
 couple_ions = false
 # Margin around the RNA: The potential is cropped to the coupled atoms plus this margin (Å); it must
-# fit into the periodic cell.
+# fit into the periodic cell as NAMD checks it, which a truncated octahedron allows only for small
+# margins.
 pad = 8.0
 # Required overlap: Share of the coupled RNA atoms that must lie on density above the map's mean + 1
 # σ, a check that the model is in the map's frame.

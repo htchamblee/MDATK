@@ -1016,7 +1016,8 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
 **Inputs and output.**
 
 - **Topology and coordinates:** the topology and coordinates of the Amber build, or a restart of
-  *Amber · MD stages*. NetCDF restarts are converted with cpptraj; vacuum runs take the dry PDB.
+  *Amber · MD stages*. NetCDF restarts are converted with cpptraj; vacuum runs take the dry PDB. A
+  PDB of a solvated system must be in the topology's atom order and carry the box (CRYST1).
 - **Map:** the density map (MRC / CCP4, or an OpenDX density).
 - **Map-frame model:** the PDB that was fitted into the map, usually the input of the Amber build.
 - **Secondary structure** (optional), for the dihedral and base-pair restraints.
@@ -1046,7 +1047,11 @@ already in the plan and their files do not change.
      Equation 3 of Trabuco et al. (2008) and the formula of VMD's `mdff griddx`. The paper sets the
      threshold at the minimum between the solvent and biomolecule peaks of the density histogram, or at
      the map's average when they are not resolved; the default is 0, as in `mdff griddx`. It is cropped to
-     the RNA plus a margin and must fit into the periodic cell.
+     the RNA plus a margin and must fit into the periodic cell the way NAMD checks it: padded by one
+     voxel and wrapped about its centre, no corner may reach half a cell vector. A truncated
+     octahedron, the Amber build's default box, takes a grid only about half as wide as the box, so
+     the usual 8 Å margin rarely fits; the *amber-mdff* template therefore builds a rectangular box.
+     The script stops with an explanation before NAMD would.
    - **Coupling** (`…_coupling_….pdb`, as VMD's `mdff gridpdb`: occupancy 1 couples an atom, beta is its
      mass): the RNA heavy atoms by default, weighted by standard masses, so HMR does not change the map
      forces. *Couple ions too* adds the ions that start within the margin around the RNA; the
@@ -1075,8 +1080,9 @@ already in the plan and their files do not change.
    When the script is run again, finished runs are skipped as long as their inputs (topology, start
    coordinates, potential, coupling and restraint files) and the stage files up to them are unchanged.
    A change reruns that stage and every stage after it. The date line that tleap and ParmEd write into
-   a topology does not count, so rebuilding the same topology (e.g. by rerunning the whole plan)
-   keeps finished runs.
+   a topology does not count. A rebuild of a solvated system still restarts the fit: tleap places the
+   ions anew at random (`addIonsRand`), which gives new start coordinates. To keep finished runs, run
+   only the MDFF step (*Run selected steps*, or its own script), not the whole plan.
 5. **Final model** (`…_mdff_….py final`): NAMD's last coordinates, back in the map's frame.
 
 **Amber settings in NAMD.**
@@ -1157,7 +1163,8 @@ and the NAMD 2.14 guide and source code.
 - 12-6-4 topologies cannot be used; per-dihedral 1-4 scaling is refused.
 - Four-site water is unverified, as described above.
 - NPT is not offered.
-- The potential must fit into the periodic cell; lower the margin or build a larger box.
+- The potential must fit into the periodic cell as NAMD checks it (see above): use a rectangular box,
+  a larger buffer or a smaller margin.
 - If NAMD ever disagrees with sander on a topology (energy comparison), the fallback would be a
   conversion that keeps the Lennard-Jones pair table. ParmEd's `chamber` / CHARMM writers do not
   do that, so MDATK does not generate one; ask before planning around it.

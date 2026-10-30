@@ -165,7 +165,8 @@ class NamdMDFFTool(Tool):
                    "counterions are left alone)."),
             Option("pad", "Margin around the RNA", "float", 8.0,
                    "The potential is cropped to the coupled atoms plus this margin (Å); it must fit into the "
-                   "periodic cell.", minimum=0.0, maximum=100.0, digits=1, unit="Å"),
+                   "periodic cell as NAMD checks it, which a truncated octahedron allows only for small margins.",
+                   minimum=0.0, maximum=100.0, digits=1, unit="Å"),
             Option("min_overlap", "Required overlap", "float", 0.3,
                    "Share of the coupled RNA atoms that must lie on density above the map's mean + 1 σ, a check "
                    "that the model is in the map's frame.", minimum=0.0, maximum=1.0, step=0.05, digits=2),
@@ -487,6 +488,12 @@ class NamdMDFFTool(Tool):
         try:
             top = _namd_mdff.Topology(top_path)
             problems, _notes = _namd_mdff.topology_problems(top, cfg)
+            if cfg["periodic"] and top.box_dimensions and abs(top.box_dimensions[0] - 90.0) > 0.1:
+                notes.append(Issue("warning", "the periodic box is a truncated octahedron: NAMD fits the MDFF potential "
+                                              "only into a region much smaller than the box's width, so the usual "
+                                              "margin rarely fits (the script checks it and stops before NAMD runs). "
+                                              "A rectangular box (Amber build: Box shape 'Rectangular') avoids this",
+                                   ("input:topology",)))
             xyz = None
             if _namd_mdff.is_netcdf(crd_path):  # converted by cpptraj when the script runs
                 notes.append(Issue("info", "the coordinates are a NetCDF restart: the D/L and dihedral checks of the "
@@ -499,6 +506,9 @@ class NamdMDFFTool(Tool):
                     problems.append(order)
                 else:
                     xyz = [a[3] for a in atoms]
+                    if top.ifbox and _namd_mdff.pdb_box(crd_path) is None:
+                        problems.append(f"{os.path.basename(crd_path)} has no CRYST1 record, so the periodic box is "
+                                        "unknown: connect the rst7 of the Amber build or an MD restart")
             else:
                 xyz, _box, _vel = _namd_mdff.read_rst7(crd_path, top.natom)
             if xyz is not None:
@@ -693,7 +703,8 @@ class NamdMDFFTool(Tool):
             # a finished run belongs to the inputs it ran from: its key chains the start files with every stage
             # file up to it, so a changed input or stage setting reruns that stage and all after it.  Keys are
             # written whether or not runs are skipped, so they always describe the outputs on disk.  The
-            # topology's %VERSION line holds the time it was written: a rebuild of the same topology keeps it
+            # topology's %VERSION line holds the time it was written and is left out (a solvated rebuild still
+            # changes the start coordinates: tleap places ions at random)
             settings = self.prep_settings(s, ctx)
             inputs = [start, n("prep", "json"), n("potential", "dx"), n("coupling", "pdb")]
             for path, used in ((n("posres", "pdb"), settings["positional"]["selection"] != "none"),

@@ -596,11 +596,12 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
     "amber-mdff": ("Model + map → Amber build → NAMD MDFF on the Amber topology", [
         ("model", "input-file", 0, 0, {"kind": "pdb"}),
         ("map", "input-file", 0, 1, {"kind": "map"}),
-        ("build", "amber-build", 1, 0, {}),
+        ("build", "amber-build", 1, 0, {"box": "rect"}),
         ("mdff", "namd-mdff", 2, 0, {}),
         ("note", "note", 2, 1, {"text": (
             "NAMD reads the Amber topology as built (CP, NBfix19, 0BPh, L-RNA, Mg²⁺ pairs, HMR) and an "
             "energy comparison with sander checks it before fitting.\n"
+            "Rectangular box: NAMD fits the MDFF potential into a truncated octahedron only with a small margin.\n"
             "The model is the map-frame model: tleap moves the solute, MDFF moves the map with it.\n"
             "Restraints are MDATK's L-RNA-safe ones; never add VMD's chirality / ssrestraints.\n"
             "The fitted model has Amber residue names: 'mdatk pdb clean --scheme ccd' before Phenix / Coot.")}),
