@@ -62,6 +62,9 @@ def step_resources(step) -> List[str]:
     """Resources one resolved planner step uses (its tool decides from its settings)."""
     if step.tool is None:
         return []
+    by_context = getattr(step.tool, "step_resources", None)  # tools whose resources depend on their inputs
+    if by_context is not None and getattr(step, "ctx", None) is not None:
+        return unique(by_context(step.settings, step.ctx))
     return unique(step.tool.resources(step.settings))
 
 

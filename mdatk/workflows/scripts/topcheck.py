@@ -14,6 +14,9 @@ something is wrong:
   resolves a name the residue libraries do not define to whatever unit has it, and AmberTools'
   atomic_ions.lib defines LA (lanthanum) and LU (lutetium) - an L-RNA library with other unit
   names silently turns L-adenosines and L-uridines into one-atom ions;
+* with MDATK's generated L-RNA library: as many residues carry the L atom types (LD ...) as the PDB
+  read by tleap has L residues - a D unit loaded for an L residue (e.g. names lost between two
+  tleap passes) has none;
 * microMg / nanoMg: every solute atom type with Lennard-Jones terms has an explicit Mg2+
   pair term. With these models the ion's own LJ is a fitted effective potential that only
   reproduces Mg2+-water by the combination rule; a solute type without a pair term (e.g. a
@@ -30,7 +33,7 @@ from __future__ import annotations
 import math
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 CHARGE_SCALE = 18.2223  # parm7 stores charges in units of e / 18.2223
 # solvent = water residues (by residue name) and monatomic ions (any single-atom residue). Classified
@@ -112,9 +115,20 @@ class Topology:
         return _lj(self.acoef[k - 1], self.bcoef[k - 1]) if k > 0 else (None, None)
 
 
+def l_residues_in_pdb(path: str) -> int:
+    """L nucleotides (LA LC LG LU and terminal forms) in a PDB."""
+    seen = set()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")) and re.fullmatch(r"L[ACGU][35N]?", line[17:21].strip()):
+                seen.add((line[21], line[22:27], line[17:21]))
+    return len(seen)
+
+
 def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0,
           ion_lj: Optional[Tuple[float, float]] = None, pairs: bool = False, model: str = "",
-          pair_refs: Optional[Dict[str, List[float]]] = None) -> List[str]:
+          pair_refs: Optional[Dict[str, List[float]]] = None, l_types: Sequence[str] = (),
+          expected_l: Optional[int] = None) -> List[str]:
     """Problems found in the topology ([] = all good); prints a report."""
     top = Topology(path)
     problems: List[str] = []
@@ -149,6 +163,17 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
                         "with addPdbResMap ('Leap commands before loadpdb') and rebuild")
     else:
         print(f"  every residue named as a nucleotide has at least {MIN_NUCLEOTIDE_ATOMS} atoms")
+    if l_types and expected_l is not None:
+        found, first = 0, 0
+        for lab, size in top.residues:
+            if any(top.atype[i] in l_types for i in range(first, first + size)):
+                found += 1
+            first += size
+        print(f"  {found} residues with L-RNA atom types ({', '.join(l_types)}); the PDB has {expected_l} L residues")
+        if found != expected_l:
+            problems.append(f"the PDB read by tleap has {expected_l} L residues but {found} residues of the topology "
+                            f"carry the L-RNA atom types ({', '.join(l_types)}): tleap loaded D units for L residues "
+                            "(residue names lost on the way, e.g. after ambpdb) - the L strand would be simulated as D")
     mg = [i for i, r in enumerate(top.resname) if r == mg_res]
     print(f"  {len(mg)} {mg_res} atom(s)")
     if mg_count and len(mg) < mg_count:  # more is fine: the input structure may bring its own
@@ -211,11 +236,12 @@ def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0
 
 
 def main(argv: List[str]) -> int:
-    if len(argv) != 1:
-        print("usage: python3 THIS_SCRIPT TOPOLOGY.parm7", file=sys.stderr)
+    if len(argv) not in (1, 2):
+        print("usage: python3 THIS_SCRIPT TOPOLOGY.parm7 [PDB_READ_BY_TLEAP]", file=sys.stderr)
         return 2
     try:
-        problems = check(argv[0], MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL, PAIR_REFS)
+        expected = l_residues_in_pdb(argv[1]) if len(argv) == 2 and L_TYPES else None
+        problems = check(argv[0], MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL, PAIR_REFS, L_TYPES, expected)
     except (OSError, ValueError, IndexError) as exc:
         print(f"topology check: {exc}", file=sys.stderr)
         return 1
@@ -225,3 +251,4 @@ def main(argv: List[str]) -> int:
 # defaults when imported (the generated script sets its own)
 MG_RESIDUE, NEUTRAL, MG_COUNT, ION_LJ, PAIRS, MODEL = "MG", True, 0, None, False, ""
 PAIR_REFS: Dict[str, List[float]] = {}
+L_TYPES: List[str] = []
