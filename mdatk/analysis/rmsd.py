@@ -66,16 +66,17 @@ class RMSDAnalysis(Analysis):
         super().setup(frame_indices)
         p = self.project.analyses.rmsd
         if not p.targets:
-            raise ValueError("RMSD: no targets defined")
+            raise self.ctx.fail("RMSD: no targets defined", self.field("targets"))
         self.ref_pos = min(max(0, p.reference_frame), self.n_frames - 1)
         self.superposition = p.superposition
         self.targets = []
         for k, t in enumerate(p.targets):
-            mob = self.ctx.select(t.selection, allow_empty=True)
+            mob = self.ctx.select(t.selection, allow_empty=True, field=self.field(f"targets.{k}.selection"))
             if mob.n_atoms == 0:
                 self.ctx.warn(f"RMSD target {t.label!r}: {t.selection!r} matched no atoms; "
                               "its series will be empty (NaN)")
-            fit = self.ctx.select(t.fit_selection) if t.fit_selection.strip() else None
+            fit = (self.ctx.select(t.fit_selection, field=self.field(f"targets.{k}.fit_selection"))
+                   if t.fit_selection.strip() else None)
             w = mob.masses.astype(np.float64) if p.mass_weighted else None
             wf = (fit.masses.astype(np.float64) if fit is not None else w) if p.mass_weighted else None
             self.targets.append({"label": t.label or f"target{k}", "out": _out_key(t.label, k),

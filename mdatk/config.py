@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, Dict, List, Optional, Sequence
 
 from . import PROJECT_ABBREV
+from .problems import Problem, problem
 
 log = logging.getLogger(__name__)
 
@@ -644,109 +645,247 @@ class Project:
         d = self.density
         return bool(d.map_path and d.show and any(sp.type == "structure" for sp in self.layout.panels))
 
-    def density_problems(self) -> List[str]:
+    def density_problems(self) -> List[Problem]:
         d = self.density
         if not d.map_path:
             return []
-        out = []
+        out: List[Problem] = []
+
+        def add(field: str, message: str) -> None:
+            out.append(problem(f"density.{field}", message, self))
+
         if self.density_active() and not os.path.exists(d.map_path):
-            out.append(f"Density map not found: {d.map_path} (untick 'show' to render without it)")
+            add("map_path", f"Density map not found: {d.map_path} (untick 'show' to render without it)")
         if d.resolution <= 0:
-            out.append("Density map resolution must be positive.")
+            add("resolution", "Density map resolution must be positive.")
         if not 0.0 <= d.opacity <= 1.0:
-            out.append("Density map opacity must be between 0 and 1.")
+            add("opacity", "Density map opacity must be between 0 and 1.")
         if not 5.0 <= d.angular_step <= 45.0:
-            out.append("Density search angular step must be between 5 and 45 degrees.")
+            add("angular_step", "Density search angular step must be between 5 and 45 degrees.")
         if d.search not in ("global", "manual"):
-            out.append(f"Unknown density fit start {d.search!r} (global or manual).")
+            add("search", f"Unknown density fit start {d.search!r} (global or manual).")
         if d.transform:
             from .density import RigidTransform
 
             try:
                 RigidTransform.from_list(d.transform)
             except (TypeError, ValueError) as exc:
-                out.append(f"The stored density map placement is invalid ({exc}); clear it or fit again.")
+                add("transform", f"The stored density map placement is invalid ({exc}); clear it or fit "
+                    "again.")
         frame = d.fit_frame.strip().lower()
         if frame not in ("", "ref") and not frame.isdigit():
-            out.append(f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
+            add("fit_frame", f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
         return out
 
-    def validate(self) -> List[str]:
-        """Return a list of human readable problems (empty when valid)."""
-        problems: List[str] = []
+    def validate(self) -> List[Problem]:
+        """Return a list of human readable problems (empty when valid).
+
+        The items are :class:`~mdatk.problems.Problem` strings: each text starts with where the problem
+        is ("Analyses › Hydrogen bonds › Group A: unknown residue group ...") and each item carries the
+        setting's field path and GUI page.  Warnings (see :meth:`problems`) are left out."""
+        return [p for p in self.problems() if p.level == "error"]
+
+    def problems(self) -> List[Problem]:
+        """Every problem of the settings: errors (a run would fail; :meth:`validate`) and warnings (the
+        setting is allowed but ignored or probably unintended), each naming its setting."""
+        out: List[Problem] = []
+
+        def add(field: str, message: str, level: str = "error", token: str = "") -> None:
+            out.append(problem(field, message, self, level, token))
+
         if not self.inputs.topology:
-            problems.append("No topology file selected.")
+            add("inputs.topology", "No topology file selected.")
         elif not os.path.exists(self.inputs.topology):
-            problems.append(f"Topology file not found: {self.inputs.topology}")
+            add("inputs.topology", f"Topology file not found: {self.inputs.topology}")
         if not self.inputs.trajectories:
-            problems.append("No trajectory file selected.")
+            add("inputs.trajectories", "No trajectory file selected.")
         for t in self.inputs.trajectories:
             if not os.path.exists(t):
-                problems.append(f"Trajectory file not found: {t}")
+                add("inputs.trajectories", f"Trajectory file not found: {t}")
         if self.inputs.step < 1:
-            problems.append("Frame step must be >= 1.")
+            add("inputs.step", "Frame step must be >= 1.")
         names = [g.name for g in self.groups]
-        if len(set(names)) != len(names):
-            problems.append("Residue group names must be unique.")
-        for g in self.groups:
+        for k, g in enumerate(self.groups):
             if not g.name.strip():
-                problems.append("Residue groups need a name.")
+                add(f"groups.{k}.name", "Residue groups need a name.")
             elif not re.fullmatch(r"[A-Za-z0-9_.\-]+", g.name):
-                problems.append(f"Group name {g.name!r} may only contain letters, digits, "
-                                "'_', '.' and '-' (no spaces).")
+                add(f"groups.{k}.name", f"Group name {g.name!r} may only contain letters, digits, "
+                    "'_', '.' and '-' (no spaces).", token=g.name)
+            elif g.name in names[:k]:
+                add(f"groups.{k}.name", f"Residue group names must be unique: {g.name!r} is also the name of "
+                    f"group {names.index(g.name) + 1}.", token=g.name)
             if not (g.residues.strip() or g.selection.strip()):
-                problems.append(f"Group {g.name!r} has neither residues nor a selection.")
+                add(f"groups.{k}.residues", f"Group {g.name!r} has neither residues nor a selection.")
+        out += self.selection_problems()
         a = self.analyses
-        for label, params in (("contacts", a.contacts), ("H-bonds", a.hbonds),
-                              ("Mg", a.mg), ("stacking", a.stacking), ("energy", a.energy)):
-            if not params.enabled:
-                continue
-            for gname in (params.group_a, params.group_b):
-                if gname and gname not in names:
-                    problems.append(f"{label}: unknown residue group {gname!r}.")
         if a.contacts.cutoff <= 0:
-            problems.append("Contact cutoff must be positive.")
+            add("analyses.contacts.cutoff", "Contact cutoff must be positive.")
         if a.mg.inner_cutoff > a.mg.outer_cutoff:
-            problems.append("Mg inner-sphere cutoff must not exceed the outer-sphere cutoff.")
+            add("analyses.mg.inner_cutoff", "Mg inner-sphere cutoff must not exceed the outer-sphere cutoff.")
         v = self.visual
         if v.color_mode not in ("chain", "groups", "proximity"):
-            problems.append(f"Unknown colour mode {v.color_mode!r}.")
+            add("visual.color_mode", f"Unknown colour mode {v.color_mode!r}.")
         if v.glow_mode not in ("none", "ever", "fade", "current"):
-            problems.append(f"Unknown glow mode {v.glow_mode!r}.")
+            add("visual.glow_mode", f"Unknown glow mode {v.glow_mode!r}.")
         for k, rs in enumerate(v.representations):
+            rep = f"visual.representations.{k}"
             if rs.style not in REP_STYLES:
-                problems.append(f"Representation {k + 1}: unknown style {rs.style!r} "
-                                f"({', '.join(REP_STYLES)}).")
+                add(f"{rep}.style", f"Unknown style {rs.style!r} ({', '.join(REP_STYLES)}).")
             if rs.color not in REP_COLORS:
-                problems.append(f"Representation {k + 1}: unknown colouring {rs.color!r}.")
-            for gname in rs.groups:
-                if gname not in names:
-                    problems.append(f"Representation {k + 1}: unknown residue group {gname!r}.")
+                add(f"{rep}.color", f"Unknown colouring {rs.color!r}.")
             if rs.size <= 0 or not 0 < rs.opacity <= 1:
-                problems.append(f"Representation {k + 1}: size must be positive and opacity in (0, 1].")
+                add(f"{rep}.size", "Size must be positive and opacity in (0, 1].")
         if v.renderer not in ("auto", "software", "vtk"):
-            problems.append(f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
+            add("visual.renderer", f"Unknown renderer {v.renderer!r} (auto, software or vtk).")
         if not 0.05 <= v.zoom <= 50:
-            problems.append("Structure zoom must be between 0.05 and 50.")
+            add("visual.zoom", "Structure zoom must be between 0.05 and 50.")
         bp = a.basepairs
         if bp.engine not in ("builtin", "barnaba"):
-            problems.append(f"Unknown base-pair engine {bp.engine!r} (builtin or barnaba).")
+            add("analyses.basepairs.engine", f"Unknown base-pair engine {bp.engine!r} (builtin or barnaba).")
         if bp.stride < 1:
-            problems.append("Base-pair stride must be at least 1.")
+            add("analyses.basepairs.stride", "Base-pair stride must be at least 1.")
         if not 2.0 <= bp.cutoff <= 5.0:
-            problems.append("Base-pair H-bond cutoff must be between 2.0 and 5.0 Å.")
+            add("analyses.basepairs.cutoff", "Base-pair H-bond cutoff must be between 2.0 and 5.0 Å.")
         if v.rep_rest not in REP_REST:
-            problems.append(f"Unknown setting for residues without a representation {v.rep_rest!r} "
-                            "(trace or hide).")
+            add("visual.rep_rest", f"Unknown setting for residues without a representation {v.rep_rest!r} "
+                "(trace or hide).")
         if v.backbone_atom not in ("P", "C4'"):
-            problems.append("The backbone atom of ribbons and cartoons must be P or C4'.")
+            add("visual.backbone_atom", "The backbone atom of ribbons and cartoons must be P or C4'.")
         if v.proximity_cutoff > a.proximity_search_radius:
-            problems.append("Proximity cutoff exceeds the proximity search radius "
-                            "(raise analyses.proximity_search_radius).")
-        problems += self.density_problems()
+            add("visual.proximity_cutoff", "Proximity cutoff exceeds the proximity search radius "
+                "(raise analyses.proximity_search_radius).")
+        out += self.density_problems()
         if self.output.video.fps <= 0:
-            problems.append("Video FPS must be positive.")
-        return problems
+            add("output.video.fps", "Video FPS must be positive.")
+        for text in layout_warnings(self):
+            add("layout.panels", text, "warning")
+        return out
+
+    def selection_problems(self) -> List[Problem]:
+        """Problems of the residue groups and of every setting that names a group or holds a selection:
+        unknown groups (with the closest defined name), circular group definitions, residue ranges and
+        selections MDAnalysis cannot parse.  Settings of disabled analyses are not checked; settings that
+        are ignored when wrong, or not used with the current options, only get warnings."""
+        from .selections import (SelectionError, check_selection, parse_residue_ranges, referenced_groups,
+                                 split_csv, unknown_group_error)
+
+        out: List[Problem] = []
+        names = self.group_names()
+        broken: set = set()  # groups whose own definition has a problem (reported there only)
+        a, v = self.analyses, self.visual
+
+        def add(field: str, message: str, level: str = "error", token: str = "") -> None:
+            out.append(problem(field, message, self, level, token))
+
+        def unknown(field: str, gname: str, level: str = "error", note: str = "") -> None:
+            message = unknown_group_error(gname, names).message
+            if note:  # a second sentence: what happens with the unknown name
+                message += ("" if message.endswith("?") else ".") + f" {note}"
+            add(field, message, level, gname)
+
+        def check(field: str, text: str, level: str = "error", required: bool = True,
+                  group: str = "") -> bool:
+            """``text``: a group name, ``sel:<selection>`` or a selection with group:<Name> tokens.  A
+            selection is not blamed for a broken group it uses: that group's definition is."""
+            text = (text or "").strip()
+            if not text and not required:
+                return True
+            try:
+                check_selection(text, self.groups)
+            except SelectionError as exc:
+                if (exc.group and exc.group != group) or (broken & set(referenced_groups(text, self.groups))):
+                    return True
+                if exc.kind == "syntax" and exc.token == text:  # a lone unknown word: a group name?
+                    exc = unknown_group_error(text, names)
+                add(field, exc.message, level, exc.token)
+                return False
+            return True
+
+        def ranges(field: str, text: str, level: str = "error") -> bool:
+            try:
+                parse_residue_ranges(text)
+            except SelectionError as exc:
+                add(field, f"{exc.message} (ranges look like 1-40, 45, A:50-60)", level, exc.token)
+                return False
+            return True
+
+        for k, g in enumerate(self.groups):
+            if g.selection.strip():
+                ok = check(f"groups.{k}.selection", g.selection, group=g.name)
+            else:
+                ok = ranges(f"groups.{k}.residues", g.residues)
+            if not ok or not (g.selection.strip() or g.residues.strip()):
+                broken.add(g.name)
+
+        if a.rmsd.enabled:
+            for k, t in enumerate(a.rmsd.targets):
+                check(f"analyses.rmsd.targets.{k}.selection", t.selection)
+                check(f"analyses.rmsd.targets.{k}.fit_selection", t.fit_selection, required=False)
+        for key in ("contacts", "hbonds", "mg", "stacking", "energy"):
+            params = getattr(a, key)
+            if params.enabled:
+                for slot in ("group_a", "group_b"):
+                    gname = getattr(params, slot)
+                    if gname and gname not in names:
+                        unknown(f"analyses.{key}.{slot}", gname)
+        panel_types = {sp.type for sp in self.layout.panels}
+        structure_used = bool(panel_types & {"structure", "sequence", "secondary"})
+        if a.mg.enabled or structure_used:  # the structure view draws the ions of this selection
+            check("analyses.mg.mg_selection", a.mg.mg_selection)
+        if a.mg.enabled:
+            check("analyses.mg.ligand_selection", a.mg.ligand_selection)
+            check("analyses.mg.occupancy_selection", a.mg.occupancy_selection, required=False)
+        if a.stacking.enabled:
+            check("analyses.stacking.selection", a.stacking.selection)
+
+        shown = [n for n in v.structure_groups if n in names]
+        for gname in v.structure_groups:
+            if gname not in names:
+                unknown("visual.structure_groups", gname, "warning", "It is left out of the structure view.")
+        if structure_used and not (shown if v.structure_groups else names):
+            why = "none of the groups shown exists" if v.structure_groups else "define a residue group"
+            add("visual.structure_groups", f"The structure view has no residue group to show ({why}).")
+        for k, rs in enumerate(v.representations):
+            for gname in rs.groups:
+                if gname not in names:
+                    unknown(f"visual.representations.{k}.groups", gname)
+        proximity = structure_used and (v.color_mode == "proximity" or v.glow_mode != "none")
+        check("visual.proximity_set", v.proximity_set, "error" if proximity else "warning",
+              required=proximity)
+        if v.center_on.strip() and v.center_on.strip().lower() != "origin":
+            ranges("visual.center_on", v.center_on, "warning")
+        ranges("visual.label_residues", v.label_residues, "warning")
+
+        for k, sp in enumerate(self.layout.panels):
+            for j, key in enumerate(sp.series):
+                for gname in _key_groups(key):
+                    if gname not in names:
+                        unknown(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", gname, "warning",
+                                f"The panel has no data for {key!r}.")
+            residues = (sp.options or {}).get("residues") if sp.type in ("sequence", "secondary") else None
+            if isinstance(residues, str):
+                ranges(f"layout.panels.{k}.options", residues, "warning")
+        pdb = self.output.pdb
+        items = split_csv(pdb.selection)
+        level = "error" if pdb.enabled else "warning"
+        if "," in pdb.selection and all(re.fullmatch(r"[A-Za-z0-9_.\-]+", n) for n in items):
+            for gname in items:  # a list of group names
+                if gname not in names:
+                    unknown("output.pdb.selection", gname, level)
+        elif not (items and all(n in names for n in items)):
+            check("output.pdb.selection", pdb.selection, level, required=False)
+        if self.output.charts.enabled:
+            for key in self.output.charts.series:
+                for gname in _key_groups(key):
+                    if gname not in names:
+                        unknown("output.charts.series", gname, "warning", f"No chart is drawn for {key!r}.")
+        return out
+
+
+def _key_groups(key: str) -> List[str]:
+    """Residue groups of a data key: ``"contacts@A+B/atom_pairs"`` -> ``["A", "B"]``."""
+    instance = key.split("/", 1)[0]
+    return [g for g in instance.partition("@")[2].split("+") if g]
 
 
 # ---------------------------------------------------------------------------

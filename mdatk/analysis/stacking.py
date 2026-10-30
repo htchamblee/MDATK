@@ -95,10 +95,12 @@ class StackingAnalysis(Analysis):
         super().setup(frame_indices)
         p = self.project.analyses.stacking
         self.p = p
-        sel = self.ctx.select(p.selection)
+        sel = self.ctx.select(p.selection, field=self.field("selection"))
         names = set(self.project.group_names())
-        in_a = self.ctx.group_atoms(p.group_a).residues.ix if p.group_a in names else []
-        in_b = self.ctx.group_atoms(p.group_b).residues.ix if p.group_b in names else []
+        in_a = (self.ctx.group_atoms(p.group_a, field=self.field("group_a")).residues.ix if p.group_a in names
+                else [])
+        in_b = (self.ctx.group_atoms(p.group_b, field=self.field("group_b")).residues.ix if p.group_b in names
+                else [])
         rings: List[List[int]] = []
         residues = []
         for res in sel.residues:

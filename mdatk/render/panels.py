@@ -256,8 +256,9 @@ class StructurePanel(Panel):
         try:
             row = int(residue_rows(tr, spec)[0])
         except (SelectionError, IndexError) as exc:
+            from ..problems import describe
             self.view_note = f"centre: {exc}"
-            warn_once(f"structure view centre: {exc}; using the model centre")
+            warn_once(f"{describe('visual.center_on')}: {exc}; using the model centre")
             return coords[0].mean(axis=0), shift
         if v.center_follow:
             shift = coords[:, row] - coords[0, row]

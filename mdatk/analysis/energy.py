@@ -128,10 +128,11 @@ class EnergyAnalysis(Analysis):
         super().setup(frame_indices)
         p = self.project.analyses.energy
         self.p = p
-        a = self.ctx.group_atoms(p.group_a)
-        b = without(self.ctx.group_atoms(p.group_b), a)
+        a = self.ctx.group_atoms(p.group_a, field=self.field("group_a"))
+        b = without(self.ctx.group_atoms(p.group_b, field=self.field("group_b")), a)
         if b.n_atoms == 0:
-            raise ValueError(f"energy: group {p.group_b!r} lies entirely inside {p.group_a!r}")
+            raise self.ctx.fail(f"energy: group {p.group_b!r} lies entirely inside {p.group_a!r}",
+                                self.field("group_b"))
         self.a, self.b = a, b
         u = self.ctx.u
         if hasattr(u.atoms, "charges"):

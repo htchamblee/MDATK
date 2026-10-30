@@ -19,12 +19,13 @@ from typing import List
 
 import numpy as np
 
-from ..selections import SelectionError, atom_elements, heavy, resolve_selection, split_csv
+from ..selections import SelectionError, atom_elements, heavy, split_csv
 from ..spatial import kabsch, pairs_within
 from .base import Analysis, register
 from .common import labels
 
 LINK_MAX = 9.0  # max trace-point distance (A) for drawing a backbone link
+VIEW_GROUPS = "visual.structure_groups"  # the setting selection errors of the structural view point at
 
 
 def structure_groups(project) -> List[str]:
@@ -43,8 +44,12 @@ def structure_selection_text(project) -> str:
 def structure_residues(ctx):
     """Residues shown in the structural view (ions are drawn separately)."""
     project = ctx.project
-    atoms = ctx.select(structure_selection_text(project))
-    ions = ctx.select(project.analyses.mg.mg_selection, allow_empty=True)
+    try:
+        text = structure_selection_text(project)
+    except SelectionError as exc:
+        raise exc.locate(VIEW_GROUPS, project)
+    atoms = ctx.select(text, field=VIEW_GROUPS)
+    ions = ctx.select(project.analyses.mg.mg_selection, allow_empty=True, field="analyses.mg.mg_selection")
     if ions.n_atoms:
         atoms = atoms[~np.isin(atoms.ix, ions.ix)]
     uniq = np.unique(atoms.resindices)
@@ -170,11 +175,12 @@ class TraceAnalysis(Analysis):
         project = self.project
         residues, _ = structure_residues(self.ctx)
         if len(residues) == 0:
-            raise SelectionError("structural view: no residues selected")
+            raise self.ctx.fail("structural view: no residues selected", VIEW_GROUPS)
         self.residues = residues
         self.tracer = TracePoints(self.ctx, residues, project.visual.trace_atoms)
         self.is_point = self.tracer.is_point
-        self.ions = (self.ctx.select(project.analyses.mg.mg_selection, allow_empty=True)
+        self.ions = (self.ctx.select(project.analyses.mg.mg_selection, allow_empty=True,
+                                     field="analyses.mg.mg_selection")
                      if project.visual.show_ions else self.ctx.u.atoms[[]])
         self.align = project.visual.align_frames
         n_res = len(residues)
@@ -255,8 +261,7 @@ class ProximityAnalysis(Analysis):
         project = self.project
         residues, atoms = structure_residues(self.ctx)
         self.residues = residues
-        text = resolve_selection(project.visual.proximity_set, project.groups, self.ctx.u)
-        self.set_atoms = heavy(self.ctx.select(f"sel:{text}"))
+        self.set_atoms = heavy(self.ctx.select(project.visual.proximity_set, field="visual.proximity_set"))
         members = np.isin(residues.ix, np.unique(self.set_atoms.resindices))
         self.member = members
         struct = heavy(atoms)
@@ -312,7 +317,7 @@ class AtomsAnalysis(Analysis):
         super().setup(frame_indices)
         residues, atoms = structure_residues(self.ctx)
         if len(residues) == 0:
-            raise SelectionError("structural view: no residues selected")
+            raise self.ctx.fail("structural view: no residues selected", VIEW_GROUPS)
         if not self.project.visual.rep_hydrogens:
             atoms = heavy(atoms)
         atoms = atoms[np.argsort(atoms.ix, kind="stable")]
