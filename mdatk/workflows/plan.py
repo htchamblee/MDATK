@@ -336,6 +336,7 @@ class Plan:
                                                   "same folder with the same names: give one of them "
                                                   "another step number"))
             seen[key] = nid
+        self._check_shared_outputs()
         numbers: Dict[int, List[str]] = {}
         for nid in self.order:
             step = self.steps[nid]
@@ -345,6 +346,29 @@ class Plan:
             if len(labels) > 1:
                 self.issues.append(Issue("info", f"step number {step_label(num)} is used by "
                                                  f"{', '.join(labels)}"))
+
+    def _check_shared_outputs(self) -> None:
+        """Two steps must not write the same output file.  Built-in steps put their number and tag in every
+        name, but a custom script's outputs can be given any name, and in a plan without step folders the
+        steps after such a pair would read whichever file was written last."""
+        claimed: Dict[str, str] = {}  # plan-relative path -> node id of the first step that writes it
+        for nid in self.order:
+            step = self.steps[nid]
+            if step.tool is None or not step.tool.generates or step.ctx is None:
+                continue
+            # another step's files, and files chosen by hand that the step passes on (a FARFAR2 FASTA file)
+            passed = {p for v in step.ctx.inputs.values() for p in v.paths}
+            passed |= {str(step.settings.get(key) or "").strip()
+                       for key, opt in step.tool.flat_options().items() if opt.kind == "file"}
+            for port, value in step.outputs.items():
+                for path in value.paths:
+                    if os.path.isabs(path) or path in passed or os.path.dirname(path) != step.ctx.folder:
+                        continue  # not written by this step
+                    first = self.steps[claimed.setdefault(path, nid)]
+                    if first is step or (first.node.step, first.tool.tag) == (step.node.step, step.tool.tag):
+                        continue  # the same step, or a pair already reported as writing the same names
+                    step.issues.append(Issue("error", f"output '{port}': {path} is also written by "
+                                                      f"{first.label}; give one of them another file name"))
 
     # ------------------------------------------------------------ queries
     def all_issues(self) -> List[Tuple[str, Issue]]:
