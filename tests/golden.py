@@ -10,7 +10,10 @@ planner message for:
 * the example projects in ``examples/``.
 
 Every case is planned with residue groups, as the app plans it: the example projects with their own,
-the others with those of a new project.  One VMD case without groups keeps the fallback pinned.
+the others with those of a new project.  One VMD case without groups keeps the fallback pinned.  Steps
+that take a typed secondary structure get extra cases with one (a hairpin with a G·U pair, wobble pairs
+off and on; optional inputs left unconnected), so the secondary-structure code they share with later
+step types is pinned too.
 
 ``test_released_output_unchanged`` (tests/test_golden.py) regenerates the same cases with the
 current code and compares.  Two things are normalised before hashing, because they change with
@@ -46,6 +49,17 @@ def _sha(text: str) -> str:
 
 def _dummy(port) -> str:
     return f"/golden/inputs/{port.name}.{port.kinds[0]}"
+
+
+TYPED_SS = {"sequence": "GGGCUUCGGUCC", "dotbracket": "((((....))))"}  # G3·U10 is a wobble pair
+EXTRA_CASES = {  # (label, settings) beyond the one-change-at-a-time variants
+    "amber-restraints": [("typed-ss", TYPED_SS), ("typed-ss+wobble", dict(TYPED_SS, wobble=True))],
+    "phenix-rsr": [("typed-ss", dict(TYPED_SS, resolution=3.5)),
+                   ("typed-ss+wobble", dict(TYPED_SS, resolution=3.5, wobble=True))],
+    "simrna": [("typed-ss", TYPED_SS)],
+    "farfar2": [("typed-ss", TYPED_SS)],
+    "structure-builder": [("mode=fit+resolution", {"mode": "fit", "resolution": 4.0})],
+}
 
 
 def _variants(tool) -> Iterator[Tuple[str, Dict]]:
@@ -92,6 +106,11 @@ def cases(tool_names=None) -> Iterator[Tuple[str, object, list]]:
             yield f"tool:{name}:{label}", wf, groups
             if name == "vmd" and label == "default":  # the fallback when a project has no groups
                 yield f"tool:{name}:{label}:no-groups", copy.deepcopy(wf), []
+        for label, change in EXTRA_CASES.get(name, []):
+            settings = tool.normalise(copy.deepcopy(change))
+            node = PlanNode(id="x", tool=name, step=3, settings=settings,
+                            files={p.name: _dummy(p) for p in tool.input_ports(settings) if not p.optional})
+            yield f"tool:{name}:{label}", WorkflowParams(project_name="golden", stamp=STAMP, nodes=[node]), groups
 
 
 def run_case(wf, root: str, groups=()) -> Dict[str, str]:
