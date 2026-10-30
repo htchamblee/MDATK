@@ -646,3 +646,10 @@ def test_amber_mdff_template_builds_a_rectangular_box():
     apply_template(wf, "amber-mdff")
     build = next(n for n in wf.nodes if n.tool == "amber-build")
     assert TOOLS["amber-build"].normalise(build.settings)["box"] == "rect"
+
+
+def test_planned_octahedral_build_is_flagged_before_anything_runs():
+    _plan, st = built_after_amber({"water": "tip3p", "box": "oct"})
+    assert any("truncated octahedron" in m for m in messages(st, "warning")), messages(st)
+    _plan, st = built_after_amber({"water": "tip3p", "box": "rect"})
+    assert not any("truncated octahedron" in m for m in messages(st, "warning"))

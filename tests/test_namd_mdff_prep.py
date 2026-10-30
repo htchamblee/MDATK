@@ -661,3 +661,35 @@ def test_pdb_coordinates_of_a_periodic_system_take_the_cryst1_box(tmp_path):
     assert nm.read_rst7(str(tmp_path / "start.rst7"), len(atoms))[1] == pytest.approx(box)
     with pytest.raises(nm.PrepError, match="no CRYST1 record"):
         nm.start_coordinates(cfg, str(tmp_path / "plain.pdb"))
+
+
+def test_octahedral_cryst1_angles_become_the_topologys_exact_ones(tmp_path):
+    # CRYST1 keeps two decimals (109.47); sander refuses anything but the exact octahedron for IFBOX 2
+    atoms = ms.atoms_of(ms.mixed_pdb())
+    box = (64.188, 64.188, 64.188, 109.4712190, 109.4712190, 109.4712190)
+    ms.write_topology(str(tmp_path / "t.parm7"), atoms, box=box, ifbox=2)
+    pdb = ms.model_pdb(atoms)
+    cfg = {"topology": str(tmp_path / "t.parm7"), "coordinates": str(tmp_path / "start.rst7")}
+    (tmp_path / "oct.pdb").write_text("CRYST1   64.188   64.188   64.188 109.47 109.47 109.47 P 1           1\n" + pdb)
+    assert nm.start_coordinates(cfg, str(tmp_path / "oct.pdb")) == 0
+    assert nm.read_rst7(cfg["coordinates"], len(atoms))[1][3:] == (109.471219,) * 3
+    (tmp_path / "rect.pdb").write_text("CRYST1   64.188   64.188   64.188  90.00  90.00  90.00 P 1           1\n" + pdb)
+    with pytest.raises(nm.PrepError, match="not those of the topology's box"):
+        nm.start_coordinates(cfg, str(tmp_path / "rect.pdb"))
+
+
+def test_chimerax_repair_keeps_negative_numbers_and_large_coordinates():
+    chain, number, name, xyz, _el = nm._atom_fields(
+        "ATOM      1  C5'   GC:  -1     999.9991003.568  83.647  1.00  0.00           C")
+    assert (chain, number, name) == ("C", "  -1 ", "G") and xyz == (999.999, 1003.568, 83.647)
+
+
+def test_strands_joined_by_tleap_stop_the_run(tmp_path, system):
+    # a PDB numbering two strands as one chain: tleap bonds O3' of one strand's end to P of the next strand
+    names = [(a[0], a[1], a[3]) for a in system]
+    o3 = names.index(("A", 4, "O3'"))
+    p = names.index(("B", 1, "P")) if ("B", 1, "P") in names else names.index(("B", 2, "P"))
+    ms.write_topology(str(tmp_path / "sys.parm7"), system,
+                      extra_flags=[("BONDS_WITHOUT_HYDROGEN", "i", [3 * o3, 3 * p, 1])])
+    with pytest.raises(nm.PrepError, match=r"bond\(s\) of the topology are longer than 3 A"):
+        nm.prep(config(tmp_path), write=False)

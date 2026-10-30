@@ -53,8 +53,10 @@ def topology_facts(path: str) -> Dict[str, Any]:
             top = _namd_mdff.Topology(path)
             h_mass = [m for i, (m, z) in enumerate(zip(top.mass, top.number)) if z == 1 and not top.solvent(i)]
             heavy_h = sum(1 for m in h_mass if m > 2.0)
+            beta = top.box_dimensions[0] if top.box_dimensions else 90.0
             _TOPOLOGY_FACTS[key] = {"four_site_water": top.numextra > 0,
-                                    "hmr": bool(h_mass) and heavy_h >= 0.5 * len(h_mass)}
+                                    "hmr": bool(h_mass) and heavy_h >= 0.5 * len(h_mass),
+                                    "octahedral": top.ifbox == 2 or abs(beta - 90.0) > 0.1}
         except (OSError, ValueError, _namd_mdff.PrepError):
             _TOPOLOGY_FACTS[key] = {}
     return dict(_TOPOLOGY_FACTS[key])
@@ -387,6 +389,12 @@ class NamdMDFFTool(Tool):
             if not solvated and data["box"]:
                 out.append(Issue("error", "vacuum runs need the dry topology (Amber build: 'Two-pass build' gives "
                                           "it) - the connected one is solvated", ("solvent",)))
+        path = ctx.existing("topology")
+        if solvated and (data.get("box_shape") == "oct" or (path and topology_facts(path).get("octahedral"))):
+            out.append(Issue("warning", "the periodic box is a truncated octahedron: NAMD fits the MDFF potential only "
+                                        "into a region much smaller than the box's width, so the usual margin rarely "
+                                        "fits (the script checks it and stops before NAMD runs). A rectangular box "
+                                        "(Amber build: Box shape 'Rectangular') avoids this", ("input:topology",)))
         if solvated and data.get("four_site_water"):
             water = (f"{WATERS[data['water']][0]} is a four-site water" if data.get("water") in WATERS
                      else "the topology has four-site water (extra points)")
@@ -488,12 +496,6 @@ class NamdMDFFTool(Tool):
         try:
             top = _namd_mdff.Topology(top_path)
             problems, _notes = _namd_mdff.topology_problems(top, cfg)
-            if cfg["periodic"] and top.box_dimensions and abs(top.box_dimensions[0] - 90.0) > 0.1:
-                notes.append(Issue("warning", "the periodic box is a truncated octahedron: NAMD fits the MDFF potential "
-                                              "only into a region much smaller than the box's width, so the usual "
-                                              "margin rarely fits (the script checks it and stops before NAMD runs). "
-                                              "A rectangular box (Amber build: Box shape 'Rectangular') avoids this",
-                                   ("input:topology",)))
             xyz = None
             if _namd_mdff.is_netcdf(crd_path):  # converted by cpptraj when the script runs
                 notes.append(Issue("info", "the coordinates are a NetCDF restart: the D/L and dihedral checks of the "
@@ -512,6 +514,7 @@ class NamdMDFFTool(Tool):
             else:
                 xyz, _box, _vel = _namd_mdff.read_rst7(crd_path, top.natom)
             if xyz is not None:
+                problems += _namd_mdff.bond_problems(top, xyz)
                 if cfg["chirality"]["enabled"]:
                     _lines, bad, _more = _namd_mdff.chirality_lines(top, xyz, 1.0, D_IMPROPERS)
                     problems += bad

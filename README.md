@@ -1017,7 +1017,8 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
 
 - **Topology and coordinates:** the topology and coordinates of the Amber build, or a restart of
   *Amber · MD stages*. NetCDF restarts are converted with cpptraj; vacuum runs take the dry PDB. A
-  PDB of a solvated system must be in the topology's atom order and carry the box (CRYST1).
+  PDB of a solvated system must be in the topology's atom order and carry the box (CRYST1; the
+  angles are taken from the topology, so a truncated octahedron keeps its exact 109.4712°).
 - **Map:** the density map (MRC / CCP4, or an OpenDX density).
 - **Map-frame model:** the PDB that was fitted into the map, usually the input of the Amber build.
 - **Secondary structure** (optional), for the dihedral and base-pair restraints.
@@ -1037,7 +1038,8 @@ already in the plan and their files do not change.
      - 12-6-4 C4 terms (NAMD cannot apply them; use 12-6, microMg or nanoMg for NAMD);
      - per-dihedral 1-4 scaling different from 1.2 / 2.0;
      - a polarisable topology;
-     - box, four-site water and time step that do not fit the topology (4 fs needs HMR).
+     - box, four-site water and time step that do not fit the topology (4 fs needs HMR);
+     - bonds longer than 3 Å: strands a PDB numbered as one chain, which tleap joined.
    - **Map frame:** tleap moves (and may rotate) the solute when it solvates it. The script
      superposes the coordinates on the map-frame model and moves the potential with them; a
      rotation is resampled on a grid twice as fine as the map. It stops if less than 30 % of the

@@ -195,6 +195,8 @@ def start_coordinates(cfg, source):
         if top.ifbox and box is None:
             raise PrepError(f"{source} has no CRYST1 record, so the periodic box is unknown: connect the rst7 of "
                             "the Amber build or an MD restart")
+        if box is not None:  # CRYST1 rounds the angles (109.47); sander and NAMD need the topology's own
+            box = tuple(box[:3]) + topology_angles(top, box[3:])
         write_rst7(cfg["coordinates"], [a[3] for a in atoms], box, title=f"from {os.path.basename(source)} (MDATK)")
     else:
         xyz, box, _vel = read_rst7(source, top.natom)
@@ -223,13 +225,18 @@ def _atom_fields(line):
     if colon > 0 and not line[colon - 1].isspace():
         words = line[16:colon - 1].split()
         if len(words) == 1 or (len(words) == 2 and words[0] == line[16]):
-            rest = line[colon + 1:]
-            m = re.match(r"\s*(-?\d+)([A-Za-z]?)\s", rest)
-            coords = re.findall(r"-?\d+\.\d+", rest[m.end():]) if m else []
-            if len(coords) < 3:
-                raise PrepError(f"cannot read the damaged line {line.strip()!r}")
-            number = f"{int(m.group(1)) % 10000:4d}{m.group(2) or ' '}"
-            return line[colon - 1], number, words[-1], tuple(float(v) for v in coords[:3]), ""
+            rest = line[colon + 1:].ljust(58)
+            try:  # aligned like columns 23-54 when the shift is uniform (pdbtools does the same)
+                number = f"{int(rest[0:4]):4d}{rest[4]}"
+                xyz = (float(rest[8:16]), float(rest[16:24]), float(rest[24:32]))
+            except ValueError:  # otherwise from the tokens
+                m = re.match(r"\s*(-?\d+)([A-Za-z]?)\s", rest)
+                coords = re.findall(r"-?\d+\.\d{3}", rest[m.end():]) if m else []
+                if len(coords) < 3:
+                    raise PrepError(f"cannot read the damaged line {line.strip()!r}") from None
+                number = f"{int(m.group(1)):4d}{m.group(2) or ' '}"
+                xyz = tuple(float(v) for v in coords[:3])
+            return line[colon - 1], number[-5:], words[-1], xyz, ""
     xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
     return line[21], line[22:27], line[17:21].strip(), xyz, line[76:78].strip().upper()
 
@@ -257,6 +264,16 @@ def read_pdb_atoms(path):
     if not out:
         raise PrepError(f"{path}: no atoms")
     return out
+
+
+def topology_angles(top, angles):
+    """The box angles of a periodic topology: the exact truncated octahedron (109.4712190) for IFBOX 2, else
+    90 / beta (BOX_DIMENSIONS) / 90; refuses CRYST1 angles more than 0.05 degrees from them."""
+    beta = top.box_dimensions[0] if top.box_dimensions else 90.0
+    exact = (109.4712190,) * 3 if top.ifbox == 2 else (90.0, beta, 90.0)
+    if any(abs(a - b) > 0.05 for a, b in zip(angles, exact)):
+        raise PrepError(f"the CRYST1 angles {tuple(angles)} are not those of the topology's box {exact}")
+    return exact
 
 
 def pdb_box(path):
@@ -845,6 +862,33 @@ def read_namd_coor(path, natom):
 
 
 # -------------------------------------------------------------------------------------- the steps
+def long_bonds(top, xyz, limit=3.0):
+    """Bonds between heavy atoms longer than ``limit`` (A) at the given coordinates - e.g. two strands that
+    tleap joined because the PDB numbered them as one: [(atom i, atom j, length)]."""
+    sections, _flags = read_parm7(top.path, {"BONDS_WITHOUT_HYDROGEN"})
+    raw = sections.get("BONDS_WITHOUT_HYDROGEN", [])
+    out = []
+    for k in range(0, len(raw) - 2, 3):
+        i, j = abs(raw[k]) // 3, abs(raw[k + 1]) // 3
+        if top.solvent(i):
+            continue
+        d = sub(xyz[i], xyz[j])
+        if dot(d, d) > limit * limit:
+            out.append((i, j, math.sqrt(dot(d, d))))
+    return out
+
+
+def bond_problems(top, xyz):
+    bad = long_bonds(top, xyz)
+    if not bad:
+        return []
+    i, j, d = bad[0]
+    return [f"{len(bad)} bond(s) of the topology are longer than 3 A in the coordinates, e.g. {top.names[i]} of residue "
+            f"{top.residue[i] + 1} ({top.labels[top.residue[i]]}) - {top.names[j]} of residue {top.residue[j] + 1} "
+            f"({top.labels[top.residue[j]]}): {d:.1f} A. Strands the PDB numbered as one chain were joined by tleap; "
+            "put TER between them (or give each its own chain) and rebuild"]
+
+
 def topology_problems(top, cfg):
     """Problems that stop the run (list of str) and notes."""
     problems, notes = [], []
@@ -990,6 +1034,7 @@ def prep(cfg, write=True):
     xyz, box, _vel = read_rst7(cfg["coordinates"], top.natom)
     if cfg["periodic"] and box is None:
         problems.append(f"{cfg['coordinates']} has no box line; the solvated run needs one")
+    problems += bond_problems(top, xyz)
     nts = nucleotides(top, xyz)
     if cfg["chirality"]["enabled"]:
         _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
