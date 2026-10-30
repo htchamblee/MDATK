@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.8"
+mdatk_version = "0.0.10"
 # When the settings were last saved.
-saved = 2026-10-30T10:02:05
+saved = 2026-10-30T17:44:03
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -502,6 +502,9 @@ title = ""
 x = 40
 # Position of the box on the planner canvas
 y = 40
+# Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
+# written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
+adopted = ""
 # Hand-picked input files for ports that no connection feeds ({port = path})
 files = {}
 
@@ -526,6 +529,9 @@ title = ""
 x = 40
 # Position of the box on the planner canvas
 y = 260
+# Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
+# written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
+adopted = ""
 # Hand-picked input files for ports that no connection feeds ({port = path})
 files = {}
 
@@ -550,6 +556,9 @@ title = ""
 x = 320
 # Position of the box on the planner canvas
 y = 40
+# Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
+# written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
+adopted = ""
 # Hand-picked input files for ports that no connection feeds ({port = path})
 files = {}
 
@@ -712,6 +721,9 @@ title = ""
 x = 620
 # Position of the box on the planner canvas
 y = 40
+# Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
+# written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
+adopted = ""
 # Hand-picked input files for ports that no connection feeds ({port = path})
 files = {}
 

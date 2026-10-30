@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MDFF preparation and final model for NAMD on an Amber topology - written by MDATK 0.0.8.
+"""MDFF preparation and final model for NAMD on an Amber topology - written by MDATK 0.0.10.
 
 Usage: python3 THIS_SCRIPT prep | final | check-only | is-netcdf FILE
 """

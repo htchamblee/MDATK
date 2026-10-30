@@ -1262,14 +1262,16 @@ def _lib_units(paths: List[str], ctx) -> Tuple[set, List[str]]:
     return units, unread
 
 
-_D_UNIT = re.compile(r"[RD]?[ACGTU][53N]?")  # D nucleotide units: A C G U, DA ... DT (older RA ...), ends
+# unit names of the L-RNA lineages: Dudek's (LA, LA5 ...), the older A0 / A05 / A03 and the CCD-like 0A;
+# other nucleotide names (A, DA, modified nucleotides such as PSU or 1MA) are D units
+_L_UNIT = re.compile(r"(L[ACGU]|[ACGU]0|0[ACGU])[35N]?")
 _L_TYPES = {"LD", "LH", "LE"}  # the L-RNA oxygen types (Dudek & Trylska, MDATK's generated library)
 
 
 def _lrna_like_libs(paths: List[str], ctx) -> bool:
     """Whether a readable OFF library looks like an L-RNA one: it uses an L-RNA atom type, or it has
-    nucleotide units (sugar atoms C1' and O4') under other names than the D ones (LA, A0, 0A ...).
-    A ligand library has neither; one that cannot be read tells nothing."""
+    nucleotide units (sugar atoms C1' and O4') named the way L-RNA libraries name them (LA, A0, 0A ...).
+    A ligand or modified-nucleotide library has neither; one that cannot be read tells nothing."""
     for cand in _lib_paths(paths, ctx)[0]:
         try:
             with open(cand, encoding="utf-8", errors="replace") as fh:
@@ -1283,7 +1285,7 @@ def _lrna_like_libs(paths: List[str], ctx) -> bool:
             if any(t in _L_TYPES for _a, t in atoms):
                 return True
             sugar = {a.replace("*", "'") for a, _t in atoms} >= {"C1'", "O4'"}  # (C1* in older libraries)
-            if sugar and not _D_UNIT.fullmatch(unit):
+            if sugar and _L_UNIT.fullmatch(unit):
                 return True
     return False
 

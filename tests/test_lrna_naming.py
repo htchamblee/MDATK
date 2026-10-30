@@ -332,8 +332,9 @@ def test_l_rna_set_ups_get_both_checks(tmp_path):
     assert _checks(_upstream(tmp_path, extra_libs=zero_a)) == (True, True)
     d_named = _lib(tmp_path / "d_named_L.lib", ["A", "C", "G", "U"], atoms=NT_ATOMS + (("O5'", "LD"),))
     assert _checks(_upstream(tmp_path, extra_libs=d_named)) == (True, True)
-    # D nucleotides (C1* in older libraries) and DNA are not L-like
-    d_lib = _lib(tmp_path / "d.lib", ["RA", "DA5", "G3", "UN", "DT"], atoms=(("C1*", "CT"), ("O4*", "OS")))
+    # D nucleotides (C1* in older libraries), DNA and modified nucleotides (all_modrna08.lib) are not L-like
+    d_lib = _lib(tmp_path / "d.lib", ["RA", "DA5", "G3", "UN", "DT", "PSU", "1MA"],
+                 atoms=(("C1*", "CT"), ("O4*", "OS")))
     assert _checks(_upstream(tmp_path, extra_libs=d_lib)) == (False, False)
     # 'My own files' chosen: the script checks, also when the planner cannot read the library
     assert _checks(_upstream(tmp_path, extra_libs=ligand, lrna_library="own")) == (True, True)
