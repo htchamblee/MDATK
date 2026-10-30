@@ -21,6 +21,7 @@ class RMSDAnalysis(Analysis):
     name = "rmsd"
     label = "RMSD"
     group_slots = 1
+    instance_settings = ("targets",)  # with_groups makes targets of the group
 
     @classmethod
     def with_groups(cls, project, groups):

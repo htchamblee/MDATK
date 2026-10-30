@@ -377,6 +377,24 @@ def test_bad_selection_flags_its_field_and_badges_its_page(window):
     assert W.flag_of(combo) == ("", "")
 
 
+def test_structure_view_settings_unused_by_render_are_flagged_as_warnings(window):
+    from mdatk.gui import widgets as W
+
+    entry = _bound(window, "visual.proximity_set")
+    video = _bound(window, "output.video.enabled")
+    video.set_active(False)
+    entry.set_text("Tgt")
+    assert pump(lambda: W.flag_of(entry)[1] == "warning", 5)  # shown, but Render does not use it
+    assert "unknown residue group 'Tgt'" in W.flag_of(entry)[0]
+    assert window.collect().visual.proximity_set == "Tgt"  # Render is not refused
+    with pytest.raises(ValueError, match="Proximity set: unknown residue group 'Tgt'"):
+        window.collect(video=True, charts=False, pdb=False)  # Render still draws the structure view
+    video.set_active(True)
+    assert pump(lambda: W.flag_of(entry)[1] == "error", 5)
+    entry.set_text("Target")
+    assert pump(lambda: W.flag_of(entry) == ("", ""), 5)
+
+
 def test_run_time_selection_error_flags_the_setting_it_came_from(window):
     from mdatk.gui import widgets as W
 

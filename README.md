@@ -283,8 +283,12 @@ also scrolls to the page's next problem. The field itself is **flagged**: red fr
 icon at the end of entries, and the message as its tooltip; in the group, RMSD-target and external-data
 tables the offending cell is tinted. The **problems button** next to the page title lists every
 problem with its location; click one to go to its field. Flags and badges disappear when the setting
-is fixed. A selection that fails during a run (e.g. a group that matches no atom of the structure) is
-flagged the same way until that setting or the residue groups change.
+is fixed. A setting that *Render* would not use is flagged as a warning, not an error (e.g. the proximity
+set while the video is off, or a draft group nothing uses), and does not stop it; *Render still*,
+*Export PDBs now* and the density map's *Global search* / *Refine* check what they use themselves (see
+[Residue groups and selections](#residue-groups-and-selections)). A selection that fails during a run
+(e.g. a group that matches no atom of the structure) is flagged the same way until that setting or the
+residue groups change.
 
 The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
@@ -807,13 +811,27 @@ the place of its setting, as the GUI shows it, and names the offending part:
 
 The settings are checked before every run (`mdatk render` refuses with the list; warnings, e.g. a group
 in *Groups shown* that does not exist and is left out, are logged); a selection that fails while
-analysing (it can only be matched against the structure then) names its setting the same way. A
-selection that uses a broken group is not blamed for it: the group's definition is. In Python,
-`Project.validate()` (errors) and `Project.problems()` (errors and warnings) return
-`mdatk.problems.Problem` strings whose text is the message above and which carry the setting's `field`
-path (`analyses.hbonds.group_b`), GUI page (`tab`), readable `location` and offending `token`;
-`SelectionError` carries the same plus `kind`, the selection as written and expanded and MDAnalysis'
-own message.
+analysing (it can only be matched against the structure then) names its setting the same way.
+**Only what is about to run can block it**: a wrong setting is an error if the run uses it, and only a
+warning otherwise. The structure view's settings (*Groups shown*, the proximity set, the
+representations' groups, the Mg selection while the Mg analysis is off) are errors only when the
+structure view is rendered: the video is on (and the layout has a structure, sequence or
+secondary-structure panel), or *Render still*. `mdatk render --no-video`, `mdatk analyze` with the
+video off, `mdatk export-pdb` (and *Export PDBs now*) and the density fit are not refused for them;
+the density fit does use *Groups shown* and the Mg selection. The PDB atom subset is an error only when
+PDBs are exported; one made only of commas names no group and is an error too (an empty subset exports
+every atom). A selection that uses a broken group is not blamed for it: the group's definition is. That
+definition is an error when something about to run selects the group (a setting that is an error, the
+groups the rendered structure view shows, a panel or chart that is drawn), directly or through other
+groups, and a warning for a draft group nothing uses. Circular definitions (`Stem` uses `group:Loop`,
+`Loop` uses `group:Stem`) are reported at every group of the circle. A run of an analysis on a panel's
+or chart's groups (`rmsd@Loop/Heavy`) that fails is reported at that panel or chart, else at the
+group's definition, never at the analysis' own settings. In Python, `Project.validate()` (errors) and
+`Project.problems()` (errors and warnings) take what is about to run (`video`, `charts`, `pdb`: default
+the output switches; `density`) and return `mdatk.problems.Problem` strings whose text is the message
+above and which carry the setting's `field` path (`analyses.hbonds.group_b`), GUI page (`tab`), readable
+`location` and offending `token`; `SelectionError` carries the same plus `kind`, the selection as written
+and expanded and MDAnalysis' own message.
 
 ## Structural view, colouring and glow
 

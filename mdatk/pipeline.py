@@ -102,8 +102,12 @@ class Pipeline:
         self._stamp = None
 
     # ---------------------------------------------------------------- inputs
-    def check(self) -> None:
-        problems = self.project.problems()
+    def check(self, video: Optional[bool] = None, charts: Optional[bool] = None, pdb: Optional[bool] = None,
+              density: bool = False) -> None:
+        """Raise :class:`PipelineError` for a wrong setting that what is about to run uses: the outputs
+        ``video``, ``charts`` and ``pdb`` (None: their switches), or a ``density`` fit.  The problems of
+        settings it does not use are only logged as warnings (see :meth:`~mdatk.config.Project.problems`)."""
+        problems = self.project.problems(video, charts, pdb, density)
         errors = [p for p in problems if p.level == "error"]
         if errors:
             raise PipelineError("Invalid parameters:\n  - " + "\n  - ".join(errors), errors)
@@ -336,7 +340,7 @@ class Pipeline:
         video = p.output.video.enabled if video is None else video
         charts = p.output.charts.enabled if charts is None else charts
         pdb = p.output.pdb.enabled if pdb is None else pdb
-        self.check()
+        self.check(video, charts, pdb)
         with logged(self.project_path, "render", "Analyses and outputs",
                     keys_for(pipeline_resources(p))) as entry:
             outputs = self._run(video, charts, pdb, force_analysis)

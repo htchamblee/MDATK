@@ -1385,7 +1385,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def fit_density(self, search: str) -> None:
         try:
-            project = self.collect()
+            project = self.collect(video=False, charts=False, pdb=False, density=True)
         except ValueError as exc:
             self.error("Please fix these parameters first", str(exc))
             return
@@ -1820,7 +1820,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.append_log("Conda environments with cpptraj: " +
                         ", ".join(f"{e.name} ({e.prefix})" for e in envs))
 
-    def collect(self, validate: bool = True, include_layout: bool = True) -> Project:
+    def collect(self, validate: bool = True, include_layout: bool = True, **uses: bool) -> Project:
+        """The project as the side bar shows it; ``validate`` refuses the errors of what is about to run,
+        which ``uses`` names as :meth:`Project.problems` does (default: the output switches)."""
         project = self.project.copy()
         # the planner / wizard edit the live workflow object; keep sharing it
         project.workflow = self.project.workflow
@@ -1828,7 +1830,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if errors:
             raise ValueError("\n".join(errors))
         if validate:
-            problems = project.validate()
+            problems = project.validate(**uses)
             if problems:
                 self.check_problems()  # the fields are flagged while the message is shown
                 raise ValueError("\n".join(problems))
@@ -2213,7 +2215,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def preview_frame(self):
         try:
-            project = self.collect()
+            project = self.collect(video=True, charts=False, pdb=False)  # renders the structure view
         except ValueError as exc:
             self.error("Please fix these parameters first", str(exc))
             return
@@ -2234,7 +2236,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def export_pdbs(self):
         try:
-            project = self.collect()
+            project = self.collect(video=False, charts=False, pdb=True)
         except ValueError as exc:
             self.error("Please fix these parameters first", str(exc))
             return
