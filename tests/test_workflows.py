@@ -426,7 +426,7 @@ def test_amber_md_segments_and_engines():
     assert "-o apt1_04_prod-002_20261015-1432.out" in prod and "-c apt1_04_prod-002_20261015-1432.rst7" in prod
     assert "finished" not in prod
     main = files["apt1_04_amber-md_20261015-1432.sh"].content
-    assert "\npmemd -O -i apt1_04_min1" in main and "$PMEMD -O -i apt1_04_heat" in main
+    assert "\n  pmemd -O -i apt1_04_min1" in main  # inside the block skipped after production and "$PMEMD -O -i apt1_04_heat" in main
     assert st.outputs["trajectory"].paths == [f"04_amber-md/apt1_04_prod-00{k}_20261015-1432.nc" for k in (1, 2, 3)]
 
 

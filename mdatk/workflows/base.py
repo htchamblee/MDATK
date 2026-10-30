@@ -319,16 +319,15 @@ WAITING_STATUS = 75
 def separate_check(script: str, finished: Sequence[str], what: str) -> Tuple[List[str], List[str]]:
     """Shell lines for the main script of a step that leaves ``what`` to the separate ``script``.
 
-    ``finished`` are shell tests that all succeed once that script has finished.  The first lines (placed
-    before the step's own work) end the main script at once when it has: the step is complete and nothing
-    is run again.  The last lines (placed at its very end) exit with :data:`WAITING_STATUS` and name the
-    script to run while it has not, so a step never reports success with its production missing."""
+    ``finished`` are shell tests that all succeed once that script has finished.  The first lines define
+    ``separate_done`` (place them before the step's own work; :func:`skip_when_done` keeps the work that
+    production starts from from running again).  The last lines exit with :data:`WAITING_STATUS` and name
+    the script to run while it has not finished - place them before anything that needs its output - so a
+    step never reports success with its production missing."""
     tests = [f"  {t} &&" for t in finished[:-1]] + [f"  {finished[-1]}"]
     head = [f"# {what[:1].upper() + what[1:]} run in a separate script, e.g. on a cluster: this step is "
             f"complete once", f"# bash {script} has finished",
-            "separate_done() {", *tests, "}",
-            "if separate_done; then",
-            f'  echo "{script} has finished: nothing left to run in this step"', "  exit 0", "fi", ""]
+            "separate_done() {", *tests, "}", ""]
     tail = [f"# The step is not complete before {what} have finished",
             "if ! separate_done; then",
             f'  echo "WAITING: {what} have not finished. Run them (e.g. on a cluster) with:" >&2',
@@ -336,6 +335,20 @@ def separate_check(script: str, finished: Sequence[str], what: str) -> Tuple[Lis
             '  echo "then run this script again." >&2',
             f"  exit {WAITING_STATUS}", "fi", ""]
     return head, tail
+
+
+def skip_when_done(lines: Sequence[str], what: str) -> List[str]:
+    """``lines`` (the work production starts from) run only while ``separate_done`` fails: once the separate
+    script has finished, running them again would replace its starting point (without per-stage resume)."""
+    if not lines:
+        return []
+    body = list(lines)
+    while body and not body[-1].strip():
+        body.pop()
+    if not any("<<" in ln for ln in body):  # here-documents must keep their lines as they are
+        body = [f"  {ln}" if ln else ln for ln in body]
+    return (["if separate_done; then", f'  echo "{what} have finished: the work before them is not run again"',
+             "else"] + body + ["fi", ""])
 
 
 def fortran_float(x: float) -> str:

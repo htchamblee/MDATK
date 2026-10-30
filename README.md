@@ -321,13 +321,16 @@ script* of the Amber MD and GROMACS steps) are not started unless you tick *Also
 step's main script. Such a step is complete only when its separate script has finished, and its main
 script checks that:
 
-- it stops at once, with success, when the separate script has finished (nothing is run again, so the
-  stages production started from are not redone);
-- otherwise it runs its own stages (equilibration) and then exits with status **75**, naming the script
-  to run (`WAITING: the production stages have not finished. Run them … with: bash …/<name>_amber-prod_….sh`).
+- it runs its own stages before production (equilibration; for GROMACS also the conversion) only while
+  the separate script has not finished - once it has, they are not redone, as production started from
+  them;
+- while production has not finished, it then exits with status **75**, naming the script to run
+  (`WAITING: the production stages have not finished. Run them … with: bash …/<name>_amber-prod_….sh`).
   MDATK reports such a step as **waiting**, not as failed, and does not start the steps that read
   from it; `mdatk workflow run` exits with 75 too. Run the separate script (e.g. on the cluster), then
-  the step again.
+  the step again;
+- once production has finished, the stages after it (e.g. a cooling stage) and the dry PDB run, and the
+  step succeeds.
 
 Before 0.0.10 the main script of a step whose stages were all production held only the preamble and
 "succeeded" without running anything. Main scripts written by older versions do not check; MDATK
@@ -790,6 +793,7 @@ resort `index …`, which only holds for topologies with the same atom order).
 - Otherwise nothing changes by itself; the status line lists the chains without a group and
   **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
   name gets a suffix). Your groups are never changed.
+
 **When a group or selection is wrong, the message says where and what.** Every problem starts with
 the place of its setting, as the GUI shows it, and names the offending part:
 

@@ -27,9 +27,11 @@ while [ $# -gt 0 ]; do
     -o) out="$2"; shift ;;
     -r) rst="$2"; shift ;;
     -x) nc="$2"; shift ;;
+    -c) crd="$2"; shift ;;
   esac
   shift
 done
+[ -s "$crd" ] || { echo "pmemd: no coordinates $crd" >&2; exit 1; }  # like pmemd
 echo "pmemd $out" >> "$FAKE_LOG"
 echo restart > "$rst"
 if [ -n "$nc" ]; then echo trajectory > "$nc"; fi
@@ -309,8 +311,35 @@ def test_all_production_step_waits_for_its_production_script(tmp_path, fake_bin)
     assert res.returncode == 0, res.stderr
     assert calls(fake_bin) == [f"pmemd apt1_01_prod_{OLD}.out"]
     res = bash(main_sh)
-    assert res.returncode == 0 and "nothing left to run in this step" in res.stdout
+    assert res.returncode == 0 and len(calls(fake_bin)) == 1, res.stdout + res.stderr
     assert runstate.check_step(plan, "md").state == "done"
+
+
+@needs_bash
+def test_stages_after_production_run_once_it_has_finished(tmp_path, fake_bin):
+    # review: an early 'production finished: exit 0' skipped the stages that continue from production
+    cool = dict(name="cool", kind="md", nstlim=1000, ntwx=0)
+    plan, main_sh, prod_sh = md_plan(tmp_path, [EQ, PROD, cool], resume=False)
+    res = bash(main_sh)
+    assert res.returncode == WAITING_STATUS and calls(fake_bin) == [f"pmemd apt1_01_eq_{OLD}.out"]
+    assert bash(prod_sh).returncode == 0
+    res = bash(main_sh)  # equilibration is not redone (production started from it); cool runs
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert calls(fake_bin)[2:] == [f"pmemd apt1_01_cool_{OLD}.out"]
+    assert (tmp_path / "plan" / "01_amber-md" / f"apt1_01_cool_{OLD}.rst7").exists()
+    assert runstate.check_step(plan, "md").state == "done"
+
+
+@needs_bash
+def test_dry_pdb_asked_for_after_production_is_still_written(tmp_path, fake_bin):
+    plan, main_sh, prod_sh = md_plan(tmp_path, [EQ, PROD], dry_pdb=False)
+    assert bash(main_sh).returncode == WAITING_STATUS and bash(prod_sh).returncode == 0
+    assert bash(main_sh).returncode == 0
+    plan, main_sh, prod_sh = md_plan(tmp_path, [EQ, PROD], dry_pdb=True)  # written again, same stamp
+    n = len(calls(fake_bin))
+    assert bash(main_sh).returncode == 0
+    assert calls(fake_bin)[n:] == ["cpptraj"]  # only the dry PDB: equilibration is not redone
+    assert (tmp_path / "plan" / "01_amber-md" / f"apt1_01_dry_{OLD}.pdb").exists()
 
 
 @needs_bash

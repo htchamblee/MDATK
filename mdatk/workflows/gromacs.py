@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from .. import PROJECT_ABBREV, __version__
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
-                   script_header, separate_check)
+                   script_header, separate_check, skip_when_done)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -359,12 +359,13 @@ class GromacsTool(Tool):
         main = preamble("GROMACS: conversion and MD stages", script)
         waiting: List[str] = []
         if self._prod_split(s):  # the main script must not report success while production has not run
-            # (mdrun writes a stage's .gro last); without per-stage resume, the first lines also keep a re-run
-            # from redoing the conversion and stages production started from
+            # (mdrun writes a stage's .gro last); without per-stage resume, the conversion and the stages
+            # production started from are skipped once it has finished, so a re-run does not redo them
             done = [f"[ -s {n(tags[k], 'gro')} ]" for k, st in enumerate(s["stages"])
                     if st["production"] and st["integrator"] != "steep"]
             head, waiting = separate_check(prod_script, done, "the production stages")
             main += head
+        pre_start = len(main)
         need_posres = any(st["posres"] for st in s["stages"])
         if s["convert"] == "parmed":
             conv = n("convert", "py")
@@ -402,6 +403,8 @@ class GromacsTool(Tool):
         if s["extra_mdrun"].strip():
             mdrun_flags.append(s["extra_mdrun"].strip())
         prev_gro, prev_cpt, prev_kind = gro, "", "start"
+        after: List[str] = []  # split production: stages that continue from it
+        seen_prod = False
         for k, st in enumerate(s["stages"]):
             tag = tags[k]
             dyn = st["integrator"] != "steep"
@@ -415,7 +418,10 @@ class GromacsTool(Tool):
             files.append(GeneratedFile(n(tag, "mdp"), self.mdp(st, gen_vel, cont, f"{tag}: stage {k + 1}",
                                                                s["mass_repartition"]),
                                        "input", f"mdp of stage {tag}"))
-            target = prod if (prod_split and st["production"] and dyn) else main
+            if prod_split and st["production"] and dyn:
+                target, seen_prod = prod, True
+            else:
+                target = after if seen_prod else main
             ref = f" -r {prev_gro}" if st["posres"] else ""
             cpt = f" -t {prev_cpt}" if (dyn and cont and prev_cpt) else ""
             target += [f"# {tag}",
@@ -426,6 +432,11 @@ class GromacsTool(Tool):
                        require_file(n(tag, "gro"), f"mdrun ({tag})"), ""]
             prev_gro, prev_cpt = n(tag, "gro"), n(tag, "cpt")
             prev_kind = "md" if dyn else "min"
+        if prod_split:  # before production; then wait for it; then the stages that continue from it
+            main[pre_start:] = skip_when_done(main[pre_start:], "the production stages")
+            if after:
+                main += waiting + after
+                waiting = []
         main += waiting
         files.append(GeneratedFile(script, "\n".join(main), "run", "runs the GROMACS stages"))
         if prod_split:

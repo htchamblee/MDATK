@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
-                   require_file, script_header, separate_check, shell_quote)
+                   require_file, script_header, separate_check, shell_quote, skip_when_done)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import cp_retype as _cp_retype
@@ -1916,14 +1916,21 @@ class AmberMDTool(Tool):
         main = preamble("Amber MD stages", main_name)
         prod = preamble("Amber production", prod_name) if prod_split else main
         waiting: List[str] = []
+        # split production: the main script's stages before it (production starts from them) and after it
+        before: List[str] = []
+        after: List[str] = []
         if prod_split:  # the main script must not report success while production has not run
             head, waiting = separate_check(prod_name, self._production_done(s, ctx, runs),
                                            "the production stages")
             main += ([] if s["resume"] else FINISHED_FN) + head
         prev_rst = crd
+        seen_prod = False
         for r in runs:
             st = r["stage"]
-            target = prod if (prod_split and st["production"]) else main
+            if prod_split and st["production"]:
+                target, seen_prod = prod, True
+            else:
+                target = (after if seen_prod else before) if prod_split else main
             ref = crd if s["restraint_ref"] == "initial" else prev_rst
             exe = min_pmemd if st["kind"] == "min" else "$PMEMD"
             seg = f" (segment {r['seg']}/{r['nseg']})" if r["nseg"] > 1 else ""
@@ -1939,6 +1946,11 @@ class AmberMDTool(Tool):
                 target.append(cmd)
             target += [require_file(r["rst"], f"pmemd ({r['rtag']})"), ""]
             prev_rst = r["rst"]
+        if prod_split:  # before production; then wait for it; then the stages that continue from it
+            main += skip_when_done(before, "the production stages")
+            if after:
+                main += waiting + after
+                waiting = []
         main_runs = [r for r in runs if not (prod_split and r["stage"]["production"])]
         if main_runs and s["dry_pdb"]:
             dry = ctx.name("dry", "pdb")
