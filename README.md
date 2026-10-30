@@ -53,6 +53,12 @@ In 0.0.10:
   units and the `addPdbResMap` lines **before tleap runs** and stops on a name tleap would read as the
   lanthanum or lutetium ion (LA / LU); the planner warns about the names even when an earlier step makes
   the structure. In the Windows build the mouse pointer no longer disappears over the structure panel.
+- **Check previous runs** (planner toolbar, right-click menu, `mdatk workflow status`) finds the
+  outputs of a step's earlier run, also under an earlier time stamp, and marks the box done, partial or
+  missing. A step can then **use those outputs**: the steps after it read them, and it is not written
+  or run again. A step whose production runs in a separate script no longer reports success before
+  that script has finished; it **waits** (exit status 75) and the steps after it do not start.
+  `mdatk workflow run --include-separate` runs the separate scripts too.
 
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
 steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
@@ -279,12 +285,29 @@ up to *Parallel* scripts at a time (planner toolbar, saved with the project; def
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
 - **Cancel** stops every running script.
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
-  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed) or a
-  dash (cancelled / not started) until the next run.
+  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
+  bars (waiting for a separately run script, see below) or a dash (cancelled / not started) until the
+  next run.
 - **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
   *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
 
-Scripts marked *run separately* (production runs meant for a cluster queue) are never started.
+Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
+script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
+'run separately'* in the confirmation (or give `--include-separate`); they then run right after their
+step's main script. Such a step is complete only when its separate script has finished, and its main
+script checks that:
+
+- it stops at once, with success, when the separate script has finished (nothing is run again, so the
+  stages production started from are not redone);
+- otherwise it runs its own stages (equilibration) and then exits with status **75**, naming the script
+  to run (`WAITING: the production stages have not finished. Run them … with: bash …/<name>_amber-prod_….sh`).
+  MDATK reports such a step as **waiting**, not as failed, and does not start the steps that read
+  from it; `mdatk workflow run` exits with 75 too. Run the separate script (e.g. on the cluster), then
+  the step again.
+
+Before 0.0.10 the main script of a step whose stages were all production held only the preamble and
+"succeeded" without running anything. Main scripts written by older versions do not check; MDATK
+treats such a step as waiting and asks you to write it again.
 
 - **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
@@ -321,6 +344,33 @@ of other steps by relative paths (`../03_amber-build/apt1_03_parmed_….parm7`),
 can be copied to a cluster. Every script starts with `cd "$(dirname "$0")"`, so it can be started from
 anywhere. Each script's header cites what that step uses (see [Citations](#citations)).
 
+### Previous runs
+
+Each iteration of a project may get a new time stamp (*New stamp*), and the stamp is part of every file
+name, so after an update the plan no longer sees the outputs of its earlier runs. *Check previous runs*
+(planner toolbar; for one box or the ticked boxes in the right-click menu and the details pane) looks
+in each step's folder for the files the step's outputs name: under the plan's stamp first, otherwise
+under the newest earlier stamp with all of them. Only the files the step's scripts make count; for
+Amber MD every stage's output must also end with pmemd's closing lines, so a run still in progress is
+*partial*. Each box then shows a footer: **done** with the stamp and the time its files were last
+written, **partial** with how many files are there (the details list the missing ones), or **missing**.
+
+A step with a complete run can **use it** (*Use this run* in the details, the right-click menu, or the
+offer after a check): the project file stores the run's stamp in the step (`adopted`), and the planner
+points the step's outputs at that run's files. The steps after it then read existing files, so the
+checks that look into their inputs run, and the scripts they write refer to the right files; the step
+itself is not written or run again (the master script lists it as used). *Run selected steps* / *Run
+all…* ask whether to skip such steps or run them again; *Stop using it* returns a step to normal. If a
+file of the run disappears, the planner warns. On the command line:
+
+```bash
+mdatk workflow status -p plan.mdatk.toml              # done / partial / missing for every step
+mdatk workflow status -p plan.mdatk.toml --adopt      # use every complete run found (saved)
+mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written and run again
+```
+
+`workflow run` skips steps that use an earlier run and says so.
+
 ### Step types
 
 | Step | Writes | Notes |
@@ -350,7 +400,8 @@ ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4
 models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
-a separate production script for the cluster; resuming (finished stages are skipped); a dry PDB and a
+a separate production script for the cluster (the main script then waits for it, see above); resuming
+(finished stages are skipped); a dry PDB and a
 dry, imaged production trajectory. The engine is pmemd,
 pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
 the same input, the version is recorded in the scripts. The *Environment* section adds
@@ -557,6 +608,8 @@ mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
 mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
+mdatk workflow run -p plan.mdatk.toml --include-separate  # ... and the scripts marked 'run separately'
+mdatk workflow status -p plan.mdatk.toml [--adopt|--forget]  # earlier runs of the steps (see above)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```
@@ -1275,7 +1328,7 @@ mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selectio
 mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
-mdatk workflow tools|generate|template|check|write|run|restraints   (see Script wizard and Project Planner)
+mdatk workflow tools|generate|template|check|write|run|status|restraints   (see Script wizard and Project Planner)
 mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
@@ -1316,7 +1369,7 @@ visual     structure_groups, trace_atoms, align_frames, rotation, color_mode, co
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log
 workflow   project_name, stamp, use_stamp, out_dir, step_folders,
-           nodes[] {id, tool, step, title, x, y, settings{}, files{}},
+           nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
 

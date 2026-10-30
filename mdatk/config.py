@@ -429,6 +429,9 @@ class PlanNode:
     settings: Dict[str, Any] = field(default_factory=dict)
     # Hand-picked input files for ports that no connection feeds ({port = path})
     files: Dict[str, str] = field(default_factory=dict)
+    # Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
+    # written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
+    adopted: str = ""
 
 
 @dataclass

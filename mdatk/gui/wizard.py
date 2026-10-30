@@ -871,8 +871,11 @@ class WizardWindow(Gtk.Window):
                              f"{os.path.dirname(written[0]) if written else '-'}")
         self.refresh_now()
         if run and not report.skipped and hasattr(self.main, "run_scripts"):
-            self.main.run_scripts(plan_jobs(plan, [self.node.id]), separate_scripts(plan, [self.node.id]),
-                                  parent=self)
+            ids = [self.node.id]
+            jobs = plan_jobs(plan, ids)
+            separate = separate_scripts(plan, ids)
+            both = plan_jobs(plan, ids, include_separate=True) if separate else None
+            self.main.run_scripts(jobs, separate, parent=self, with_separate=both)
 
     def step_folder(self) -> str:
         plan = self.plan or self._resolve()

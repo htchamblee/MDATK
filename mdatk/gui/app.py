@@ -1942,9 +1942,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.worker.start()
 
     def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None, parallel: int = 1,
-                    on_state=None, on_finished=None) -> None:
+                    on_state=None, on_finished=None, with_separate=None) -> None:
         """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation.
-        ``on_state(job, state)`` and ``on_finished()`` are called on the GTK main loop."""
+        ``on_state(job, state)`` and ``on_finished()`` are called on the GTK main loop.  ``with_separate``
+        (the jobs including the scripts marked 'run separately') adds a choice to run those too."""
         from ..workflows.runner import run_jobs, runner_problem
 
         parent = parent or self
@@ -1966,7 +1967,9 @@ class MainWindow(Gtk.ApplicationWindow):
             detail += ("\n\nThe scripts run one after the other on this computer; a failure stops the steps "
                        "that depend on it, Cancel stops the running script. Their output appears in the log.")
         if separate:
-            detail += f"\n\n{len(separate)} script(s) marked 'run separately' are not started."
+            detail += (f"\n\n{len(separate)} script(s) marked 'run separately' (e.g. production) are not "
+                       "started: until they have finished, their step waits and the steps that read from it "
+                       "do not start.")
         if self.project_path:
             detail += f"\n\nEach run is logged in {os.path.basename(self.project_path)}."
         else:
@@ -1974,7 +1977,17 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.QUESTION,
                                 buttons=Gtk.ButtonsType.OK_CANCEL, text=f"Run {len(jobs)} generated script(s)?")
         dlg.format_secondary_text(detail)
+        include = None
+        if separate and with_separate:
+            include = Gtk.CheckButton(label="Also run the scripts marked 'run separately' here, each after "
+                                            "its step's main script")
+            include.set_tooltip_text("For production runs that are meant for this computer rather than a "
+                                     "cluster queue; finished ones are not run again")
+            dlg.get_message_area().pack_start(include, False, False, 0)
+            include.show()
         ok = dlg.run() == Gtk.ResponseType.OK
+        if ok and include is not None and include.get_active():
+            jobs, separate = list(with_separate), ()
         dlg.destroy()
         if not ok:
             return
@@ -1992,10 +2005,17 @@ class MainWindow(Gtk.ApplicationWindow):
                     call_soon(on_finished)
 
         def done(results):
-            msg = f"{len(results)} script(s) finished"
-            if separate:
-                msg += "; run separately: " + ", ".join(os.path.basename(s) for s in separate)
-            self.info("Scripts finished", msg)
+            waiting = [r for r in results if r.status == "waiting"]
+            if waiting:  # not a failure: the user runs those scripts, then the step again
+                skipped = sum(1 for r in results if r.status == "skipped")
+                text = "\n".join(f"Step {r.job.step:02d} ({r.job.title}) is complete once its separately run "
+                                 f"script has finished: run {', '.join(r.job.separate) or 'it'} (e.g. on a "
+                                 "cluster), then the step again." for r in waiting)
+                if skipped:
+                    text += f"\n\n{skipped} script(s) of the steps that read from it were not started."
+                self.info("Waiting for separately run scripts", text)
+                return
+            self.info("Scripts finished", f"{len(results)} script(s) finished")
 
         self.start_job("Running generated scripts", job, done)
 
