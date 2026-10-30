@@ -62,18 +62,22 @@ class MgAnalysis(Analysis):
         super().setup(frame_indices)
         p = self.project.analyses.mg
         self.p = p
-        self.mg = self.ctx.select(p.mg_selection, allow_empty=True)
+        self.mg = self.ctx.select(p.mg_selection, allow_empty=True, field=self.field("mg_selection"))
         if self.mg.n_atoms == 0:
             self.ctx.warn(f"Mg: selection {p.mg_selection!r} matched no ions; Mg series will be zero")
-        lig_sel = without(self.ctx.select(p.ligand_selection), self.mg)
+        lig_sel = without(self.ctx.select(p.ligand_selection, field=self.field("ligand_selection")), self.mg)
         self.lig = element_filter(lig_sel, split_csv(p.ligand_elements))
         names = set(self.project.group_names())
-        in_a = self.ctx.group_atoms(p.group_a).ix if p.group_a in names else np.empty(0, int)
-        in_b = self.ctx.group_atoms(p.group_b).ix if p.group_b in names else np.empty(0, int)
+        in_a = (self.ctx.group_atoms(p.group_a, field=self.field("group_a")).ix if p.group_a in names
+                else np.empty(0, int))
+        in_b = (self.ctx.group_atoms(p.group_b, field=self.field("group_b")).ix if p.group_b in names
+                else np.empty(0, int))
         self.lig_a = np.isin(self.lig.ix, in_a)
         self.lig_b = np.isin(self.lig.ix, in_b) & ~self.lig_a
 
-        occ_sel = without(self.ctx.select(p.occupancy_selection or p.ligand_selection), self.mg)
+        occ_field = self.field("occupancy_selection" if p.occupancy_selection else "ligand_selection")
+        occ_sel = without(self.ctx.select(p.occupancy_selection or p.ligand_selection, field=occ_field),
+                          self.mg)
         self.occ_res, _ = residue_rows(occ_sel)
         self.occ_atoms = element_filter(occ_sel, split_csv(p.occupancy_elements))
         uniq = np.unique(occ_sel.resindices)

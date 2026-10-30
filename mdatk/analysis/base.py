@@ -17,7 +17,7 @@ import numpy as np
 from ..config import Project, stable_hash
 from ..data import AnalysisResult
 from ..progress import Reporter
-from ..selections import heavy, select
+from ..selections import SelectionError, heavy, select
 
 log = logging.getLogger(__name__)
 
@@ -118,12 +118,21 @@ class AnalysisContext:
         self.reporter = reporter or Reporter()
         self.use_pbc = project.analyses.use_pbc
 
-    def select(self, text: str, allow_empty: bool = False):
-        return select(self.u, text, self.project.groups, allow_empty=allow_empty)
+    def select(self, text: str, allow_empty: bool = False, field: str = ""):
+        """Atoms of ``text``; a :class:`SelectionError` names ``field``, the setting the text came from
+        (e.g. ``"analyses.mg.ligand_selection"``)."""
+        try:
+            return select(self.u, text, self.project.groups, allow_empty=allow_empty)
+        except SelectionError as exc:
+            raise exc.locate(field, self.project)
 
-    def group_atoms(self, name: str, heavy_only: bool = False):
-        ag = self.select(f"group:{name}")
+    def group_atoms(self, name: str, heavy_only: bool = False, field: str = ""):
+        ag = self.select(f"group:{name}", field=field)
         return heavy(ag) if heavy_only else ag
+
+    def fail(self, message: str, field: str) -> SelectionError:
+        """A :class:`SelectionError` of the setting ``field`` to raise (e.g. two groups that overlap)."""
+        return SelectionError(message).locate(field, self.project)
 
     def box(self, ts):
         if not self.use_pbc:
@@ -221,6 +230,24 @@ class Analysis:
         return AnalysisResult(name=self.instance, key=key, params=self.params_for(project),
                               arrays={}, meta=dict(meta, label=self.label, analysis=self.name))
 
+    def field(self, name: str) -> str:
+        """Project path of one of this analysis' settings: ``"group_a"`` -> ``"analyses.hbonds.group_a"``."""
+        return f"analyses.{self.name}.{name}"
+
+    def locate_error(self, exc: SelectionError) -> SelectionError:
+        """A run on other groups (``contacts@A+B``) got its groups from a panel or a chart series:
+        report a group problem there, not at the analysis' own group fields."""
+        if INSTANCE_SEP not in self.instance or not exc.field.startswith(self.field("group_")):
+            return exc
+        project = self.project
+        for k, spec in enumerate(project.layout.panels):
+            for j, key in enumerate(spec.series):
+                if split_key(key)[0] == self.instance:
+                    return exc.locate(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", project, True)
+        if any(split_key(key)[0] == self.instance for key in project.output.charts.series):
+            return exc.locate("output.charts.series", project, True)
+        return exc
+
 
 def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indices: np.ndarray,
                  reporter: Optional[Reporter] = None):
@@ -233,7 +260,10 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     n = len(frame_indices)
     for a in analyses:
         reporter.log(f"Preparing {a.label} ...")
-        a.setup(frame_indices)
+        try:
+            a.setup(frame_indices)
+        except SelectionError as exc:  # name the setting the failing selection came from
+            raise a.locate_error(exc)
     times = np.empty(n, dtype=np.float64)
     traj = ctx.u.trajectory
     every = max(1, n // 200)

@@ -55,10 +55,11 @@ class HBondAnalysis(Analysis):
     def setup(self, frame_indices):
         super().setup(frame_indices)
         p = self.project.analyses.hbonds
-        a = self.ctx.group_atoms(p.group_a)
-        b = without(self.ctx.group_atoms(p.group_b), a)
+        a = self.ctx.group_atoms(p.group_a, field=self.field("group_a"))
+        b = without(self.ctx.group_atoms(p.group_b, field=self.field("group_b")), a)
         if b.n_atoms == 0:
-            raise ValueError(f"H-bonds: group {p.group_b!r} lies entirely inside {p.group_a!r}")
+            raise self.ctx.fail(f"H-bonds: group {p.group_b!r} lies entirely inside {p.group_a!r}",
+                                self.field("group_b"))
         self.ga, self.gb = p.group_a, p.group_b
         self.ab = a | b  # sorted union; positions fetched once per frame
         self.side = np.where(np.isin(self.ab.ix, a.ix), 0, 1)

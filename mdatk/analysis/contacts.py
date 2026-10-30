@@ -46,15 +46,16 @@ class ContactAnalysis(Analysis):
     def setup(self, frame_indices):
         super().setup(frame_indices)
         p = self.project.analyses.contacts
-        a = self.ctx.group_atoms(p.group_a)
-        b = self.ctx.group_atoms(p.group_b)
+        a = self.ctx.group_atoms(p.group_a, field=self.field("group_a"))
+        b = self.ctx.group_atoms(p.group_b, field=self.field("group_b"))
         if p.heavy_only:
             a, b = heavy(a), heavy(b)
         self.same = set(a.ix.tolist()) == set(b.ix.tolist())
         if not self.same:
             b = without(b, a)
             if b.n_atoms == 0:
-                raise ValueError(f"contacts: group {p.group_b!r} lies entirely inside {p.group_a!r}")
+                raise self.ctx.fail(f"contacts: group {p.group_b!r} lies entirely inside {p.group_a!r}",
+                                    self.field("group_b"))
         self.a, self.b = a, b
         self.res_a, self.row_a = residue_rows(a)
         self.res_b, self.row_b = residue_rows(b)

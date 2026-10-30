@@ -9,7 +9,7 @@ import shutil
 import sys
 import tempfile
 import warnings
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import gi
 
@@ -24,16 +24,20 @@ from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E4
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
 from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeries,  # noqa: E402
-                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, layout_warnings)
+                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, layout_warnings, stable_hash)
+from ..problems import Problem, field_parents  # noqa: E402
+from ..problems import problem as make_problem  # noqa: E402
 from ..progress import Cancelled  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
 from ..render.example import example_dataset  # noqa: E402
 from ..render.layout import PRESET_LABELS, PRESETS, n_slots  # noqa: E402
 from ..render.orientation import format_angles  # noqa: E402
 from ..render.panels import PANEL_TYPES  # noqa: E402
+from ..selections import SelectionError  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
+from .problemview import ProblemView  # noqa: E402
 from .worker import Worker, call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -51,6 +55,7 @@ PAGES = [  # (id, icon, side panel title)
     ("outputs", "video-x-generic-symbolic", "Outputs"),
 ]
 SIDE_WIDTH = 520  # fixed width of the settings side bar (pixels)
+CHECK_DELAY_MS = 400  # the settings are revalidated this long after the last edit
 # file chooser filters: (name, patterns); the dialogs list the extensions in the name
 TOPOLOGY_FILES = ("Topology files", ["*.parm7", "*.prmtop", "*.top", "*.pdb", "*.psf", "*.gro"])
 TRAJECTORY_FILES = ("Trajectory files", ["*.nc", "*.mdcrd", "*.crd", "*.trj", "*.dcd", "*.trr", "*.gro",
@@ -102,6 +107,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.wizard = None  # stand-alone script wizard window
         self.pdb_tools = None  # PDB clean-up window
         self.builder = None  # structure builder window
+        # live problems: badges on the page buttons, flags on the fields (revalidated after edits)
+        self.problem_view = ProblemView(self.jump_to_problem)
+        self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
+        self._check_source = 0
+        self._next_problem: Dict[str, int] = {}
 
         self._build_header()
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -127,6 +137,8 @@ class MainWindow(Gtk.ApplicationWindow):
         outer.pack_start(self.log_expander, False, False, 0)
         outer.pack_start(self._build_action_bar(), False, False, 0)
         self._install_actions()
+        self._register_fields()
+        W.watch_tree(self.side_stack, self.schedule_check)
         self.load_project(self.project, project_path)
         self.connect("delete-event", self._on_close)
         self.append_log(f"{PROJECT_TITLE} {__version__} ready. Everything runs locally and offline.")
@@ -233,11 +245,14 @@ class MainWindow(Gtk.ApplicationWindow):
             btn = Gtk.RadioButton.new_from_widget(group)
             group = group or btn
             btn.set_mode(False)  # a toggle button, not a radio indicator
-            btn.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+            image, badge = W.badge_overlay(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+            btn.set_image(image)  # the badge counts the page's problems
             btn.set_always_show_image(True)
             btn.set_tooltip_text(title)
             btn.get_accessible().set_name(title)
             btn.connect("toggled", lambda b, p=page: b.get_active() and self._show_page(p))
+            btn.connect("button-release-event", self._on_page_button_release, page)
+            self.problem_view.add_page_badge(page, btn, badge)
             self.page_buttons[page] = btn
             pages.pack_start(btn, False, False, 0)
         bar.pack_start(pages, False, False, 0)
@@ -260,6 +275,7 @@ class MainWindow(Gtk.ApplicationWindow):
         head = Gtk.Box(spacing=6, margin=6)
         self.side_title = W.label("", markup=True)
         head.pack_start(self.side_title, True, True, 0)
+        head.pack_end(self.problem_view.button, False, False, 0)  # every problem; click one to go there
         box.pack_start(head, False, False, 0)
         box.pack_start(Gtk.Separator(), False, False, 0)
         self.side_stack = Gtk.Stack()
@@ -318,6 +334,119 @@ class MainWindow(Gtk.ApplicationWindow):
             if coords:
                 sw.get_vadjustment().set_value(max(0, coords[1] - 6))
         return False
+
+    # ---------------------------------------------------------- problems
+    def _register_fields(self) -> None:
+        """Field paths -> widgets, so that each problem flags its field (see :mod:`.problemview`)."""
+        reg = self.problem_view.registry
+        for b in self.binder.bindings:
+            reg.add(b.path, b.widget)
+        reg.add_list("groups", self.group_editor, {"name": 0, "residues": 1, "selection": 2, "color": 3},
+                     keep=lambda row: bool(row[0].strip()))
+        reg.add_list("analyses.rmsd.targets", self.rmsd_editor,
+                     {"label": 0, "selection": 1, "fit_selection": 2},
+                     keep=lambda row: bool(row[1].strip()))
+        reg.add_list("inputs.external", self.ext_editor,
+                     {"path": 0, "label": 1, "x_column": 2, "x_unit": 3, "columns": 4},
+                     keep=lambda row: bool(row[0].strip()))
+        reg.add_provider(self._row_fields)
+
+    def _row_fields(self) -> Dict[str, List[Gtk.Widget]]:
+        """Fields of the rebuilt rows: representations and panel slots."""
+        out: Dict[str, List[Gtk.Widget]] = {}
+        for k, row in enumerate(self.rep_rows):
+            base = f"visual.representations.{k}"
+            out.update({base: [row["groups"]], f"{base}.groups": [row["groups"]],
+                        f"{base}.style": [row["style"]], f"{base}.color": [row["color"]],
+                        f"{base}.size": [row["size"], row["opacity"]]})
+        for k, row in enumerate(self.slot_rows):
+            base = f"layout.panels.{k}"
+            out.update({base: [row["type"]], f"{base}.type": [row["type"]], f"{base}.series": [row["more"]],
+                        f"{base}.groups": [row["ga"], row["gb"]], f"{base}.title": [row["title"]],
+                        f"{base}.options": [row["opts"]]})
+        return out
+
+    def schedule_check(self) -> None:
+        """Revalidate shortly after an edit (one check for a burst of changes)."""
+        if self._loading:
+            return
+        if self._check_source:
+            GLib.source_remove(self._check_source)
+        self._check_source = GLib.timeout_add(CHECK_DELAY_MS, self._check_due)
+
+    def _check_due(self) -> bool:
+        self._check_source = 0
+        self.check_problems()
+        return False
+
+    def _side_bar_project(self):
+        """The project as the side bar shows it, and the values it could not store as problems."""
+        project = self.project.copy()
+        project.workflow = self.project.workflow
+        errors = self.binder.store_fields(project)
+        return project, [make_problem(path, message, project) for path, message in errors]
+
+    def check_problems(self) -> List[Problem]:
+        """Validate the settings as they stand and show every problem on its page and field; a failed
+        job's problem stays until its setting or the residue groups change."""
+        if self._check_source:
+            GLib.source_remove(self._check_source)
+            self._check_source = 0
+        try:
+            project, found = self._side_bar_project()
+            found += project.problems()
+        except Exception as exc:  # noqa: BLE001 - checking must never break the window
+            log.warning("could not check the settings: %s", exc)
+            return self.problem_view.problems
+        self.runtime_problems = [(p, snap) for p, snap in self.runtime_problems
+                                 if snap == self._snapshot(project, p.field)]
+        known = {(p.field, p.message) for p in found}
+        found += [p for p, _snap in self.runtime_problems if (p.field, p.message) not in known]
+        self.problem_view.show(found)
+        return found
+
+    @staticmethod
+    def _snapshot(project: Project, field: str) -> str:
+        """What a run-time problem depends on: its setting and the residue groups."""
+        value = None
+        for path in field_parents(field):
+            try:
+                value = W.get_path(project, path)
+                break
+            except (AttributeError, IndexError, TypeError, ValueError):
+                continue
+        return stable_hash([value, project.groups])
+
+    def _note_failure(self, exc: BaseException) -> None:
+        """A job failed on a setting: flag it like the other problems."""
+        if isinstance(exc, SelectionError) and exc.field:
+            try:
+                project, _errors = self._side_bar_project()
+            except Exception:  # noqa: BLE001
+                return
+            self.runtime_problems.append((exc.problem(), self._snapshot(project, exc.field)))
+        self.check_problems()
+
+    def jump_to_problem(self, problem: Problem, focus: bool = True) -> None:
+        """Show a problem's page and bring its field into view (and focus it)."""
+        if problem.tab in self.pages:
+            self._show_page(problem.tab)
+        GLib.timeout_add(60, self._reveal_problem, problem, focus)
+
+    def _reveal_problem(self, problem: Problem, focus: bool) -> bool:
+        widget = self.problem_view.reveal(problem, focus)
+        if widget is not None and problem.tab in self.pages:
+            self._scroll_to(problem.tab, widget)
+        return False
+
+    def _on_page_button_release(self, _button, _event, page: str) -> bool:
+        """A click on a page button with a badge also shows the page's next problem field."""
+        mine = self.problem_view.on_page(page)
+        if mine:
+            k = self._next_problem.get(page, 0) % len(mine)
+            self._next_problem[page] = k + 1
+            GLib.idle_add(lambda: self.jump_to_problem(mine[k], focus=False) and False)
+        return False  # the button still toggles
 
     # ----------------------------------------------------------- canvas
     def refresh_canvas(self) -> None:
@@ -901,11 +1030,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.rep_rows.append(row)
         self.rep_box.pack_start(grid, False, False, 0)
         grid.show_all()
+        W.watch_tree(grid, self.schedule_check)
+        self.schedule_check()
 
     def _remove_rep_row(self, row: dict) -> None:
         self.rep_rows.remove(row)
         self.rep_box.remove(row["box"])
         self.refresh_canvas()
+        self.schedule_check()
 
     def _read_reps(self) -> List[RepSpec]:
         return [RepSpec(style=r["style"].get_active_id() or "cartoon",
@@ -1297,18 +1429,22 @@ class MainWindow(Gtk.ApplicationWindow):
         finally:
             self._loading = loading
         self.slot_box.show_all()
+        W.watch_tree(self.slot_box, self.schedule_check)
+        self.schedule_check()  # the new slot widgets get their flags back
 
     def _read_slots(self) -> List[PanelSpec]:
         specs = []
         project = None
-        for row in self.slot_rows:
+        for k, row in enumerate(self.slot_rows):
             text = row["opts"].get_text().strip()
             try:
                 options = json.loads(text) if text else {}
                 if not isinstance(options, dict):
                     raise ValueError("options must be a JSON object")
             except ValueError as exc:
-                raise ValueError(f"panel options {text!r}: {exc}") from exc
+                err = ValueError(f"panel options {text!r}: {exc}")
+                err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
+                raise err from exc
             ptype = row["type"].get_active_id() or "timeseries"
             keys = []
             if PANEL_TYPES.get(ptype) is None or PANEL_TYPES[ptype].max_series > 0:
@@ -1431,6 +1567,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.header.set_subtitle(path or "unsaved project")
         self._prefill_conda()
         self.refresh_canvas()
+        self.runtime_problems = []
+        self.check_problems()
         if self.wizard is not None:
             self.wizard.destroy()
             self.wizard = None
@@ -1469,6 +1607,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if validate:
             problems = project.validate()
             if problems:
+                self.check_problems()  # the fields are flagged while the message is shown
                 raise ValueError("\n".join(problems))
         return project
 
@@ -1918,6 +2057,9 @@ class MainWindow(Gtk.ApplicationWindow):
             w.set_sensitive(False)
         self.cancel_button.set_sensitive(True)
         self.append_log(f"--- {title} ---")
+        if self.runtime_problems:  # the last job's problems: this job tells anew
+            self.runtime_problems = []
+            self.check_problems()
 
         def done(result, exc, tb):
             for w in self.busy_widgets:
@@ -1932,6 +2074,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.progress.set_text("Failed")
                 if tb:
                     self.append_log(tb.rstrip())
+                self._note_failure(exc)  # a selection error flags its field (and page)
                 self.error(f"{title} failed", str(exc))
                 return
             self.progress.set_fraction(1.0)

@@ -25,13 +25,15 @@ from .analysis.base import analysis_class, instance_project, parse_instance, spl
 from .citations import keys_for, pipeline_resources, project_resources, text_lines
 from .cleaning import CleanResult, clean, cleaning_key
 from .cleaning.cpptraj import MARKER, cpptraj_command
-from .config import Project, file_fingerprint, layout_warnings
+from .config import Project, file_fingerprint
 from .data import Dataset
 from .io.cache import CacheStore
 from .io.external import load_external
 from .io.loader import frame_indices, load_universe
 from .io.pdb_export import export_frames, frames_from_specs, resolve_export_selection
+from .problems import Problem
 from .progress import Reporter
+from .selections import SelectionError
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +50,9 @@ def stamped(name: str, stamp: str) -> str:
 
 
 class PipelineError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", problems: Sequence[Problem] = ()):
+        super().__init__(message)
+        self.problems = list(problems)  # the located problems behind an "Invalid parameters" error
 
 
 @dataclass
@@ -99,10 +103,11 @@ class Pipeline:
 
     # ---------------------------------------------------------------- inputs
     def check(self) -> None:
-        problems = self.project.validate()
-        if problems:
-            raise PipelineError("Invalid parameters:\n  - " + "\n  - ".join(problems))
-        for text in layout_warnings(self.project):
+        problems = self.project.problems()
+        errors = [p for p in problems if p.level == "error"]
+        if errors:
+            raise PipelineError("Invalid parameters:\n  - " + "\n  - ".join(errors), errors)
+        for text in problems:  # warnings: the layout and settings that are ignored
             self.reporter.log(f"WARNING: {text}")
 
     def resolve_inputs(self, reporter: Optional[Reporter] = None, force_clean: bool = False) -> ResolvedInputs:
@@ -273,10 +278,16 @@ class Pipeline:
         p = self.project
         pp = p.output.pdb
         u = self.universe()
-        frames = frames_from_specs(u, pp.frames, pp.times, p.inputs.time_unit, p.inputs.dt_ps)
+        try:
+            frames = frames_from_specs(u, pp.frames, pp.times, p.inputs.time_unit, p.inputs.dt_ps)
+        except SelectionError as exc:
+            raise exc.locate("output.pdb.times" if exc.kind == "times" else "output.pdb.frames", p)
         if not frames:
             raise PipelineError("PDB export enabled but no frames or times were given")
-        atoms = resolve_export_selection(u, pp.selection, p.groups)
+        try:
+            atoms = resolve_export_selection(u, pp.selection, p.groups)
+        except SelectionError as exc:
+            raise exc.locate("output.pdb.selection", p)
         rep.log(f"Exporting {len(frames)} frame(s) ({atoms.n_atoms} atoms) as PDB")
         return export_frames(u, frames, atoms, p.out_dir, pp.prefix,
                              progress=lambda f, m: rep.progress(f, m), stamp=self.stamp())

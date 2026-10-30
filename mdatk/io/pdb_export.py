@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import warnings
 from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
-from ..selections import (SelectionError, parse_frame_spec, parse_time_spec, select,
-                          split_csv)
+from ..selections import (SelectionError, parse_frame_spec, parse_time_spec, select, split_csv,
+                          unknown_group_error)
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +22,12 @@ def resolve_export_selection(universe, text: str, groups: Sequence):
     if not text:
         return universe.atoms
     names = split_csv(text)
-    group_names = {g.name for g in groups}
+    group_names = [g.name for g in groups]
     if names and all(n in group_names for n in names):
         text = " or ".join(f"group:{n}" for n in names)
+    elif "," in text and all(re.fullmatch(r"[A-Za-z0-9_.\-]+", n) for n in names):
+        # a list of group names (a selection has no commas): name the one that does not exist
+        raise unknown_group_error(next(n for n in names if n not in group_names), group_names)
     return select(universe, text, groups)
 
 

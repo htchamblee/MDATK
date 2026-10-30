@@ -321,3 +321,74 @@ def test_builder_non_wc_helix_builds_in_the_background(window, tmp_path):
     buf = dlg.report.get_buffer()
     assert "Wrote" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
     dlg.destroy()
+
+
+def _bound(window, path):
+    return next(b.widget for b in window.binder.bindings if b.path == path)
+
+
+def test_bad_selection_flags_its_field_and_badges_its_page(window):
+    from mdatk.gui import widgets as W
+    from mdatk.gui.app import PAGES
+    from mdatk.problems import TABS
+
+    assert {page: title for page, _icon, title in PAGES} == TABS  # problem locations use the page titles
+    pv = window.problem_view
+    badge = pv.badges["analyses"]
+    assert not pv.on_page("analyses") and not badge.get_visible()
+    entry = _bound(window, "analyses.mg.ligand_selection")
+    hint = entry.get_tooltip_text()
+    entry.set_text("group:Aptamr or group:Target")
+    assert pump(lambda: badge.get_visible(), 5)  # revalidated shortly after the edit
+    assert badge.get_text() == "1" and "mdatk-badge" in badge.get_style_context().list_classes()
+    assert "Ligand selection" in window.page_buttons["analyses"].get_tooltip_text()
+    message, level = W.flag_of(entry)
+    assert level == "error" and "unknown residue group 'Aptamr'" in message
+    assert "did you mean 'Aptamer'?" in message
+    assert entry.get_style_context().has_class("error")
+    assert entry.get_icon_name(Gtk.EntryIconPosition.SECONDARY) == "dialog-error-symbolic"
+    assert entry.get_tooltip_text().startswith(message)
+    (prob,) = pv.problems
+    assert prob.key == "analyses:analyses.mg.ligand_selection"
+    assert prob.location == "Analyses › Mg²⁺ coordination and occupancy › Ligand selection"
+    assert pv.button.get_visible() and "1 error" in pv._count.get_text()
+    window.page_buttons["input"].clicked()
+    window.jump_to_problem(prob)  # what a click in the problems list does
+    assert pump(lambda: window.side_stack.get_visible_child_name() == "analyses" and entry.has_focus(), 5)
+    # the fix clears the flag, the badge and the list
+    entry.set_text("group:Aptamer or group:Target")
+    assert pump(lambda: not badge.get_visible(), 5)
+    assert W.flag_of(entry) == ("", "") and not entry.get_style_context().has_class("error")
+    assert entry.get_icon_name(Gtk.EntryIconPosition.SECONDARY) is None and entry.get_tooltip_text() == hint
+    assert not pv.button.get_visible()
+    # a group combo and a list editor cell; a broken group is reported at its definition only
+    combo = _bound(window, "analyses.hbonds.group_b")
+    combo.get_child().set_text("Tagret")
+    window.group_editor.store[0][1] = "1-x"
+    assert pump(lambda: pv.badges["groups"].get_visible() and badge.get_visible(), 5)
+    assert W.flag_of(combo)[0].startswith("unknown residue group 'Tagret'")
+    assert window.group_editor.cell_problems[(0, 1)][1] == "error"
+    assert "invalid residue range item '1-x'" in W.flag_of(window.group_editor)[0]
+    assert [p.field for p in pv.on_page("analyses")] == ["analyses.hbonds.group_b"]
+    combo.get_child().set_text("Target")
+    window.group_editor.store[0][1] = "1-12"
+    assert pump(lambda: not pv.problems, 5)
+    assert not pv.badges["groups"].get_visible() and window.group_editor.cell_problems == {}
+    assert W.flag_of(combo) == ("", "")
+
+
+def test_run_time_selection_error_flags_the_setting_it_came_from(window):
+    from mdatk.gui import widgets as W
+
+    window.group_editor.store[1][1] = "100-112"  # valid, but nothing in the structure
+    window.render()
+    assert pump(lambda: window.worker is None)
+    kind, title, detail = window.messages[-1]
+    assert kind == "error" and detail.startswith("Analyses › Pairwise contacts › Group B: selection "
+                                                 "'group:Target' matched no atoms: group 'Target'")
+    combo = _bound(window, "analyses.contacts.group_b")
+    assert pump(lambda: W.flag_of(combo)[1] == "error", 5)
+    assert window.problem_view.badges["analyses"].get_visible()
+    window.group_editor.store[1][1] = "13-24"  # the group is fixed: the run-time problem goes
+    assert pump(lambda: not window.problem_view.badges["analyses"].get_visible(), 5)
+    assert W.flag_of(combo) == ("", "")

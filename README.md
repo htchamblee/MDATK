@@ -47,6 +47,15 @@ keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. The A
 the same energy) and checks that tleap really loaded L units for the L residues. Steps that existed in
 0.0.7 write the same files as before (tested against the 0.0.7 output).
 
+In 0.0.10:
+
+- **Selection and group errors say exactly where they are**: every problem names its setting
+  ("Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did
+  you mean 'Target'?"), shows MDAnalysis' own message next to the selection as written and as expanded,
+  and says which group or part of a selection matched no atoms. The GUI checks the settings as you type:
+  red count badges on the page buttons, flagged fields with the message as tooltip, and a problems list
+  that jumps to the field (see *Residue groups and selections*).
+
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
 steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
 inputs), and a box shows an animated marker while its script runs.
@@ -248,6 +257,15 @@ sideways), opened at the Input page; the icon bar above it switches pages (hover
 | **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
 | **Layout** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
 | **Outputs** | output/cache folders, video, charts, PDB export, timestamps, *Re-render from cache* |
+
+The settings are checked as you edit them (a moment after the last change). A page with problems gets
+a **red badge with their count** on its button (amber when they are only warnings); clicking the button
+also scrolls to the page's next problem. The field itself is **flagged**: red frame and text, an error
+icon at the end of entries, and the message as its tooltip; in the group, RMSD-target and external-data
+tables the offending cell is tinted. The **problems button** next to the page title lists every
+problem with its location; click one to go to its field. Flags and badges disappear when the setting
+is fixed. A selection that fails during a run (e.g. a group that matches no atom of the structure) is
+flagged the same way until that setting or the residue groups change.
 
 The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
@@ -606,6 +624,27 @@ Wherever a selection is expected you can write `group:<Name>`, e.g.
 `group:Aptamer and name P C4'`. Fields that ask for a group accept its bare name. Amber
 topologies number residues 1…N in file order. Defaults are provided for the reference system
 (`Aptamer` = 1–12, `Target` = 13–24) — edit them for yours.
+
+**When a group or selection is wrong, the message says where and what.** Every problem starts with
+the place of its setting, as the GUI shows it, and names the offending part:
+
+| Problem | Example message |
+|---|---|
+| unknown group | `Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did you mean 'Target'?` |
+| MDAnalysis cannot parse it | `Analyses › RMSD › Target 3 (X) › Selection: invalid selection 'group:Aptamer and nme P' (expanded: '((resid 1:12)) and nme P'): MDAnalysis says: Unknown selection token: 'nme' (did you mean 'name'?)` |
+| nothing matches (each group, then each and / or part, is tried on its own) | `Analyses › Pairwise contacts › Group B: selection 'group:Target' matched no atoms: group 'Target' (residues '100-112') matches no atoms - the structure's residues are numbered 1-24` |
+| a group's own definition | `Residue groups › Group 3 (Loop) › Selection (overrides): unknown residue group 'Aptamr' (defined: Aptamer, Target, Loop); did you mean 'Aptamer'?` |
+| a panel's group pair | `Layout & panels › Panel 4 (Contact map) › Groups: …` |
+
+The settings are checked before every run (`mdatk render` refuses with the list; warnings, e.g. a group
+in *Groups shown* that does not exist and is left out, are logged); a selection that fails while
+analysing (it can only be matched against the structure then) names its setting the same way. A
+selection that uses a broken group is not blamed for it: the group's definition is. In Python,
+`Project.validate()` (errors) and `Project.problems()` (errors and warnings) return
+`mdatk.problems.Problem` strings whose text is the message above and which carry the setting's `field`
+path (`analyses.hbonds.group_b`), GUI page (`tab`), readable `location` and offending `token`;
+`SelectionError` carries the same plus `kind`, the selection as written and expanded and MDAnalysis'
+own message.
 
 ## Structural view, colouring and glow
 
@@ -1312,7 +1351,8 @@ compatible across versions. The recent-projects list is kept in `~/.config/mdatk
 
 ```text
 mdatk/
-  config.py          parameter model, hashing
+  config.py          parameter model, hashing, validation
+  problems.py        located problems: field path, GUI page and readable location of a setting
   projectfile.py, tomlio.py   commented TOML project files, step log, parameter logs, recent projects
   pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
   citations.py       per-use citations (data in _citation_data.py)
@@ -1335,7 +1375,8 @@ mdatk/
                      graph and names files; scripts/ holds self-contained helper programs that
                      are embedded in generated workflows
   cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas,
-                     gui/wizard.py: script wizard, gui/planner.py: Project Planner)
+                     gui/wizard.py: script wizard, gui/planner.py: Project Planner,
+                     gui/problemview.py: problem badges, field flags and the problems list)
   demo.py            synthetic RNA system generator
 ```
 
@@ -1344,7 +1385,8 @@ mdatk/
 describe the outputs on the returned `AnalysisResult` (`add_series`, `add_matrix`,
 `add_pairmap`) and decorate the class with `@register`. Set `group_slots` (and `OUTPUT_LABELS`)
 to let panels choose residue groups for it. Its data keys immediately work in panels, charts,
-the cache and the GUI.
+the cache and the GUI. Select through `self.ctx.select(text, field=self.field("selection"))` (or
+`ctx.group_atoms(name, field=...)`) so a failing selection names its setting.
 
 **Adding a panel type**: subclass `mdatk.render.panels.Panel`, implement `setup` /
 `draw_frame` (and `animated_artists` for fast blitting) and decorate it with `@register_panel`.
