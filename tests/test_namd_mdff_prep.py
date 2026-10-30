@@ -316,3 +316,174 @@ def test_prep_writes_secondary_structure_dihedrals(tmp_path, system):
     assert nm.prep(cfg) == 0
     text = (tmp_path / "ssd.txt").read_text()
     assert text.count("\ndihedral ") > 4 * 4 and "Trabuco" in text
+
+
+def _standard_columns(line):
+    """An ATOM record read at the standard PDB columns, as NAMD and VMD read it."""
+    return {"name": line[12:16].strip(), "alt": line[16], "resname": line[17:21].strip(), "chain": line[21],
+            "resseq": int(line[22:26]), "xyz": (float(line[30:38]), float(line[38:46]), float(line[46:54])),
+            "occupancy": float(line[54:60]), "beta": float(line[60:66]), "element": line[76:78].strip()}
+
+
+def test_pdb_records_use_the_standard_columns(tmp_path, system):
+    # far from the origin (x < -100) and with a force constant >= 100 every field starts with a digit or a
+    # sign: a field written one column off is then read with a wrong sign or value
+    far = ms.moved(system, np.eye(3), (-150.0, 0.0, 0.0))
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in far])
+    ms.write_map(str(tmp_path / "map.mrc"), far)
+    cfg = config(tmp_path, positional={"selection": "heavy", "k": 250.0})
+    assert nm.prep(cfg) == 0
+    top = nm.Topology(cfg["topology"])
+    ref = [_standard_columns(ln) for ln in (tmp_path / "ref.pdb").read_text().splitlines() if ln.startswith("ATOM")]
+    assert len(ref) == top.natom
+    for i, rec in enumerate(ref):
+        assert rec["xyz"] == pytest.approx(far[i][5], abs=0.001)
+        assert rec["alt"] == " " and rec["chain"] == "A" and rec["resname"] == top.labels[top.residue[i]]
+        assert rec["name"] == top.names[i] and rec["resseq"] == top.residue[i] + 1
+        assert rec["beta"] == (250.0 if top.number[i] > 1 else 0.0)
+        assert rec["element"] == {1: "H", 6: "C", 7: "N", 8: "O", 15: "P"}[top.number[i]]
+    # a force constant of 1000 still fits the six beta columns
+    line = nm.pdb_line(0, top, [p[5] for p in far], 1.0, 1000.0)
+    assert _standard_columns(line)["beta"] == 1000.0 and len(line) == 79
+    # the fitted model (the step's output) keeps residue names, chain and coordinates for any reader
+    n = top.natom
+    with open(cfg["final_coor"], "wb") as fh:
+        fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *[c for a in far for c in a[5]]))
+    assert nm.final(cfg) == 0
+    from mdatk import pdbtools
+    residues = list(pdbtools.read_pdb((tmp_path / "final.pdb").read_text()).residues())
+    assert [res.name for res in residues] == top.labels and {res.chain for res in residues} == {"A"}
+    assert residues[0].atoms[0].xyz[0] == pytest.approx(far[0][5][0], abs=0.001)
+    assert residues[0].atoms[0].xyz[0] < -100
+
+
+def test_frame_check_reads_the_density_whatever_the_threshold(tmp_path, system):
+    # with a threshold above the map's mean + 1 sigma the potential is 1 wherever the density is not
+    # above the threshold: the check must still see atoms that miss the density
+    d = nm.read_map(str(tmp_path / "map.mrc"))
+    mean = sum(d.data) / len(d.data)
+    sigma = math.sqrt(sum(v * v for v in d.data) / len(d.data) - mean * mean)
+    high = 1.5 * (mean + sigma)
+    assert nm.prep(config(tmp_path, threshold=high, min_overlap=0.5)) == 0  # in the map's frame
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [tuple(np.array(a[5]) + (9.0, 0.0, 0.0)) for a in system])
+    for threshold in (0.0, high):
+        with pytest.raises(nm.PrepError, match="not in the map's frame"):
+            nm.prep(config(tmp_path, threshold=threshold, min_overlap=0.5))
+
+
+def test_only_ions_near_the_rna_are_coupled(tmp_path, system):
+    # counterions of a solvated build are spread through the box: they must neither size the potential
+    # nor be coupled far from the RNA
+    near, far = (0.0, 0.0, 14.0), (40.0, 40.0, 40.0)
+    ions = [("M", 1, "MG", "MG", "MG", near), ("M", 2, "MG", "MG", "MG", far),
+            ("N", 1, "Na+", "Na+", "NA", (-40.0, -38.0, 35.0))]
+    atoms = list(system) + ions
+    box = (90.0, 90.0, 90.0, 90.0, 90.0, 90.0)
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms, box=box)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in atoms], box=box)
+    cfg = config(tmp_path, periodic=True, couple_ions=True, pad=6.0)
+    assert nm.prep(cfg) == 0
+    records = [_standard_columns(ln) for ln in (tmp_path / "grid.pdb").read_text().splitlines()
+               if ln.startswith("ATOM")]
+    occ = [r["occupancy"] for r in records[-3:]]
+    assert occ == [1.0, 0.0, 0.0]
+    assert records[-3]["beta"] == pytest.approx(24.305, abs=0.01)
+    pot = nm.read_dx(cfg["potential"])
+    heavy = np.array([a[5] for a in system if a[4] != "H"])
+    size = np.array(pot.delta) * (np.array(pot.n) - 1)
+    assert np.all(size <= heavy.max(axis=0) - heavy.min(axis=0) + 2 * 6.0 + 2 * 1.5)
+
+
+def test_translation_branch_applies_and_records_the_shift_it_used(tmp_path):
+    # a model far from the map's origin, coordinates rotated by less than the resampling limit: the grid
+    # is only moved, by the shift that is exact at the molecule, and final() undoes exactly that shift
+    atoms = ms.moved(ms.atoms_of(ms.mixed_pdb()), np.eye(3), (330.0, 150.0, 60.0))
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms)
+    ms.write_map(str(tmp_path / "map.mrc"), atoms)
+    (tmp_path / "model.pdb").write_text(ms.model_pdb(atoms))
+    centre = np.mean([a[5] for a in atoms], axis=0)
+    rot = ms.rotation((0.2, 0.5, 1.0), 0.045)
+    sim = [tuple(rot @ (np.array(a[5]) - centre) + centre + (-300.0, -140.0, -50.0)) for a in atoms]
+    ms.write_rst7(str(tmp_path / "sys.rst7"), sim)
+    cfg = config(tmp_path, model=str(tmp_path / "model.pdb"))
+    assert nm.prep(cfg) == 0
+    info = json.loads((tmp_path / "prep.json").read_text())
+    assert info["rotation"] == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    # the potential sits where the fitted transform puts the density
+    pot = nm.read_dx(cfg["potential"])
+    reference, _ = nm.mdff_potential(nm.read_map(str(tmp_path / "map.mrc")), 0.0)
+    heavy = [i for i, a in enumerate(atoms) if a[4] != "H"]
+    assert max(abs(pot.interpolate(*sim[i], 1.0) - reference.interpolate(*atoms[i][5], 1.0)) for i in heavy) < 0.02
+    n = len(sim)
+    with open(cfg["final_coor"], "wb") as fh:
+        fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *[c for p in sim for c in p]))
+    assert nm.final(cfg) == 0
+    out = [ln for ln in (tmp_path / "final.pdb").read_text().splitlines() if ln.startswith("ATOM")]
+    back = np.array([[float(ln[30:38]), float(ln[38:46]), float(ln[46:54])] for ln in out])
+    assert np.abs(back - np.array([a[5] for a in atoms])).max() < 0.05  # 0.25 A with the fitted t
+
+
+def test_gzipped_dx_and_non_ascii_file_names(tmp_path, system):
+    import gzip
+    import shutil
+    g = nm.Grid(2, 3, 4, (1, 2, 3), (0.5, 0.5, 0.5), array.array("f", [float(v) for v in range(24)]))
+    nm.write_dx(str(tmp_path / "g.dx"), g, "test")
+    with open(tmp_path / "g.dx", "rb") as src, gzip.open(tmp_path / "g.dx.gz", "wb") as dst:
+        dst.write(src.read())
+    h = nm.read_map(str(tmp_path / "g.dx.gz"))
+    assert h.n == g.n and list(h.data) == list(g.data)
+    # a map or coordinate file named with non-ASCII characters: the names end up in ASCII file headers
+    shutil.copy(tmp_path / "map.mrc", tmp_path / "carte_résolue_3.2Å.mrc")
+    shutil.copy(tmp_path / "sys.rst7", tmp_path / "coordonnées.rst7")
+    cfg = config(tmp_path, map=str(tmp_path / "carte_résolue_3.2Å.mrc"), coordinates=str(tmp_path / "start.rst7"))
+    assert nm.main(["coordinates", str(tmp_path / "coordonnées.rst7")], cfg) == 0
+    assert nm.main(["prep"], cfg) == 0
+    assert "carte_r?solue_3.2?.mrc" in (tmp_path / "pot.dx").read_text().splitlines()[0]
+    assert nm.read_rst7(cfg["coordinates"], len(system))[0] == pytest.approx([a[5] for a in system], abs=1e-6)
+
+
+def _flatten(atoms, chain, resseq, centre, partners, factor):
+    """``centre`` moved along the normal of its partners' plane: factor 1 puts it into the plane, 2
+    mirrors it through the plane (inverts that one centre)."""
+    pos = {a[3]: np.array(a[5]) for a in atoms if a[0] == chain and a[1] == resseq}
+    p = [pos[n] for n in partners]
+    normal = np.cross(p[1] - p[0], p[2] - p[0])
+    normal /= np.linalg.norm(normal)
+    new = pos[centre] - factor * np.dot(pos[centre] - p[0], normal) * normal
+    return [a[:5] + (tuple(new),) if a[0] == chain and a[1] == resseq and a[3] == centre else a for a in atoms]
+
+
+@pytest.mark.parametrize("change", ["flat C1'", "mirrored C1'"])
+def test_ambiguous_sugar_does_not_hide_centres_of_the_other_hand(tmp_path, system, change):
+    # an L residue named as D (residue 10, chain C 2) whose geometry gives no clear hand: one flat or
+    # one inverted centre leaves no unanimous vote, but its other centres are clearly L - D targets
+    # would invert them, so the run must stop
+    factor = 1.0 if change.startswith("flat") else 2.0
+    atoms = _flatten(system, "C", 2, "C1'", ("O4'", "N1", "C2'"), factor)
+    atoms = [a[:2] + ("C",) + a[3:] if a[0] == "C" and a[1] == 2 else a for a in atoms]
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in atoms])
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    lines, problems, _notes = nm.chirality_lines(top, [a[5] for a in atoms], 200.0, D_TARGETS)
+    assert len(problems) == 1
+    assert problems[0].startswith("residue 10 (C) is named as D but its ") and "C3', C4'" in problems[0]
+    assert "# residue 10 " not in "\n".join(lines)
+    with pytest.raises(nm.PrepError, match="residue 10 .C. is named as D"):
+        nm.prep(config(tmp_path), write=False)
+    # the same residue named L: the flat / single inverted centre is the only odd one; no clearly
+    # defined centre is pushed through inversion, so nothing stops
+    atoms = [a[:2] + ("LC",) + a[3:] if a[0] == "C" and a[1] == 2 else a for a in atoms]
+    ms.write_topology(str(tmp_path / "sys.parm7"), atoms)
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    _lines, problems, _notes = nm.chirality_lines(top, [a[5] for a in atoms], 200.0, D_TARGETS)
+    assert problems == ([] if change.startswith("flat") else
+                        ["residue 10 (LC) is named as L but its C1' has the other hand: the restraints would "
+                         "invert it - correct the model or the residue name"])
+
+
+def test_inverted_c2_of_a_d_residue_stops(tmp_path, system):
+    # the C2' centre does not vote on the hand, but its restraint would still invert a clear C2'
+    atoms = _flatten(system, "A", 2, "C2'", ("C1'", "O2'", "C3'"), 2.0)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in atoms])
+    with pytest.raises(nm.PrepError, match=r"residue 2 \(C\) is named as D but its C2' has the other hand"):
+        nm.prep(config(tmp_path), write=False)

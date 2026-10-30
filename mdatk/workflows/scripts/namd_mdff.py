@@ -21,7 +21,8 @@ needs around that topology:
         - chirality: one harmonic improper per ribose centre (C1', C2', C3', C4') with the
           target sign of the residue's own hand - D residues the D value, L residues its mirror
           image.  The hand comes from the residue name and must agree with the coordinates;
-          a residue whose geometry contradicts its name stops the script.  VMD's ``chirality``
+          a residue whose geometry contradicts its name - or any clearly defined centre of the
+          other hand, which the restraint would invert - stops the script.  VMD's ``chirality``
           / ``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used:
           on an L-RNA they would push every sugar towards the inverted centre, silently;
         - base pairs: flat-bottom extraBonds walls on the hydrogen-bond distances of the secondary
@@ -49,6 +50,7 @@ STANDARD_MASS = {0: 0.0, 1: 1.008, 3: 6.94, 6: 12.011, 7: 14.007, 8: 15.999, 9: 
                  35: 79.904, 37: 85.468, 53: 126.904, 55: 132.905}
 ELEMENT_NUMBER = {"H": 1, "LI": 3, "C": 6, "N": 7, "O": 8, "F": 9, "NA": 11, "MG": 12, "P": 15, "S": 16,
                   "CL": 17, "K": 19, "CA": 20, "ZN": 30, "BR": 35, "RB": 37, "I": 53, "CS": 55}
+SYMBOL = {z: s for s, z in ELEMENT_NUMBER.items()}
 SUGAR_CENTRES = (("C1'", ("O4'", "N", "C2'")), ("C2'", ("C1'", "O2'", "C3'")),
                  ("C3'", ("C2'", "O3'", "C4'")), ("C4'", ("C3'", "O4'", "C5'")))
 # signs of the chiral volumes of an L-ribose (MDATK pdbtools); D has the opposite signs
@@ -195,7 +197,7 @@ def is_pdb(path):
 
 def write_rst7(path, xyz, box=None, title="MDATK"):
     values = [c for p in xyz for c in p]
-    with open(path, "w", encoding="ascii") as fh:
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
         fh.write(f"{title[:80]}\n{len(xyz):6d}\n")
         for k in range(0, len(values), 6):
             fh.write("".join(f"{v:12.7f}" for v in values[k:k + 6]) + "\n")
@@ -352,7 +354,10 @@ def read_mrc(path):
 
 
 def read_dx(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, "rb") as fh:
+        gz = fh.read(2) == b"\x1f\x8b"
+    with (gzip.open(path, "rt", encoding="utf-8", errors="replace") if gz
+          else open(path, "r", encoding="utf-8", errors="replace")) as fh:
         text = fh.read()
     m = re.search(r"gridpositions\s+counts\s+(\d+)\s+(\d+)\s+(\d+)", text)
     o = re.search(r"\norigin\s+(\S+)\s+(\S+)\s+(\S+)", text)
@@ -387,7 +392,7 @@ def read_map(path):
 
 def write_dx(path, grid, comment):
     nx, ny, nz = grid.n
-    with open(path, "w", encoding="ascii") as fh:
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
         fh.write(f"# {comment}\n")
         fh.write(f"object 1 class gridpositions counts {nx} {ny} {nz}\n")
         fh.write("origin {:.6f} {:.6f} {:.6f}\n".format(*grid.origin))
@@ -623,15 +628,29 @@ def chirality_lines(top, xyz, k, targets):
         base = residue_base(label)
         glyco = "N9" if base in ("A", "G") or (base is None and "N9" in atoms) else "N1"
         sign = 1.0 if use == "D" else -1.0
-        # comments on lines of their own: extraBonds reads "improper a b c d k n ref" when a line has
-        # one field more, so trailing text after the values must never appear
-        lines.append(f"# residue {r + 1} {label} ({use}): C1' C2' C3' C4'")
+        quads, other_hand = [], []
         for centre, partners in SUGAR_CENTRES:
             names = [centre] + [glyco if p == "N" else p for p in partners]
             if any(n not in atoms for n in names):
                 continue
             idx = [atoms[n] for n in names]
             target = sign * targets[centre]
+            # the chiral volume over the restraint's own atoms has the sign of the improper: a clearly
+            # defined centre of the other sign would be driven through inversion by the restraint
+            v = chiral_volume(*(xyz[i] for i in idx))
+            if v * target < 0 and abs(v) >= MIN_CHIRAL_VOLUME:
+                other_hand.append(centre)
+            quads.append((idx, target))
+        if other_hand:
+            how = "named as" if hand else "from its geometry"
+            problems.append(f"residue {r + 1} ({label}) is {how} {use} but its {', '.join(other_hand)} "
+                            f"{'has' if len(other_hand) == 1 else 'have'} the other hand: the restraints would "
+                            "invert it - correct the model or the residue name")
+            continue
+        # comments on lines of their own: extraBonds reads "improper a b c d k n ref" when a line has
+        # one field more, so trailing text after the values must never appear
+        lines.append(f"# residue {r + 1} {label} ({use}): C1' C2' C3' C4'")
+        for idx, target in quads:
             lines.append(f"improper {idx[0]} {idx[1]} {idx[2]} {idx[3]} {k:.3f} {target:.2f}")
     return lines, problems, notes
 
@@ -717,18 +736,31 @@ def basepair_walls(top, pairs, bonds, offset, walls):
 
 
 # ------------------------------------------------------------------------------------------- output
+def _fixed(value, width, decimals):
+    """``value`` in ``width`` columns, with fewer decimals when it would not fit (a wider field shifts
+    every later column of a PDB line)."""
+    for d in range(decimals, -1, -1):
+        text = f"{value:{width}.{d}f}"
+        if len(text) <= width:
+            return text
+    raise PrepError(f"{value:g} does not fit a {width}-column PDB field")
+
+
 def pdb_line(i, top, xyz, occupancy, beta):
+    """ATOM record in the standard columns (1-based): name 13-16, residue 18-21, chain 22, number 23-26,
+    x y z 31-54, occupancy 55-60, beta 61-66, element 77-78 - where NAMD and VMD read them."""
     r = top.residue[i]
     name = top.names[i][:4]
     name = f" {name:<3s}" if len(name) < 4 else name
     x, y, z = xyz[i]
-    return (f"ATOM  {(i + 1) % 100000:5d} {name}{top.labels[r][:4]:<4s}A{(r + 1) % 10000:4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}{occupancy:6.2f}{beta:6.2f}\n")
+    return (f"ATOM  {(i + 1) % 100000:5d} {name} {top.labels[r][:4]:<4s}A{(r + 1) % 10000:4d}    "
+            f"{_fixed(x, 8, 3)}{_fixed(y, 8, 3)}{_fixed(z, 8, 3)}{_fixed(occupancy, 6, 2)}{_fixed(beta, 6, 2)}"
+            f"{'':10s}{SYMBOL.get(top.number[i], ''):>2s}\n")
 
 
 def write_pdb(path, top, xyz, columns, remark):
     """A PDB of every atom; ``columns(i)`` -> (occupancy, beta)."""
-    with open(path, "w", encoding="ascii") as fh:
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
         fh.write(f"REMARK   {remark}\n")
         for i in range(top.natom):
             occ, beta = columns(i)
@@ -737,7 +769,7 @@ def write_pdb(path, top, xyz, columns, remark):
 
 
 def write_xsc(path, vectors, origin):
-    with open(path, "w", encoding="ascii") as fh:
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
         fh.write("# NAMD extended system configuration (written by MDATK from the Amber box)\n")
         fh.write("#$LABELS step a_x a_y a_z b_x b_y b_z c_x c_y c_z o_x o_y o_z\n")
         values = [v for vec in vectors for v in vec] + list(origin)
@@ -748,6 +780,8 @@ def read_namd_coor(path, natom):
     """NAMD binary coordinates: int32 atom count, then x, y, z float64 per atom (native byte order)."""
     with open(path, "rb") as fh:
         raw = fh.read()
+    if len(raw) < 4:
+        raise PrepError(f"{path}: not NAMD binary coordinates for {natom} atoms")
     for e in ("<", ">"):
         n = struct.unpack(e + "i", raw[:4])[0]
         if n == natom and len(raw) >= 4 + 24 * n:
@@ -838,7 +872,8 @@ def _canonical(name):
 
 
 def potential_in_simulation_frame(density, cfg, rot, t, region):
-    """The MDFF potential cropped to ``region`` (simulation frame), moved / resampled from the map frame."""
+    """The MDFF potential cropped to ``region`` (simulation frame), moved / resampled from the map frame;
+    also the transform actually applied (simulation = R map + t), which final() undoes."""
     potential, rho_max = mdff_potential(density, cfg["threshold"])
     rot_t = transpose(rot)
     corners = [(x, y, z) for x in (region[0][0], region[1][0]) for y in (region[0][1], region[1][1])
@@ -848,9 +883,12 @@ def potential_in_simulation_frame(density, cfg, rot, t, region):
     hi = [max(c[a] for c in in_map) for a in range(3)]
     part = crop(potential, lo, hi)
     angle = rotation_angle(rot)
-    if angle < 0.05:  # a translation (tleap centring): move the grid
-        part.origin = tuple(part.origin[a] + t[a] for a in range(3))
-        return part, rho_max, angle
+    if angle < 0.05:  # a translation (tleap centring): move the grid by t' = t + (R - I) c, the shift that
+        # is exact at the region's centre c (map frame) - t alone belongs to the rotation fitted with it
+        mid = [(region[0][a] + region[1][a]) / 2.0 for a in range(3)]
+        shift = sub(mid, mat_vec(rot_t, sub(mid, t)))
+        part.origin = tuple(part.origin[a] + shift[a] for a in range(3))
+        return part, rho_max, angle, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], shift
     # rotated frames: resample on an axis-parallel grid in the simulation frame, finer than the map so
     # that the second interpolation (NAMD's) adds little blur
     step = min(part.delta) / max(1, int(cfg.get("resample_divisor", 2)))
@@ -865,7 +903,7 @@ def potential_in_simulation_frame(density, cfg, rot, t, region):
                 q = mat_vec(rot_t, sub((region[0][0] + i * step, y, z), t))
                 data[p] = part.interpolate(q[0], q[1], q[2], 1.0)
                 p += 1
-    return Grid(n[0], n[1], n[2], region[0], (step, step, step), data), rho_max, angle
+    return Grid(n[0], n[1], n[2], region[0], (step, step, step), data), rho_max, angle, rot, t
 
 
 def coupled(top, i, cfg):
@@ -912,27 +950,34 @@ def prep(cfg, write=True):
                             "superposition: is this the model the topology was built from?")
     else:
         print("map frame: no map-frame model connected; the coordinates are taken to be in the map's frame")
-    sel = [i for i in range(top.natom) if coupled(top, i, cfg)]
-    if not sel:
+    solute = [i for i in range(top.natom) if coupled(top, i, cfg) and not top.solvent(i)]
+    if not solute:
         raise PrepError("no atoms to couple to the map")
-    lo = [min(xyz[i][a] for i in sel) - cfg["pad"] for a in range(3)]
-    hi = [max(xyz[i][a] for i in sel) + cfg["pad"] for a in range(3)]
+    # the potential covers the RNA plus the margin; of the ions only those inside it are coupled (the
+    # counterions of a solvated build are spread through the whole box)
+    lo = [min(xyz[i][a] for i in solute) - cfg["pad"] for a in range(3)]
+    hi = [max(xyz[i][a] for i in solute) + cfg["pad"] for a in range(3)]
+    ions = [i for i in range(top.natom) if top.solvent(i) and coupled(top, i, cfg)
+            and all(lo[a] <= xyz[i][a] <= hi[a] for a in range(3))]
+    sel = solute + ions
     density = read_map(cfg["map"])
-    grid, rho_max, angle = potential_in_simulation_frame(density, cfg, rot, t, (lo, hi))
+    grid, rho_max, angle, rot, t = potential_in_simulation_frame(density, cfg, rot, t, (lo, hi))
     print(f"map {cfg['map']}: {density.n[0]} x {density.n[1]} x {density.n[2]} voxels, maximum {rho_max:g}; "
           f"potential {grid.n[0]} x {grid.n[1]} x {grid.n[2]} voxels"
           + (f" (resampled for a {angle:.2f} deg rotation)" if angle >= 0.05 else ""))
-    # sanity check of the frame: a fitted model sits mostly on density above the map's mean + 1 sigma
+    # sanity check of the frame: a fitted model sits mostly on density above the map's mean + 1 sigma -
+    # read from the density itself, in the map's frame (the potential is flat above a high threshold)
     count = len(density.data)
     mean = sum(density.data) / count
     sigma = math.sqrt(max(sum(v * v for v in density.data) / count - mean * mean, 0.0))
     level = mean + sigma
-    u_level = (rho_max - max(level, cfg["threshold"])) / (rho_max - cfg["threshold"])
+    rot_t = transpose(rot)
     corner = grid.corner()
     outside = sum(1 for i in sel if any(not (grid.origin[a] <= xyz[i][a] <= corner[a]) for a in range(3)))
-    on_density = sum(1 for i in sel if grid.interpolate(*xyz[i], 1.0) <= u_level)
-    share = on_density / len(sel)
-    print(f"coupled atoms: {len(sel)}; {share:.0%} on density above mean + 1 sigma ({level:g}), "
+    on_density = sum(1 for i in solute if density.interpolate(*mat_vec(rot_t, sub(xyz[i], t)), -math.inf) >= level)
+    share = on_density / len(solute)
+    print(f"coupled atoms: {len(solute)} RNA" + (f" + {len(ions)} ion{'s' * (len(ions) > 1)}" if ions else "")
+          + f"; {share:.0%} of the RNA's on density above mean + 1 sigma ({level:g}), "
           f"{outside} outside the potential grid")
     if share < cfg["min_overlap"]:
         raise PrepError(f"only {share:.0%} of the coupled atoms lie on density above the map's mean + 1 sigma: "
@@ -962,7 +1007,7 @@ def prep(cfg, write=True):
         print(f"wrote {cfg['restraint_pdb']} ({len(chosen)} restrained atoms)")
     if cfg["chirality"]["enabled"]:
         lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
-        with open(cfg["extrabonds"], "w", encoding="ascii") as fh:
+        with open(cfg["extrabonds"], "w", encoding="ascii", errors="replace") as fh:
             fh.write("# L-RNA-safe chirality restraints (MDATK): harmonic impropers at C1' C2' C3' C4' with the\n"
                      "# target of each residue's own hand (D value, or its mirror image for L residues).\n"
                      "# Atom numbers are 0-based. Never replace these with VMD's chirality / ssrestraints tools,\n"
@@ -972,7 +1017,7 @@ def prep(cfg, write=True):
               "impropers)")
     if ssd["enabled"]:
         lines, _bad = ss_dihedral_lines(top, xyz, ssd["residues"], ssd["k"])
-        with open(ssd["file"], "w", encoding="ascii") as fh:
+        with open(ssd["file"], "w", encoding="ascii", errors="replace") as fh:
             fh.write("# Secondary-structure restraints (MDATK, after Trabuco et al. 2008): backbone and glycosidic\n"
                      "# dihedrals of the base-paired residues held at their starting values (L residues keep their\n"
                      "# own mirror-image values). Atom numbers are 0-based; angles in degrees, k in kcal/mol/rad^2.\n")
@@ -982,7 +1027,7 @@ def prep(cfg, write=True):
     if cfg["basepairs"]["enabled"]:
         bp = cfg["basepairs"]
         lines, count = basepair_walls(top, bp["pairs"], bp["bonds"], bp["offset"], bp["walls"])
-        with open(bp["file"], "w", encoding="ascii") as fh:
+        with open(bp["file"], "w", encoding="ascii", errors="replace") as fh:
             fh.write("# Base-pair hydrogen-bond restraints (MDATK): flat-bottom walls, U = k (d - upper)^2 above,\n"
                      "# k (d - lower)^2 below, 0 inside (extraBonds 'wall'). Atom numbers are 0-based.\n")
             fh.write("\n".join(lines) + "\n")
@@ -1005,7 +1050,7 @@ def final(cfg):
         info = json.load(fh)
     rot_t, t = transpose(info["rotation"]), info["translation"]
     back = [mat_vec(rot_t, sub(p, t)) for p in xyz]
-    with open(cfg["final_pdb"], "w", encoding="ascii") as fh:
+    with open(cfg["final_pdb"], "w", encoding="ascii", errors="replace") as fh:
         fh.write("REMARK   MDFF result (NAMD), solute only, in the frame of the map - MDATK\n")
         for i in range(top.natom):
             if not top.solvent(i):
@@ -1016,12 +1061,17 @@ def final(cfg):
 
 
 def main(argv, cfg):
+    for stream in (sys.stdout, sys.stderr):  # file names with non-ASCII characters on an ASCII terminal
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     if argv[:1] == ["is-netcdf"] and len(argv) == 2:  # exit status 0: NetCDF, 1: not (ASCII)
         return 0 if is_netcdf(argv[1]) else 1
     if argv[:1] == ["coordinates"] and len(argv) == 2:
         try:
             return start_coordinates(cfg, argv[1])
-        except (PrepError, OSError) as exc:
+        except (PrepError, OSError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
     if not argv or argv[0] not in ("prep", "final", "check-only"):
@@ -1032,10 +1082,7 @@ def main(argv, cfg):
         if argv[0] == "final":
             return final(cfg)
         return prep(cfg, write=argv[0] == "prep")
-    except PrepError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    except OSError as exc:
+    except (PrepError, OSError, ValueError) as exc:  # ValueError: unreadable numbers, encodings
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
