@@ -489,6 +489,12 @@ error.
 > before `loadpdb` (a name in leap's search path is looked up in `$AMBERHOME/dat/leap`) and its
 > `addPdbResMap` lines, and stops the script on a name that is neither a unit nor mapped. A library
 > it cannot read gives a warning and the build goes on. The topology check (below) is the last net.
+> The warning for a structure from an earlier step and the check in the build script come with an
+> L-RNA set-up only: *My own files* chosen under *L-RNA library*, a structure known to have L
+> residues (*Force L for*, an L helix, an input PDB with L sugars), or an own library that looks like
+> an L-RNA one (it uses the atom types LD / LH / LE, or has nucleotide units under other names than
+> A C G U, DA DC DG DT and their 5′ / 3′ / N forms). A D build with, say, a ligand library is written
+> as before.
 
 The optional
 **two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue
