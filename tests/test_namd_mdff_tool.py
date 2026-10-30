@@ -521,3 +521,16 @@ def test_example_generator(tmp_path, monkeypatch):
     project = Project.load(str(out / "namd_mdff.mdatk.toml"))
     plan = Plan(project.workflow, str(out / "generated"))
     assert not messages(plan.steps["mdff"], "error"), messages(plan.steps["mdff"])
+    # the shipped example is what the generator makes now: the same files, and the same text wherever it does
+    # not depend on floating-point results (maps, potential, coordinates may differ in the last digit elsewhere)
+    shipped = os.path.join(ROOT, "examples", "namd_mdff")
+
+    def listing(top):
+        return sorted(os.path.relpath(os.path.join(r, f), top) for r, _d, fs in os.walk(top) for f in fs
+                      if not f.endswith(".lock"))
+
+    assert listing(shipped) == listing(str(out)), "regenerate: python3 tests/mdff_system.py --example examples/namd_mdff"
+    for rel in listing(str(out)):
+        if rel.startswith("generated") or rel == "README.md" or "_chirality_" in rel or "_basepairs_" in rel:
+            assert open(os.path.join(shipped, rel)).read() == (out / rel).read_text(), \
+                f"examples/namd_mdff/{rel} is out of date: python3 tests/mdff_system.py --example examples/namd_mdff"
