@@ -410,7 +410,7 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
-| **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours, bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
+| **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours (chain groups keep to their chain), bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
 | **Structure builder (MDATK)** | a script calling `python3 -m mdatk build`: ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see Structure builder |
 | **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see Restraint dictionaries |
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see Real-space refinement |
@@ -785,14 +785,15 @@ are unique, chain-qualified ranges (`A:1-44`) when chains repeat them, else a se
 resort `index …`, which only holds for topologies with the same atom order).
 
 - Choosing a topology on the Input page (or taking the planner's files as inputs) fills the groups
-  **automatically only when nothing you made is overwritten**: when there are no groups, or the two
-  untouched defaults. The defaults are replaced when the topology has at least two chains, unless they
-  already select one chain each (as in the demo); every reference to `Aptamer` then names the first
-  chain's group and every reference to `Target` the second's, so the analyses keep comparing two groups,
-  and further chains are added. With a single chain the defaults stay.
+  **automatically only when nothing you made is overwritten** (opening a project never does): when there
+  are no groups, or the two untouched defaults. The defaults are replaced when the topology has at least
+  two chains, unless they already select one chain each (as in the demo); every reference to `Aptamer`
+  then names the first chain's group and every reference to `Target` the second's, so the analyses keep
+  comparing two groups, and further chains are added. With a single chain the defaults stay.
 - Otherwise nothing changes by itself; the status line lists the chains without a group and
   **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
-  name gets a suffix). Your groups are never changed.
+  name gets a suffix). Your groups are never changed, and neither are the untouched defaults: the button
+  only adds.
 
 **When a group or selection is wrong, the message says where and what.** Every problem starts with
 the place of its setting, as the GUI shows it, and names the offending part:

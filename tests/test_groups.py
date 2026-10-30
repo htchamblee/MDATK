@@ -138,6 +138,28 @@ def test_group_references_of_a_deleted_group():
     assert Project().group_references("Nobody") == []
 
 
+def test_a_group_list_with_empty_items_is_renamed():
+    """The export reads 'Apt, Tgt,' and 'Apt,, Tgt' as group lists (empty items skipped); renaming and
+    the references of a deleted group read them the same way, so the export keeps working."""
+    from mdatk.io.pdb_export import resolve_export_selection
+
+    atoms = [{"name": "P", "resid": r, "resname": "G", "element": "P"} for r in range(1, 17)]
+    u = make_universe(atoms, np.zeros((1, 16, 3)))
+    p = Project()
+    p.groups = [ResidueGroup("Apt", "1-8", "", "#2a78d6"), ResidueGroup("Tgt", "9-16", "", "#eb6834")]
+    cases = (("Apt, Tgt,", "Binder, Tgt,"), ("Apt,, Tgt", "Binder,, Tgt"), (", Apt", ", Binder"))
+    for text, renamed in cases:
+        q = p.copy()
+        q.output.pdb.selection = text
+        assert "output.pdb.selection" in q.group_references("Apt")
+        assert "output.pdb.selection" in q.rename_group("Apt", "Binder")
+        assert q.output.pdb.selection == renamed
+        assert resolve_export_selection(u, renamed, q.groups).n_atoms == (16 if "Tgt" in renamed else 8)
+    q = p.copy()
+    q.output.pdb.selection = "Apt, Other,"  # not every item names a group: not a group list
+    assert q.group_references("Apt") == [] and q.rename_group("Apt", "Binder") == []
+
+
 def test_rename_group_tokens():
     text = "group:Apt or group:Apter or group:Apt_2 or group:Apt.x or (group:Apt)and subgroup:Apt"
     assert rename_group_tokens(text, "Apt", "B") == (
@@ -413,3 +435,44 @@ def test_user_groups_are_never_overwritten(four_chains):
     assert p.analyses.contacts.group_a == "Aptamer"
     again = chaingroups.merge_chain_groups(p, chaingroups.topology_chain_groups(four_chains, p.groups))
     assert not again.changed and "already has a group" in again.summary("four.parm7")
+
+
+def test_the_button_keeps_untouched_defaults(four_chains, tmp_path):
+    """'Groups from chains' (not auto) only adds the chains no group selects, as its tooltip says;
+    replacing untouched defaults is left to choosing a topology."""
+    p = Project()
+    merge = chaingroups.merge_chain_groups(p, chaingroups.topology_chain_groups(four_chains, p.groups))
+    assert not merge.replaced and not merge.references
+    assert merge.added == ["Chain_A", "Chain_B", "Chain_C", "Chain_D"]
+    assert p.groups[:2] == Project().groups and p.analyses.contacts.group_a == "Aptamer"
+    assert "Default groups replaced" not in merge.summary("four.parm7")
+    # a duplex against a duplex: the defaults (1-12 / 13-24) select no chain of their own either
+    path = write_parm7_bonded(str(tmp_path / "dd.parm7"), system_atoms("GCGCAU"))
+    p = Project()
+    merge = chaingroups.merge_chain_groups(p, chaingroups.topology_chain_groups(path, p.groups))
+    assert not merge.replaced and merge.added == ["Chain_A", "Chain_B", "Chain_C", "Chain_D"]
+    assert [(g.name, g.residues) for g in p.groups[:3]] == [("Aptamer", "1-12"), ("Target", "13-24"),
+                                                            ("Chain_A", "1-6")]
+
+
+def test_vmd_keeps_chain_groups_apart(tmp_path):
+    """Chain groups of a PDB whose chains are each numbered from 1 ('A:1-4', or index selections without
+    chain IDs) colour their own chain in a VMD step, not the same residues of every chain."""
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows import TOOLS
+    from mdatk.workflows.plan import single_step_plan
+
+    for chains, expected in ((True, [f"chain {c} and resid 1 to 4" for c in "ABCD"]),
+                             (False, ["index 0 to 128", "index 129 to 257", "index 258 to 386",
+                                      "index 387 to 515"])):
+        pdb = write_pdb(str(tmp_path / f"m{chains}.pdb"), system_atoms(), chains=chains)
+        p = Project()
+        chaingroups.merge_chain_groups(p, chaingroups.topology_chain_groups(pdb, p.groups), auto=True)
+        assert len(p.groups) == 4
+        node = PlanNode(id="x", tool="vmd", step=6, settings=TOOLS["vmd"].normalise({}),
+                        files={"topology": pdb})
+        plan = single_step_plan(WorkflowParams(project_name="apt1", stamp="20261015-1432"), node,
+                                str(tmp_path), p.groups)
+        tcl = next(f.content for f in plan.generate(["x"])["x"] if f.name.endswith(".tcl"))
+        assert tcl.count("color change rgb") == 4
+        assert re.findall(r"mol selection \{(.*)\}", tcl)[:4] == expected

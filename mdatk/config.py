@@ -1054,7 +1054,8 @@ def _renamed_text(kind: str, text: str, old: str, new: str, names) -> str:
         return f"{m.group('base')}@{'+'.join(new if g == old else g for g in groups)}{m.group('rest') or ''}"
     if kind == "selection":
         items = text.split(",")
-        if any(t.strip() == old for t in items) and all(t.strip() in names for t in items):
+        named = [t.strip() for t in items if t.strip()]  # empty items are skipped, as split_csv does
+        if old in named and all(t in names for t in named):
             return ",".join(t.replace(old, new) if t.strip() == old else t for t in items)
     return rename_group_tokens(text, old, new)
 

@@ -35,20 +35,57 @@ TRAJ_TYPES = {".nc": "netcdf", ".ncdf": "netcdf", ".mdcrd": "crdbox", ".crd": "c
 TOP_TYPES = {".parm7": "parm7", ".prmtop": "parm7", ".top": "parm7", ".gro": "gro", ".pdb": "pdb",
              ".psf": "psf", ".mol2": "mol2"}
 COLOR_IDS = list(range(23, 33))  # free VMD colour ids redefined to the group colours
+_QUALIFIED = re.compile(r"([A-Za-z][A-Za-z0-9]*):(-?\d+)(?:[-:](-?\d+))?")  # MDATK's "A:30-40"
 
 
 def residue_selection(residues: str) -> str:
-    """'1-12, 20, A:30-40' -> 'resid 1 to 12 20 30 to 40' (chain prefixes dropped)."""
-    parts = []
+    """'1-12, 20, A:30-40' -> '(resid 1 to 12 20) or (chain A and resid 30 to 40)'; plain ranges alone
+    give 'resid 1 to 12 20'.  A chain qualifier is a PDB's chain ID (what MDATK reads it as there), so
+    chain groups of a PDB whose chains are each numbered from 1 keep to their own chain."""
+    by_chain: Dict[str, List[str]] = {}  # chain ("": none) -> resid items, in the order given
     for tok in re.split(r"[,\s]+", (residues or "").strip()):
         if not tok:
             continue
-        tok = tok.split(":")[-1]
-        m = re.fullmatch(r"(-?\d+)(?:-(-?\d+))?", tok)
+        q = _QUALIFIED.fullmatch(tok)
+        m = re.fullmatch(r"(-?\d+)(?:-(-?\d+))?", tok.split(":")[-1])  # unqualified: read as before
+        if not (q or m):
+            return ""
+        chain, a, b = q.groups() if q else ("", *m.groups())
+        by_chain.setdefault(chain, []).append(f"{a} to {b}" if b else a)
+    parts = [f"chain {c} and resid {' '.join(items)}" if c else f"resid {' '.join(items)}"
+             for c, items in by_chain.items()]
+    return parts[0] if len(parts) == 1 else " or ".join(f"({p})" for p in parts)
+
+
+def _vmd_ranges(text: str) -> str:
+    """MDAnalysis' '1:4 6' -> '1 to 4 6' ('' unless every item is a number or a range)."""
+    items = []
+    for tok in text.split():
+        m = re.fullmatch(r"(-?\d+)(?::(-?\d+))?", tok)
         if not m:
             return ""
-        parts.append(f"{m.group(1)} to {m.group(2)}" if m.group(2) else m.group(1))
-    return f"resid {' '.join(parts)}" if parts else ""
+        items.append(f"{m.group(1)} to {m.group(2)}" if m.group(2) else m.group(1))
+    return " ".join(items)
+
+
+def selection_for_vmd(selection: str) -> str:
+    """The selections MDATK writes for chain groups in VMD's words: 'chainID A and resid 1:40' ->
+    'chain A and resid 1 to 40', 'segid P1 and resid ...' -> 'segname P1 and resid ...', 'index 0:811'
+    -> 'index 0 to 811' (both count from 0); '' for any other selection."""
+    m = re.fullmatch(r"\s*(chainID|segid)\s+(\w+)\s+and\s+resid\s+(.+?)\s*", selection or "")
+    if m:
+        ranges = _vmd_ranges(m.group(3))
+        keyword = "chain" if m.group(1) == "chainID" else "segname"
+        return f"{keyword} {m.group(2)} and resid {ranges}" if ranges else ""
+    m = re.fullmatch(r"\s*index\s+(.+?)\s*", selection or "")
+    ranges = _vmd_ranges(m.group(1)) if m else ""
+    return f"index {ranges}" if ranges else ""
+
+
+def group_selection(group: Any) -> str:
+    """VMD selection of a residue group: its residue ranges, else (a chain group without ranges) its
+    selection translated by :func:`selection_for_vmd`; '' when VMD cannot select it."""
+    return residue_selection(_g(group, "residues")) or selection_for_vmd(_g(group, "selection"))
 
 
 def _hex_rgb(color: str) -> Tuple[float, float, float]:
@@ -180,7 +217,7 @@ class VMDTool(Tool):
                                      "then starts VMD with a display", ("renderer",)))
         if s["last"] != -1 and s["last"] < s["first"]:
             out.append(Issue("error", "the last frame comes before the first", ("first", "last")))
-        if s["group_colors"] and not [g for g in ctx.groups if residue_selection(_g(g, "residues"))]:
+        if s["group_colors"] and not [g for g in ctx.groups if group_selection(g)]:
             out.append(Issue("info", "no residue groups with residue ranges; colouring by residue name",
                              ("group_colors",)))
         if s["rna_style"] in ("Surf",) and trajs:
@@ -211,14 +248,14 @@ class VMDTool(Tool):
               f"color Display Background {'white' if s['background'] == 'white' else 'black'}",
               "axes location Off", ""]
         reps = []  # (selection, representation with parameters, colour)
-        groups = [g for g in ctx.groups if residue_selection(_g(g, "residues"))]
+        groups = [g for g in ctx.groups if group_selection(g)]
         style = STYLE_PARAMS[s["rna_style"]]
         if s["group_colors"] and groups:
             for k, g in enumerate(groups[:len(COLOR_IDS)]):
                 cid = COLOR_IDS[k]
                 r, gg, b = _hex_rgb(_g(g, "color"))
                 L.append(f"color change rgb {cid} {r:.3f} {gg:.3f} {b:.3f} ;# {_g(g, 'name')}")
-                reps.append((residue_selection(_g(g, "residues")), style, f"ColorID {cid}"))
+                reps.append((group_selection(g), style, f"ColorID {cid}"))
         else:
             reps.append(("nucleic", style, "ResName"))
         if s["bases"] and s["rna_style"] != "Licorice":
