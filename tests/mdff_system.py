@@ -66,7 +66,7 @@ def with_solvent(atoms, waters: int = 6, mg: int = 1, spacing: float = 3.1, star
 
 
 def write_topology(path: str, atoms, box: Optional[Sequence[float]] = None, hmr: bool = False,
-                   extra_flags: Sequence[Tuple[str, str, list]] = (), l_types: bool = True) -> None:
+                   extra_flags: Sequence[Tuple[str, str, list]] = (), l_types: bool = True, numextra: int = 0) -> None:
     labels: List[str] = []
     pointers: List[int] = []
     last = None
@@ -93,6 +93,7 @@ def write_topology(path: str, atoms, box: Optional[Sequence[float]] = None, hmr:
     pointers_section[1] = 1
     pointers_section[11] = len(labels)
     pointers_section[27] = 1 if box else 0
+    pointers_section[30] = numextra  # NUMEXTRA: extra points of four-site water
     sections = [("POINTERS", "i", pointers_section), ("ATOM_NAME", "a", names), ("CHARGE", "e", [0.0] * n),
                 ("ATOMIC_NUMBER", "i", numbers), ("MASS", "e", masses), ("ATOM_TYPE_INDEX", "i", [1] * n),
                 ("NONBONDED_PARM_INDEX", "i", [1]), ("RESIDUE_LABEL", "a", labels),

@@ -127,8 +127,14 @@ def test_vacuum_run_on_the_dry_topology():
     fit = files[f"apt1_02_fit_{STAMP}.namd"]
     assert "PME" not in fit and "extendedSystem" not in fit and "GBIS             on" in fit
     energy = files[f"apt1_02_energy_{STAMP}.namd"]
-    assert "cutoff           999.0" in energy and "GBIS" not in energy
+    assert "cutoff           999.0" in energy and "GBIS" not in energy and "switching        off" in energy
     assert "ntb=0, cut=999.0" in files[f"apt1_02_energy_{STAMP}.mdin"]
+    # with switching off NAMD sums plain truncated Coulomb terms, as sander does without a cutoff: the
+    # vacuum comparison is held to the same tolerances as the periodic one
+    ns = {"__name__": "energy"}
+    exec(compile(files[f"apt1_02_energy_{STAMP}.py"], "energy.py", "exec"), ns)
+    from mdatk.workflows.scripts import namd_energy as ne
+    assert ns["TOLERANCES"] == ne.TOLERANCES
 
 
 def test_vacuum_needs_dry_coordinates_too():
@@ -172,7 +178,10 @@ for line in text.splitlines():
     line = line.split("#")[0].strip()
     if line:
         key, _, value = line.partition(" ")
-        opts.setdefault(key.lower(), []).append(value.strip())
+        value = value.strip()
+        if value.startswith("{") and value.endswith("}"):
+            value = value[1:-1]  # NAMD strips braces, as Tcl does
+        opts.setdefault(key.lower(), []).append(value)
 assert opts["amber"] == ["on"] and os.path.isfile(opts["parmfile"][0]) and os.path.isfile(opts["ambercoor"][0])
 for key in ("extendedsystem", "bincoordinates", "binvelocities", "extrabondsfile", "consref"):
     for v in opts.get(key, []):
@@ -237,8 +246,8 @@ def _bin(tmp_path):
     return b
 
 
-def _system(tmp_path, netcdf=False):
-    d = tmp_path / "data"
+def _system(tmp_path, netcdf=False, folder="data"):
+    d = tmp_path / folder
     d.mkdir()
     atoms = ms.atoms_of(ms.mixed_pdb())
     rot = ms.rotation((0.0, 0.0, 1.0), 0.0)
@@ -374,3 +383,119 @@ def test_energy_parsers_and_comparison(tmp_path):
     mdout.write_text(mdout.read_text().replace("1234.5678  EEL", "**********  EEL", 1))
     with pytest.raises(ValueError, match=r"\*\*\*\*\* for VDWAALS"):
         ne.sander_terms(str(mdout))
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_resume_reuses_only_runs_made_from_the_same_inputs(tmp_path):
+    _bin(tmp_path)
+    d, atoms = _system(tmp_path)
+    script = _write(tmp_path, d)
+    folder = os.path.dirname(script)
+    log = tmp_path / "namd-runs.log"
+
+    def run():
+        if log.exists():
+            log.unlink()
+        res = _run(script, tmp_path, d, NAMD_SAME)
+        assert res.returncode == 0, res.stdout + res.stderr
+        return [os.path.basename(r).split("_")[2] for r in log.read_text().split()] if log.exists() else []
+
+    def first_atom():
+        line = next(ln for ln in open(os.path.join(folder, f"apt1_01_fitted_{STAMP}.pdb")) if ln.startswith("ATOM"))
+        return float(line[30:38]), float(line[38:46]), float(line[46:54])
+
+    every = ["min", "ramp-001", "ramp-002", "final-min"]
+    assert run() == every
+    assert run() == []  # nothing changed: every run is reused
+    # new start coordinates of the same system (e.g. a new MD restart), 6 A further along x: the finished runs
+    # belong to the old coordinates and the old map frame, so all of them run again - and the fitted model
+    # stays on the map
+    top = nm.Topology(str(d / "sys.parm7"))
+    xyz, box, _vel = nm.read_rst7(str(d / "sys.rst7"), top.natom)
+    ms.write_rst7(str(d / "sys.rst7"), [(x + 6.0, y, z) for x, y, z in xyz], box=box)
+    assert run() == every
+    assert first_atom() == pytest.approx(atoms[0][5], abs=0.002)
+    # a changed stage reruns from that stage on
+    stages = [dict(name="min", kind="min", steps=100, gscale=0.3),
+              dict(name="ramp", kind="md", steps=40, gscale=0.1, gscale_end=0.3, segments=2, positional=True),
+              dict(name="final-min", kind="min", steps=200, gscale=10.0)]
+    script = _write(tmp_path, d, {"stages": stages})
+    assert run() == ["final-min"]
+    # a changed restraint file reruns everything
+    script = _write(tmp_path, d, {"stages": stages, "chirality_k": 150.0})
+    assert run() == every
+    # a run whose output is gone runs again, and so does every run after it
+    os.remove(os.path.join(folder, f"apt1_01_ramp-001_{STAMP}.coor"))
+    assert run() == ["ramp-001", "ramp-002", "final-min"]
+    assert run() == []
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_input_paths_with_spaces(tmp_path):
+    _bin(tmp_path)
+    d, atoms = _system(tmp_path, netcdf=True, folder="my project data")
+    script = _write(tmp_path, d)
+    conf = open(script.replace(f"namd-mdff_{STAMP}.sh", f"min_{STAMP}.namd")).read()
+    assert f"parmfile         {{{d / 'sys.parm7'}}}" in conf  # braces: one NAMD (Tcl) word
+    res = _run(script, tmp_path, d, NAMD_SAME)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert os.path.getsize(script.replace(f"namd-mdff_{STAMP}.sh", f"fitted_{STAMP}.pdb")) > 0
+
+
+@pytest.mark.parametrize("stages, text", [
+    ([dict(name="min", kind="min"), dict(name="energy", kind="min")], "stage name energy is taken by the step's own"),
+    ([dict(name="Prep", kind="min")], "stage name Prep is taken"),
+    ([dict(name="cell", kind="md", steps=100), dict(name="start", kind="min")], "stage names cell, start are taken"),
+    ([dict(name="ramp", kind="md", steps=100, segments=2), dict(name="ramp-002", kind="min")],
+     "run names repeat (ramp-002)"),
+])
+def test_run_names_must_not_meet_other_files(stages, text):
+    _plan, st = single({"stages": stages})
+    assert any(text in m for m in messages(st, "error")), messages(st)
+
+
+def test_hand_picked_topology_is_read_for_four_site_water_and_hmr(tmp_path):
+    atoms = ms.with_solvent(ms.atoms_of(ms.mixed_pdb()))
+    box = (80.0, 80.0, 80.0, 90.0, 90.0, 90.0)
+    ms.write_topology(str(tmp_path / "opc.parm7"), atoms, box=box, hmr=True, numextra=6)
+    ms.write_rst7(str(tmp_path / "opc.rst7"), [a[5] for a in atoms], box=box)
+    files = {"topology": str(tmp_path / "opc.parm7"), "coordinates": str(tmp_path / "opc.rst7"),
+             "map": "/d/map.mrc", "model": "/d/model.pdb"}
+    plan, st = single(files=files)
+    assert not any("four-site" in m for m in messages(st, "error")), messages(st)
+    assert any("the topology has four-site water (extra points)" in m for m in messages(st, "warning"))
+    assert any("time step 4 fs (HMR topology)" in m for m in messages(st, "info"))
+    fit = {f.name: f.content for f in plan.generate(["m"])["m"]}[f"apt1_02_fit_{STAMP}.namd"]
+    assert "watermodel       tip4" in fit and "timestep         4.0" in fit
+    # three-site water, no HMR: neither
+    ms.write_topology(str(tmp_path / "opc.parm7"), atoms, box=box)
+    plan, st = single(files=files)
+    fit = {f.name: f.content for f in plan.generate(["m"])["m"]}[f"apt1_02_fit_{STAMP}.namd"]
+    assert "watermodel" not in fit and "timestep         2.0" in fit
+    _plan, st = single({"timestep": "4"}, files=files)
+    assert any("4 fs needs hydrogen mass repartitioning" in m for m in messages(st, "error"))
+
+
+def test_coupling_warnings_follow_each_stage():
+    tool = TOOLS["namd-mdff"]
+    stages = tool.normalise({})["stages"]
+    stages[-1]["chirality"] = False  # final-min at xi = 10 without chirality restraints
+    _plan, st = single({"stages": stages})
+    assert any("without chirality restraints in stage final-min can invert" in m for m in messages(st, "warning"))
+    ramp = [dict(name="ramp", kind="md", steps=1000, gscale=0.05, gscale_end=5.0, segments=5, chirality=False)]
+    _plan, st = single({"stages": ramp})
+    assert any("in stage ramp can invert" in m for m in messages(st, "warning")), messages(st)
+    assert tool.describe(st.settings).endswith("ξ 0.05–5")
+    one = [dict(name="fit", kind="md", steps=1000, gscale=0.1, gscale_end=0.5)]
+    _plan, st = single({"stages": one})
+    assert any("ξ stays at 0.1 - a ramp to 0.5 needs at least 2 segments" in m for m in messages(st, "warning"))
+    assert tool.describe(st.settings).endswith("ξ 0.1–0.1")
+    _plan, st = single()
+    assert not any("can invert" in m for m in messages(st, "warning"))
+
+
+def test_cpptraj_is_cited():
+    plan, st = single({"energy_check": False})
+    assert TOOLS["namd-mdff"].resources(st.settings) == ["namd", "mdff", "cpptraj"]
+    sh = {f.name: f.content for f in plan.generate(["m"])["m"]}[f"apt1_02_namd-mdff_{STAMP}.sh"]
+    assert "cpptraj -p" in sh and "Roe D. R." in sh.split("set -eo pipefail")[0]

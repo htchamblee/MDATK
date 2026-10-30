@@ -27,11 +27,43 @@ from .scripts import namd_energy as _namd_energy
 from .scripts import namd_mdff as _namd_mdff
 
 # Improper dihedral (centre, partner 1-3; scripts/namd_mdff.SUGAR_CENTRES) of each ribose centre of a
-# D-nucleotide, degrees, measured on MDATK's C3'-endo nucleotide from PDB 4JRD (mdatk.builder); an L
-# residue gets the mirror image (the negative).  The same for every base.
+# D-nucleotide, degrees, measured on the C3'-endo Arnott A-RNA fiber monomer of mdatk.builder (the
+# nucleotide of its default Watson-Crick helices); an L residue gets the mirror image (the negative).
+# The same for every base.
 D_IMPROPERS = {"C1'": -35.01, "C2'": 40.03, "C3'": 38.30, "C4'": 33.31}
 FOUR_SITE = {"opc", "tip4pew", "tip4pd", "tip4p2005"}
+# file tags of the step's own files (ctx.name): a stage or segment run of the same name would overwrite them
+RESERVED_TAGS = ("start", "prep", "potential", "coupling", "posres", "chirality", "ssdihedrals", "basepairs",
+                 "cell", "fitted", "mdff", "energy", "energy-check", "namd-mdff")
 _FILE_CHECKS: Dict[tuple, List[Issue]] = {}
+_TOPOLOGY_FACTS: Dict[tuple, Dict[str, Any]] = {}
+
+
+def topology_facts(path: str) -> Dict[str, Any]:
+    """Four-site water and HMR read from a parm7 on disk - what the Amber build reports for its own
+    topologies (port data), for a topology chosen as a file.  Cached per file version."""
+    try:
+        key = (path, os.path.getmtime(path), os.path.getsize(path))
+    except OSError:
+        return {}
+    if key not in _TOPOLOGY_FACTS:
+        if len(_TOPOLOGY_FACTS) > 32:
+            _TOPOLOGY_FACTS.clear()
+        try:
+            top = _namd_mdff.Topology(path)
+            h_mass = [m for i, (m, z) in enumerate(zip(top.mass, top.number)) if z == 1 and not top.solvent(i)]
+            heavy_h = sum(1 for m in h_mass if m > 2.0)
+            _TOPOLOGY_FACTS[key] = {"four_site_water": top.numextra > 0,
+                                    "hmr": bool(h_mass) and heavy_h >= 0.5 * len(h_mass)}
+        except (OSError, ValueError, _namd_mdff.PrepError):
+            _TOPOLOGY_FACTS[key] = {}
+    return dict(_TOPOLOGY_FACTS[key])
+
+
+def namd_file(path: str) -> str:
+    """A file name as a NAMD config value: in braces, which NAMD strips as Tcl does, when it holds spaces
+    or characters Tcl would substitute."""
+    return "{" + path + "}" if any(c.isspace() or c in '$[]";\\#' for c in path) else path
 
 STAGE_OPTIONS = [
     Option("name", "Name", "text", "stage", "Short stage name used in file names (letters, digits, hyphens)."),
@@ -128,13 +160,15 @@ class NamdMDFFTool(Tool):
             Option("couple", "Atoms coupled to the map", "radio", "heavy",
                    "Every coupled atom feels the map in proportion to its (standard) mass.",
                    choices=[("heavy", "RNA heavy atoms"), ("all", "All RNA atoms, with hydrogens")]),
-            Option("couple_ions", "Couple ions too", "bool", False, "Also couple Mg²⁺ and other ions to the map."),
+            Option("couple_ions", "Couple ions too", "bool", False,
+                   "Also couple the Mg²⁺ and other ions that start within the margin around the RNA (bulk "
+                   "counterions are left alone)."),
             Option("pad", "Margin around the RNA", "float", 8.0,
                    "The potential is cropped to the coupled atoms plus this margin (Å); it must fit into the "
                    "periodic cell.", minimum=0.0, maximum=100.0, digits=1, unit="Å"),
             Option("min_overlap", "Required overlap", "float", 0.3,
-                   "Share of coupled atoms that must lie on density above the map's mean + 1 σ, a check that the "
-                   "model is in the map's frame.", minimum=0.0, maximum=1.0, step=0.05, digits=2),
+                   "Share of the coupled RNA atoms that must lie on density above the map's mean + 1 σ, a check "
+                   "that the model is in the map's frame.", minimum=0.0, maximum=1.0, step=0.05, digits=2),
             Option("max_frame_rmsd", "Largest model / topology RMSD", "float", 2.0,
                    "RMSD (Å) allowed between the map-frame model and the coordinates after superposition.",
                    minimum=0.01, maximum=50.0, digits=2, unit="Å"),
@@ -190,7 +224,8 @@ class NamdMDFFTool(Tool):
             Option("sander", "sander program", "text", "sander", "AmberTools sander for the energy comparison.",
                    requires={"energy_check": True}),
             Option("resume", "Skip finished runs", "bool", True,
-                   "When the script is run again, runs whose log shows NAMD finished are skipped."),
+                   "When the script is run again, finished runs are skipped while their inputs and stage files are "
+                   "unchanged; a change reruns that stage and every one after it."),
         ], tooltip="How the NAMD runs are started."),
         env_section("module load NAMD/3.0   and   module load Amber/24   (sander, cpptraj)"),
     ]
@@ -201,26 +236,45 @@ class NamdMDFFTool(Tool):
         from .naming import sanitize_tag
         return sanitize_tag(stage.get("name") or f"stage{k + 1}")
 
+    @staticmethod
+    def stage_scales(st: Dict[str, Any]) -> List[float]:
+        """Map coupling ξ of each NAMD run (segment) of a stage: constant, or a linear ramp over the
+        segments of an MD stage."""
+        nseg = st["segments"] if st["kind"] == "md" else 1
+        end = st["gscale_end"] if st["kind"] == "md" and st["gscale_end"] is not None else st["gscale"]
+        return [st["gscale"] + (end - st["gscale"]) * (seg / (nseg - 1) if nseg > 1 else 0.0)
+                for seg in range(nseg)]
+
     def runs(self, s, ctx) -> List[Dict[str, Any]]:
         """Stages expanded into NAMD runs (segments), with the coupling of each run."""
         out = []
         for k, st in enumerate(s["stages"]):
             tag = self.stage_tag(st, k)
-            nseg = st["segments"] if st["kind"] == "md" else 1
-            end = st["gscale_end"] if st["kind"] == "md" and st["gscale_end"] is not None else st["gscale"]
-            steps = max(1, st["steps"] // nseg)
-            for seg in range(nseg):
-                frac = seg / (nseg - 1) if nseg > 1 else 0.0
-                rtag = f"{tag}-{seg + 1:03d}" if nseg > 1 else tag
-                out.append({"stage": st, "index": k, "seg": seg, "tag": rtag, "steps": steps,
-                            "gscale": st["gscale"] + (end - st["gscale"]) * frac,
+            scales = self.stage_scales(st)
+            steps = max(1, st["steps"] // len(scales))
+            for seg, gscale in enumerate(scales):
+                rtag = f"{tag}-{seg + 1:03d}" if len(scales) > 1 else tag
+                out.append({"stage": st, "index": k, "seg": seg, "tag": rtag, "steps": steps, "gscale": gscale,
                             "conf": ctx.name(rtag, "namd"), "out": ctx.name(rtag), "log": ctx.name(rtag, "log")})
         return out
+
+    def topology_data(self, ctx) -> Dict[str, Any]:
+        """The topology's port data; for a topology chosen as a file, four-site water and HMR are read from
+        the file (the Amber build reports them for the topologies it writes)."""
+        data = dict(ctx.data("topology"))
+        if "four_site_water" not in data or "hmr" not in data:
+            path = ctx.existing("topology")
+            for key, value in (topology_facts(path) if path else {}).items():
+                data.setdefault(key, value)
+        return data
+
+    def four_site(self, s, ctx) -> bool:
+        return s["solvent"] == "solvated" and bool(self.topology_data(ctx).get("four_site_water"))
 
     def timestep(self, s, ctx) -> float:
         if s["timestep"] != "auto":
             return float(s["timestep"])
-        return 4.0 if ctx.data("topology").get("hmr") else 2.0
+        return 4.0 if self.topology_data(ctx).get("hmr") else 2.0
 
     def pairs(self, s, ctx) -> Tuple[List[Tuple[int, int, str]], List[Issue], str]:
         model, source, issues = secondary_structure(s, ctx)
@@ -251,7 +305,7 @@ class NamdMDFFTool(Tool):
         return {
             "topology": ctx.inp("topology"), "coordinates": n("start", "rst7"), "model": ctx.inp("model"),
             "map": ctx.inp("map"), "periodic": s["solvent"] == "solvated",
-            "four_site": s["solvent"] == "solvated" and bool(ctx.data("topology").get("four_site_water")),
+            "four_site": self.four_site(s, ctx),
             "timestep": self.timestep(s, ctx), "threshold": s["threshold"], "pad": s["pad"],
             "couple": s["couple"], "couple_ions": s["couple_ions"], "min_overlap": s["min_overlap"],
             "max_frame_rmsd": s["max_frame_rmsd"], "resample_divisor": s["resample_divisor"],
@@ -274,17 +328,18 @@ class NamdMDFFTool(Tool):
         return {"fitted": PortValue([ctx.own("fitted", "pdb")], "pdb", {"map_frame": True})}
 
     def resources(self, s):
-        return ["namd", "mdff"] + (["ambertools"] if s["energy_check"] else [])
+        # cpptraj: the script converts NetCDF restarts (pmemd's default) with it
+        return ["namd", "mdff", "cpptraj"] + (["ambertools"] if s["energy_check"] else [])
 
     def describe(self, s):
-        gs = [st["gscale"] for st in s["stages"]]
+        gs = [g for st in s["stages"] for g in self.stage_scales(st)]
         env = "solvated" if s["solvent"] == "solvated" else ("GBIS" if s["gbis"] else "vacuum")
         span = f", ξ {min(gs):g}–{max(gs):g}" if gs else ""
         return f"NAMD MDFF on the Amber topology, {env}, {len(s['stages'])} stage(s){span}"
 
     def check(self, s, ctx):
         out: List[Issue] = []
-        data = ctx.data("topology")
+        data = self.topology_data(ctx)
         solvated = s["solvent"] == "solvated"
         if not s["stages"]:
             out.append(Issue("error", "add at least one stage", ("stages",)))
@@ -292,6 +347,22 @@ class NamdMDFFTool(Tool):
         dup = sorted({t for t in tags if tags.count(t) > 1})
         if dup:
             out.append(Issue("error", f"stage names must differ ({', '.join(dup)})", ("stages",)))
+        # every run writes <tag>.namd / .log / .coor / .xsc ...: segment names (<stage>-001 ...) must not meet
+        # another run's or the step's own files (letter case ignored: macOS file systems ignore it)
+        run_tags = [r["tag"] for r in self.runs(s, ctx)]
+        low = [t.lower() for t in run_tags]
+        clash = sorted({t for t in run_tags if low.count(t.lower()) > 1} - set(dup))
+        if clash:
+            out.append(Issue("error", f"run names repeat ({', '.join(clash)}): a stage name matches another stage's "
+                                      "segment runs (<stage>-001 ...)", ("stages",)))
+        reserved = sorted({t for t in run_tags if t.lower() in RESERVED_TAGS})
+        if reserved:
+            several = len(reserved) > 1
+            out.append(Issue("error", f"stage name{'s' * several} {', '.join(reserved)} {'are' if several else 'is'} "
+                                      f"taken by the step's own files ({', '.join(RESERVED_TAGS)})", ("stages",)))
+        if any(c in ctx.inp("topology") for c in "{}\n"):
+            out.append(Issue("error", "the topology's path contains a brace, which a NAMD configuration cannot "
+                                      "hold; move or rename the file", ("input:topology",)))
         if data.get("c4"):
             out.append(Issue("error", "the topology carries 12-6-4 C4 terms (Li & Merz 12-6-4 Mg²⁺); NAMD cannot apply "
                                       "them. Build with the 12-6, microMg or nanoMg model for NAMD.", ("input:topology",)))
@@ -310,10 +381,11 @@ class NamdMDFFTool(Tool):
                 out.append(Issue("error", "vacuum runs need the dry topology (Amber build: 'Two-pass build' gives "
                                           "it) - the connected one is solvated", ("solvent",)))
         if solvated and data.get("four_site_water"):
-            water = WATERS.get(data.get("water", ""), (data.get("water", "four-site water"),))[0]
-            out.append(Issue("warning", f"{water} is a four-site water: NAMD runs it with 'watermodel tip4' from the "
-                                        "Amber extra points, which MDATK has not verified - only trust the run if the "
-                                        "energy comparison with sander passes", ("energy_check",)))
+            water = (f"{WATERS[data['water']][0]} is a four-site water" if data.get("water") in WATERS
+                     else "the topology has four-site water (extra points)")
+            out.append(Issue("warning", f"{water}: NAMD runs it with 'watermodel tip4' from the Amber extra points, "
+                                        "which MDATK has not verified - only trust the run if the energy comparison "
+                                        "with sander passes", ("energy_check",)))
         if data.get("hmr") and s["timestep"] in ("1", "2"):
             out.append(Issue("info", "the topology has HMR masses; 4 fs would be possible", ("timestep",)))
         if s["timestep"] == "4" and "hmr" in data and not data["hmr"]:
@@ -362,12 +434,21 @@ class NamdMDFFTool(Tool):
                 out.append(Issue("info", f"{len(pairs)} base pairs restrained ({source})", ("dotbracket",)))
             if s["bp_lower"] > s["bp_upper"]:
                 out.append(Issue("error", "the lower wall must not be above the upper wall", ("bp_lower", "bp_upper")))
-        if not self.uses(s, "chirality") and any(st["gscale"] > 1.0 for st in s["stages"]):
-            out.append(Issue("warning", "strong map coupling without chirality restraints can invert sugar centres "
-                                        "(of D and L residues alike)", ("stages",)))
+        strong = [k for k, st in enumerate(s["stages"])
+                  if (not st["chirality"] or s["chirality_k"] <= 0) and max(self.stage_scales(st)) > 1.0]
+        if strong:
+            plural = "s" * (len(strong) > 1)
+            out.append(Issue("warning", f"strong map coupling (ξ > 1) without chirality restraints in stage{plural} "
+                                        f"{', '.join(tags[k] for k in strong)} can invert sugar centres (of D and L "
+                                        "residues alike)", tuple(f"stages.{k}.chirality" for k in strong)))
         for k, st in enumerate(s["stages"]):
             if st["kind"] == "md" and st["segments"] > st["steps"]:
                 out.append(Issue("error", f"stage {k + 1}: more segments than steps", (f"stages.{k}.segments",)))
+            if (st["kind"] == "md" and st["gscale_end"] is not None and st["gscale_end"] != st["gscale"]
+                    and st["segments"] < 2):
+                out.append(Issue("warning", f"stage {k + 1}: ξ stays at {st['gscale']:g} - a ramp to "
+                                            f"{st['gscale_end']:g} needs at least 2 segments",
+                                 (f"stages.{k}.segments",)))
         out.append(Issue("info", "restraints are written by MDATK and keep every residue's own hand; do not add "
                                  "VMD's chirality / ssrestraints / cispeptide restraints, which assume D-nucleotides "
                                  "and would push L sugars towards the inverted centre", ("chirality_k",)))
@@ -423,12 +504,12 @@ class NamdMDFFTool(Tool):
     # ---------------------------------------------------------------- files
     def _common(self, s, ctx, periodic: bool, for_energy: bool = False) -> List[str]:
         n = ctx.name
-        # the vacuum energy comparison uses an effectively infinite cutoff: NAMD shifts electrostatics
-        # without PME, sander truncates them, and only a cutoff beyond the molecule makes them comparable
+        # the vacuum energy comparison runs sander without a cutoff (cut=999); with 'switching off' NAMD
+        # truncates plain Coulomb and LJ sums at its cutoff, so the same 999 A makes them the same sums
         cut = 999.0 if for_energy and not periodic else s["cutoff"]
         lines = ["# Amber force field read natively from the parm7 (nothing converted)",
                  "amber            on",
-                 f"parmfile         {ctx.inp('topology')}",
+                 f"parmfile         {namd_file(ctx.inp('topology'))}",
                  f"ambercoor        {n('start', 'rst7')}",
                  "readexclusions   yes",
                  "exclude          scaled1-4",
@@ -441,7 +522,7 @@ class NamdMDFFTool(Tool):
             lines += ["", "# periodic cell of the Amber box, PME",
                       "PME              yes", "PMEGridSpacing   1.0",
                       f"LJcorrection     {'off' if for_energy else 'on'}"]
-            if ctx.data("topology").get("four_site_water"):
+            if self.four_site(s, ctx):
                 lines.append("watermodel       tip4")
         elif s["gbis"] and not for_energy:
             lines += ["", "# generalised Born implicit solvent", "GBIS             on",
@@ -554,11 +635,8 @@ class NamdMDFFTool(Tool):
                                        f"NAMD stage {run['tag']}"))
             prev = run
         if s["energy_check"]:
-            tolerances = dict(_namd_energy.TOLERANCES)
-            if s["solvent"] != "solvated":  # NAMD shifts cutoff electrostatics, sander truncates: 1 %
-                tolerances["ELECT"] = (2.0, 1e-2)
             files.append(GeneratedFile(energy_py, embed(
-                _namd_energy, {"TOLERANCES": tolerances}, "main(sys.argv[1:], TOLERANCES)",
+                _namd_energy, {"TOLERANCES": dict(_namd_energy.TOLERANCES)}, "main(sys.argv[1:], TOLERANCES)",
                 f"sander / NAMD single-point energy comparison - written by {PROJECT_ABBREV} {__version__}.\n\n"
                 "Usage: python3 THIS_SCRIPT SANDER.mdout NAMD.log"), "helper", "compares the energy terms"))
             files.append(GeneratedFile(n("energy", "namd"), self._energy_conf(s, ctx), "input",
@@ -581,12 +659,13 @@ class NamdMDFFTool(Tool):
         if s["namd_args"].strip():
             cmd.append(s["namd_args"].strip())
         top, crd, start = ctx.inp("topology"), ctx.inp("coordinates"), n("start", "rst7")
+        qtop, qcrd = shell_quote(top), shell_quote(crd)
         sh += [f'NAMD="{" ".join(cmd)}"', "",
                "# Coordinates as ASCII Amber restart (pmemd writes NetCDF restarts: converted with cpptraj)",
-               f"if python3 {n('mdff', 'py')} is-netcdf {crd}; then",
-               f"    cpptraj -p {top} -y {crd} -x {start} > {n('start', 'log')}",
+               f"if python3 {n('mdff', 'py')} is-netcdf {qcrd}; then",
+               f"    cpptraj -p {qtop} -y {qcrd} -x {start} > {n('start', 'log')}",
                "else",
-               f"    python3 {n('mdff', 'py')} coordinates {crd}",
+               f"    python3 {n('mdff', 'py')} coordinates {qcrd}",
                "fi",
                require_file(start, "the coordinate conversion"), "",
                "# Checks, MDFF potential, coupling and restraint files, periodic cell",
@@ -595,21 +674,39 @@ class NamdMDFFTool(Tool):
         if s["energy_check"]:
             e = n("energy")
             sh += ["# Same energies in sander and NAMD? (else NAMD does not reproduce the topology's force field)",
-                   f"{s['sander'].strip() or 'sander'} -O -i {e}.mdin -o {e}.mdout -p {top} -c {start} "
+                   f"{s['sander'].strip() or 'sander'} -O -i {e}.mdin -o {e}.mdout -p {qtop} -c {start} "
                    f"-r {e}.rst7 -inf {e}.mdinfo || {{ echo \"ERROR: sander failed; see {e}.mdout\" >&2; exit 1; }}",
                    f"$NAMD {e}.namd > {e}.namd.log 2>&1 || {{ echo \"ERROR: NAMD failed on the Amber topology; see "
                    f"{e}.namd.log\" >&2; exit 1; }}",
                    f"python3 {n('energy', 'py')} {e}.mdout {e}.namd.log | tee {n('energy-check', 'log')}", ""]
+        if s["resume"] and runs:
+            # a finished run belongs to the inputs it ran from: its key chains the start files with every stage
+            # file up to it, so a changed input or stage setting reruns that stage and all after it
+            settings = self.prep_settings(s, ctx)
+            inputs = [top, start, n("prep", "json"), n("potential", "dx"), n("coupling", "pdb")]
+            for path, used in ((n("posres", "pdb"), settings["positional"]["selection"] != "none"),
+                               (n("chirality", "txt"), settings["chirality"]["enabled"]),
+                               (n("ssdihedrals", "txt"), settings["ssdihedrals"]["enabled"]),
+                               (n("basepairs", "txt"), settings["basepairs"]["enabled"]),
+                               (n("cell", "xsc"), s["solvent"] == "solvated")):
+                if used:
+                    inputs.append(path)
+            sh += ["# Finished runs are skipped only if they ran from these inputs and the same stage files",
+                   f"KEY=$(cat {' '.join(shell_quote(p) for p in inputs)} | cksum)", "FRESH=0", ""]
         for run in runs:
-            done = f'[ -s "{run["out"]}.coor" ] && grep -q "WallClock:" "{run["log"]}" 2>/dev/null'
+            key = f"{run['out']}.key"
             body = [f"$NAMD {run['conf']} > {run['log']} 2>&1 || {{ echo \"ERROR: NAMD failed on {run['conf']}; see "
                      f"{run['log']}\" >&2; exit 1; }}",
                     f'grep -q "WallClock:" "{run["log"]}" || {{ echo "ERROR: NAMD did not finish {run["conf"]}; see '
                     f'{run["log"]}" >&2; exit 1; }}']
             sh.append(f"# {run['tag']}: {run['stage']['kind']} {run['steps']} steps, map coupling {run['gscale']:g}")
             if s["resume"]:
-                sh += [f"if {done}; then", f'    echo "{run["tag"]} already finished - skipped"', "else"]
-                sh += ["    " + b for b in body] + ["fi"]
+                done = (f'[ "$FRESH" = 0 ] && [ -s "{run["out"]}.coor" ] && grep -q "WallClock:" "{run["log"]}" '
+                        f'2>/dev/null && [ "$(cat "{key}" 2>/dev/null)" = "$KEY" ]')
+                sh += [f'KEY=$( {{ echo "$KEY"; cat "{run["conf"]}"; }} | cksum )',
+                       f"if {done}; then", f'    echo "{run["tag"]} already finished - skipped"', "else",
+                       "    FRESH=1", f'    rm -f "{key}"']
+                sh += ["    " + b for b in body] + [f'    echo "$KEY" > "{key}"', "fi"]
             else:
                 sh += body
             sh.append("")

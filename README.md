@@ -1038,22 +1038,25 @@ already in the plan and their files do not change.
    - **Map frame:** tleap moves (and may rotate) the solute when it solvates it. The script
      superposes the coordinates on the map-frame model and moves the potential with them; a
      rotation is resampled on a grid twice as fine as the map. It stops if less than 30 % of the
-     coupled atoms lie on density above the map's mean + 1σ, which catches a missing or wrong frame.
+     coupled RNA atoms lie on density above the map's mean + 1σ (read from the map itself, whatever the
+     threshold), which catches a missing or wrong frame.
    - **MDFF potential** (`…_potential_….dx`): V = (ρmax − max(ρ, threshold)) / (ρmax − threshold),
      Equation 3 of Trabuco et al. (2008) and the formula of VMD's `mdff griddx`. The paper sets the
      threshold at the minimum between the solvent and biomolecule peaks of the density histogram, or at
-     the map's average when they are not resolved; the default is 0, as in `mdff griddx`. It is cropped to the coupled atoms plus a margin and must
-     fit into the periodic cell.
+     the map's average when they are not resolved; the default is 0, as in `mdff griddx`. It is cropped to
+     the RNA plus a margin and must fit into the periodic cell.
    - **Coupling** (`…_coupling_….pdb`, as VMD's `mdff gridpdb`: occupancy 1 couples an atom, beta is its
      mass): the RNA heavy atoms by default, weighted by standard masses, so HMR does not change the map
-     forces.
+     forces. *Couple ions too* adds the ions that start within the margin around the RNA; the
+     counterions spread through the box are left alone.
    - **Restraints** (below) and the periodic cell (`…_cell_….xsc`, triclinic boxes included).
 3. **Energy comparison** (on by default). sander and NAMD evaluate the start coordinates once, with
    the same cutoff, no rigid bonds, no long-range LJ correction and no map or restraints. The terms
    must agree:
    - bonds, angles and torsions within 0.01 %;
    - van der Waals within 0.1 %; this term holds every off-diagonal pair;
-   - electrostatics within 0.2 % with PME, 1 % in vacuum.
+   - electrostatics within 0.2 %. In vacuum both programs sum plain Coulomb terms without a cutoff
+     (NAMD with `switching off` and a 999 Å cutoff, sander with `cut=999`).
 
    On a mismatch nothing is fitted. This is how the step proves, for each topology, that NAMD kept
    the force field.
@@ -1063,8 +1066,13 @@ already in the plan and their files do not change.
    - MDFF at ξ = 0.3 (the default of VMD's `mdff setup`);
    - a final minimisation with strong coupling (ξ = 10).
 
-   ξ is in kcal/mol per amu: each atom feels ξ × its mass × the potential gradient. Runs that
-   finished are skipped when the script is run again.
+   ξ is in kcal/mol per amu: each atom feels ξ × its mass × the potential gradient. A ramp needs at
+   least two segments. Stage names must differ from each other and from the step's own files
+   (`energy`, `prep`, `cell` ...).
+
+   When the script is run again, finished runs are skipped as long as their inputs (topology, start
+   coordinates, potential, coupling and restraint files) and the stage files up to them are unchanged.
+   A change reruns that stage and every stage after it.
 5. **Final model** (`…_mdff_….py final`): NAMD's last coordinates, back in the map's frame.
 
 **Amber settings in NAMD.**
@@ -1075,9 +1083,10 @@ already in the plan and their files do not change.
 - Solvated runs (the default): PME and `LJcorrection on` in the build's periodic box, NVT with a
   Langevin thermostat. The map is fixed in space, so the box must not change.
 - Vacuum runs: the dry topology, optionally with NAMD's GBIS implicit solvent.
-- Four-site waters (OPC, TIP4P-Ew, TIP4P-D, TIP4P/2005) get `watermodel tip4`. MDATK has not
-  verified NAMD's handling of Amber extra points, so the planner warns: trust such a run only when
-  the energy comparison passes.
+- Four-site waters (OPC, TIP4P-Ew, TIP4P-D, TIP4P/2005) get `watermodel tip4`. For a topology chosen
+  as a file, the step reads the extra points (and HMR masses) from the parm7. MDATK has not verified
+  NAMD's handling of Amber extra points, so the planner warns: trust such a run only when the energy
+  comparison passes.
 
 **L-RNA-safe restraints.** VMD's stereochemistry plugins (`chirality`, `cispeptide`, `ssrestraints`,
 whose restraint files `mdff setup -extrab` and the MDFF GUI add to a run) validate against D-nucleotide
@@ -1089,11 +1098,14 @@ VMD and writes its own restraints:
 - **Chirality** (`…_chirality_….txt`, NAMD `extraBonds`): one harmonic improper per ribose centre
   (C1′ O4′ N C2′, C2′ C1′ O2′ C3′, C3′ C2′ O3′ C4′, C4′ C3′ O4′ C5′), default
   200 kcal/mol/rad².
-  - The targets come from MDATK's 4JRD nucleotide: −35.0°, +40.0°, +38.3° and +33.3° for D
-    residues, and the mirror image (opposite signs) for L residues.
+  - The targets come from the C3'-endo Arnott A-RNA fiber nucleotide of MDATK's helix builder:
+    −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
+    residues.
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
-    agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run;
-    the planner reports it as soon as the files exist.
+    agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run.
+    So does any clearly defined sugar centre of the other hand, even in a residue whose overall
+    geometry is ambiguous: its restraint would invert it. The planner reports these as soon as the
+    files exist.
 - **Secondary-structure dihedrals** (`…_ssdihedrals_….txt`, NAMD `extraBonds`), the RNA restraints
   of the MDFF paper (Trabuco et al. 2008).
   - α, β, γ, δ, ε, ζ and χ of every base-paired residue in the secondary structure are held at their
@@ -1113,8 +1125,8 @@ VMD and writes its own restraints:
   restrained to the start coordinates, in stages that ask for it.
 
 All restraint files are NAMD `extraBonds` files (comments on lines of their own, 0-based atoms) plus
-the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF
-and AmberTools (for the energy comparison).
+the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF,
+CPPTRAJ (it converts NetCDF restarts) and AmberTools (for the energy comparison).
 
 **What NAMD does with an Amber topology.** These settings were checked against the NAMD 3.0 user's guide
 (section 3.3, AMBER file and force field support; grid forces; extra bonded terms; GPU-resident features)
