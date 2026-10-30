@@ -284,8 +284,6 @@ def test_superpose_and_cell_helpers():
     oct_box = (60.0, 60.0, 60.0, 109.4712206, 109.4712206, 109.4712206)
     v = nm.cell_vectors(oct_box)
     assert [math.sqrt(nm.dot(x, x)) for x in v] == pytest.approx([60.0] * 3)
-    widths = nm.cell_widths(v)
-    assert widths == pytest.approx([60 * math.sqrt(2 / 3) * 1.0] * 3, rel=0.02) or min(widths) > 45
     assert nm.residue_hand("LG5") == "L" and nm.residue_hand("0C") == "L" and nm.residue_hand("RA3") == "D"
     assert nm.residue_hand("G") == "D" and nm.residue_hand("WAT") is None
 
@@ -552,3 +550,114 @@ def test_damaged_inputs_end_with_an_error_line(tmp_path, system, capsys):
     (tmp_path / "sys.parm7").write_text(text[:text.index("%FLAG RESIDUE_POINTER") + 120])
     with pytest.raises(nm.PrepError, match="truncated topology"):
         nm.Topology(str(tmp_path / "sys.parm7"))
+
+
+def _namd_fits(grid, vectors):
+    """GridforceGrid::fits_lattice of NAMD 2.14 / 3.0, literally: the grid padded by one voxel on every side,
+    each padded corner wrapped about the unpadded centre (Lattice::wrap_delta); any move fails."""
+    a = np.array(vectors, dtype=float)
+    b = np.linalg.inv(a).T  # rows: the reciprocal vectors b1 b2 b3
+    origin, delta, n = np.array(grid.origin), np.array(grid.delta), np.array(grid.n)
+    centre = origin + delta * (n - 1) / 2
+    ends = [(origin[k] - delta[k], origin[k] + n[k] * delta[k]) for k in range(3)]
+    for corner in (np.array((x, y, z)) for x in ends[0] for y in ends[1] for z in ends[2]):
+        shift = sum(a[i] * math.floor(0.5 + float(b[i] @ (corner - centre))) for i in range(3))
+        if np.linalg.norm(shift) > 1.0:
+            return False
+    return True
+
+
+OCT = 109.4712206  # truncated octahedron angle
+
+
+@pytest.mark.parametrize("box", [(60.0, 60.0, 60.0, 90.0, 90.0, 90.0), (64.19, 64.19, 64.19, OCT, OCT, OCT)])
+def test_grid_reach_is_namds_cell_test(box):
+    # the old check compared (n - 1) x delta with the face-to-face widths: it passed grids NAMD refuses,
+    # by two border voxels in a rectangular cell and by far in a truncated octahedron
+    vectors = nm.cell_vectors(box)
+    agree = 0
+    for size in range(20, 62, 2):
+        for n in ((size, size, size), (size, size // 2 + 3, size - 7)):
+            g = nm.Grid(*n, (1.0, -2.0, 3.0), (1.0, 1.0, 1.0), array.array("f", bytes(4)))
+            assert (nm.grid_reach(g, vectors) < 0.5) == _namd_fits(g, vectors), (box, n)
+            agree += 1
+    assert agree == 42
+    cube = nm.Grid(59, 59, 59, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), array.array("f", bytes(4)))
+    if box[3] == 90.0:  # 58 A wide: fits the 60 A faces, but NAMD's border voxels make it 60 A
+        assert nm.grid_reach(cube, vectors) == pytest.approx(0.5) and not _namd_fits(cube, vectors)
+    else:  # an octahedron 64 A across takes a cube of only about 0.5 x 64 A
+        small = nm.Grid(31, 31, 31, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), array.array("f", bytes(4)))
+        assert _namd_fits(small, vectors) and not _namd_fits(cube, vectors)
+
+
+def test_prep_stops_when_namd_would_refuse_the_grid(tmp_path, system):
+    # the D + L test system in a truncated octahedron of the size tleap's solvateoct would make: the default
+    # margin gives a grid NAMD refuses, a small one fits
+    oct_box = (64.0, 64.0, 64.0, OCT, OCT, OCT)
+    ms.write_topology(str(tmp_path / "sys.parm7"), system, box=oct_box)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in system], box=oct_box)
+    with pytest.raises(nm.PrepError, match="truncated-octahedron cell holds a much smaller grid"):
+        nm.prep(config(tmp_path, periodic=True, pad=8.0))
+
+
+def _relabelled(text, how):
+    """The model PDB as other programs write it: 'vmd' - one chain id (X) for every strand, numbers restarting,
+    no TER; 'chimerax' - residue name fused with the chain id and a colon ('  GC:   1')."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("ATOM"):
+            if how == "vmd":
+                line = line[:21] + "X" + line[22:]
+            else:
+                line = line[:16] + f"{line[17:20].strip() + line[21]:>5s}:" + line[22:]
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+@pytest.mark.parametrize("how", ["vmd", "chimerax"])
+def test_models_written_by_other_programs_keep_their_strands(tmp_path, system, how):
+    # VMD writes segments with one chain id and restarting numbers; ChimeraX damages the residue field.  Every
+    # strand must still be matched to the topology (in file order) and come back with the model's labels
+    model = _relabelled(ms.model_pdb(system), how)
+    (tmp_path / "model.pdb").write_text(model)
+    shift = (12.0, -7.0, 5.0)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [tuple(np.array(a[5]) + shift) for a in system])
+    cfg = config(tmp_path, model=str(tmp_path / "model.pdb"))
+    assert nm.prep(cfg) == 0
+    assert json.loads((tmp_path / "prep.json").read_text())["frame_rmsd"] < 0.01
+    n = len(system)
+    with open(cfg["final_coor"], "wb") as fh:
+        moved = [c for a in system for c in np.array(a[5]) + shift]
+        fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *moved))
+    assert nm.final(cfg) == 0
+    from mdatk import pdbtools
+    text = (tmp_path / "final.pdb").read_text()
+    residues = list(pdbtools.read_pdb(text).residues())
+    chains = "XXXX" if how == "vmd" else "ABCD"
+    assert [(r.chain, r.resseq) for r in residues] == [(c, k) for c in chains for k in (1, 2, 3, 4)]
+    assert text.count("\nTER\n") == 4
+
+
+def test_chain_ids_reused_beyond_62_strands_continue_their_numbers(tmp_path):
+    # 70 single nucleotides far apart: 70 strands, more than the 62 chain ids
+    one = [a for a in ms.atoms_of(ms.mixed_pdb()) if a[0] == "A" and a[1] == 1]
+    atoms = [("A", k + 1) + a[2:5] + (tuple(np.array(a[5]) + (40.0 * k, 0.0, 0.0)),) for k in range(70) for a in one]
+    ms.write_topology(str(tmp_path / "many.parm7"), atoms)
+    top = nm.Topology(str(tmp_path / "many.parm7"))
+    labels = nm.solute_chains(top, [a[5] for a in atoms], "")
+    ids = [labels[r][:2] for r in range(top.nres)]
+    assert len(set(ids)) == 70 and ids[62] == ("A", "   2 ") and all(labels[r][2] for r in range(top.nres))
+
+
+def test_pdb_coordinates_of_a_periodic_system_take_the_cryst1_box(tmp_path):
+    atoms = ms.atoms_of(ms.mixed_pdb())
+    box = (80.0, 80.0, 80.0, 90.0, 90.0, 90.0)
+    ms.write_topology(str(tmp_path / "t.parm7"), atoms, box=box)
+    pdb = ms.model_pdb(atoms)
+    (tmp_path / "plain.pdb").write_text(pdb)
+    (tmp_path / "boxed.pdb").write_text("CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1\n" + pdb)
+    cfg = {"topology": str(tmp_path / "t.parm7"), "coordinates": str(tmp_path / "start.rst7")}
+    assert nm.start_coordinates(cfg, str(tmp_path / "boxed.pdb")) == 0
+    assert nm.read_rst7(str(tmp_path / "start.rst7"), len(atoms))[1] == pytest.approx(box)
+    with pytest.raises(nm.PrepError, match="no CRYST1 record"):
+        nm.start_coordinates(cfg, str(tmp_path / "plain.pdb"))

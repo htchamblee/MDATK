@@ -222,7 +222,11 @@ def start_coordinates(cfg, source):
         problem = pdb_order_problem(top, atoms, source)
         if problem:
             raise PrepError(problem)
-        write_rst7(cfg["coordinates"], [a[3] for a in atoms], title=f"from {os.path.basename(source)} (MDATK)")
+        box = pdb_box(source) if top.ifbox else None  # a periodic system takes its box from CRYST1
+        if top.ifbox and box is None:
+            raise PrepError(f"{source} has no CRYST1 record, so the periodic box is unknown: connect the rst7 of "
+                            "the Amber build or an MD restart")
+        write_rst7(cfg["coordinates"], [a[3] for a in atoms], box, title=f"from {os.path.basename(source)} (MDATK)")
     else:
         xyz, box, _vel = read_rst7(source, top.natom)
         write_rst7(cfg["coordinates"], xyz, box, title=f"from {os.path.basename(source)} (MDATK)")
@@ -242,22 +246,63 @@ def pdb_order_problem(top, atoms, source):
     return None
 
 
+def _atom_fields(line):
+    """(chain, resSeq + iCode (5 columns), residue name, (x, y, z), element) of an ATOM / HETATM line, with
+    ChimeraX's damage repaired as mdatk.pdbtools does: the residue name fused with the chain id and a colon
+    ('GC:' = residue G, chain C) and the rest of the line shifted (element then unknown: '')."""
+    colon = line.find(":", 18, 30)
+    if colon > 0 and not line[colon - 1].isspace():
+        words = line[16:colon - 1].split()
+        if len(words) == 1 or (len(words) == 2 and words[0] == line[16]):
+            rest = line[colon + 1:]
+            m = re.match(r"\s*(-?\d+)([A-Za-z]?)\s", rest)
+            coords = re.findall(r"-?\d+\.\d+", rest[m.end():]) if m else []
+            if len(coords) < 3:
+                raise PrepError(f"cannot read the damaged line {line.strip()!r}")
+            number = f"{int(m.group(1)) % 10000:4d}{m.group(2) or ' '}"
+            return line[colon - 1], number, words[-1], tuple(float(v) for v in coords[:3]), ""
+    xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+    return line[21], line[22:27], line[17:21].strip(), xyz, line[76:78].strip().upper()
+
+
 def read_pdb_atoms(path):
-    """[(residue key, residue name, atom name, (x, y, z), element)] of the first model."""
+    """[(residue key, residue name, atom name, (x, y, z), element)] of the first model.  The key is (ordinal,
+    chain, resSeq + iCode): a new residue starts wherever chain, number or name change or a TER intervenes,
+    so strands that share a chain id and numbering (as VMD writes segments) stay apart."""
     out = []
+    ordinal, last = 0, None
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             if line.startswith("ENDMDL"):
                 break
+            if line.startswith("TER"):
+                last = None
+                continue
             if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
                 continue
-            name = line[12:16].strip()
-            element = line[76:78].strip().upper() if len(line) >= 78 else ""
-            out.append(((line[21], line[22:27]), line[17:21].strip(), name,
-                        (float(line[30:38]), float(line[38:46]), float(line[46:54])), element))
+            chain, number, resname, xyz, element = _atom_fields(line.rstrip("\n"))
+            if (chain, number, resname) != last:
+                ordinal += 1
+                last = (chain, number, resname)
+            out.append(((ordinal, chain, number), resname, line[12:16].strip(), xyz, element))
     if not out:
         raise PrepError(f"{path}: no atoms")
     return out
+
+
+def pdb_box(path):
+    """The periodic box (a, b, c, alpha, beta, gamma) of a PDB's CRYST1 record, None without one."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith("CRYST1"):
+                try:
+                    box = tuple(float(line[k:k + w]) for k, w in ((6, 9), (15, 9), (24, 9), (33, 7), (40, 7), (47, 7)))
+                except ValueError:
+                    return None
+                return box if all(v > 1.0 for v in box) else None  # 1 1 1 90 90 90: no box
+            if line.startswith(("ATOM  ", "HETATM")):
+                return None
+    return None
 
 
 # ------------------------------------------------------------------------------------------------ maps
@@ -572,11 +617,17 @@ def cell_vectors(box):
     return v1, v2, v3
 
 
-def cell_widths(vectors):
-    """Distances between opposite faces of the cell along x, y and z (the largest object that fits)."""
+def grid_reach(grid, vectors):
+    """NAMD's test of a grid against the periodic cell (gridforcechecksize, GridForceGrid.C fits_lattice):
+    the grid is padded by one voxel on every non-continuous side and its corners are wrapped about the
+    grid's centre; NAMD stops if any corner moves, i.e. if |b_i . (corner - centre)| >= 0.5 for a reciprocal
+    vector b_i.  Returns the largest of these over the corners (it must stay below 0.5)."""
     v1, v2, v3 = vectors
-    volume = abs(dot(v1, cross(v2, v3)))
-    return tuple(volume / math.sqrt(dot(f, f)) for f in (cross(v2, v3), cross(v3, v1), cross(v1, v2)))
+    volume = dot(v1, cross(v2, v3))
+    recip = [tuple(c / volume for c in cross(v2, v3)), tuple(c / volume for c in cross(v3, v1)),
+             tuple(c / volume for c in cross(v1, v2))]
+    half = [(grid.n[a] + 1) * grid.delta[a] / 2.0 for a in range(3)]  # padded corners about the unpadded centre
+    return max(sum(abs(b[a]) * half[a] for a in range(3)) for b in recip)
 
 
 # ------------------------------------------------------------------------------------- nucleotides
@@ -1032,12 +1083,19 @@ def prep(cfg, write=True):
     vectors = None
     if cfg["periodic"]:
         vectors = cell_vectors(box)
-        widths = cell_widths(vectors)
-        size = [(grid.n[a] - 1) * grid.delta[a] for a in range(3)]
-        if any(size[a] > widths[a] for a in range(3)):
-            raise PrepError("the potential grid ({:.1f} x {:.1f} x {:.1f} A) is larger than the periodic cell "
-                            "(widths {:.1f} x {:.1f} x {:.1f} A); lower the padding or build a larger box"
-                            .format(*size, *widths))
+        reach = grid_reach(grid, vectors)
+        if reach >= 0.5 - 1e-6:
+            size = [(grid.n[a] - 1) * grid.delta[a] for a in range(3)]
+            shape = "truncated-octahedron" if any(abs(v - 90.0) > 0.1 for v in box[3:]) else "rectangular"
+            raise PrepError(
+                "the potential grid ({:.1f} x {:.1f} x {:.1f} A) does not fit the periodic cell as NAMD requires: "
+                "padded by one voxel and wrapped about its centre it reaches {:.2f} of a cell vector, where NAMD "
+                "allows less than 0.5 (it would stop with 'Periodic cell basis too small for Gridforce grid'). "
+                .format(*size, reach)
+                + ("A truncated-octahedron cell holds a much smaller grid than its width suggests: build a rectangular "
+                   "box (Amber build: Box shape 'Rectangular'), " if shape != "rectangular" else "Build a larger box, ")
+                + "or lower the margin around the RNA")
+        print(f"the potential fits the periodic cell as NAMD checks it ({reach:.2f} of a cell vector, limit 0.5)")
     write_dx(cfg["potential"], grid, f"MDFF potential (mdff griddx formula, threshold {cfg['threshold']:g}) "
                                      f"from {os.path.basename(cfg['map'])}, in the simulation frame - MDATK")
     masses = {i: STANDARD_MASS.get(top.number[i], top.mass[i]) for i in sel}
@@ -1094,18 +1152,21 @@ def solute_chains(top, xyz, model_path):
     are those of the map-frame model when it has the same residues, else A, B ... per segment from 1."""
     sim_res = [r for r in range(top.nres) if not top.solvent_residue[r]]
     keys = [key for key, _names in model_residues(model_path)] if model_path else []
-    out, chain, number, prev = {}, -1, 0, None
+    out, chain, cid, number, prev, used = {}, -1, "", 0, None, {}
     for k, r in enumerate(sim_res):
         names = {top.names[i]: i for i in top.residue_atoms(r)}
         linked = prev is not None and any(a in prev and b in names and _bonded(xyz, prev[a], names[b])
                                           for a, b in (("O3'", "P"), ("C", "N")))
         if not linked:
-            chain, number = chain + 1, 0
+            chain += 1
+            cid = CHAIN_IDS[chain % len(CHAIN_IDS)]
+            number = used.get(cid, 0)  # beyond 62 strands an id comes back: its numbers continue
         number += 1
+        used[cid] = number
         if len(keys) == len(sim_res):
-            out[r] = (keys[k][0], keys[k][1], not linked)
+            out[r] = (keys[k][1], keys[k][2], not linked)
         else:
-            out[r] = (CHAIN_IDS[chain % len(CHAIN_IDS)], f"{number % 10000:4d} ", not linked)
+            out[r] = (cid, f"{number % 10000:4d} ", not linked)
         prev = names
     return out
 
