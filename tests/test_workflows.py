@@ -1046,7 +1046,10 @@ def test_amber_build_topology_check_step():
     assert "PAIRS = False" in chk and "ION_LJ = None" in chk and "NEUTRAL = False" in chk
     off = generated(step("amber-build", {"check_topology": False}, {"structure": "/x.pdb"})[0])
     assert not any("_check_" in n for n in off)
+    # dry builds: checked only with L-RNA naming (the nucleotide-residue check, 0.0.8), never for neutrality
     dry = generated(step("amber-build", {"water": "none"}, {"structure": "/x.pdb"})[0])
+    assert "NEUTRAL = False" in dry["apt1_01_check_20261015-1432.py"].content
+    dry = generated(step("amber-build", {"water": "none", "lrna": False}, {"structure": "/x.pdb"})[0])
     assert not any("_check_" in n for n in dry)
 
 
