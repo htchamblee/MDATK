@@ -229,3 +229,55 @@ def test_mirror_image_has_the_same_energy(tmp_path, cp):
         assert e_l[term] == pytest.approx(e_d[term], abs=0.01 + 1e-5 * abs(e_d[term])), (term, e_d, e_l)
     parm = (tmp_path / "L.parm7").read_text()
     assert all(t in parm for t in twins)
+
+
+# ------------------------------------------------------------------------------- review regressions
+def test_generator_refuses_odd_phases_it_cannot_mirror(tmp_path, capsys):
+    (tmp_path / "RNA.lib").write_text(LIB)
+    (tmp_path / "mini.dat").write_text(DAT)
+    (tmp_path / "frcmod.odd").write_text("2'-OH torsion\nDIHE\nHO-OH-CT-CT   1    0.50        40.0           1.\n")
+    (tmp_path / "frcmod.even").write_text("even\nDIHE\nCT-CT-CT-CT   1    0.50       180.0           2.\n")
+    out = tmp_path / "out"
+    lib, dat = str(tmp_path / "RNA.lib"), str(tmp_path / "mini.dat")
+    assert lrna_lib.main([lib, dat, str(tmp_path / "frcmod.even"), str(out)]) == 0
+    # OH is twinned here (the 5'-OH): a term without OS / OH with an odd phase is refused
+    (tmp_path / "frcmod.odd").write_text("x\nDIHE\nHO-CT-CT-CT   1    0.50        40.0           1.\n")
+    assert lrna_lib.main([lib, dat, str(tmp_path / "frcmod.odd"), str(tmp_path / "o2")]) == 1
+    assert "HO-CT-CT-CT" in capsys.readouterr().err and not (tmp_path / "o2" / "LRNA.lib").exists()
+
+
+def test_equivalences_come_from_the_block_before_the_lennard_jones_terms():
+    dat = DAT.replace("OS  OH\n", "N   NA  N2\n").replace("title of the bond block", "OS OH CT\n\ntitle")
+    params = lrna_lib.read_dat(DAT.replace("OS  OH\n", "CT  CI\n"))
+    assert params["EQUIV"] == {"CI": "CT"}
+    assert "OS" not in lrna_lib.read_dat(dat)["EQUIV"]
+
+
+def test_l_residues_are_counted_like_tleap_reads_them(tmp_path):
+    blank = "\n".join(ln[:21] + " " + ln[22:] if ln.startswith(("ATOM", "HETATM")) else ln
+                      for ln in ms.mixed_pdb().splitlines())
+    (tmp_path / "b.pdb").write_text(blank)
+    assert topcheck.l_residues_in_pdb(str(tmp_path / "b.pdb")) == 8
+
+
+def test_automatic_leaves_own_l_rna_set_ups_alone(tmp_path):
+    frc = tmp_path / "frcmod.mylrna"
+    frc.write_text("own L-RNA\nMASS\nLD 16.00\n\nNONB\n  LD  1.6837  0.17\n")
+    for settings in ({"extra_frcmod": str(frc)}, {"leap_before_load": "loadOff /x/mylrna.lib"},
+                     {"leap_before_params": "loadAmberParams /x/frcmod.LRNA"}):
+        plan = _plan(tmp_path, ms.mixed_pdb(), **settings)
+        assert not plan.steps["b"].tool.lrna_generated(plan.steps["b"].settings, plan.steps["b"].ctx), settings
+
+
+def test_generated_library_refuses_an_own_cp_residue_library(tmp_path):
+    lib = _lib(tmp_path / "RNA_CaseP.lib", ["A", "C", "G", "U"])
+    (tmp_path / "frcmod.casep").write_text("x\n")
+    errors = [i.message for i in _plan(tmp_path, ms.mixed_pdb(), lrna_library="generated", cp_source="frcmod",
+                                       cp_frcmod=str(tmp_path / "frcmod.casep"), extra_libs=lib)
+              .steps["b"].issues if i.level == "error"]
+    assert any("mirrors AmberTools' RNA.lib" in m for m in errors), errors
+
+
+def test_no_stale_addatomtypes_hint_with_the_generated_library(tmp_path):
+    st = _plan(tmp_path, ms.mixed_pdb(), lrna_fixes=False).steps["b"]
+    assert not any("if leap reports unknown types" in i.message for i in st.issues), st.issues

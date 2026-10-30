@@ -76,11 +76,15 @@ def read_dat(text: str) -> Dict[str, object]:
                 nonb[parts[0]] = (float(parts[1]), float(parts[2]))
             except (IndexError, ValueError):
                 continue
-        for ln in lines[:start]:  # equivalence lines just before MOD4: "N   NA  N2 ..." share N's terms
-            parts = ln.split()
+        k = start - 1
+        while k >= 0 and not lines[k].strip():
+            k -= 1
+        while k >= 0 and lines[k].strip():  # the equivalence block just before MOD4: "N   NA  N2 ..."
+            parts = lines[k].split()
             if len(parts) > 1 and all(len(p) <= 2 for p in parts) and parts[0] in nonb:
                 for p in parts[1:]:
                     equiv.setdefault(p, parts[0])
+            k -= 1
     return {"MASS": {ln.split()[0]: ln[2:].strip() for ln in blocks[0]},
             "BOND": _grouped(blocks[1][1:], "BOND"), "ANGL": _grouped(blocks[2], "ANGL"),
             "DIHE": _grouped(blocks[3], "DIHE"), "IMPR": _grouped(blocks[4], "IMPR"),
@@ -139,6 +143,21 @@ def _mirror(line: str, section: str) -> str:
     phase = float(fields[k])
     fields[k] = f"{(-phase) % 360.0:.5f}".rstrip("0").rstrip(".") if (-phase) % 360.0 else "0.0"
     return line[:width] + "  " + "  ".join(fields)
+
+
+def _phase(line: str, section: str) -> float:
+    return float(line[WIDTH[section]:].split()[2 if section == "DIHE" else 1])
+
+
+def unmirrored(params: Dict[str, object], twins: Dict[str, str]) -> List[str]:
+    """Dihedrals / impropers with a phase other than 0 / 180 that contain no twinned type: an L residue would
+    use them unmirrored, so its mirror image would not have the same energy."""
+    out = []
+    for sec in ("DIHE", "IMPR"):
+        for key, glines in params[sec].items():
+            if not any(t in twins for t in key) and any(abs(_phase(ln, sec) % 180.0) > 1e-6 for ln in glines):
+                out.append("-".join(key))
+    return out
 
 
 def twin_terms(params: Dict[str, object], twins: Dict[str, str]) -> Dict[str, List[str]]:
@@ -268,6 +287,11 @@ def main(argv: List[str]) -> int:
         for twin in twins.values():
             if twin in params["MASS"]:
                 raise ValueError(f"the parameters already define atom type {twin}")
+        odd = unmirrored(params, twins)
+        if odd:
+            raise ValueError(f"dihedral / improper terms with a phase other than 0 or 180 and none of the types "
+                             f"{', '.join(twins)}: {', '.join(odd[:8])}{' ...' if len(odd) > 8 else ''}. The "
+                             "generated library mirrors only O5' / O4'; use your own L-RNA files with these parameters")
         lib_text, units = l_library(lib, twins)
         frcmod = frcmod_text(params, twins, ", ".join(os.path.basename(p) for p in [lib_path] + parm_paths))
         os.makedirs(out_dir, exist_ok=True)

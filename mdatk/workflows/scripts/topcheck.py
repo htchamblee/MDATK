@@ -117,12 +117,17 @@ class Topology:
 
 def l_residues_in_pdb(path: str) -> int:
     """L nucleotides (LA LC LG LU and terminal forms) in a PDB."""
-    seen = set()
+    count, last = 0, None
     with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if line.startswith(("ATOM  ", "HETATM")) and re.fullmatch(r"L[ACGU][35N]?", line[17:21].strip()):
-                seen.add((line[21], line[22:27], line[17:21]))
-    return len(seen)
+        for line in fh:  # a new residue where name / chain / number change, or after TER, as tleap reads it
+            if line.startswith(("TER", "END")):
+                last = None
+            elif line.startswith(("ATOM  ", "HETATM")):
+                key = (line[17:21], line[21], line[22:27])
+                if key != last and re.fullmatch(r"L[ACGU][35N]?", line[17:21].strip()):
+                    count += 1
+                last = key
+    return count
 
 
 def check(path: str, mg_res: str = "MG", neutral: bool = True, mg_count: int = 0,
