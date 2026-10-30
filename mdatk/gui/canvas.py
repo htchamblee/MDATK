@@ -33,6 +33,7 @@ from ..render.orientation import rx, ry  # noqa: E402
 from ..render.panels import StructurePanel  # noqa: E402
 from ..render.theme import get_theme  # noqa: E402
 from ..render.video import build_figure  # noqa: E402
+from . import cursors  # noqa: E402
 
 TITLE_STRIP = 0.12  # top fraction of a slot that drags the structure panel
 DRAG_THRESHOLD = 4  # pixels before a press becomes a drag
@@ -305,7 +306,7 @@ class FigureCanvas(Gtk.DrawingArea):
                     sx, sy, sw, sh = self.slots[slot]
                     rotating = slot == self.structure_slot and event.y >= sy + TITLE_STRIP * sh
                     name = ("all-scroll" if self.map_mode else "grab") if rotating else "move"
-                win.set_cursor(Gdk.Cursor.new_from_name(win.get_display(), name))
+                cursors.set_named(win, name)
             return False
         x0, y0, slot, mode = self._press
         if not self._dragging and abs(event.x - x0) + abs(event.y - y0) < DRAG_THRESHOLD:
