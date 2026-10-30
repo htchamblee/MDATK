@@ -16,14 +16,23 @@ from ..selections import (SelectionError, parse_frame_spec, parse_time_spec, sel
 log = logging.getLogger(__name__)
 
 
+def empty_list_error(text: str) -> SelectionError:
+    """The atom subset ``text`` is only commas: a list of no groups.  It is an error rather than "every
+    atom", which only an empty subset means."""
+    return SelectionError(f"{text.strip()!r} names no residue group (leave the atom subset empty to export "
+                          "every atom)", kind="no_text", text=text.strip())
+
+
 def resolve_export_selection(universe, text: str, groups: Sequence):
     """``""`` -> all atoms; ``"Aptamer, Target"`` -> union of groups; else a selection."""
     text = (text or "").strip()
     if not text:
         return universe.atoms
     names = split_csv(text)
+    if not names:  # "," or " , , "
+        raise empty_list_error(text)
     group_names = [g.name for g in groups]
-    if names and all(n in group_names for n in names):
+    if all(n in group_names for n in names):
         text = " or ".join(f"group:{n}" for n in names)
     elif "," in text and all(re.fullmatch(r"[A-Za-z0-9_.\-]+", n) for n in names):
         # a list of group names (a selection has no commas): name the one that does not exist

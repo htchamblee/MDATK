@@ -154,6 +154,8 @@ class Analysis:
     internal = False
     #: number of residue groups a data key may choose (0, 1 or 2)
     group_slots = 0
+    #: the settings (under ``analyses.<name>``) that :meth:`with_groups` rewrites for a run on other groups
+    instance_settings: Tuple[str, ...] = ("group_a", "group_b")
     #: output name -> label; ``{a}`` / ``{b}`` are replaced by the group names
     OUTPUT_LABELS: Dict[str, str] = {}
 
@@ -235,9 +237,13 @@ class Analysis:
         return f"analyses.{self.name}.{name}"
 
     def locate_error(self, exc: SelectionError) -> SelectionError:
-        """A run on other groups (``contacts@A+B``) got its groups from a panel or a chart series:
-        report a group problem there, not at the analysis' own group fields."""
-        if INSTANCE_SEP not in self.instance or not exc.field.startswith(self.field("group_")):
+        """A run on other groups (``contacts@A+B``, ``rmsd@A``) got its groups from a panel or a chart
+        series: report a problem of a setting :meth:`with_groups` rewrote there (or, when neither asked
+        for the run, at the definition of the group concerned), never at the analysis' own settings,
+        which the run did not use."""
+        _, groups = parse_instance(self.instance)
+        own = [self.field(name) for name in self.instance_settings]
+        if not groups or not any(exc.field == f or exc.field.startswith(f + ".") for f in own):
             return exc
         project = self.project
         for k, spec in enumerate(project.layout.panels):
@@ -246,6 +252,11 @@ class Analysis:
                     return exc.locate(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", project, True)
         if any(split_key(key)[0] == self.instance for key in project.output.charts.series):
             return exc.locate("output.charts.series", project, True)
+        name = groups[1] if exc.field == self.field("group_b") and len(groups) > 1 else groups[0]
+        for k, g in enumerate(project.groups):
+            if g.name == name:
+                return exc.locate(f"groups.{k}.{'selection' if g.selection.strip() else 'residues'}", project,
+                                  True)
         return exc
 
 

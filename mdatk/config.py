@@ -677,17 +677,25 @@ class Project:
             add("fit_frame", f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
         return out
 
-    def validate(self) -> List[Problem]:
+    def validate(self, video: Optional[bool] = None, charts: Optional[bool] = None,
+                 pdb: Optional[bool] = None, density: bool = False) -> List[Problem]:
         """Return a list of human readable problems (empty when valid).
 
         The items are :class:`~mdatk.problems.Problem` strings: each text starts with where the problem
         is ("Analyses › Hydrogen bonds › Group A: unknown residue group ...") and each item carries the
-        setting's field path and GUI page.  Warnings (see :meth:`problems`) are left out."""
-        return [p for p in self.problems() if p.level == "error"]
+        setting's field path and GUI page.  Warnings (see :meth:`problems`, which also explains the
+        arguments) are left out."""
+        return [p for p in self.problems(video, charts, pdb, density) if p.level == "error"]
 
-    def problems(self) -> List[Problem]:
+    def problems(self, video: Optional[bool] = None, charts: Optional[bool] = None,
+                 pdb: Optional[bool] = None, density: bool = False) -> List[Problem]:
         """Every problem of the settings: errors (a run would fail; :meth:`validate`) and warnings (the
-        setting is allowed but ignored or probably unintended), each naming its setting."""
+        setting is allowed but ignored or probably unintended), each naming its setting.
+
+        What is about to run decides which selection settings are errors (see
+        :meth:`selection_problems`): ``video``, ``charts`` and ``pdb`` are the outputs it makes (None:
+        their switches under ``output``, as :meth:`~mdatk.pipeline.Pipeline.run` does), ``density`` a
+        density fit, which selects the structure view's residues and ions without drawing them."""
         out: List[Problem] = []
 
         def add(field: str, message: str, level: str = "error", token: str = "") -> None:
@@ -714,9 +722,7 @@ class Project:
             elif g.name in names[:k]:
                 add(f"groups.{k}.name", f"Residue group names must be unique: {g.name!r} is also the name of "
                     f"group {names.index(g.name) + 1}.", token=g.name)
-            if not (g.residues.strip() or g.selection.strip()):
-                add(f"groups.{k}.residues", f"Group {g.name!r} has neither residues nor a selection.")
-        out += self.selection_problems()
+        out += self.selection_problems(video, charts, pdb, density)
         a = self.analyses
         if a.contacts.cutoff <= 0:
             add("analyses.contacts.cutoff", "Contact cutoff must be positive.")
@@ -761,18 +767,33 @@ class Project:
             add("layout.panels", text, "warning")
         return out
 
-    def selection_problems(self) -> List[Problem]:
+    def selection_problems(self, video: Optional[bool] = None, charts: Optional[bool] = None,
+                           pdb: Optional[bool] = None, density: bool = False) -> List[Problem]:
         """Problems of the residue groups and of every setting that names a group or holds a selection:
         unknown groups (with the closest defined name), circular group definitions, residue ranges and
-        selections MDAnalysis cannot parse.  Settings of disabled analyses are not checked; settings that
-        are ignored when wrong, or not used with the current options, only get warnings."""
+        selections MDAnalysis cannot parse.
+
+        A setting is an error only if what is about to run uses it (the arguments are those of
+        :meth:`problems`); otherwise, and when it is ignored if wrong, it gets a warning.  Settings of
+        disabled analyses are not checked.  The structure view's settings (the groups shown, the Mg
+        selection drawn as ions, the proximity set, the representations' groups) are errors only while
+        the view is rendered.  A selection is not blamed for a broken group it uses: the group's
+        definition is, as an error if something about to run selects the group (an error-level setting,
+        the groups the rendered structure view shows, a panel or chart that is drawn), directly or
+        through other groups, and as a warning otherwise."""
+        from .io.pdb_export import empty_list_error
         from .selections import (SelectionError, check_selection, parse_residue_ranges, referenced_groups,
                                  split_csv, unknown_group_error)
 
         out: List[Problem] = []
         names = self.group_names()
         broken: set = set()  # groups whose own definition has a problem (reported there only)
-        a, v = self.analyses, self.visual
+        used: set = set()  # groups that what is about to run selects
+        definitions: Dict[int, str] = {}  # index in out -> the group whose definition the problem is
+        a, v, o = self.analyses, self.visual, self.output
+        video = o.video.enabled if video is None else video
+        charts = o.charts.enabled if charts is None else charts
+        pdb = o.pdb.enabled if pdb is None else pdb
 
         def add(field: str, message: str, level: str = "error", token: str = "") -> None:
             out.append(problem(field, message, self, level, token))
@@ -783,17 +804,36 @@ class Project:
                 message += ("" if message.endswith("?") else ".") + f" {note}"
             add(field, message, level, gname)
 
+        def use(*texts: str) -> None:
+            for text in texts:
+                used.update(referenced_groups(text, self.groups))
+
+        def circle(group: str) -> Optional[SelectionError]:
+            """The circle of definitions through ``group``, starting at it (None: it is in none)."""
+            try:
+                check_selection(f"group:{group}", self.groups)
+            except SelectionError as exc:
+                if exc.kind == "nesting" and exc.group == group:
+                    return exc
+            return None
+
         def check(field: str, text: str, level: str = "error", required: bool = True,
                   group: str = "") -> bool:
-            """``text``: a group name, ``sel:<selection>`` or a selection with group:<Name> tokens.  A
-            selection is not blamed for a broken group it uses: that group's definition is."""
+            """``text``: a group name, ``sel:<selection>`` or a selection with group:<Name> tokens;
+            ``group``: the group whose definition ``text`` is."""
             text = (text or "").strip()
+            if level == "error" and not group:
+                use(text)
             if not text and not required:
                 return True
             try:
                 check_selection(text, self.groups)
             except SelectionError as exc:
-                if (exc.group and exc.group != group) or (broken & set(referenced_groups(text, self.groups))):
+                if group and exc.kind == "nesting" and exc.group != group:
+                    # the circle is told from where it closes: report it at each of its groups
+                    exc = circle(group) or exc
+                own = bool(group) and exc.group == group
+                if not own and (exc.group or broken & set(referenced_groups(text, self.groups))):
                     return True
                 if exc.kind == "syntax" and exc.token == text:  # a lone unknown word: a group name?
                     exc = unknown_group_error(text, names)
@@ -810,12 +850,17 @@ class Project:
             return True
 
         for k, g in enumerate(self.groups):
+            first = len(out)
             if g.selection.strip():
                 ok = check(f"groups.{k}.selection", g.selection, group=g.name)
-            else:
+            elif g.residues.strip():
                 ok = ranges(f"groups.{k}.residues", g.residues)
-            if not ok or not (g.selection.strip() or g.residues.strip()):
+            else:
+                add(f"groups.{k}.residues", f"Group {g.name!r} has neither residues nor a selection.")
+                ok = False
+            if not ok:
                 broken.add(g.name)
+            definitions.update(dict.fromkeys(range(first, len(out)), g.name))
 
         if a.rmsd.enabled:
             for k, t in enumerate(a.rmsd.targets):
@@ -828,10 +873,13 @@ class Project:
                     gname = getattr(params, slot)
                     if gname and gname not in names:
                         unknown(f"analyses.{key}.{slot}", gname)
+                    use(gname)
         panel_types = {sp.type for sp in self.layout.panels}
-        structure_used = bool(panel_types & {"structure", "sequence", "secondary"})
-        if a.mg.enabled or structure_used:  # the structure view draws the ions of this selection
-            check("analyses.mg.mg_selection", a.mg.mg_selection)
+        in_layout = bool(panel_types & {"structure", "sequence", "secondary"})  # panels of the view
+        drawn = video and in_layout  # the view is rendered (see Pipeline.required_analyses)
+        view = "error" if drawn or density else "warning"  # the view's residues and ions are selected
+        if a.mg.enabled or in_layout or density:  # the structure view draws the ions of this selection
+            check("analyses.mg.mg_selection", a.mg.mg_selection, "error" if a.mg.enabled else view)
         if a.mg.enabled:
             check("analyses.mg.ligand_selection", a.mg.ligand_selection)
             check("analyses.mg.occupancy_selection", a.mg.occupancy_selection, required=False)
@@ -842,15 +890,20 @@ class Project:
         for gname in v.structure_groups:
             if gname not in names:
                 unknown("visual.structure_groups", gname, "warning", "It is left out of the structure view.")
-        if structure_used and not (shown if v.structure_groups else names):
+        if (in_layout or density) and not (shown if v.structure_groups else names):
             why = "none of the groups shown exists" if v.structure_groups else "define a residue group"
-            add("visual.structure_groups", f"The structure view has no residue group to show ({why}).")
+            add("visual.structure_groups", f"The structure view has no residue group to show ({why}).", view)
+        if view == "error":
+            use(*(shown if v.structure_groups else names))
+        reps = "error" if video and "structure" in panel_types else "warning"  # drawn by structure panels
         for k, rs in enumerate(v.representations):
             for gname in rs.groups:
                 if gname not in names:
-                    unknown(f"visual.representations.{k}.groups", gname)
-        proximity = structure_used and (v.color_mode == "proximity" or v.glow_mode != "none")
-        check("visual.proximity_set", v.proximity_set, "error" if proximity else "warning",
+                    unknown(f"visual.representations.{k}.groups", gname, reps)
+                elif reps == "error":
+                    use(gname)
+        proximity = in_layout and (v.color_mode == "proximity" or v.glow_mode != "none")
+        check("visual.proximity_set", v.proximity_set, "error" if proximity and drawn else "warning",
               required=proximity)
         if v.center_on.strip() and v.center_on.strip().lower() != "origin":
             ranges("visual.center_on", v.center_on, "warning")
@@ -858,29 +911,44 @@ class Project:
 
         for k, sp in enumerate(self.layout.panels):
             for j, key in enumerate(sp.series):
-                for gname in _key_groups(key):
-                    if gname not in names:
-                        unknown(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", gname, "warning",
-                                f"The panel has no data for {key!r}.")
+                missing = [gname for gname in _key_groups(key) if gname not in names]
+                for gname in missing:
+                    unknown(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", gname, "warning",
+                            f"The panel has no data for {key!r}.")
+                if video and not missing:  # the panel's analysis runs on its groups
+                    use(*_key_groups(key))
             residues = (sp.options or {}).get("residues") if sp.type in ("sequence", "secondary") else None
             if isinstance(residues, str):
                 ranges(f"layout.panels.{k}.options", residues, "warning")
-        pdb = self.output.pdb
-        items = split_csv(pdb.selection)
-        level = "error" if pdb.enabled else "warning"
-        if "," in pdb.selection and all(re.fullmatch(r"[A-Za-z0-9_.\-]+", n) for n in items):
+        selection = o.pdb.selection
+        items = split_csv(selection)
+        level = "error" if pdb else "warning"
+        if selection.strip() and not items:  # only commas
+            add("output.pdb.selection", empty_list_error(selection).message, level)
+        elif "," in selection and all(re.fullmatch(r"[A-Za-z0-9_.\-]+", n) for n in items):
             for gname in items:  # a list of group names
                 if gname not in names:
                     unknown("output.pdb.selection", gname, level)
-        elif not (items and all(n in names for n in items)):
-            check("output.pdb.selection", pdb.selection, level, required=False)
-        if self.output.charts.enabled:
-            for key in self.output.charts.series:
-                for gname in _key_groups(key):
-                    if gname not in names:
-                        unknown("output.charts.series", gname, "warning", f"No chart is drawn for {key!r}.")
-        return out
+                elif pdb:
+                    use(gname)
+        elif items and all(n in names for n in items):  # one group's name
+            if pdb:
+                use(*items)
+        else:
+            check("output.pdb.selection", selection, level, required=False)
+        if charts:
+            for key in o.charts.series:
+                missing = [gname for gname in _key_groups(key) if gname not in names]
+                for gname in missing:
+                    unknown("output.charts.series", gname, "warning", f"No chart is drawn for {key!r}.")
+                if not missing:  # the chart's analysis runs on its groups
+                    use(*_key_groups(key))
 
+        for i, gname in definitions.items():
+            if gname not in used:  # nothing about to run selects the group
+                x = out[i]
+                out[i] = problem(x.field, x.message, self, "warning", x.token)
+        return out
 
 def _key_groups(key: str) -> List[str]:
     """Residue groups of a data key: ``"contacts@A+B/atom_pairs"`` -> ``["A", "B"]``."""

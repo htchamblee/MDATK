@@ -148,6 +148,135 @@ def test_validation_problems_carry_field_and_location(tmp_path):
     assert "analyses.hbonds.group_b" not in fields and fields["visual.proximity_set"] == "warning"
 
 
+def _levels(p, field, text="", **uses):
+    return {x.level for x in p.problems(**uses) if x.field == field and text in x}
+
+
+def test_structure_view_settings_are_errors_only_while_the_view_is_rendered():
+    p = Project()  # the video is on and the layout has a structure panel
+    p.analyses.mg.enabled = False
+    p.analyses.mg.mg_selection = "resname MG and nme MG"  # only the structure view draws these ions
+    p.visual.proximity_set = "Tgt"  # glow is on: the proximity set is used
+    p.visual.structure_groups = ["Nope"]
+    p.visual.representations = [RepSpec(groups=["Nopes"])]
+    cases = {"analyses.mg.mg_selection": "", "visual.proximity_set": "",
+             "visual.representations.0.groups": "", "visual.structure_groups": "no residue group to show"}
+    for field, text in cases.items():
+        assert _levels(p, field, text) == {"error"}, field
+        assert _levels(p, field, text, video=False) == {"warning"}, field  # mdatk render --no-video
+        assert _levels(p, field, text, video=True) == {"error"}, field  # Render still
+    p.output.video.enabled = False  # charts and PDBs only: shown and logged, not blocking
+    for field, text in cases.items():
+        assert _levels(p, field, text) == {"warning"}, field
+    assert not {x.field for x in p.validate()} & set(cases)
+    # a density fit selects the view's residues and ions without drawing them
+    assert _levels(p, "analyses.mg.mg_selection", density=True) == {"error"}
+    assert _levels(p, "visual.structure_groups", "no residue group", density=True) == {"error"}
+    assert _levels(p, "visual.proximity_set", density=True) == {"warning"}
+    assert _levels(p, "visual.representations.0.groups", density=True) == {"warning"}
+    # without a structure view in the layout the video does not use them either
+    p.output.video.enabled = True
+    p.layout.panels = [PanelSpec("timeseries", ["rmsd/Complex"])]
+    assert _levels(p, "analyses.mg.mg_selection") == set()  # Mg is off: not checked
+    assert _levels(p, "visual.proximity_set") == _levels(p, "visual.representations.0.groups") == {"warning"}
+    assert _levels(p, "visual.structure_groups", "no residue group") == set()
+
+
+def test_structure_view_settings_do_not_block_what_does_not_render_it(demo_dry, tmp_path):
+    from mdatk.pipeline import Pipeline, PipelineError
+    from mdatk.progress import Reporter
+
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir = str(tmp_path)
+    p.visual.proximity_set = "Tgt"  # 0.0.7 never checked it
+    p.output.pdb.enabled, p.output.pdb.frames, p.output.pdb.times = True, "0", ""
+    p.output.charts.enabled = False
+    logs = []
+    pipe = Pipeline(p, Reporter(log_cb=logs.append))
+    with pytest.raises(PipelineError, match="Structure view › Appearance › Proximity set: unknown residue"):
+        pipe.run()
+    pipe.check(video=False, charts=False, pdb=True)  # mdatk export-pdb
+    assert any(line.startswith("WARNING: Structure view › Appearance › Proximity set") for line in logs)
+    out = pipe.run(video=False)  # mdatk render --no-video
+    assert out.video is None and len(out.pdbs) == 1
+    # the PDB subset is checked only when PDBs are exported
+    p.output.pdb.selection = "Aptamer, Tget"
+    with pytest.raises(PipelineError, match="Atom subset: unknown residue group 'Tget'"):
+        pipe.check(video=False, charts=False, pdb=True)
+    pipe.check(video=False, pdb=False)
+
+
+def test_a_broken_group_nothing_uses_is_only_a_warning():
+    p = Project()
+    p.groups += [ResidueGroup("Scratch", "", "resname G and nme N7"), ResidueGroup("Draft")]
+    p.visual.structure_groups = ["Aptamer", "Target"]
+    assert _levels(p, "groups.2.selection", "Unknown selection token: 'nme'") == {"warning"}
+    assert _levels(p, "groups.3.residues", "has neither residues nor a selection") == {"warning"}
+    assert not [x for x in p.validate() if x.field.startswith("groups.")]
+    # a setting that is checked reaches it through another group: the definition is the error
+    p.groups.append(ResidueGroup("Uses", "", "group:Scratch and name P"))
+    p.analyses.stacking.selection = "group:Uses"
+    errors = {x.field for x in p.validate()}
+    assert "groups.2.selection" in errors
+    assert not errors & {"groups.4.selection", "analyses.stacking.selection"}  # not blamed for it
+    p.analyses.stacking.enabled = False  # a disabled analysis does not use it
+    assert _levels(p, "groups.2.selection") == {"warning"}
+    p.analyses.contacts.group_b = "Scratch"  # an analysis group
+    assert _levels(p, "groups.2.selection") == {"error"}
+    p.analyses.contacts.group_b = "Target"
+    # a group the structure view shows: an error while the view is rendered
+    p.visual.structure_groups = []  # every group is shown
+    assert _levels(p, "groups.3.residues") == {"error"}
+    assert _levels(p, "groups.3.residues", video=False) == {"warning"}
+    assert _levels(p, "groups.3.residues", video=False, density=True) == {"error"}
+    p.visual.structure_groups = ["Aptamer"]
+    # a panel's or a chart's analysis run on the group: an error when the panel or chart is drawn
+    p.layout.panels.append(PanelSpec("timeseries", ["contacts@Aptamer+Draft/atom_pairs"]))
+    assert _levels(p, "groups.3.residues") == {"error"}
+    assert _levels(p, "groups.3.residues", video=False) == {"warning"}
+    p.layout.panels.pop()
+    p.output.charts.series = ["rmsd@Draft/Heavy"]
+    assert _levels(p, "groups.3.residues") == {"error"}
+    assert _levels(p, "groups.3.residues", charts=False) == {"warning"}
+    p.output.charts.series = []
+    p.output.pdb.selection = "Aptamer, Draft"  # the PDB subset, when PDBs are exported
+    assert _levels(p, "groups.3.residues", pdb=True) == {"error"}
+    assert _levels(p, "groups.3.residues", pdb=False) == {"warning"}
+
+
+def test_an_unused_broken_group_does_not_stop_the_structure_view(demo_dry, tmp_path):
+    from mdatk.pipeline import Pipeline
+
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir = str(tmp_path)
+    p.groups.append(ResidueGroup("Scratch", "", "resname G and nme N7"))
+    p.visual.structure_groups = ["Aptamer", "Target"]
+    pipe = Pipeline(p)
+    pipe.check()
+    ds = pipe.analyze(["trace"])  # the view skips the broken group when it marks group membership
+    assert ds.results["trace"].arrays["group_member"].shape[0] == 3
+
+
+def test_circular_group_definitions_are_reported_at_every_group_of_the_circle():
+    p = Project()
+    p.groups += [ResidueGroup("Stem", "", "group:Loop or resid 1-3"),
+                 ResidueGroup("Loop", "", "group:Stem and name P"),
+                 ResidueGroup("Outer", "", "group:Stem or resid 9")]
+    p.analyses.stacking.selection = "group:Outer"
+    by_field = {x.field: x for x in p.validate()}
+    assert by_field["groups.2.selection"].message == \
+        "group definitions are nested in a circle: group:Stem → group:Loop → group:Stem"
+    assert by_field["groups.3.selection"].message == \
+        "group definitions are nested in a circle: group:Loop → group:Stem → group:Loop"
+    # a group or a setting that only uses the circle is not blamed for it
+    assert "groups.4.selection" not in by_field and "analyses.stacking.selection" not in by_field
+    p.groups[2].selection = "group:Stem"  # a group nested in itself
+    by_field = {x.field: x for x in p.validate()}
+    assert by_field["groups.2.selection"].message == \
+        "group definitions are nested in a circle: group:Stem → group:Stem"
+    assert "groups.3.selection" not in by_field  # Loop only uses the circle
+
+
 def test_pipeline_refuses_with_located_problems(tmp_path):
     from mdatk.pipeline import Pipeline, PipelineError
 
@@ -197,6 +326,43 @@ def test_run_time_errors_of_panel_group_pairs_point_at_the_panel():
                                       "selection 'group:Empty'")
 
 
+def test_run_time_errors_of_rmsd_group_runs_never_name_the_projects_targets():
+    from mdatk.analysis import ANALYSES, AnalysisContext, run_analyses
+    from mdatk.analysis.base import instance_project
+
+    atoms = [{"name": "P", "resid": r, "resname": "G", "element": "P"} for r in range(1, 5)]
+    u = make_universe(atoms, np.zeros((2, 4, 3)) + np.arange(4)[None, :, None])  # no tempfactors
+    p = micro_project({"A": "1-2", "B": "3-4"})
+    p.groups.append(ResidueGroup("Hot", "", "group:A and tempfactor 0 to 50"))
+    p.analyses.rmsd.targets = [RMSDTarget("Mine", "group:B")]
+    p.layout.panels = [PanelSpec("structure"), PanelSpec("timeseries", ["rmsd@Hot/Heavy"])]
+    inst = "rmsd@Hot"
+
+    def fail(project):
+        ctx = AnalysisContext(u, instance_project(project, inst))
+        with pytest.raises(SelectionError) as info:
+            run_analyses(ctx, [ANALYSES["rmsd"](ctx, inst)], np.arange(2))
+        return info.value
+
+    exc = fail(p)  # the targets are made by with_groups: the panel asked for them
+    assert exc.field == "layout.panels.1.groups"
+    assert str(exc).startswith("Layout & panels › Panel 2 (Time series) › Groups: invalid selection "
+                               "'group:Hot and not name H*'")
+    assert "does not contain tempfactor information" in str(exc)
+    p.layout.panels.pop()
+    p.output.charts.series = ["rmsd@Hot/Backbone"]
+    assert fail(p).field == "output.charts.series"
+    p.output.charts.series = []  # asked for by neither (mdatk analyze --only rmsd@Hot): the definition
+    exc = fail(p)
+    assert exc.field == "groups.2.selection" and str(exc).startswith("Residue groups › Group 3 (Hot) › ")
+    # the project's own run still names its own target
+    p.analyses.rmsd.targets = [RMSDTarget("Mine", "group:Hot")]
+    ctx = AnalysisContext(u, p)
+    with pytest.raises(SelectionError) as info:
+        run_analyses(ctx, [ANALYSES["rmsd"](ctx)], np.arange(2))
+    assert info.value.field == "analyses.rmsd.targets.0.selection"
+
+
 def test_pdb_export_selection_errors_are_located(demo_dry, tmp_path):
     from mdatk.pipeline import Pipeline
 
@@ -215,3 +381,24 @@ def test_pdb_export_selection_errors_are_located(demo_dry, tmp_path):
     p.output.pdb.selection, p.output.pdb.frames = "", "0, 9999"
     with pytest.raises(SelectionError, match=r"^Outputs › Frame PDBs › Frames: frame\(s\) \[9999\] outside"):
         Pipeline(p).export_pdbs()
+
+
+def test_a_pdb_subset_of_only_commas_is_a_located_error(universe, demo_dry, tmp_path):
+    from mdatk.io.pdb_export import resolve_export_selection
+    from mdatk.pipeline import Pipeline
+
+    assert resolve_export_selection(universe, "  ", GROUPS).n_atoms == 12  # empty: every atom
+    for text in (",", " , , "):
+        with pytest.raises(SelectionError, match="names no residue group") as info:
+            resolve_export_selection(universe, text, GROUPS)
+        assert info.value.kind == "no_text"
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir, p.output.pdb.frames = str(tmp_path), "0"
+    p.output.pdb.selection = ","
+    message = "',' names no residue group (leave the atom subset empty to export every atom)"
+    assert _levels(p, "output.pdb.selection", message, pdb=True) == {"error"}
+    assert _levels(p, "output.pdb.selection", message, pdb=False) == {"warning"}
+    with pytest.raises(SelectionError) as info:
+        Pipeline(p).export_pdbs()
+    assert info.value.field == "output.pdb.selection"
+    assert str(info.value) == f"Outputs › Frame PDBs › Atom subset: {message}"

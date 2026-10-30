@@ -290,7 +290,7 @@ def cmd_clean(args) -> int:
 
 def cmd_analyze(args) -> int:
     project, pipe = _pipeline(args)
-    pipe.check()
+    pipe.check(pdb=False)  # analyze() runs what the video and the charts need
     names = [n.strip() for n in args.only.split(",")] if args.only else None
     ds = pipe.analyze(names, force=args.force)
     print(json.dumps({"cache_manifest": pipe.cache.manifest_path, "n_frames": ds.n_frames,
@@ -301,7 +301,7 @@ def cmd_analyze(args) -> int:
 def _dataset(pipe, args):
     if getattr(args, "from_cache", False):
         return pipe.load_cached_dataset()
-    pipe.check()
+    pipe.check(pdb=False)  # analyze() runs what the video and the charts need
     return pipe.analyze()
 
 
@@ -347,7 +347,7 @@ def cmd_export_pdb(args) -> int:
         pp.times = args.times
     if args.selection is not None:
         pp.selection = args.selection
-    pipe.check()
+    pipe.check(video=False, charts=False, pdb=True)
     os.makedirs(project.out_dir, exist_ok=True)
     print(json.dumps({"pdbs": pipe.export_pdbs()}, indent=2))
     return 0
@@ -457,7 +457,7 @@ def cmd_density_fit(args) -> int:
         problems.append("no density map: give --map or set density.map_path in the project")
     if problems:
         raise ValueError("; ".join(problems))
-    pipe.check()
+    pipe.check(video=False, charts=False, pdb=False, density=True)
     res = pipe.fit_density(search=args.search)
     d = project.density
     out = {"cc": round(float(res.cc), 4), "start": res.start, "info": d.fit_info,
@@ -477,7 +477,7 @@ def cmd_density_simulate(args) -> int:
     from .io.mrc import write_map
 
     project, pipe = _pipeline(args)
-    pipe.check()
+    pipe.check(video=False, charts=False, pdb=False, density=True)
     xyz, elements, frame, reference = pipe.density_frame_atoms(args.frame or "ref")
     if args.placed:
         if len(project.density.transform) != 12:
