@@ -744,14 +744,14 @@
   },
   "tool:amber-restraints:typed-ss": {
    "03_amber-restraints/golden_03_amber-restraints_20261015-1432.sh": "b5b0fdc1e130fe990b55",
-   "03_amber-restraints/golden_03_helix_20261015-1432.py": "f2d2c536cfbe0154a079",
-   ":issues": "769ce562c706a755afd6",
+   "03_amber-restraints/golden_03_helix_20261015-1432.py": "5e3dc91c034acad2847e",
+   ":issues": "41402d9a72d9049fbd7b",
    "golden_00_plan_20261015-1432.md": "3b4bf1e4aef92b130f30",
    "golden_00_plan_20261015-1432.sh": "1bb11b2ae3497beb917e"
   },
   "tool:amber-restraints:typed-ss+wobble": {
-   "03_amber-restraints/golden_03_amber-restraints_20261015-1432.sh": "ad969a4ee539484de673",
-   "03_amber-restraints/golden_03_helix_20261015-1432.py": "09c509cc8568a40d8062",
+   "03_amber-restraints/golden_03_amber-restraints_20261015-1432.sh": "37c979aa669a2ceb3ed5",
+   "03_amber-restraints/golden_03_helix_20261015-1432.py": "021532e80cb6b6ea697d",
    ":issues": "24e524b25994b925696c",
    "golden_00_plan_20261015-1432.md": "3b4bf1e4aef92b130f30",
    "golden_00_plan_20261015-1432.sh": "1bb11b2ae3497beb917e"
@@ -957,9 +957,9 @@
    "golden_00_plan_20261015-1432.sh": "0925887b6a9bd577e7e7"
   },
   "tool:farfar2:typed-ss": {
-   "03_farfar2/golden_03_farfar2_20261015-1432.fasta": "ab63e376fcbf94012259",
+   "03_farfar2/golden_03_farfar2_20261015-1432.fasta": "865eb8634ca988957e9e",
    "03_farfar2/golden_03_farfar2_20261015-1432.flags": "28805ef219d6a1606992",
-   "03_farfar2/golden_03_farfar2_20261015-1432.secstruct": "102c2e6e401efa3933ee",
+   "03_farfar2/golden_03_farfar2_20261015-1432.secstruct": "747305ee36c64238a2b0",
    "03_farfar2/golden_03_farfar2_20261015-1432.sh": "9b47b51737ad588729bb",
    ":issues": "e3b0c44298fc1c149afb",
    "golden_00_plan_20261015-1432.md": "13724aab117a407e9104",
@@ -1163,14 +1163,14 @@
    "golden_00_plan_20261015-1432.sh": "798de2823708f4ba3378"
   },
   "tool:phenix-rsr:typed-ss": {
-   "03_phenix-rsr/golden_03_basepairs_20261015-1432.eff": "f461eb71324f8dc89654",
+   "03_phenix-rsr/golden_03_basepairs_20261015-1432.eff": "0cc0cf691ba0a0ec06fa",
    "03_phenix-rsr/golden_03_phenix-rsr_20261015-1432.sh": "9035529d2f10497fd8b4",
-   ":issues": "865ede3975b4c3f40e30",
+   ":issues": "50899f7aaeb448551b19",
    "golden_00_plan_20261015-1432.md": "03ab5059ce4e6df1cb3e",
    "golden_00_plan_20261015-1432.sh": "83f401ae2aa50ba17b05"
   },
   "tool:phenix-rsr:typed-ss+wobble": {
-   "03_phenix-rsr/golden_03_basepairs_20261015-1432.eff": "f461eb71324f8dc89654",
+   "03_phenix-rsr/golden_03_basepairs_20261015-1432.eff": "511af751ce645a84db8b",
    "03_phenix-rsr/golden_03_phenix-rsr_20261015-1432.sh": "9035529d2f10497fd8b4",
    ":issues": "865ede3975b4c3f40e30",
    "golden_00_plan_20261015-1432.md": "03ab5059ce4e6df1cb3e",
@@ -1382,11 +1382,11 @@
    "golden_00_plan_20261015-1432.sh": "a1ab53e26e5ed1cb35c8"
   },
   "tool:simrna:typed-ss": {
-   "03_simrna/golden_03_simrna-cluster_20261015-1432.sh": "6480de8384fb55c6dc73",
+   "03_simrna/golden_03_simrna-cluster_20261015-1432.sh": "0afbddb2e771fa2a99f8",
    "03_simrna/golden_03_simrna_20261015-1432.config": "ce3e0ae13389fd66c277",
-   "03_simrna/golden_03_simrna_20261015-1432.seq": "3a196b77ec2b7d7e2d99",
+   "03_simrna/golden_03_simrna_20261015-1432.seq": "a9ab54e84dc4c5693d8a",
    "03_simrna/golden_03_simrna_20261015-1432.sh": "a124c89b7b337f816fd8",
-   "03_simrna/golden_03_simrna_20261015-1432.ss": "864109a89a4d44bf8bf7",
+   "03_simrna/golden_03_simrna_20261015-1432.ss": "b06bc4b501b2669f773f",
    ":issues": "e3b0c44298fc1c149afb",
    "golden_00_plan_20261015-1432.md": "e62805bff5a5656d6c13",
    "golden_00_plan_20261015-1432.sh": "fb8923866aaba9141eca"

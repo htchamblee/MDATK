@@ -11,9 +11,9 @@ planner message for:
 
 Every case is planned with residue groups, as the app plans it: the example projects with their own,
 the others with those of a new project.  One VMD case without groups keeps the fallback pinned.  Steps
-that take a typed secondary structure get extra cases with one (a hairpin with a G·U pair, wobble pairs
-off and on; optional inputs left unconnected), so the secondary-structure code they share with later
-step types is pinned too.
+that take a typed secondary structure get extra cases with one (a hairpin with a G·U and a U·G pair,
+wobble pairs off and on; optional inputs left unconnected), so the secondary-structure code they share
+with later step types is pinned too.
 
 ``test_released_output_unchanged`` (tests/test_golden.py) regenerates the same cases with the
 current code and compares.  Two things are normalised before hashing, because they change with
@@ -51,10 +51,10 @@ def _dummy(port) -> str:
     return f"/golden/inputs/{port.name}.{port.kinds[0]}"
 
 
-TYPED_SS = {"sequence": "GGGCUUCGGUCC", "dotbracket": "((((....))))"}  # G3·U10 is a wobble pair
-EXTRA_CASES = {  # (label, settings) beyond the one-change-at-a-time variants
-    "amber-restraints": [("typed-ss", TYPED_SS), ("typed-ss+wobble", dict(TYPED_SS, wobble=True))],
-    "phenix-rsr": [("typed-ss", dict(TYPED_SS, resolution=3.5)),
+TYPED_SS = {"sequence": "GGCUCUUCGGGGUC", "dotbracket": "(((((....)))))"}  # G2·U13 and U4·G11: both wobbles
+EXTRA_CASES = {  # (label, settings) beyond the one-change-at-a-time variants; wobble set explicitly
+    "amber-restraints": [("typed-ss", dict(TYPED_SS, wobble=False)), ("typed-ss+wobble", dict(TYPED_SS, wobble=True))],
+    "phenix-rsr": [("typed-ss", dict(TYPED_SS, resolution=3.5, wobble=False)),
                    ("typed-ss+wobble", dict(TYPED_SS, resolution=3.5, wobble=True))],
     "simrna": [("typed-ss", TYPED_SS)],
     "farfar2": [("typed-ss", TYPED_SS)],
