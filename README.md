@@ -1021,7 +1021,9 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
 - **Map-frame model:** the PDB that was fitted into the map, usually the input of the Amber build.
 - **Secondary structure** (optional), for the dihedral and base-pair restraints.
 - **Output:** the fitted model, solute only, in the map's frame, ready for *Phenix* / *Coot*
-  real-space refinement.
+  real-space refinement. It keeps the chains and residue numbers of the map-frame model (without
+  one, every strand gets its own chain), with TER between strands, so renaming tools such as
+  `mdatk pdb clean --scheme ccd` find every strand end.
 
 Drop the step after an existing *Amber build* (or MD) step. It adds new files only; the steps
 already in the plan and their files do not change.
@@ -1072,7 +1074,9 @@ already in the plan and their files do not change.
 
    When the script is run again, finished runs are skipped as long as their inputs (topology, start
    coordinates, potential, coupling and restraint files) and the stage files up to them are unchanged.
-   A change reruns that stage and every stage after it.
+   A change reruns that stage and every stage after it. The date line that tleap and ParmEd write into
+   a topology does not count, so rebuilding the same topology (e.g. by rerunning the whole plan)
+   keeps finished runs.
 5. **Final model** (`…_mdff_….py final`): NAMD's last coordinates, back in the map's frame.
 
 **Amber settings in NAMD.**
@@ -1097,7 +1101,8 @@ VMD and writes its own restraints:
 
 - **Chirality** (`…_chirality_….txt`, NAMD `extraBonds`): one harmonic improper per ribose centre
   (C1′ O4′ N C2′, C2′ C1′ O2′ C3′, C3′ C2′ O3′ C4′, C4′ C3′ O4′ C5′), default
-  200 kcal/mol/rad².
+  200 kcal/mol/rad². N is the base atom bonded to C1′: N9 or N1, or C5 for C-nucleosides such as
+  pseudouridine.
   - The targets come from the C3'-endo Arnott A-RNA fiber nucleotide of MDATK's helix builder:
     −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
     residues.
@@ -1105,7 +1110,7 @@ VMD and writes its own restraints:
     agree with its coordinates. A residue named D whose sugar is L, or the reverse, stops the run.
     So does any clearly defined sugar centre of the other hand, even in a residue whose overall
     geometry is ambiguous: its restraint would invert it. The planner reports these as soon as the
-    files exist.
+    files exist (for a NetCDF restart, the script does once it has converted the restart).
 - **Secondary-structure dihedrals** (`…_ssdihedrals_….txt`, NAMD `extraBonds`), the RNA restraints
   of the MDFF paper (Trabuco et al. 2008).
   - α, β, γ, δ, ε, ζ and χ of every base-paired residue in the secondary structure are held at their
@@ -1118,7 +1123,8 @@ VMD and writes its own restraints:
 - **Base pairs** (`…_basepairs_….txt`, NAMD `extraBonds` `wall`): the hydrogen-bond atom pairs of
   *Amber · helix restraints* from the connected or typed secondary structure.
   - Each distance is flat between 2.7 and 3.2 Å, with U = k (d − wall)² outside, k = 10 kcal/mol/Å²:
-    the form of Amber's restraints (rk2 / rk3).
+    the form of Amber's restraints (rk2 / rk3). The lower wall must be at least 0.1 Å: NAMD reads a
+    lower wall of 0 as a bond of zero length.
   - Unlike Amber's restraints, the walls stay harmonic far from the window; they have no linear
     part.
 - **Positional** (`…_posres_….pdb`, NAMD `constraints`): the RNA backbone or all heavy atoms,

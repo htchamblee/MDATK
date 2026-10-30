@@ -192,8 +192,9 @@ class NamdMDFFTool(Tool):
             Option("res_offset", "Residue offset", "int", 0,
                    "Topology residue number = position in the sequence + offset.", minimum=-100000, maximum=100000),
             Option("wobble", "Restrain G·U wobble pairs", "bool", False, "Also restrain G·U pairs."),
-            Option("bp_lower", "Flat bottom from", "float", 2.7, "Lower wall of each H-bond distance (Å).",
-                   minimum=0.0, maximum=20.0, digits=2, unit="Å"),
+            Option("bp_lower", "Flat bottom from", "float", 2.7,
+                   "Lower wall of each H-bond distance (Å). At least 0.1 Å: NAMD reads a lower wall of 0 as a bond "
+                   "of zero length (or, on GPUs, drops it).", minimum=0.1, maximum=20.0, digits=2, unit="Å"),
             Option("bp_upper", "Flat bottom to", "float", 3.2, "Upper wall (Å).", minimum=0.0, maximum=20.0,
                    digits=2, unit="Å"),
             Option("bp_k", "Wall force constant", "float", 10.0,
@@ -343,15 +344,20 @@ class NamdMDFFTool(Tool):
         solvated = s["solvent"] == "solvated"
         if not s["stages"]:
             out.append(Issue("error", "add at least one stage", ("stages",)))
+        # every run writes <tag>.namd / .log / .coor / .xsc ...: names must differ without regard to letter case
+        # (macOS file systems ignore it), and segment names (<stage>-001 ...) must not meet another run's or the
+        # step's own files
         tags = [self.stage_tag(st, k) for k, st in enumerate(s["stages"])]
-        dup = sorted({t for t in tags if tags.count(t) > 1})
+        low_tags = [t.lower() for t in tags]
+        dup = sorted({t for t in tags if low_tags.count(t.lower()) > 1})
         if dup:
-            out.append(Issue("error", f"stage names must differ ({', '.join(dup)})", ("stages",)))
-        # every run writes <tag>.namd / .log / .coor / .xsc ...: segment names (<stage>-001 ...) must not meet
-        # another run's or the step's own files (letter case ignored: macOS file systems ignore it)
-        run_tags = [r["tag"] for r in self.runs(s, ctx)]
-        low = [t.lower() for t in run_tags]
-        clash = sorted({t for t in run_tags if low.count(t.lower()) > 1} - set(dup))
+            out.append(Issue("error", f"stage names must differ, letter case aside ({', '.join(dup)})", ("stages",)))
+        twice = {t.lower() for t in dup}
+        runs = self.runs(s, ctx)
+        low = [r["tag"].lower() for r in runs]
+        clash = sorted({r["tag"] for r in runs
+                        if low.count(r["tag"].lower()) > 1 and tags[r["index"]].lower() not in twice})
+        run_tags = [r["tag"] for r in runs]
         if clash:
             out.append(Issue("error", f"run names repeat ({', '.join(clash)}): a stage name matches another stage's "
                                       "segment runs (<stage>-001 ...)", ("stages",)))
@@ -477,16 +483,20 @@ class NamdMDFFTool(Tool):
 
     @staticmethod
     def _read_and_check(cfg, top_path, crd_path) -> List[Issue]:
+        notes: List[Issue] = []
         try:
             top = _namd_mdff.Topology(top_path)
             problems, _notes = _namd_mdff.topology_problems(top, cfg)
             xyz = None
-            if _namd_mdff.is_netcdf(crd_path):
-                pass  # converted by cpptraj when the script runs
+            if _namd_mdff.is_netcdf(crd_path):  # converted by cpptraj when the script runs
+                notes.append(Issue("info", "the coordinates are a NetCDF restart: the D/L and dihedral checks of the "
+                                           "coordinates run when the script has converted them",
+                                   ("input:coordinates",)))
             elif _namd_mdff.is_pdb(crd_path):
                 atoms = _namd_mdff.read_pdb_atoms(crd_path)
-                if len(atoms) != top.natom:
-                    problems.append(f"{os.path.basename(crd_path)} has {len(atoms)} atoms, the topology {top.natom}")
+                order = _namd_mdff.pdb_order_problem(top, atoms, os.path.basename(crd_path))
+                if order:  # coordinates by position would be assigned to the wrong atoms: check nothing else
+                    problems.append(order)
                 else:
                     xyz = [a[3] for a in atoms]
             else:
@@ -497,9 +507,9 @@ class NamdMDFFTool(Tool):
                     problems += bad
                 if cfg["ssdihedrals"]["enabled"]:
                     problems += _namd_mdff.ss_dihedral_lines(top, xyz, cfg["ssdihedrals"]["residues"], 1.0)[1]
-        except (OSError, ValueError, _namd_mdff.PrepError) as exc:
+        except (OSError, ValueError, EOFError, _namd_mdff.PrepError) as exc:
             return [Issue("error", f"cannot check the topology: {exc}", ("input:topology",))]
-        return [Issue("error", p, ("input:topology",)) for p in problems]
+        return [Issue("error", p, ("input:topology",)) for p in problems] + notes
 
     # ---------------------------------------------------------------- files
     def _common(self, s, ctx, periodic: bool, for_energy: bool = False) -> List[str]:
@@ -679,11 +689,13 @@ class NamdMDFFTool(Tool):
                    f"$NAMD {e}.namd > {e}.namd.log 2>&1 || {{ echo \"ERROR: NAMD failed on the Amber topology; see "
                    f"{e}.namd.log\" >&2; exit 1; }}",
                    f"python3 {n('energy', 'py')} {e}.mdout {e}.namd.log | tee {n('energy-check', 'log')}", ""]
-        if s["resume"] and runs:
+        if runs:
             # a finished run belongs to the inputs it ran from: its key chains the start files with every stage
-            # file up to it, so a changed input or stage setting reruns that stage and all after it
+            # file up to it, so a changed input or stage setting reruns that stage and all after it.  Keys are
+            # written whether or not runs are skipped, so they always describe the outputs on disk.  The
+            # topology's %VERSION line holds the time it was written: a rebuild of the same topology keeps it
             settings = self.prep_settings(s, ctx)
-            inputs = [top, start, n("prep", "json"), n("potential", "dx"), n("coupling", "pdb")]
+            inputs = [start, n("prep", "json"), n("potential", "dx"), n("coupling", "pdb")]
             for path, used in ((n("posres", "pdb"), settings["positional"]["selection"] != "none"),
                                (n("chirality", "txt"), settings["chirality"]["enabled"]),
                                (n("ssdihedrals", "txt"), settings["ssdihedrals"]["enabled"]),
@@ -691,22 +703,25 @@ class NamdMDFFTool(Tool):
                                (n("cell", "xsc"), s["solvent"] == "solvated")):
                 if used:
                     inputs.append(path)
-            sh += ["# Finished runs are skipped only if they ran from these inputs and the same stage files",
-                   f"KEY=$(cat {' '.join(shell_quote(p) for p in inputs)} | cksum)", "FRESH=0", ""]
+            sh += ["# Finished runs are " + ("skipped only if they ran from these inputs and the same stage files"
+                                             if s["resume"] else "not skipped (keys record what each run used)"),
+                   f"KEY=$( {{ sed '/^%VERSION/d' {qtop}; cat {' '.join(shell_quote(p) for p in inputs)}; }} | cksum )",
+                   "FRESH=0", ""]
         for run in runs:
             key = f"{run['out']}.key"
-            body = [f"$NAMD {run['conf']} > {run['log']} 2>&1 || {{ echo \"ERROR: NAMD failed on {run['conf']}; see "
-                     f"{run['log']}\" >&2; exit 1; }}",
+            body = ["FRESH=1", f'rm -f "{key}"',
+                    f"$NAMD {run['conf']} > {run['log']} 2>&1 || {{ echo \"ERROR: NAMD failed on {run['conf']}; see "
+                    f"{run['log']}\" >&2; exit 1; }}",
                     f'grep -q "WallClock:" "{run["log"]}" || {{ echo "ERROR: NAMD did not finish {run["conf"]}; see '
-                    f'{run["log"]}" >&2; exit 1; }}']
+                    f'{run["log"]}" >&2; exit 1; }}',
+                    f'echo "$KEY" > "{key}"']
             sh.append(f"# {run['tag']}: {run['stage']['kind']} {run['steps']} steps, map coupling {run['gscale']:g}")
+            sh.append(f'KEY=$( {{ echo "$KEY"; cat "{run["conf"]}"; }} | cksum )')
             if s["resume"]:
                 done = (f'[ "$FRESH" = 0 ] && [ -s "{run["out"]}.coor" ] && grep -q "WallClock:" "{run["log"]}" '
                         f'2>/dev/null && [ "$(cat "{key}" 2>/dev/null)" = "$KEY" ]')
-                sh += [f'KEY=$( {{ echo "$KEY"; cat "{run["conf"]}"; }} | cksum )',
-                       f"if {done}; then", f'    echo "{run["tag"]} already finished - skipped"', "else",
-                       "    FRESH=1", f'    rm -f "{key}"']
-                sh += ["    " + b for b in body] + [f'    echo "$KEY" > "{key}"', "fi"]
+                sh += [f"if {done}; then", f'    echo "{run["tag"]} already finished - skipped"', "else"]
+                sh += ["    " + b for b in body] + ["fi"]
             else:
                 sh += body
             sh.append("")

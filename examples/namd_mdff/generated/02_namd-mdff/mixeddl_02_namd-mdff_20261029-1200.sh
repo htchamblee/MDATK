@@ -39,7 +39,7 @@ $NAMD mixeddl_02_energy_20261029-1200.namd > mixeddl_02_energy_20261029-1200.nam
 python3 mixeddl_02_energy_20261029-1200.py mixeddl_02_energy_20261029-1200.mdout mixeddl_02_energy_20261029-1200.namd.log | tee mixeddl_02_energy-check_20261029-1200.log
 
 # Finished runs are skipped only if they ran from these inputs and the same stage files
-KEY=$(cat ../01_amber-build/mixeddl_01_parmed_20261029-1200.parm7 mixeddl_02_start_20261029-1200.rst7 mixeddl_02_prep_20261029-1200.json mixeddl_02_potential_20261029-1200.dx mixeddl_02_coupling_20261029-1200.pdb mixeddl_02_chirality_20261029-1200.txt mixeddl_02_ssdihedrals_20261029-1200.txt mixeddl_02_basepairs_20261029-1200.txt mixeddl_02_cell_20261029-1200.xsc | cksum)
+KEY=$( { sed '/^%VERSION/d' ../01_amber-build/mixeddl_01_parmed_20261029-1200.parm7; cat mixeddl_02_start_20261029-1200.rst7 mixeddl_02_prep_20261029-1200.json mixeddl_02_potential_20261029-1200.dx mixeddl_02_coupling_20261029-1200.pdb mixeddl_02_chirality_20261029-1200.txt mixeddl_02_ssdihedrals_20261029-1200.txt mixeddl_02_basepairs_20261029-1200.txt mixeddl_02_cell_20261029-1200.xsc; } | cksum )
 FRESH=0
 
 # min: min 2000 steps, map coupling 0.3

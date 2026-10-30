@@ -9,7 +9,7 @@ Files for the `namd-mdff` planner step (NAMD reading the Amber topology natively
 | `mixed_dl_4A.mrc` | a 4 Å map simulated from that model |
 | `namd_mdff.mdatk.toml` | a project: model → Amber build (OL3 + CP, NBfix19, 0BPh, L-RNA fixes, nanoMg, TIP3P, HMR) → NAMD MDFF, map and model connected |
 | `generated/02_namd-mdff/` | what `mdatk workflow write` writes for the MDFF step: one NAMD configuration per stage (`amber on`, `mgridforce`, `extraBonds`), the energy comparison with sander, the preparation helper and the run script |
-| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the `extraBonds` restraint files (L-RNA-safe chirality impropers, secondary-structure dihedrals of the paired residues, base-pair hydrogen-bond walls), the positional restraints, the periodic cell (`.xsc`) and its log |
+| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the `extraBonds` restraint files (L-RNA-safe chirality impropers, secondary-structure dihedrals of the paired residues, base-pair hydrogen-bond walls), the periodic cell (`.xsc`) and its log |
 | `prepared/stand-in/` | the topology and coordinates `prepared/` was made from |
 
 **`prepared/stand-in/` is not a force field.** Without AmberTools in the build environment the

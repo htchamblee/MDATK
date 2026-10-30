@@ -1,12 +1,11 @@
-start coordinates: examples/namd_mdff/prepared/mixeddl_02_start_20261029-1200.rst7 from examples/namd_mdff/prepared/stand-in/mixed_dl_stand-in.rst7
+start coordinates: prepared/mixeddl_02_start_20261029-1200.rst7 from prepared/stand-in/mixed_dl_stand-in.rst7
 note: 184 of 184 hydrogens carry repartitioned masses (HMR)
 topology: 544 atoms, 28 residues (16 nucleotides, 8 L), periodic
-map frame: 332 heavy atoms of examples/namd_mdff/mixed_dl_model.pdb superposed, RMSD 0.000 A, rotation 23.000 deg, shift 36.000 33.000 31.000 A
-map examples/namd_mdff/mixed_dl_4A.mrc: 41 x 22 x 23 voxels, maximum 18.8585; potential 83 x 62 x 53 voxels (resampled for a 23.00 deg rotation)
+map frame: 332 heavy atoms of mixed_dl_model.pdb superposed, RMSD 0.000 A, rotation 23.000 deg, shift 36.000 33.000 31.000 A
+map mixed_dl_4A.mrc: 41 x 22 x 23 voxels, maximum 18.8585; potential 83 x 62 x 53 voxels (resampled for a 23.00 deg rotation)
 coupled atoms: 332 RNA; 100% of the RNA's on density above mean + 1 sigma (2.06442), 0 outside the potential grid
-wrote examples/namd_mdff/prepared/mixeddl_02_potential_20261029-1200.dx and examples/namd_mdff/prepared/mixeddl_02_coupling_20261029-1200.pdb
-wrote examples/namd_mdff/prepared/mixeddl_02_posres_20261029-1200.pdb (92 restrained atoms)
-wrote examples/namd_mdff/prepared/mixeddl_02_chirality_20261029-1200.txt (64 chirality impropers)
-wrote examples/namd_mdff/prepared/mixeddl_02_ssdihedrals_20261029-1200.txt (96 dihedrals of 16 paired residues)
-wrote examples/namd_mdff/prepared/mixeddl_02_basepairs_20261029-1200.txt (24 hydrogen-bond distances)
-wrote examples/namd_mdff/prepared/mixeddl_02_cell_20261029-1200.xsc (cell vectors from the Amber box)
+wrote prepared/mixeddl_02_potential_20261029-1200.dx and prepared/mixeddl_02_coupling_20261029-1200.pdb
+wrote prepared/mixeddl_02_chirality_20261029-1200.txt (64 chirality impropers)
+wrote prepared/mixeddl_02_ssdihedrals_20261029-1200.txt (96 dihedrals of 16 paired residues)
+wrote prepared/mixeddl_02_basepairs_20261029-1200.txt (24 hydrogen-bond distances)
+wrote prepared/mixeddl_02_cell_20261029-1200.xsc (cell vectors from the Amber box)

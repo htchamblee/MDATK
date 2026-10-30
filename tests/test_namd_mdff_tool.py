@@ -507,11 +507,12 @@ def test_example_generator(tmp_path, monkeypatch):
     from mdatk.config import Project
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "example"
-    ms.make_example(str(out))
+    ms.make_example("example")  # relative, as documented
     assert os.listdir(tmp_path) == ["example"]
     prepared = os.listdir(out / "prepared")
-    for tag in ("potential", "coupling", "posres", "chirality", "ssdihedrals", "basepairs", "cell", "prep", "start"):
+    for tag in ("potential", "coupling", "chirality", "ssdihedrals", "basepairs", "cell", "prep", "start"):
         assert any(f"_{tag}_" in f for f in prepared), tag
+    assert not any("_posres_" in f for f in prepared)  # no stage of the example project uses them
     for root, _dirs, files in os.walk(out):
         for f in files:
             if not f.endswith(".mrc"):
@@ -534,3 +535,64 @@ def test_example_generator(tmp_path, monkeypatch):
         if rel.startswith("generated") or rel == "README.md" or "_chirality_" in rel or "_basepairs_" in rel:
             assert open(os.path.join(shipped, rel)).read() == (out / rel).read_text(), \
                 f"examples/namd_mdff/{rel} is out of date: python3 tests/mdff_system.py --example examples/namd_mdff"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_run_keys_follow_the_outputs_whatever_the_resume_setting(tmp_path):
+    _bin(tmp_path)
+    d, _atoms = _system(tmp_path)
+    log = tmp_path / "namd-runs.log"
+
+    def run(settings=None):
+        script = _write(tmp_path, d, settings)
+        if log.exists():
+            log.unlink()
+        res = _run(script, tmp_path, d, NAMD_SAME)
+        assert res.returncode == 0, res.stdout + res.stderr
+        return [os.path.basename(r).split("_")[2] for r in log.read_text().split()] if log.exists() else []
+
+    def stages(final_xi):
+        return [dict(name="min", kind="min", steps=100, gscale=0.3),
+                dict(name="ramp", kind="md", steps=40, gscale=0.1, gscale_end=0.3, segments=2, positional=True),
+                dict(name="final-min", kind="min", steps=100, gscale=final_xi)]
+
+    every = ["min", "ramp-001", "ramp-002", "final-min"]
+    assert run({"stages": stages(10.0)}) == every
+    # 'Skip finished runs' off with another coupling: everything runs, and the keys record it
+    assert run({"stages": stages(5.0), "resume": False}) == every
+    # back on, with the first coupling: the final-min outputs on disk were made with 5, so it runs again
+    assert run({"stages": stages(10.0)}) == ["final-min"]
+    # a rebuilt topology differs only in the time stamp tleap / ParmEd write: finished runs are kept
+    top = (d / "sys.parm7").read_text()
+    stamped = re.sub(r"DATE = \S+\s+\S+", "DATE = 10/30/26  14:02:11", top, count=1)
+    assert stamped != top
+    (d / "sys.parm7").write_text(stamped)
+    assert run({"stages": stages(10.0)}) == []
+
+
+def test_planner_checks_pdb_atom_order_before_reading_coordinates(tmp_path):
+    atoms = ms.atoms_of(ms.mixed_pdb())
+    ms.write_topology(str(tmp_path / "t.parm7"), atoms)
+    swapped = atoms[:]
+    swapped[0], swapped[1] = swapped[1], swapped[0]
+    (tmp_path / "order.pdb").write_text(ms.model_pdb(swapped))
+    files = {"topology": str(tmp_path / "t.parm7"), "coordinates": str(tmp_path / "order.pdb"),
+             "map": "/d/map.mrc", "model": "/d/model.pdb"}
+    _plan, st = single({"solvent": "vacuum"}, files=files)
+    errors = messages(st, "error")
+    assert any("atom 1 is " in m and "not in the topology's atom order" in m for m in errors), errors
+    assert not any("hand" in m or "geometry" in m for m in errors), errors  # nothing read from wrong atoms
+    (tmp_path / "restart.rst7").write_bytes(b"CDF\x02" + b"\0" * 32)
+    files["coordinates"] = str(tmp_path / "restart.rst7")
+    _plan, st = single({"solvent": "vacuum"}, files=files)
+    assert any("NetCDF restart" in m for m in messages(st, "info"))
+
+
+def test_stage_names_differing_in_letter_case():
+    _plan, st = single({"stages": [dict(name="Fit", kind="md", steps=100), dict(name="fit", kind="min")]})
+    errors = messages(st, "error")
+    assert "stage names must differ, letter case aside (Fit, fit)" in errors and not any("repeat" in m for m in errors)
+    ramp = dict(name="ramp", kind="md", steps=100, segments=5)
+    _plan, st = single({"stages": [ramp, dict(ramp)]})
+    assert [m for m in messages(st, "error") if "stage names" in m or "repeat" in m] == [
+        "stage names must differ, letter case aside (ramp)"]

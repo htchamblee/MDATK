@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.8"
 # When the settings were last saved.
-saved = 2026-10-30T00:18:41
+saved = 2026-10-30T01:51:58
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -765,7 +765,8 @@ dotbracket = "(((( )))) (((( ))))"
 res_offset = 0
 # Restrain G·U wobble pairs: Also restrain G·U pairs.
 wobble = false
-# Flat bottom from: Lower wall of each H-bond distance (Å).
+# Flat bottom from: Lower wall of each H-bond distance (Å). At least 0.1 Å: NAMD reads a lower wall
+# of 0 as a bond of zero length (or, on GPUs, drops it).
 bp_lower = 2.7
 # Flat bottom to: Upper wall (Å).
 bp_upper = 3.2

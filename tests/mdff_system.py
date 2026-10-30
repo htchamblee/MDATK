@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+try:
+    import mdatk  # noqa: F401
+except ImportError:  # run as a script from a source checkout
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mdatk import builder, density, pdbtools
 from mdatk.io import mrc
 from mdatk.io.parm7 import write_parm7
@@ -164,7 +169,7 @@ Files for the `namd-mdff` planner step (NAMD reading the Amber topology natively
 | `mixed_dl_4A.mrc` | a 4 Å map simulated from that model |
 | `namd_mdff.mdatk.toml` | a project: model → Amber build (OL3 + CP, NBfix19, 0BPh, L-RNA fixes, nanoMg, TIP3P, HMR) → NAMD MDFF, map and model connected |
 | `generated/02_namd-mdff/` | what `mdatk workflow write` writes for the MDFF step: one NAMD configuration per stage (`amber on`, `mgridforce`, `extraBonds`), the energy comparison with sander, the preparation helper and the run script |
-| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the `extraBonds` restraint files (L-RNA-safe chirality impropers, secondary-structure dihedrals of the paired residues, base-pair hydrogen-bond walls), the positional restraints, the periodic cell (`.xsc`) and its log |
+| `prepared/` | what the preparation helper writes around a topology: the MDFF potential (`.dx`), the coupling PDB, the `extraBonds` restraint files (L-RNA-safe chirality impropers, secondary-structure dihedrals of the paired residues, base-pair hydrogen-bond walls), the periodic cell (`.xsc`) and its log |
 | `prepared/stand-in/` | the topology and coordinates `prepared/` was made from |
 
 **`prepared/stand-in/` is not a force field.** Without AmberTools in the build environment the
@@ -193,6 +198,7 @@ def make_example(out: str) -> None:
     from mdatk.workflows.plan import Plan
     from mdatk.workflows.scripts import namd_mdff as nm
 
+    out = os.path.abspath(out)  # every path below is made relative to the example folder
     os.makedirs(out, exist_ok=True)
     for sub in ("generated", "prepared"):
         shutil.rmtree(os.path.join(out, sub), ignore_errors=True)
@@ -256,7 +262,6 @@ def make_example(out: str) -> None:
         cfg[key]["file"] = os.path.join(prep, os.path.basename(cfg[key]["file"]))
     cfg["topology"] = os.path.join(stand, "mixed_dl_stand-in.parm7")
     cfg["model"], cfg["map"] = model, mapfile
-    cfg["positional"] = {"selection": "backbone", "k": 1.0}
     buf = io.StringIO()
     with redirect_stdout(buf):
         nm.start_coordinates(cfg, os.path.join(stand, "mixed_dl_stand-in.rst7"))
@@ -274,7 +279,6 @@ def make_example(out: str) -> None:
 
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) == 3 and sys.argv[1] == "--example":
         make_example(sys.argv[2])
     else:
