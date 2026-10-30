@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -11,8 +12,8 @@ import pytest
 from mdatk import tomlio
 from mdatk.citations import step_citations
 from mdatk.config import PlanNode, Project, WorkflowParams
-from mdatk.workflows import TOOLS, tools_by_category
-from mdatk.workflows.plan import Plan, add_node, connect, generate_step, single_step_plan
+from mdatk.workflows import TOOLS, runstate, tools_by_category
+from mdatk.workflows.plan import Plan, add_node, apply_template, connect, generate_step, single_step_plan
 from mdatk.workflows.runner import ScriptFailed, plan_jobs, run_jobs, run_script
 
 STAMP = "20261015-1432"
@@ -240,6 +241,14 @@ def test_interpreters_custom_command_and_script_file(tmp_path):
     ({"script": "true", "script_name": "sub/s.sh"}, "script_name", "'sub/s.sh' is not a plain file name"),
     ({"script": "true", "interpreter": "custom", "command": " "}, "command",
      "give the command that runs the script"),
+    # bash reads a name after its own that starts with '+' as options ('bash +go.sh' fails)
+    ({"script": "true", "script_name": "+go.sh"}, "script_name", "'+go.sh' is not a plain file name"),
+    ({"script": "true", "outputs": [{"name": "r", "kind": "text", "file": "+r.txt"}]}, "outputs.0.file",
+     "'+r.txt' is not a plain file name: use letters, digits, '.', '_', '-' and '+', starting with"),
+    ({"script": "true", "script_name": f"apt1_02_custom_{STAMP}.done"}, "script_name",
+     f"apt1_02_custom_{STAMP}.done is the name of the file that marks a finished run"),
+    ({"script": "true", "outputs": [{"name": "r", "kind": "text", "file": f"apt1_02_custom_{STAMP}.done"}]},
+     "outputs.0.file", "is also the file that marks a finished run"),
 ])
 def test_planner_errors(settings, key, expected):
     _plan, st = step(settings)
@@ -381,6 +390,210 @@ def test_a_failed_output_check_stops_the_steps_that_read_it(tmp_path):
     with pytest.raises(ScriptFailed, match="1 dependent script"):
         run_jobs(plan_jobs(plan), None, on_line=lambda line: None, on_state=lambda j, s: states.append(s))
     assert "skipped" in states and not (tmp_path / "plan" / "02_custom" / "started").exists()
+
+
+# ---------------------------------------------------------------------------
+# earlier runs: stale and partial outputs, fixed names, shared names (review of 0.0.10)
+# ---------------------------------------------------------------------------
+
+OLD, NEW = STAMP, "20261101-0900"
+
+
+def _quiet_run(plan):
+    return [r.status for r in run_jobs(plan_jobs(plan), None, on_line=lambda line: None)]
+
+
+def _chain(tmp_path, script, outputs=None, stamp=STAMP):
+    """Step 01 runs ``script`` (output t) and step 02 copies t to c.txt; returns (workflow, a, b, root)."""
+    wf = WorkflowParams(project_name="run", stamp=stamp)
+    a = add_node(wf, "user-script", settings={"script": script,
+                                               "outputs": outputs or [{"name": "t", "kind": "text"}]})
+    b = add_node(wf, "user-script", settings={"script": 'cp "$MDATK_IN_T" "$MDATK_OUT_C"\n',
+                                               "inputs": [{"name": "t", "kind": "text"}],
+                                               "outputs": [{"name": "c", "kind": "text", "file": "c.txt"}]})
+    connect(wf, a.id, "t", b.id, "t")
+    return wf, a, b, str(tmp_path / "plan")
+
+
+def _written(wf, root):
+    plan = Plan(wf, root)
+    assert [i.message for _n, i in plan.all_issues() if i.level == "error"] == []
+    plan.write()
+    return plan
+
+
+@NEEDS_BASH
+def test_an_output_left_by_an_earlier_run_does_not_pass(tmp_path):
+    wf, a, _b, root = _chain(tmp_path, 'echo "run 1" > "$MDATK_OUT_T"\n')
+    assert _quiet_run(_written(wf, root)) == ["ok", "ok"]
+    table = os.path.join(root, "01_custom", f"run_01_t_{STAMP}.txt")
+    assert open(table).read() == "run 1\n"
+    # the script no longer writes its output (a bug) but exits 0: run 1's file must not pass the check
+    a.settings["script"] = 'echo "nothing to write"\n'
+    plan = _written(wf, root)
+    sh = run_sh(plan, a.id)
+    remove = f"\nrm -f -- run_01_custom_{STAMP}.done run_01_t_{STAMP}.txt\n"
+    assert sh.index(remove) < sh.index("\nbash run_01_")
+    lines = []
+    with pytest.raises(ScriptFailed, match="exit status 1; 1 dependent script"):
+        run_jobs(plan_jobs(plan), None, on_line=lines.append)
+    assert f"ERROR: run_01_script_{STAMP}.sh did not write run_01_t_{STAMP}.txt" in lines
+    assert not os.path.exists(table)
+
+
+@NEEDS_BASH
+def test_only_a_run_that_passed_its_checks_counts_as_done(tmp_path):
+    wf, a, b, root = _chain(tmp_path, 'echo partial > "$MDATK_OUT_T"\necho crash >&2; exit 3\n')
+    plan = _written(wf, root)
+    with pytest.raises(ScriptFailed, match="exit status 3"):
+        _quiet_run(plan)
+    folder = os.path.join(root, "01_custom")
+    done = os.path.join(folder, f"run_01_custom_{STAMP}.done")
+    assert open(os.path.join(folder, f"run_01_t_{STAMP}.txt")).read() == "partial\n"
+    assert not os.path.exists(done)
+    runs = runstate.check_runs(plan)
+    assert runs[a.id].state == "partial" and runs[a.id].missing == [f"01_custom/run_01_custom_{STAMP}.done"]
+    assert runstate.adopt(plan, runs) == []
+    # a run that passed every check writes the marker last
+    a.settings["script"] = 'echo whole > "$MDATK_OUT_T"\n'
+    plan = _written(wf, root)
+    sh = run_sh(plan, a.id)
+    mark = ("\necho \"MDATK: custom script finished $(date '+%Y-%m-%d %H:%M:%S')\" > "
+            f"run_01_custom_{STAMP}.done\n")
+    assert sh.index("\nbash run_01_script") < sh.index('\n[ -s "run_01_t_') < sh.index(mark)
+    assert sh.endswith(mark)  # the last line
+    assert _quiet_run(plan) == ["ok", "ok"]
+    assert open(done).read().startswith("MDATK: custom script finished 20")
+    assert TOOLS["user-script"].finish_marks(plan.steps[a.id].settings, plan.steps[a.id].ctx) == \
+        [(f"01_custom/run_01_custom_{STAMP}.done", r"MDATK:\ custom\ script\ finished")]
+    runs = runstate.check_runs(plan)
+    assert (runs[a.id].state, runs[b.id].state) == ("done", "done")
+    assert runs[a.id].finished == os.path.getmtime(done)
+    # killed while writing the marker: not finished
+    with open(done, "w") as fh:
+        fh.write("MDATK: cust")
+    assert runstate.check_runs(plan)[a.id].state == "partial"
+    # a step without outputs is done once its script ran
+    wf2 = WorkflowParams(project_name="run", stamp=STAMP)
+    c = add_node(wf2, "user-script", settings={"script": "true\n"})
+    plan = _written(wf2, str(tmp_path / "plan2"))
+    assert runstate.check_runs(plan)[c.id].state == "missing"
+    assert _quiet_run(plan) == ["ok"]
+    assert runstate.check_runs(plan)[c.id].state == "done"
+
+
+@NEEDS_BASH
+def test_a_fixed_output_name_belongs_to_the_stamp_of_its_run(tmp_path):
+    fixed = [{"name": "t", "kind": "text", "file": "result.txt"}]
+    wf, a, b, root = _chain(tmp_path, 'echo "$MDATK_STAMP" > "$MDATK_OUT_T"\n', fixed, OLD)
+    assert _quiet_run(_written(wf, root)) == ["ok", "ok"]
+    wf.stamp = NEW  # 'New stamp' for the next iteration; nothing written or run yet
+    plan = Plan(wf, root)
+    run = runstate.check_runs(plan)[a.id]
+    assert (run.state, run.stamp, run.current) == ("done", OLD, False)
+    assert runstate.run_status(plan, a.id, NEW).state == "partial"  # result.txt, but no marker of NEW
+    # NEW's run fails after writing part of result.txt: that is no run of OLD either
+    a.settings["script"] = 'echo partial > "$MDATK_OUT_T"\nexit 3\n'
+    plan = _written(wf, root)
+    assert "\nrm -f -- run_01_custom.done run_01_custom_????????-????.done\n" in run_sh(plan, a.id)
+    with pytest.raises(ScriptFailed):
+        _quiet_run(plan)
+    assert runstate.check_runs(plan)[a.id].state == "partial"
+    assert runstate.run_status(plan, a.id, OLD).state == "partial"
+    # a complete run of NEW; step 02 has automatic (stamped) names, so its run of OLD stays complete
+    a.settings["script"] = 'echo "$MDATK_STAMP" > "$MDATK_OUT_T"\n'
+    b.settings["outputs"] = [{"name": "c", "kind": "text"}]
+    plan = _written(wf, root)
+    assert "????????-????" not in run_sh(plan, b.id)
+    assert _quiet_run(plan) == ["ok", "ok"]
+    run = runstate.check_runs(plan)[a.id]
+    assert (run.state, run.stamp, run.current) == ("done", NEW, True)
+    assert sorted(f for f in os.listdir(os.path.join(root, "01_custom")) if f.endswith(".done")) == \
+        [f"run_01_custom_{NEW}.done"]
+    assert sorted(f for f in os.listdir(os.path.join(root, "02_custom")) if f.endswith(".done")) == \
+        [f"run_02_custom_{OLD}.done", f"run_02_custom_{NEW}.done"]
+
+
+@NEEDS_BASH
+def test_two_steps_must_not_write_the_same_file(tmp_path):
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP, step_folders=False)
+    out = [{"name": "r", "kind": "pdb", "file": "result.pdb"}]
+    a = add_node(wf, "user-script", title="model A", settings={"script": 'echo A > "$MDATK_OUT_R"\n',
+                                                                "outputs": out})
+    b = add_node(wf, "user-script", title="model B", settings={"script": 'echo B > "$MDATK_OUT_R"\n',
+                                                                "outputs": out})
+    c = add_node(wf, "user-script", title="reads A", settings={
+        "script": 'cp "$MDATK_IN_M" "$MDATK_OUT_O"\n', "inputs": [{"name": "m", "kind": "pdb"}],
+        "outputs": [{"name": "o", "kind": "text", "file": "o.txt"}]})
+    connect(wf, a.id, "r", c.id, "m")
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    assert [(n, i.message) for n, i in plan.all_issues() if i.level == "error"] == [
+        (b.id, "output 'r': result.pdb is also written by 01 · model A; give one of them another file name")]
+    assert b.id in plan.write().skipped
+    assert _quiet_run(plan) == ["ok", "ok"]
+    assert open(os.path.join(root, "o.txt")).read() == "A\n"
+    # in step folders the same name is two files; one folder for both is reported once, as before
+    wf.step_folders = True
+    assert [i for _n, i in Plan(wf, root).all_issues() if i.level == "error"] == []
+    b.step = a.step
+    assert [i.message for _n, i in Plan(wf, root).all_issues() if i.level == "error"] == [
+        "01 · model B and 01 · model A would write into the same folder with the same names: give one of "
+        "them another step number"]
+    # built-in steps: files passed on from an input or chosen by hand are not written by the step
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP, step_folders=False)
+    for _k in range(2):
+        add_node(wf, "farfar2", settings={"make_inputs": False, "fasta_file": "x.fasta",
+                                          "secstruct_file": "x.secstruct"})
+    apply_template(wf, "amber")
+    for node in apply_template(wf, "amber"):
+        node.step += 10
+    assert not [i for _n, i in Plan(wf, root).all_issues() if "also written by" in i.message]
+
+
+def test_an_output_must_not_be_one_of_the_steps_inputs(tmp_path):
+    root = tmp_path / "plan"
+    model = root / "02_custom" / "model.pdb"  # a hand-picked file in the step's own folder
+    settings = {"script": "true", "inputs": [{"name": "m", "kind": "pdb"}],
+                "outputs": [{"name": "r", "kind": "pdb", "file": "model.pdb"}]}
+    _plan, st = step(settings, files={"m": str(model)}, root=str(root))
+    hits = [i for i in st.issues if i.level == "error" and "model.pdb is also an input file" in i.message]
+    assert hits and hits[0].keys == ("outputs.0.file",)
+    settings["outputs"][0]["file"] = "fixed.pdb"
+    _plan, st = step(settings, files={"m": str(model)}, root=str(root))
+    assert messages(st, "error") == []
+
+
+def test_names_that_bash_would_read_as_options(tmp_path):
+    src = tmp_path / "+fix.sh"
+    src.write_text("echo fixed\n")
+    plan, st = step({"source": "file", "script_file": str(src)})
+    assert messages(st, "error") == [] and "fix.sh" in files_of(plan)
+    assert "\nbash fix.sh\n" in run_sh(plan)
+
+
+@NEEDS_PYTHON3
+def test_an_optional_input_for_several_files_without_any_gives_no_word(tmp_path):
+    settings = {"interpreter": "python3", "arguments": "{out:args} {in:extra}",
+                "script": 'import sys\nopen(sys.argv[1], "w").write(repr(sys.argv[2:]))\n',
+                "inputs": [{"name": "extra", "kind": "any", "optional": True, "multiple": True}],
+                "outputs": [{"name": "args", "kind": "text", "file": "args.txt"}]}
+
+    def words(plan):
+        return shlex.split([ln for ln in run_sh(plan).splitlines() if ln.startswith("python3")][0])[2:]
+
+    plan, st = step(settings, root=str(tmp_path / "plan"))
+    assert messages(st, "error") == [] and words(plan) == ["args.txt"]
+    plan.write()
+    code, _output = run_script(os.path.join(plan.root, "02_custom", f"apt1_02_custom_{STAMP}.sh"),
+                               lambda line: None)
+    assert code == 0 and (tmp_path / "plan" / "02_custom" / "args.txt").read_text() == "[]"
+    plan, _st = step(settings, files={"extra": "/d/a.txt;/d/b c.txt"})
+    assert words(plan) == ["args.txt", "/d/a.txt", "/d/b c.txt"]
+    # one optional file keeps its place as an empty word
+    settings["inputs"][0]["multiple"] = False
+    plan, _st = step(settings)
+    assert words(plan) == ["args.txt", ""]
 
 
 # ---------------------------------------------------------------------------

@@ -379,8 +379,10 @@ name, so after an update the plan no longer sees the outputs of its earlier runs
 in each step's folder for the files the step's outputs name: under the plan's stamp first, otherwise
 under the newest earlier stamp with all of them. Only the files the step's scripts make count; for
 Amber MD every stage's output must also end with pmemd's closing lines, so a run still in progress is
-*partial*. Each box then shows a footer: **done** with the stamp and the time its files were last
-written, **partial** with how many files are there (the details list the missing ones), or **missing**.
+*partial*, and a custom script's run counts only with the marker its run script writes last (see
+[Custom scripts](#custom-scripts)). Each box then shows a footer: **done** with the stamp and the time
+its files were last written, **partial** with how many files are there (the details list the missing
+ones), or **missing**.
 
 A step with a complete run can **use it** (*Use this run* in the details, the right-click menu, or the
 offer after a check): the project file stores the run's stamp in the step (`adopted`), and the planner
@@ -634,8 +636,8 @@ file for another program.
 - **Script.** Type it into the step (*typed here*) or choose a file (*from a file*). Either way its text
   is copied into the step folder each time the step's files are written, so the plan folder stays
   self-contained; after editing the original file, write the step again. *Name in the step folder*
-  names the copy (default `<project>_<step>_script_<time>.sh` / `.py`, or the file's own name), e.g.
-  when a program wants an extension (`.pml` for PyMOL).
+  names the copy (default `<project>_<step>_script_<time>.sh` / `.py`, or the file's own name without
+  a leading `.`, `-` or `+`), e.g. when a program wants an extension (`.pml` for PyMOL).
 - **Run with** bash, python3 or another command (`Rscript`, `python3.12 -u`,
   `vmd -dispdev text -e {script} -args`: the script's name goes where `{script}` is, otherwise at the
   end). *Arguments* follow, in shell syntax.
@@ -655,29 +657,44 @@ step folder and exports these variables (`<NAME>` is the declared name in upper 
 | `MDATK_PROJECT`, `MDATK_STEP`, `MDATK_STAMP` | the parts of the plan's file names |
 
 It then replaces `{in:<name>}`, `{out:<name>}` and `{script}` in the arguments with the names, quoted
-for the shell (one word per file; do not put quotes around them), runs the script, and checks that
-every declared output exists and is not empty. A script that fails (non-zero exit status) or misses an
-output fails the step, so the steps that read from it are not started. For example, a python3 step
-with the input `structure` (PDB), the output `fixed` (PDB, file `fixed.pdb`) and the arguments
+for the shell (one word per file; do not put quotes around them). An optional input without a file
+becomes `''`, an empty word that keeps the place of a positional argument, or no word at all with
+*Several connections*. The run script removes the declared outputs of an earlier run, runs the script,
+checks that every declared output exists and is not empty, and only then writes the marker
+`<project>_<step>_custom_<time>.done`. A script that fails (non-zero exit status) or misses an output
+fails the step, so the steps that read from it are not started; a file left from an earlier run does
+not count. *Check previous runs* counts a run as done only with its marker, so a run that failed or was
+stopped half-way, perhaps after writing part of an output, is *partial*. An output with a fixed file
+name is the same file under every stamp: it belongs to the stamp whose marker is there, and a new run
+removes the markers of the step's earlier stamps too. For example, a python3 step with the input
+`structure` (PDB), the output `fixed` (PDB, file `fixed.pdb`) and the arguments
 `--model {in:structure} -o {out:fixed}` writes
 
 ```bash
 export MDATK_IN_STRUCTURE=../01_build/apt1_01_helix_20261015-1432.pdb
 export MDATK_OUT_FIXED=fixed.pdb
 
+rm -f -- apt1_02_custom_20261015-1432.done fixed.pdb
+rm -f -- apt1_02_custom.done apt1_02_custom_????????-????.done
+
 python3 apt1_02_script_20261015-1432.py --model ../01_build/apt1_01_helix_20261015-1432.pdb -o fixed.pdb
 
 [ -s "fixed.pdb" ] || { echo "ERROR: apt1_02_script_20261015-1432.py did not write fixed.pdb" >&2; exit 1; }
+
+echo "MDATK: custom script finished $(date '+%Y-%m-%d %H:%M:%S')" > apt1_02_custom_20261015-1432.done
 ```
 
 and an Amber build connected to `fixed` reads `../02_custom/fixed.pdb`.
 
 The planner reports as errors: a missing, unreadable or empty script; a placeholder that names no
 declared input or output, or a misspelt one (`{input:x}`); two inputs or two outputs with the same
-name; output file names that are not plain file names (letters, digits, `.`, `_`, `-` and `+`; no
-folders or spaces). A `#!` line that does not match *Run with* is a warning. The plan summary shows the
-command line. MDATK cites nothing for this step and downloads nothing for it; what the script itself
-does is up to you, so review it like any other script before running it.
+name; output file names that are not plain file names (letters, digits, `.`, `_`, `-` and `+`,
+starting with a letter, digit or `_`; no folders or spaces); an output that is one of the step's own
+input files (the run would remove it before the script reads it); an output file that another step
+writes too, which can happen in a plan without step folders. A `#!` line that does not match *Run
+with* is a warning. The plan summary shows the command line. MDATK cites nothing for this step and
+downloads nothing for it; what the script itself does is up to you, so review it like any other script
+before running it.
 
 ### Command line
 

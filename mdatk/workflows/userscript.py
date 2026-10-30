@@ -5,17 +5,21 @@ so the plan folder stays self-contained.  The step declares its own input and ou
 planner ports.  The run script MDATK writes exports their names as ``MDATK_IN_<NAME>`` /
 ``MDATK_OUT_<NAME>``, replaces ``{in:<name>}`` / ``{out:<name>}`` / ``{script}`` in the arguments,
 runs the script with bash, python3 or a command of the user's choice, and stops with an error when a
-declared output is missing, so later steps never start on files that were not written.  Like every
-step, it only writes files; MDATK downloads nothing for it.
+declared output is missing, so later steps never start on files that were not written.  The outputs of
+an earlier run are removed before the script starts, and only a run that passed every check leaves the
+stamped marker ``<project>_<step>_custom_<time>.done`` (:meth:`UserScriptTool.finish_marks`), so neither a
+stale nor a partly written file counts as a finished run.  Like every step, it only writes files; MDATK
+downloads nothing for it.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .naming import file_name
 from .registry import register
 from .schema import FILE_KINDS, GeneratedFile, Issue, Option, Port, Section, kind_label
 
@@ -24,10 +28,15 @@ EXTENSIONS = {"bash": "sh", "python3": "py", "custom": "txt"}  # of a typed scri
 # an input of type "any" accepts every file type; "text" first: the type of a hand-picked unknown file
 ANY_KINDS = ("text",) + tuple(k for k in FILE_KINDS if k != "text")
 MAX_SCRIPT_BYTES = 1 << 20  # a script, not data: data files come in through input ports
+# <project>_<step>_custom_<time>.done, written last by a run that passed every output check
+DONE_EXT = "done"
+DONE_TEXT = "MDATK: custom script finished"
 
 _PORT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_PLAIN_FILE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*$")
-PLAIN_RULE = "use letters, digits, '.', '_', '-' and '+' (no folders or spaces)"
+# no leading '.', '-' or '+': bash reads '+x' after its own name as options ('bash +go.sh' fails)
+_PLAIN_FILE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]*$")
+PLAIN_RULE = ("use letters, digits, '.', '_', '-' and '+', starting with a letter, digit or '_' (no folders "
+              "or spaces)")
 # {in:name} / {out:name} / {script}; '${var:-x}' and '${script}' are shell syntax, not placeholders
 _PLACEHOLDER = re.compile(r"(?<!\$)\{(?:(in|out):([^{}]*)|script)\}")
 _SCRIPT = re.compile(r"(?<!\$)\{script\}")
@@ -41,7 +50,8 @@ INPUT_OPTIONS = [
            "Which outputs of other steps can connect to it ('any file': every type).",
            choices=[("any", "any file")] + [(k, v[0]) for k, v in FILE_KINDS.items()]),
     Option("optional", "Optional", "bool", False,
-           "The step also runs without this file; $MDATK_IN_<NAME> is then empty."),
+           "The step also runs without this file; $MDATK_IN_<NAME> is then empty and {in:<name>} an empty "
+           "word ('', no word at all with several connections)."),
     Option("multiple", "Several connections", "bool", False,
            "Several steps may feed this input. $MDATK_IN_<NAME> holds one path per line and "
            "{in:<name>} becomes one word per file."),
@@ -80,7 +90,7 @@ def env_name(name: str) -> str:
 
 
 def plain_file_name(name: str) -> bool:
-    """A file name without folders, spaces or shell characters (no leading '.' or '-')."""
+    """A file name without folders, spaces or shell characters (no leading '.', '-' or '+')."""
     return bool(_PLAIN_FILE.match(name)) and len(name) <= 200
 
 
@@ -145,8 +155,9 @@ class UserScriptTool(Tool):
                    "Command-line arguments (shell syntax). {in:<name>} becomes the input's path (one word "
                    "per file), {out:<name>} the output's file name and {script} the script's name; do not "
                    "put quotes around them.", placeholder="--model {in:structure} -o {out:result}"),
-        ], tooltip="What runs. The step's run script exports the file names, runs this script in the step "
-                   "folder and checks that every declared output exists and is not empty."),
+        ], tooltip="What runs. The step's run script exports the file names, removes the outputs of an "
+                   "earlier run, runs this script in the step folder and checks that every declared output "
+                   "exists and is not empty."),
         Section("inputs", "Input files", INPUT_OPTIONS, repeat=True, item_label="name",
                 templates=INPUT_TEMPLATES,
                 tooltip="Files the script reads; each one is an input port that other steps connect to."),
@@ -219,9 +230,18 @@ class UserScriptTool(Tool):
         if given:
             return given
         if s.get("source") == "file" and self._source_path(s):
-            base = re.sub(r"[^A-Za-z0-9._+-]", "_", os.path.basename(self._source_path(s))).lstrip(".-")
+            base = re.sub(r"[^A-Za-z0-9._+-]", "_", os.path.basename(self._source_path(s))).lstrip(".-+")
             return base or ctx.name("script", EXTENSIONS["custom"])
         return ctx.name("script", EXTENSIONS.get(s.get("interpreter"), "txt"))
+
+    def done_name(self, ctx) -> str:
+        """Name of the marker the run script writes last, once the script ran and every output passed."""
+        return ctx.name(self.tag, DONE_EXT)
+
+    def finish_marks(self, s, ctx):
+        # the marker, not the outputs, says that a run finished (a failed or killed script can leave a
+        # partial output); it also ties outputs with a fixed name, the same under every stamp, to their run
+        return [(ctx.from_own(self.done_name(ctx)), re.escape(DONE_TEXT))]
 
     def _text(self, s) -> Tuple[str, str]:
         """(script text, problem)."""
@@ -289,13 +309,20 @@ class UserScriptTool(Tool):
                                      f"{s['interpreter']}", ("interpreter",))]
         return []
 
+    @staticmethod
+    def _real(ctx, path: str) -> str:
+        """``path`` (plan-relative or absolute) with links resolved, to compare files."""
+        return os.path.realpath(ctx.abspath(path))
+
     def _check_outputs(self, s, ctx) -> List[Issue]:
         out: List[Issue] = []
         run, script = ctx.name(self.tag, "sh"), self.script_name(s, ctx)
-        if script == run:
-            out.append(Issue("error", f"{script} is the name of the step's run script; choose another name",
+        taken = {run: "the step's run script", self.done_name(ctx): "the file that marks a finished run"}
+        if script in taken:
+            out.append(Issue("error", f"{script} is the name of {taken[script]}; choose another name",
                              ("script_name",)))
-        taken = {run: "the step's run script", script: "the script's copy"}
+        taken[script] = "the script's copy"
+        inputs: Set[str] = {self._real(ctx, p) for v in ctx.inputs.values() for p in v.paths}
         for k, rec in self._records(s, "outputs"):
             name = rec["name"].strip()
             fname = self._output_file(rec, ctx)
@@ -307,6 +334,11 @@ class UserScriptTool(Tool):
                 continue
             if fname in taken:
                 out.append(Issue("error", f"output '{name}': {fname} is also {taken[fname]}", where))
+                continue
+            if self._real(ctx, ctx.from_own(fname)) in inputs:  # the run would delete the file it reads
+                out.append(Issue("error", f"output '{name}': {fname} is also an input file of this step, and "
+                                          "the run removes its outputs before the script starts; write "
+                                          "another file", where))
                 continue
             taken[fname] = f"output '{name}'s file"
             exts = FILE_KINDS.get(rec.get("kind"), ("", ()))[1]
@@ -339,13 +371,17 @@ class UserScriptTool(Tool):
     # ------------------------------------------------------------ files
     def _expand(self, text: str, s, ctx, script: str) -> str:
         outputs = self._outputs(s, ctx)
+        several = {p.name for p in self.input_ports(s) if p.multiple}
 
         def sub(m):
             if m.group(0) == "{script}":
                 return shell_quote(script)
             if m.group(1) == "in":
                 paths = ctx.inps(m.group(2))
-                return " ".join(shell_quote(p) for p in paths) if paths else "''"
+                if paths:
+                    return " ".join(shell_quote(p) for p in paths)
+                # no file: '' keeps a positional argument's place; several files give one word each, so none
+                return "" if m.group(2) in several else "''"
             name = m.group(2)
             return shell_quote(outputs[name]) if name in outputs else m.group(0)  # an error of check()
 
@@ -389,11 +425,21 @@ class UserScriptTool(Tool):
             sh += ["", "# Output files the script must write (in this folder)"]
             sh += [f"export MDATK_OUT_{env_name(name)}={shell_quote(fname)}"
                    for name, fname in outputs.items()]
+        done = self.done_name(ctx)
+        sh += ["", "# The files of an earlier run go first, so only what this run writes passes the checks",
+               "rm -f -- " + " ".join(shell_quote(f) for f in [done, *outputs.values()])]
+        fixed = [outputs[rec["name"].strip()] for _k, rec in self._records(s, "outputs")
+                 if str(rec.get("file") or "").strip() and rec["name"].strip() in outputs]
+        if fixed:
+            base = file_name(ctx.project, ctx.step, self.tag)
+            sh += [f"# {fixed[0]} has the same name in every run, so no earlier run is complete any more",
+                   f"rm -f -- {base}.{DONE_EXT} {base}_????????-????.{DONE_EXT}"]
         sh += ["", "# The script", self.command(s, ctx)]
         if outputs:
             sh += ["", "# Every declared output must exist and not be empty"]
             sh += [require_file(fname, script) for fname in outputs.values()]
-        sh.append("")
+        sh += ["", "# The run is complete ('Check previous runs' looks for this file)",
+               f"echo \"{DONE_TEXT} $(date '+%Y-%m-%d %H:%M:%S')\" > {shell_quote(done)}", ""]
         what = f"your script ({origin})"
         return [GeneratedFile(script, text, "helper", what),
                 GeneratedFile(run, "\n".join(sh), "run", f"runs {script} and checks its outputs")]

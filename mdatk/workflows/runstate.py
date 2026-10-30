@@ -10,7 +10,8 @@ step itself is neither written nor run again until the adoption is dropped (:fun
 
 Only the step's own files count (inputs passed through to an output belong to another step).  A step type
 can also name log files that must end with a program's closing lines (``Tool.finish_marks``), so a run that
-was interrupted after writing its first restart file is not mistaken for a finished one.
+was interrupted after writing its first restart file is not mistaken for a finished one; a custom script's
+run script writes such a file last, after checking the outputs.
 """
 
 from __future__ import annotations
