@@ -67,6 +67,10 @@ In 0.0.10:
   or run again. A step whose production runs in a separate script no longer reports success before
   that script has finished; it **waits** (exit status 75) and the steps after it do not start.
   `mdatk workflow run --include-separate` runs the separate scripts too.
+- **Residue groups follow their names and the topology**: renaming a group renames it everywhere the
+  project uses it (analysis groups, selections, panels, charts, representations, PDB export, planner
+  steps), deleting one that is still used says where, and choosing a topology fills empty or untouched
+  default groups with one group per chain; *Groups from chains* adds the chains no group covers yet.
 
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
 steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
@@ -264,7 +268,7 @@ sideways), opened at the Input page; the icon bar above it switches pages (hover
 | Page | Contents |
 |---|---|
 | **Input** | project notes, topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
-| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker |
+| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker; renames follow every use; *Groups from chains* |
 | **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
 | **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
 | **Layout** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
@@ -742,6 +746,38 @@ Wherever a selection is expected you can write `group:<Name>`, e.g.
 `group:Aptamer and name P C4'`. Fields that ask for a group accept its bare name. Amber
 topologies number residues 1…N in file order. Defaults are provided for the reference system
 (`Aptamer` = 1–12, `Target` = 13–24) — edit them for yours.
+
+**Renaming a group** in the Groups table (confirm the name with Enter or by leaving the cell; Escape
+cancels) renames it everywhere the project uses it: the group choices of the analyses, selections that
+are just its name or contain `group:<Name>`, *Groups shown*, the groups of 3D representations, the
+proximity set, the per-panel group choices and data keys (`contacts@Aptamer+Target/map`), chart
+series, the PDB export subset, other groups' selections and the planner steps' settings. A token that
+only starts with the name (`group:Aptamers`, `group:Aptamer_2`) is another group and stays; project
+notes are never rewritten. Automatic panel titles follow. The status line says how many places
+changed (hover it for the list). Empty names, names with spaces or other characters than letters,
+digits, `_`, `.` and `-`, and names another group has are refused, and flagged red while you type.
+Deleting a group that is still used names the settings that still refer to it; a panel keeps showing
+it as *(missing)* until you choose another group. `Project.rename_group(old, new)` does the same from
+Python and returns the changed locations; `Project.group_references(name)` lists them.
+
+**Groups from chains.** One group per polymer chain of the topology, water and ions left out: from
+the chain IDs when there are several (PDB, or a parm7 written with `RESIDUE_CHAINID`), else from
+segment ids that name several chains, else from bonded fragments numbered in order (`Chain_1`,
+`Chain_2` …; consecutive residues within covalent distance count as bonded when the file has no
+bonds). Groups are named `Chain_<ID>` and get distinct colours. Each group's residue spec is checked
+to select exactly its chain's atoms in that topology: plain ranges (`1-44`) when the residue numbers
+are unique, chain-qualified ranges (`A:1-44`) when chains repeat them, else a selection (as a last
+resort `index …`, which only holds for topologies with the same atom order).
+
+- Choosing a topology on the Input page (or taking the planner's files as inputs) fills the groups
+  **automatically only when nothing you made is overwritten**: when there are no groups, or the two
+  untouched defaults. The defaults are replaced when the topology has at least two chains, unless they
+  already select one chain each (as in the demo); every reference to `Aptamer` then names the first
+  chain's group and every reference to `Target` the second's, so the analyses keep comparing two groups,
+  and further chains are added. With a single chain the defaults stay.
+- Otherwise nothing changes by itself; the status line lists the chains without a group and
+  **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
+  name gets a suffix). Your groups are never changed.
 
 ## Structural view, colouring and glow
 
@@ -1453,6 +1489,7 @@ mdatk/
   pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
   citations.py       per-use citations (data in _citation_data.py)
   selections.py      residue ranges, group:<Name> expansion, frame/time specs, elements
+  chaingroups.py     residue groups from the chains of a topology
   spatial.py         cKDTree / cell-list neighbour search, Kabsch superposition
   cleaning/          cpptraj script generation, streaming execution, cached cleaned outputs;
                      conda environment detection / `conda run`
