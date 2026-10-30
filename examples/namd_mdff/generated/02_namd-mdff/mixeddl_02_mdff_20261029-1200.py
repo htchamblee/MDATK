@@ -661,8 +661,23 @@ def geometry_hand(coords, base):
     return "L" if votes["L"] else "D"
 
 
-def nucleotides(top, xyz):
-    """[(residue index, label, hand from the name, hand from the coordinates, {name: atom index})]."""
+def parse_residues(text):
+    """Residue numbers from '45-73, 80' (1-based); None for an empty text."""
+    if not text or not text.strip():
+        return None
+    out = set()
+    for part in re.split(r"[,\s]+", text.strip()):
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not m or (m.group(2) and int(m.group(2)) < int(m.group(1))):
+            raise PrepError(f"cannot read the residue range {part!r} (e.g. 45-73, 80)")
+        out.update(range(int(m.group(1)), int(m.group(2) or m.group(1)) + 1))
+    return out
+
+
+def nucleotides(top, xyz, declared=None):
+    """[(residue index, label, hand from the name, hand from the coordinates, {name: atom index})].
+    ``declared``: 1-based residue numbers that are L (every other nucleotide is D) - for topologies whose
+    residue names do not tell the hand; it replaces the name, and the geometry still has to agree."""
     out = []
     for r in range(top.nres):
         if top.solvent_residue[r]:
@@ -671,21 +686,23 @@ def nucleotides(top, xyz):
         if not all(n in atoms for n in ("C1'", "C3'", "C4'", "O4'")):
             continue
         base = residue_base(top.labels[r])
-        hand = residue_hand(top.labels[r])
+        hand = residue_hand(top.labels[r]) if declared is None else ("L" if r + 1 in declared else "D")
         geo = geometry_hand({n: xyz[i] for n, i in atoms.items()}, base)
         out.append((r, top.labels[r], hand, geo, atoms))
     return out
 
 
-def chirality_lines(top, xyz, k, targets):
+def chirality_lines(top, xyz, k, targets, declared=None):
     """extraBonds impropers (0-based atoms) restraining every ribose centre to its own hand."""
     lines, problems, notes = [], [], []
-    for r, label, hand, geo, atoms in nucleotides(top, xyz):
+    how = "named as" if declared is None else "declared"
+    fix = "the residue name" if declared is None else "the declared L residues"
+    for r, label, hand, geo, atoms in nucleotides(top, xyz, declared):
         if hand is None and geo is None:
             problems.append(f"residue {r + 1} ({label}): neither its name nor its geometry tells D from L")
             continue
         if hand is not None and geo is not None and hand != geo:
-            problems.append(f"residue {r + 1} ({label}) is named as {hand} but its sugar has {geo} geometry")
+            problems.append(f"residue {r + 1} ({label}) is {how} {hand} but its sugar has {geo} geometry")
             continue
         use = hand or geo
         if hand is None:
@@ -710,8 +727,8 @@ def chirality_lines(top, xyz, k, targets):
         if other_hand:
             centres = f"{', '.join(other_hand)} {'has' if len(other_hand) == 1 else 'have'} the other hand"
             if hand:
-                problems.append(f"residue {r + 1} ({label}) is named as {use} but its {centres}: the restraints "
-                                "would invert it - correct the model or the residue name")
+                problems.append(f"residue {r + 1} ({label}) is {how} {use} but its {centres}: the restraints "
+                                f"would invert it - correct the model or {fix}")
             else:  # the hand is the vote of C1' C3' C4', so only C2' can disagree and no name would help
                 problems.append(f"residue {r + 1} ({label}): its sugar is {use} by C1' C3' C4' but its {centres}: "
                                 "the restraints would invert it - correct the model")
@@ -1035,9 +1052,11 @@ def prep(cfg, write=True):
     if cfg["periodic"] and box is None:
         problems.append(f"{cfg['coordinates']} has no box line; the solvated run needs one")
     problems += bond_problems(top, xyz)
-    nts = nucleotides(top, xyz)
+    declared = cfg["chirality"].get("l_residues")
+    declared = set(declared) if declared is not None else None
+    nts = nucleotides(top, xyz, declared)
     if cfg["chirality"]["enabled"]:
-        _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
+        _lines, bad, more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"], declared)
         problems += bad
         notes += more
     ssd = cfg.get("ssdihedrals") or {"enabled": False}
@@ -1124,7 +1143,7 @@ def prep(cfg, write=True):
                   "positional restraints: beta = force constant (kcal/mol/A^2), reference = these coordinates")
         print(f"wrote {cfg['restraint_pdb']} ({len(chosen)} restrained atoms)")
     if cfg["chirality"]["enabled"]:
-        lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"])
+        lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"], declared)
         with open(cfg["extrabonds"], "w", encoding="ascii", errors="replace") as fh:
             fh.write("# L-RNA-safe chirality restraints (MDATK): harmonic impropers at C1' C2' C3' C4' with the\n"
                      "# target of each residue's own hand (D value, or its mirror image for L residues).\n"
@@ -1243,7 +1262,7 @@ SETTINGS = {}
 
 
 # --- settings written by MDATK ---
-SETTINGS = {'topology': '../01_amber-build/mixeddl_01_parmed_20261029-1200.parm7', 'coordinates': 'mixeddl_02_start_20261029-1200.rst7', 'model': '../../mixed_dl_model.pdb', 'map': '../../mixed_dl_4A.mrc', 'periodic': True, 'four_site': False, 'timestep': 4.0, 'threshold': 0.0, 'pad': 8.0, 'couple': 'heavy', 'couple_ions': False, 'min_overlap': 0.3, 'max_frame_rmsd': 2.0, 'resample_divisor': 2, 'potential': 'mixeddl_02_potential_20261029-1200.dx', 'grid_pdb': 'mixeddl_02_coupling_20261029-1200.pdb', 'restraint_pdb': 'mixeddl_02_posres_20261029-1200.pdb', 'extrabonds': 'mixeddl_02_chirality_20261029-1200.txt', 'xsc': 'mixeddl_02_cell_20261029-1200.xsc', 'prep_json': 'mixeddl_02_prep_20261029-1200.json', 'final_pdb': 'mixeddl_02_fitted_20261029-1200.pdb', 'final_coor': 'mixeddl_02_final-min_20261029-1200.coor', 'chirality': {'enabled': True, 'k': 200.0, 'targets': {"C1'": -35.01, "C2'": 40.03, "C3'": 38.3, "C4'": 33.31}}, 'basepairs': {'enabled': True, 'pairs': [[1, 8, 'GC'], [2, 7, 'CG'], [3, 6, 'GC'], [4, 5, 'CG'], [9, 16, 'GC'], [10, 15, 'CG'], [11, 14, 'GC'], [12, 13, 'CG']], 'bonds': {'GC': [['O6', 'N4'], ['N1', 'N3'], ['N2', 'O2']], 'CG': [['N4', 'O6'], ['N3', 'N1'], ['O2', 'N2']]}, 'offset': 0, 'walls': [2.7, 3.2, 10.0], 'file': 'mixeddl_02_basepairs_20261029-1200.txt'}, 'positional': {'selection': 'none', 'k': 1.0}, 'ssdihedrals': {'enabled': True, 'k': 200.0, 'residues': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 'file': 'mixeddl_02_ssdihedrals_20261029-1200.txt'}}
+SETTINGS = {'topology': '../01_amber-build/mixeddl_01_parmed_20261029-1200.parm7', 'coordinates': 'mixeddl_02_start_20261029-1200.rst7', 'model': '../../mixed_dl_model.pdb', 'map': '../../mixed_dl_4A.mrc', 'periodic': True, 'four_site': False, 'timestep': 4.0, 'threshold': 0.0, 'pad': 8.0, 'couple': 'heavy', 'couple_ions': False, 'min_overlap': 0.3, 'max_frame_rmsd': 2.0, 'resample_divisor': 2, 'potential': 'mixeddl_02_potential_20261029-1200.dx', 'grid_pdb': 'mixeddl_02_coupling_20261029-1200.pdb', 'restraint_pdb': 'mixeddl_02_posres_20261029-1200.pdb', 'extrabonds': 'mixeddl_02_chirality_20261029-1200.txt', 'xsc': 'mixeddl_02_cell_20261029-1200.xsc', 'prep_json': 'mixeddl_02_prep_20261029-1200.json', 'final_pdb': 'mixeddl_02_fitted_20261029-1200.pdb', 'final_coor': 'mixeddl_02_final-min_20261029-1200.coor', 'chirality': {'enabled': True, 'k': 200.0, 'targets': {"C1'": -35.01, "C2'": 40.03, "C3'": 38.3, "C4'": 33.31}, 'l_residues': None}, 'basepairs': {'enabled': True, 'pairs': [[1, 8, 'GC'], [2, 7, 'CG'], [3, 6, 'GC'], [4, 5, 'CG'], [9, 16, 'GC'], [10, 15, 'CG'], [11, 14, 'GC'], [12, 13, 'CG']], 'bonds': {'GC': [['O6', 'N4'], ['N1', 'N3'], ['N2', 'O2']], 'CG': [['N4', 'O6'], ['N3', 'N1'], ['O2', 'N2']]}, 'offset': 0, 'walls': [2.7, 3.2, 10.0], 'file': 'mixeddl_02_basepairs_20261029-1200.txt'}, 'positional': {'selection': 'none', 'k': 1.0}, 'ssdihedrals': {'enabled': True, 'k': 200.0, 'residues': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 'file': 'mixeddl_02_ssdihedrals_20261029-1200.txt'}}
 
 
 if __name__ == "__main__":

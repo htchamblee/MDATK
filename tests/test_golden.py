@@ -8,6 +8,7 @@ introduces it."""
 
 import json
 import os
+import re
 
 import pytest
 
@@ -15,6 +16,18 @@ import golden
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REFERENCE = os.path.join(HERE, "data", "golden_v0.0.7.json")
+# intended changes of 0.0.7 output, each with its reason; everything else must match 0.0.7 byte for byte
+INTENDED = [
+    # 0.0.8: the Amber build's topology check also checks that residues named as nucleotides have a
+    # nucleotide's atoms (an L-RNA library without the names MDATK writes: LA / LU became La / Lu ions)
+    (re.compile(r"(^|/|:)[^/]*_check_\d{8}-\d{4}\.py$"), None),
+    # ... and runs for dry L-RNA builds too (they had no topology check)
+    (re.compile(r"_amber-build_\d{8}-\d{4}\.sh$|_00_plan_\d{8}-\d{4}\.md$"), {"tool:amber-build:water=none"}),
+]
+
+
+def intended(case, key):
+    return any(rx.search(key) and (cases is None or case in cases) for rx, cases in INTENDED)
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +45,8 @@ def test_released_output_unchanged(reference):
     assert set(ref) <= set(now), f"cases no longer generated: {sorted(set(ref) - set(now))[:10]}"
     changed = {}
     for case, files in ref.items():
-        diff = sorted(k for k in set(files) | set(now[case]) if files.get(k) != now[case].get(k))
+        diff = sorted(k for k in set(files) | set(now[case])
+                      if files.get(k) != now[case].get(k) and not intended(case, k))
         if diff:
             changed[case] = diff
     assert not changed, (f"{len(changed)} case(s) differ from 0.0.7, e.g. "

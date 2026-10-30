@@ -58,7 +58,7 @@ def write_parm7(path, atoms, residues, pairs):
 def system(tmp_path, ld_pair=True, mg_charge=2.0, cl_missing=0.0, ion=ION):
     OWN["MG"] = ion
     atoms = [("OS", -1.0), ("LD", -1.0), ("HO", 0.0), ("OW", cl_missing), ("MG", mg_charge)]
-    residues = [("G5", 1), ("WAT", 4), ("MG", 5)]
+    residues = [("LIG", 1), ("WAT", 4), ("MG", 5)]  # a small solute residue (not a nucleotide name)
     ref = mg_params.amber_pair(*SET.rna["OS"])
     pairs = {("MG", "OS"): ref}
     if ld_pair:
@@ -134,7 +134,7 @@ def test_mapped_type_sharing_an_lj_type_is_reported(tmp_path):
     # XO reuses the OS Lennard-Jones terms, so tleap merges it into the OS LJ type; mapping it as OH
     # would overwrite the OS pair
     atoms = [("OS", -1.0), ("OS", 0.0), ("MG", 2.0), ("OW", -1.0)]
-    path = write_parm7(tmp_path / "s.parm7", atoms, [("G5", 1), ("MG", 3), ("WAT", 4)],
+    path = write_parm7(tmp_path / "s.parm7", atoms, [("LIG", 1), ("MG", 3), ("WAT", 4)],
                        {("MG", "OS"): mg_params.amber_pair(*SET.rna["OS"])})
     os_ref = [round(v, 6) for v in mg_params.amber_pair(*SET.rna["OS"])]
     oh_ref = [round(v, 6) for v in mg_params.amber_pair(*SET.rna["OH"])]
@@ -150,7 +150,7 @@ def test_mapped_type_sharing_an_lj_type_is_reported(tmp_path):
 def test_shared_solute_water_lj_type_is_noted(tmp_path, capsys):
     atoms = [("OS", -1.0), ("HO", 0.0), ("HO", 0.0), ("HO", 0.0), ("MG", 2.0), ("OW", -1.0)]
     # HO of the RNA and the water hydrogens (also zero LJ, typed HW in a real topology) share an LJ type
-    path = write_parm7(tmp_path / "s.parm7", atoms, [("G5", 1), ("WAT", 3), ("MG", 5), ("WAT", 6)],
+    path = write_parm7(tmp_path / "s.parm7", atoms, [("LIG", 1), ("WAT", 3), ("MG", 5), ("WAT", 6)],
                        {("MG", "OS"): mg_params.amber_pair(*SET.rna["OS"])})
     text = open(path).read().replace("OS  HO  HO  HO  MG", "OS  HO  HW  HW  MG")
     open(path, "w").write(text)
@@ -164,8 +164,18 @@ def test_solvent_is_classified_by_residue(tmp_path):
     # the sodium ion (a single-atom residue, whatever its name) does not
     atoms = [("OS", -1.0), ("NA", 0.0), ("MG", 2.0), ("Na+", 1.0), ("OW", -2.0)]
     refs = {("MG", "OS"): mg_params.amber_pair(*SET.rna["OS"])}
-    path = write_parm7(tmp_path / "s.parm7", atoms, [("G", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)
+    path = write_parm7(tmp_path / "s.parm7", atoms, [("LIG", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)
     problems = run(path)
     assert len(problems) == 1 and "NA (1)" in problems[0] and "Na+" not in problems[0]
     refs[("MG", "NA")] = mg_params.amber_pair(*SET.rna["NA"])
-    assert run(write_parm7(tmp_path / "t.parm7", atoms, [("G", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)) == []
+    assert run(write_parm7(tmp_path / "t.parm7", atoms, [("LIG", 1), ("MG", 3), ("SOD", 4), ("WAT", 5)], refs)) == []
+
+
+def test_residue_named_as_a_nucleotide_must_have_a_nucleotides_atoms(tmp_path):
+    # an L-RNA library without the names MDATK writes: tleap resolves LA to lanthanum (atomic_ions.lib)
+    atoms = [("OS", -1.0)] * 12 + [("NA", 1.0), ("MG", 2.0), ("Na+", -2.0)]
+    path = write_parm7(tmp_path / "la.parm7", atoms, [("LG5", 1), ("LA", 13), ("MG", 14), ("LIG", 15)], {})
+    problems = run(path, neutral=False, mg_count=0, ion_lj=None, pairs=False)
+    assert len(problems) == 1 and "residue 2 LA with 1" in problems[0] and "lanthanum" in problems[0]
+    path = write_parm7(tmp_path / "ok.parm7", atoms, [("LG5", 1), ("LIG", 13), ("MG", 14), ("LIG2", 15)], {})
+    assert run(path, neutral=False, mg_count=0, ion_lj=None, pairs=False) == []

@@ -187,6 +187,11 @@ class NamdMDFFTool(Tool):
                    "Secondary-structure dihedral restraints (kcal/mol/rad², E = k (θ − θ₀)²). Trabuco et al. (2008) "
                    "use 200 and discourage softening them: they are what prevents overfitting.",
                    minimum=0.0, maximum=10000.0, digits=1),
+            Option("l_residues", "L residues", "text", "",
+                   "Topology residue numbers of the L residues, e.g. 45-73 - for topologies whose residue names "
+                   "do not tell the hand (an L-RNA library that writes D names). Every other nucleotide is then D, "
+                   "and each residue's sugar geometry must agree, or the run stops. Empty: the hand comes from the "
+                   "residue names (LA, LG5 ...).", placeholder="45-73"),
             Option("sequence", "Sequence", "multiline", "",
                    "For a typed secondary structure: RNA sequence in topology order, chains separated by spaces.",
                    placeholder="GGGCAC GUGCCC"),
@@ -298,6 +303,14 @@ class NamdMDFFTool(Tool):
         keep, skip = rna.classify_pairs(model, True)
         return sorted({p + s["res_offset"] for i, j, _k in keep + skip for p in (i, j)})
 
+    @staticmethod
+    def l_residues(s) -> Optional[List[int]]:
+        try:
+            found = _namd_mdff.parse_residues(s["l_residues"])
+        except _namd_mdff.PrepError:
+            return None  # reported by check()
+        return sorted(found) if found is not None else None
+
     def uses(self, s, key: str) -> bool:
         return any(st[key] for st in s["stages"])
 
@@ -317,7 +330,8 @@ class NamdMDFFTool(Tool):
             "extrabonds": n("chirality", "txt"), "xsc": n("cell", "xsc"),
             "prep_json": n("prep", "json"), "final_pdb": n("fitted", "pdb"),
             "final_coor": self.runs(s, ctx)[-1]["out"] + ".coor" if s["stages"] else "",
-            "chirality": {"enabled": self.uses(s, "chirality"), "k": s["chirality_k"], "targets": dict(D_IMPROPERS)},
+            "chirality": {"enabled": self.uses(s, "chirality"), "k": s["chirality_k"], "targets": dict(D_IMPROPERS),
+                          "l_residues": self.l_residues(s)},
             "basepairs": {"enabled": self.uses(s, "basepairs") and bool(pairs), "pairs": [list(p) for p in pairs],
                           "bonds": {k: [list(b) for b in v] for k, v in bonds.items()}, "offset": s["res_offset"],
                           "walls": [s["bp_lower"], s["bp_upper"], s["bp_k"]], "file": n("basepairs", "txt")},
@@ -372,6 +386,10 @@ class NamdMDFFTool(Tool):
         if any(c in ctx.inp("topology") for c in "{}\n"):
             out.append(Issue("error", "the topology's path contains a brace, which a NAMD configuration cannot "
                                       "hold; move or rename the file", ("input:topology",)))
+        try:
+            _namd_mdff.parse_residues(s["l_residues"])
+        except _namd_mdff.PrepError as exc:
+            out.append(Issue("error", f"L residues: {exc}", ("l_residues",)))
         if data.get("c4"):
             out.append(Issue("error", "the topology carries 12-6-4 C4 terms (Li & Merz 12-6-4 Mg²⁺); NAMD cannot apply "
                                       "them. Build with the 12-6, microMg or nanoMg model for NAMD.", ("input:topology",)))
@@ -483,7 +501,8 @@ class NamdMDFFTool(Tool):
         except OSError:
             return []
         key = (top_path, crd_path, stamp, cfg["periodic"], cfg["four_site"], cfg["timestep"],
-               cfg["chirality"]["enabled"], cfg["ssdihedrals"]["enabled"], tuple(cfg["ssdihedrals"]["residues"]))
+               cfg["chirality"]["enabled"], cfg["ssdihedrals"]["enabled"], tuple(cfg["ssdihedrals"]["residues"]),
+               tuple(cfg["chirality"]["l_residues"] or ()), cfg["chirality"]["l_residues"] is None)
         if key not in _FILE_CHECKS:
             if len(_FILE_CHECKS) > 32:
                 _FILE_CHECKS.clear()
@@ -516,7 +535,9 @@ class NamdMDFFTool(Tool):
             if xyz is not None:
                 problems += _namd_mdff.bond_problems(top, xyz)
                 if cfg["chirality"]["enabled"]:
-                    _lines, bad, _more = _namd_mdff.chirality_lines(top, xyz, 1.0, D_IMPROPERS)
+                    declared = cfg["chirality"].get("l_residues")
+                    _lines, bad, _more = _namd_mdff.chirality_lines(top, xyz, 1.0, D_IMPROPERS,
+                                                                    set(declared) if declared is not None else None)
                     problems += bad
                 if cfg["ssdihedrals"]["enabled"]:
                     problems += _namd_mdff.ss_dihedral_lines(top, xyz, cfg["ssdihedrals"]["residues"], 1.0)[1]
