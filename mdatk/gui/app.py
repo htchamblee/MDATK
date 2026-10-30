@@ -106,6 +106,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._name_edit: Optional[dict] = None  # state of the group-name cell being edited
         self._chain_request = 0  # newest chain-group request (older answers are dropped)
         self._chains_offered = ""  # topology whose chain groups were last offered automatically
+        self._chains_reading = 0  # the manual chain request whose "Reading …" line is shown
         self._topology_timer = 0
         self.slot_rows: List[dict] = []
         self.busy_widgets: List[Gtk.Widget] = []
@@ -862,23 +863,30 @@ class MainWindow(Gtk.ApplicationWindow):
             return True
         try:
             project = self.collect(validate=False)
+            before = project.copy()
             refs = project.rename_group(old, new)
         except ValueError as exc:
             self._group_message(f"Group {old} not renamed; fix these settings first: {exc}", error=True)
             return False
-        refs = self._adopt_project(project, refs, rows_in_place=True)
+        refs = self._adopt_project(project, refs, before, rows_in_place=True)
         self._group_message(f"Renamed {old} → {new} in {len(refs)} place{'' if len(refs) == 1 else 's'}",
                             detail=", ".join(refs))
         return True
 
-    def _adopt_project(self, project: Project, changed: List[str], rows_in_place: bool = False) -> List[str]:
-        """Make ``project`` (the settings collected from the widgets, then changed at the locations
-        ``changed``) current and reload the widgets of those settings only.  ``rows_in_place`` updates
-        the group rows without rebuilding the table, where a name cell may still be open.  Automatic
-        panel titles follow their data; returns ``changed`` with those titles."""
+    def _adopt_project(self, project: Project, changed: List[str], before: Project,
+                       rows_in_place: bool = False) -> List[str]:
+        """Make ``project`` (the settings collected from the widgets as ``before``, then changed at the
+        locations ``changed``) current and reload the widgets of those settings only.  ``rows_in_place``
+        updates the group rows without rebuilding the table, where a name cell may still be open.
+        Automatic panel titles follow their data: a title that was its data's label, or the automatic
+        or default title of a panel whose data keys changed; returns ``changed`` with those titles."""
         changed = list(changed)
         for k, (row, spec) in enumerate(zip(self.slot_rows, project.layout.panels)):
-            if spec.series and row["auto"] and spec.title == row["auto"]:
+            if not (spec.series and row["auto"] and spec.title == row["auto"]):
+                continue
+            # a default title ("RMSD") is not its data's label: it stays while the panel's keys do
+            moved = any(c.startswith(f"layout.panels[{k}].series") for c in changed)
+            if moved or spec.title == key_label(spec.series[0], before):
                 title = key_label(spec.series[0], project)
                 if title != spec.title:
                     spec.title = title
@@ -921,9 +929,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 "; ".join(f"{n} in {', '.join(refs)}" for n, refs in uses), error=True)
 
     def groups_from_chains(self, auto: bool = False) -> None:
-        """'Groups from chains': add one group per chain of the topology (read in the background).
-        ``auto`` (a topology was just chosen) only fills empty or untouched default groups; otherwise
-        it names the chains that have no group yet."""
+        """'Groups from chains': add a group for each chain of the topology that no group selects yet
+        (read in the background); existing groups are kept.  ``auto`` (a topology was just chosen)
+        instead fills empty or untouched default groups, and only names the chains left without one."""
         path = self.topology_entry.get_text().strip()
         if not os.path.isfile(path):
             if not auto:
@@ -932,7 +940,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._chain_request += 1
         request, existing = self._chain_request, self._get_groups()
         if not auto:
-            self.group_status.set_text(f"Reading the chains of {os.path.basename(path)} …")
+            self._chains_reading = request
+            self.group_status.set_text(self._reading_text(path))
 
         def work():
             try:
@@ -943,10 +952,20 @@ class MainWindow(Gtk.ApplicationWindow):
 
         threading.Thread(target=work, name="mdatk-chains", daemon=True).start()
 
+    @staticmethod
+    def _reading_text(path: str) -> str:
+        return f"Reading the chains of {os.path.basename(path)} …"
+
     def _chains_ready(self, request: int, path: str, auto: bool, chains, error) -> None:
-        if request != self._chain_request or self._topology_timer < 0:
-            return  # superseded by a newer request, or the window is gone
+        if self._topology_timer < 0:
+            return  # the window is gone
         name = os.path.basename(path)
+        # superseded by a newer request or by loading a project, or the topology changed meanwhile
+        if request != self._chain_request or path != self.topology_entry.get_text().strip():
+            if request == self._chains_reading and self.group_status.get_text() == self._reading_text(path):
+                self._group_message(f"Groups not changed: the topology changed while the chains of {name} "
+                                    "were read")
+            return
         if error is not None:
             self._group_message(f"Could not read the chains of {name}: {error}", error=True)
             return
@@ -956,9 +975,10 @@ class MainWindow(Gtk.ApplicationWindow):
             if not auto:
                 self._group_message(f"Groups not changed; fix these settings first: {exc}", error=True)
             return
+        before = project.copy()
         merge = chaingroups.merge_chain_groups(project, chains, auto=auto)
         if merge.changed:
-            merge.references = [c for c in self._adopt_project(project, merge.references + ["groups"])
+            merge.references = [c for c in self._adopt_project(project, merge.references + ["groups"], before)
                                 if c != "groups"]
         if merge.changed or merge.pending or not auto:
             self._group_message(merge.summary(name), detail=", ".join(merge.references))
@@ -983,6 +1003,19 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._topology_timer > 0:
             GLib.source_remove(self._topology_timer)
         self._topology_timer = -1  # the window is gone: no more chain look-ups
+
+    def _forget_chain_requests(self) -> None:
+        """Another project was loaded: chain groups being read or about to be offered belong to the
+        previous one, and so does the status line.  Loading never fills groups, so the loaded topology
+        counts as offered (choosing another one offers its chains)."""
+        self._chain_request += 1
+        if self._topology_timer > 0:
+            GLib.source_remove(self._topology_timer)
+            self._topology_timer = 0
+        self._chains_offered = self.topology_entry.get_text().strip()
+        self.group_status.set_text("")
+        self.group_status.set_tooltip_text(None)
+        self.group_status.get_style_context().remove_class("error")
 
     # --------------------------------------------------------------- analyses
     def _tab_analyses(self):
@@ -1785,6 +1818,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.binder.load(project)
         finally:
             self._loading = False
+        self._forget_chain_requests()
         self._on_scale()
         self._update_density_status()
         self.header.set_subtitle(path or "unsaved project")
@@ -1983,10 +2017,12 @@ class MainWindow(Gtk.ApplicationWindow):
             project.cleaning.enabled = True
         planner, wizard = self.planner, self.wizard
         self.planner = self.wizard = None  # same workflow object: keep the windows as they are
+        offered = self._chains_offered
         try:
             self.load_project(project, self.project_path)
         finally:
             self.planner, self.wizard = planner, wizard
+        self._chains_offered = offered  # the same project with a new topology: offer its chains
         self._on_topology_changed()  # chain groups for empty or untouched default groups
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "

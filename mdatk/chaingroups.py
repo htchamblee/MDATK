@@ -9,11 +9,12 @@ through the selection code the analyses use: plain residue ranges when the resid
 unique, else chain-qualified ranges (``A:1-40``), else a selection.
 
 :func:`merge_chain_groups` decides what may change in a project.  Chain groups only fill groups that
-are empty, or replace the untouched default groups (``Aptamer`` / ``Target``) when there are at least
-as many chains and the defaults do not already select a chain each; then every reference to a
-default follows the chain group that takes its place (``Aptamer`` -> the first chain, ``Target`` ->
-the second; see :meth:`mdatk.config.Project.rename_group`).  Otherwise existing groups are never
-changed: on request the chains that no group selects yet are added.
+are empty, or, when a topology was just chosen, replace the untouched default groups (``Aptamer`` /
+``Target``) when there are at least as many chains and the defaults do not already select a chain
+each; then every reference to a default follows the chain group that takes its place (``Aptamer`` ->
+the first chain, ``Target`` -> the second; see :meth:`mdatk.config.Project.rename_group`).  Otherwise
+existing groups, the defaults included, are never changed: on request ('Groups from chains') the
+chains that no group selects yet are added.
 """
 
 from __future__ import annotations
@@ -284,11 +285,12 @@ def topology_chain_groups(path: str, existing: Sequence[ResidueGroup] = ()) -> L
 def merge_chain_groups(project: Project, chains: Sequence[ChainGroup], auto: bool = False) -> ChainMerge:
     """Bring the chain groups into ``project`` (see the module docstring for the rule).  ``auto``: the
     topology was just chosen; only empty or untouched default groups change, and the chains that no
-    group selects yet are listed in ``pending`` instead of being added."""
+    group selects yet are listed in ``pending`` instead of being added.  Otherwise (the button) the
+    chains that no group selects are added and every existing group is kept."""
     out = ChainMerge()
     if not chains:
         return out
-    defaults = untouched_defaults(project.groups)
+    defaults = auto and untouched_defaults(project.groups)
     fits = {g.name for g in project.groups} <= {c.covered_by for c in chains}
     if defaults and not fits and len(chains) >= len(project.groups):
         for g, c in zip(list(project.groups), chains):
