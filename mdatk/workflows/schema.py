@@ -36,6 +36,7 @@ class Option:
     ``requires`` makes the option available only when other settings have
     given values: ``{"engine": ("pmemd.MPI",)}``, ``{"shake": True}``.  The
     wizard greys the widget out otherwise and the generators ignore it.
+    ``rows`` asks the wizard for a taller ``multiline`` box (lines shown).
     """
 
     key: str
@@ -52,6 +53,7 @@ class Option:
     placeholder: str = ""
     unit: str = ""
     requires: Dict[str, Any] = field(default_factory=dict)
+    rows: int = 0  # multiline: visible lines in the wizard (0: a small box)
 
     def __post_init__(self):
         if self.kind not in KINDS:

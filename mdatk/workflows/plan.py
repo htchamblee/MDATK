@@ -426,6 +426,9 @@ class Plan:
                 lines.append(f"Folder: `{step.ctx.folder or '.'}`  ")
             lines.append(f"Type: {step.tool.label}")
             lines.append("")
+            extra = step.tool.summary_lines(step.settings, step.ctx) if step.ctx is not None else []
+            if extra:
+                lines += extra + [""]
             if step.ctx and step.ctx.inputs:
                 lines.append("Inputs:")
                 for port, value in step.ctx.inputs.items():

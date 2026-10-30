@@ -950,7 +950,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "
-                                        "VMD) and the Project Planner")
+                                        "VMD, custom scripts) and the Project Planner")
     wsub = p.add_subparsers(dest="wcommand", metavar="action")
     w = wsub.add_parser("tools", help="list step types, or the options of one")
     w.add_argument("tool", nargs="?")
