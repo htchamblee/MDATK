@@ -1,7 +1,10 @@
 """RNAdo's output log panel: planner messages and the output of the scripts it runs.
 
 Lines arrive from any thread (:meth:`LogPanel.feed`, :meth:`LogPanel.feed_script`) and are inserted on
-the GTK main loop in batches, so a chatty script never floods the loop with one callback per line.
+the GTK main loop in batches, so a chatty script never floods the loop with one callback per line.  A batch
+holds at most :data:`MAX_BATCH` lines, the newest: when a script prints faster than the panel can show
+(``cat`` of a large file, ``seq 1 1000000``) the panel skips lines, and a note says how many, but the window
+stays responsive.
 Every script line carries its step number (``[03] ``); stderr and lines starting with ERROR or WAITING
 are highlighted.  The panel filters by step, shows the stored log of a step's last run (from the
 project's step log), and keeps at most :data:`MAX_LINES` lines like the analysis window's log.
@@ -11,6 +14,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import gi
@@ -24,6 +28,13 @@ from . import widgets as W  # noqa: E402
 MAX_LINES = 6000  # beyond this the oldest lines go ...
 KEEP_LINES = 5000  # ... down to this many
 FLUSH_MS = 40  # lines that arrive within this time are inserted together
+# Lines one flush inserts at most, the newest (a note counts the others): a flush then takes well under
+# 0.1 s, so Cancel stays reachable.  Below KEEP_LINES, so the note survives the trimming.
+MAX_BATCH = 2000
+# A thread that floods the panel pauses this long after every MAX_BATCH lines it queues: the main loop's
+# Python code (drawing the planner, the progress bar) waits for the GIL after every GTK call, and without
+# the pause it would wait for that thread most of the time.
+FLOOD_PAUSE_S = 0.001
 _MARK = re.compile(r"\[(\d{2,})\] ")
 _STATUS = re.compile(r"==== step (\d+):")
 TAGS = {  # tag -> text properties
@@ -77,7 +88,8 @@ class LogPanel(Gtk.Box):
         self.on_expanded = on_expanded
         self.records: List[Line] = []
         self._pending: List[Line] = []
-        self._lock = threading.Lock()
+        self._skipped: Dict[Optional[int], int] = {}  # step -> queued lines dropped since the last flush
+        self._lock = threading.RLock()  # RLock: a GTK handler may log while a flush holds it
         self._flush_id = 0
         self._dead = False
         self._filter: Optional[int] = None  # step shown (None: all lines)
@@ -170,8 +182,19 @@ class LogPanel(Gtk.Box):
             if self._dead:
                 return
             self._pending.extend(lines)
+            flood = len(self._pending) > 2 * MAX_BATCH
+            if flood:  # dropped in chunks: constant work per line
+                self._skip(len(self._pending) - MAX_BATCH)
             if not self._flush_id:
                 self._flush_id = GLib.timeout_add(FLUSH_MS, self._flush)
+        if flood and threading.current_thread() is not threading.main_thread():
+            time.sleep(FLOOD_PAUSE_S)  # the GIL to the main loop for a moment (see FLOOD_PAUSE_S)
+
+    def _skip(self, n: int) -> None:
+        """Drop the ``n`` oldest queued lines, counted per step for the note (the lock is held)."""
+        for r in self._pending[:n]:
+            self._skipped[r.step] = self._skipped.get(r.step, 0) + 1
+        del self._pending[:n]
 
     def flush(self) -> None:
         """Insert the queued lines now (main loop)."""
@@ -181,26 +204,43 @@ class LogPanel(Gtk.Box):
         self._flush()
 
     def _flush(self) -> bool:
+        # The lock is held throughout: a script's reader thread waits here instead of competing for the
+        # GIL, which every GTK call releases; with a chatty script each call would wait for it.
         with self._lock:
+            if len(self._pending) > MAX_BATCH:
+                self._skip(len(self._pending) - MAX_BATCH)
             pending, self._pending = self._pending, []
+            skipped, self._skipped = self._skipped, {}
             self._flush_id = 0
-        if not pending or self._dead:
-            return False
-        self.records.extend(pending)
-        if not self.stored_btn.get_active():
-            self._insert([r for r in pending if self._visible(r)])
-        new_steps = {r.step for r in pending if r.step is not None and r.step not in self._steps}
+            if (pending or skipped) and not self._dead:
+                self._show_batch(pending, skipped)
+        return False
+
+    def _show_batch(self, pending: List[Line], skipped: Dict[Optional[int], int]) -> None:
+        # no "see the step log": it keeps only the end of a script's output (projectfile.LOG_OUTPUT_CHARS)
+        notes = [Line(step, "info", "" if step is None else f"[{step:02d}] ",
+                      f"… {n} line(s) not shown: they came faster than the log can show them")
+                 for step, n in sorted(skipped.items(), key=lambda kv: -1 if kv[0] is None else kv[0])]
+        batch = notes + pending
+        live = not self.stored_btn.get_active()
+        total = len(self.records) + len(batch)
+        if total > MAX_LINES:  # the oldest lines go first: the buffer never holds more than MAX_LINES
+            cut = total - KEEP_LINES
+            old = min(cut, len(self.records))
+            n = sum(1 for r in self.records[:old] if self._visible(r))
+            if n and live:
+                self.buffer.delete(self.buffer.get_start_iter(), self.buffer.get_iter_at_line(n))
+            self.records = self.records[old:]
+            batch = batch[cut - old:]
+        self.records.extend(batch)
+        if live:
+            self._insert([r for r in batch if self._visible(r)])
+        new_steps = {r.step for r in batch if r.step is not None and r.step not in self._steps}
         if new_steps:  # offered by the filter from now on
             for s in new_steps:
                 self._steps[s] = ""
             self._fill_steps()
-        if len(self.records) > MAX_LINES:
-            drop, self.records = self.records[:-KEEP_LINES], self.records[-KEEP_LINES:]
-            n = sum(1 for r in drop if self._visible(r))
-            if n and not self.stored_btn.get_active():
-                self.buffer.delete(self.buffer.get_start_iter(), self.buffer.get_iter_at_line(n))
         self._update_subtitle()
-        return False
 
     def _on_destroy(self, *_):
         with self._lock:
@@ -320,7 +360,7 @@ class LogPanel(Gtk.Box):
 
     def clear(self) -> None:
         with self._lock:
-            self._pending = []
+            self._pending, self._skipped = [], {}
         self.records = []
         if self.stored_btn.get_active():
             self.stored_btn.set_active(False)

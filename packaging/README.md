@@ -28,7 +28,7 @@ its own (see [RNAdo](#rnado)).
 | `notices/FFMPEG.txt` | FFmpeg licence / source notice template |
 | `smoke_test.py` | tests a finished build (`--version`, `demo`, `analyze`, `render`, barnaba, GUI and RNAdo start); stdlib only |
 | `linux/build_appimage.sh` | the Linux build: PyInstaller → FFmpeg → licences → AppDir → `appimagetool` |
-| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, `rnado ...` (or a link named `rnado`) → RNAdo, otherwise the command line; adds `_internal/fallback` (Wayland libraries) to the library path on hosts without them |
+| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, `rnado ...` (or a link named `rnado`) → `mdatk rnado ...` (RNAdo, or a workflow action: `rnado write ...`), otherwise the command line; adds `_internal/fallback` (Wayland libraries) to the library path on hosts without them |
 | `linux/check_glibc.sh` | newest glibc symbol version the bundle needs (RHEL 9 = 2.34) |
 | `windows/build_windows.sh` | the Windows build, in an MSYS2 UCRT64 shell (optionally installs the dependencies) |
 | `windows/mdatk.iss` | Inno Setup installer (per-user by default, optional PATH entry; Start-menu entries and optional desktop shortcuts for MDATK and RNAdo) |

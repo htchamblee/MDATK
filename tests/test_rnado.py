@@ -235,7 +235,7 @@ def test_a_custom_script_runs_from_rnado_into_the_log_panel(app, windows, tmp_pa
 
 
 def test_the_log_panel_stays_bounded_and_batches(app, windows):
-    from mdatk.gui.logpanel import KEEP_LINES, MAX_LINES
+    from mdatk.gui.logpanel import KEEP_LINES, MAX_BATCH, MAX_LINES
 
     win = rnado_window(app, windows)
     panel = win.log
@@ -244,17 +244,140 @@ def test_the_log_panel_stays_bounded_and_batches(app, windows):
     real = panel._flush
     panel._flush = lambda: flushes.append(1) or real()
     before = len(panel.records)
-    for i in range(MAX_LINES + 500):  # e.g. from a script's thread: queued, inserted together
+    for i in range(MAX_BATCH - 10):  # e.g. from a script's thread: queued, inserted together
         panel.feed_script(f"[05] line {i}")
     assert len(panel.records) == before and not flushes
     pump(0.3)
-    assert len(flushes) == 1
+    assert len(flushes) == 1 and len(panel.records) == before + MAX_BATCH - 10
+    # more than a flush inserts: the newest lines, after a note (in their step) of how many were skipped
+    for i in range(MAX_LINES + 500):
+        panel.feed_script(f"[05] line {i}")
+    pump(0.3)
+    assert len(flushes) == 2
+    note, first = panel.records[-MAX_BATCH - 1:-MAX_BATCH + 1]
+    assert (note.step, note.kind, note.mark) == (5, "info", "[05] ")
+    assert note.text.startswith(f"… {MAX_LINES + 500 - MAX_BATCH} line(s) not shown")
+    assert first.text == f"line {MAX_LINES + 500 - MAX_BATCH}"
+    assert panel.records[-1].text == f"line {MAX_LINES + 499}"
+    assert "info" in tag_names(win, "line(s) not shown")
+    # beyond MAX_LINES lines the oldest go, down to KEEP_LINES, in the buffer too
+    for k in range(2):
+        for i in range(MAX_BATCH):
+            panel.feed_script(f"[06] more {k} {i}")
+        pump(0.2)
     assert len(panel.records) == KEEP_LINES and panel.buffer.get_line_count() == KEEP_LINES + 1
-    assert panel.records[-1].text == f"line {MAX_LINES + 499}" and panel.records[0].step == 5
+    assert panel.records[-1].text == f"more 1 {MAX_BATCH - 1}"
     panel.autoscroll.set_active(False)
     panel.feed("one more")
     pump(0.2)
     assert panel.text().endswith("one more\n")
+
+
+def test_a_flood_of_output_from_a_thread_keeps_the_main_loop_running(app, windows):
+    """A script that prints faster than the panel can show: every flush inserts at most MAX_BATCH lines, the
+    main loop keeps running (one flush used to insert the whole backlog: seconds without events), and each
+    note counts exactly the lines skipped."""
+    import threading
+
+    from gi.repository import GLib
+
+    from mdatk.gui.logpanel import MAX_BATCH, MAX_LINES
+
+    win = rnado_window(app, windows)
+    panel = win.log
+    n = 300000
+    batches = []
+    real = panel._show_batch
+    panel._show_batch = lambda pending, skipped: batches.append(len(pending)) or real(pending, skipped)
+    gaps, last = [], [time.monotonic()]
+
+    def tick():
+        now = time.monotonic()
+        gaps.append(now - last[0])
+        last[0] = now
+        return True
+
+    def feed():  # like the runner's thread that reads a script's output
+        for i in range(n):
+            panel.feed_script(f"[03] {i}")
+
+    ticker = GLib.timeout_add(20, tick)
+    thread = threading.Thread(target=feed)
+    thread.start()
+    while thread.is_alive():
+        pump(0.05)
+    pump(0.3)
+    GLib.source_remove(ticker)
+    assert max(batches) <= MAX_BATCH and max(gaps) < 1.0, (max(batches), max(gaps))
+    recs = panel.records
+    assert len(recs) <= MAX_LINES and recs[-1].text == str(n - 1)
+    checked = 0
+    for k in range(1, len(recs) - 1):
+        r, before, after = recs[k], recs[k - 1], recs[k + 1]
+        if "line(s) not shown" in r.text and before.kind == after.kind == "out":
+            assert int(r.text.split()[1]) == int(after.text) - int(before.text) - 1
+            checked += 1
+    assert checked
+
+
+@NEEDS_BASH
+def test_cancel_stays_reachable_while_a_step_floods_the_log(app, windows, tmp_path, monkeypatch):
+    from gi.repository import GLib
+
+    from mdatk.gui import rnado
+
+    win = rnado_window(app, windows)
+    path = str(tmp_path / "flood.mdatk.toml")
+    monkeypatch.setattr(rnado, "choose_save_path", lambda *_a, **_k: path)
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings["script"] = "seq 1 1000000\nsleep 30\n"
+    pl.changed()
+    pump(0.2)
+    assert win.save_project()
+    monkeypatch.setattr(Gtk.MessageDialog, "run", lambda self: Gtk.ResponseType.OK)
+    clicked = []
+
+    def click():  # the user presses Cancel while the step prints
+        clicked.append((time.monotonic(), any(r.text == "1000000" for r in win.log.records)))
+        win.cancel_button.clicked()
+        return False
+
+    pl.write(None, run=True)  # Run all…
+    t0 = time.monotonic()
+    GLib.timeout_add(700, click)
+    assert wait_for(lambda: clicked and not win.jobs.running, 60)
+    (at, all_shown), = clicked
+    assert at - t0 < 2.0 and not all_shown  # on time (it used to wait for the whole backlog), mid-flood
+    assert pl.run_state == {a.id: "cancelled"}
+    assert any("line(s) not shown" in r.text for r in win.log.records)
+
+
+@NEEDS_BASH
+def test_a_refused_run_leaves_the_running_runs_marks(app, windows, tmp_path, monkeypatch):
+    """'Run step…' while scripts still run: RNAdo refuses, and the run going on still marks its steps done
+    (the planner used to hand its callbacks' run over to the refused one)."""
+    from mdatk.gui import rnado
+
+    win = rnado_window(app, windows)
+    path = str(tmp_path / "run.mdatk.toml")
+    monkeypatch.setattr(rnado, "choose_save_path", lambda *_a, **_k: path)
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings["script"] = "sleep 1.5\necho done a\n"
+    b = pl.add_step("user-script", 40, 300)
+    b.settings["script"] = "echo b\n"
+    pl.changed()
+    pump(0.2)
+    assert win.save_project()
+    monkeypatch.setattr(Gtk.MessageDialog, "run", lambda self: Gtk.ResponseType.OK)
+    pl.write([a.id], run=True)
+    assert wait_for(lambda: pl.run_state.get(a.id) == "running", 10)
+    pl.write([b.id], run=True)  # 'Run step…' on B
+    assert win.messages[-1][:2] == ("error", "Scripts are still running")
+    assert wait_for(lambda: any(m[1] == "Scripts finished" for m in win.messages), 20), win.messages
+    pump(0.3)
+    assert pl.run_state == {a.id: "ok"} and not pl._spin_id
 
 
 @NEEDS_BASH
@@ -309,13 +432,18 @@ def test_open_in_rnado_from_the_analysis_window(app, windows, tmp_path, monkeypa
               if not isinstance(i, Gtk.SeparatorMenuItem)]
     assert labels == ["Open in RNAdo…", "Script wizard: open in RNAdo…", "PDB clean-up: open in RNAdo…",
                       "Structure builder: open in RNAdo…", "Use the plan's files as inputs"]
-    calls = []
+    calls, codes = [], []
 
     class FakePopen:
         def __init__(self, cmd, **kw):
             calls.append(cmd)
+            self.args, self.code = cmd, codes.pop(0) if codes else None
+
+        def poll(self):
+            return self.code
 
     monkeypatch.setattr(launch.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(launch, "START_S", 0.2)
     monkeypatch.delenv("APPIMAGE", raising=False)
     win.lookup_action("rnado").activate(None)  # Ctrl+P
     assert calls == [[sys.executable, "-m", "mdatk.gui.rnado", path]]
@@ -340,6 +468,22 @@ def test_open_in_rnado_from_the_analysis_window(app, windows, tmp_path, monkeypa
     monkeypatch.setattr(analysis, "ask", lambda *_a, **_k: Gtk.ResponseType.REJECT)
     win.new_project()
     assert win.open_in_rnado() and calls[-1] == [sys.executable, "-m", "mdatk.gui.rnado"]
+    # logged once RNAdo still runs a moment later
+    log = win.log_buffer
+
+    def logged():
+        return log.get_text(log.get_start_iter(), log.get_end_iter(), False)
+
+    assert wait_for(lambda: logged().count("Started RNAdo") == 6, 5) and not win.messages
+    # RNAdo ending with an error status right away (an AppImage that cannot mount): an error instead
+    codes.append(127)
+    assert win.open_in_rnado()
+    assert wait_for(lambda: win.messages, 5)
+    (kind, title, detail), = win.messages
+    assert (kind, title) == ("error", "RNAdo did not start") and "(exit status 127)" in detail
+    assert f"Command: {sys.executable} -m mdatk.gui.rnado" in detail
+    pump(0.3)
+    assert logged().count("Started RNAdo") == 6
 
 
 def test_use_the_plans_files_as_inputs(app, windows, tmp_path):

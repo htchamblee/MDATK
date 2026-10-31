@@ -118,7 +118,7 @@ cp -a "$DIST" "$APPDIR/usr/lib/mdatk"
 install -m 755 "$HERE/AppRun" "$APPDIR/AppRun"
 # The desktop file of the source tree, with the bundled icon. Its "RNAdo" action becomes
 # "mdatk-gui rnado %f": desktop integration (AppImageLauncher, appimaged) replaces the program of every
-# Exec line with the AppImage, and AppRun starts rnado-gui for a first argument "rnado". The
+# Exec line with the AppImage, and AppRun starts "mdatk rnado" for a first argument "rnado". The
 # X-AppImage-Version line goes into the main group, before the action group.
 sed -e '/^Icon=rnado$/!s/^Icon=.*/Icon=mdatk/' -e 's/^Exec=mdatk-gui .*/Exec=mdatk-gui %f/' \
     -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' \

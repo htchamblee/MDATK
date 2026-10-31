@@ -185,10 +185,8 @@ def _project_file(args) -> Optional[str]:
 
 def cmd_gui(args) -> int:
     if args.rnado or args.open:
-        from .gui.rnado import main as rnado_gui
-
         argv = [args.params] if args.params else []
-        return rnado_gui(argv + (["--open", args.open] if args.open else []))
+        return _rnado_window(argv + (["--open", args.open] if args.open else []))
     from .gui.app import main as gui_main
 
     return gui_main([args.params] if args.params else [])
@@ -1157,6 +1155,18 @@ def rnado_main(argv: Optional[List[str]] = None) -> int:
     if argv and argv[0] in WORKFLOW_ACTIONS:
         return main(["workflow"] + argv)
     rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    return _rnado_window(argv)
+
+
+def _rnado_window(argv: List[str]) -> int:
+    """The RNAdo window in this process, also in the stand-alone ``mdatk`` program (the AppImage runs
+    ``mdatk rnado``: that process has the AppImage's library path set up already)."""
+    try:  # before GTK starts: the windows' WM_CLASS is RNAdo's, not the analysis window's ("mdatk")
+        from gi.repository import GLib
+
+        GLib.set_prgname("rnado")
+    except ImportError:  # mdatk.gui.rnado says what is missing
+        pass
     from .gui.rnado import main as rnado_gui
 
     return rnado_gui(argv)

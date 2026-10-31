@@ -124,7 +124,8 @@ if WINDOWS:
         console=False,
         icon=ICON,
     ))
-# RNAdo on every platform: the AppImage's AppRun and mdatk.gui.launch start it from the bundle
+# RNAdo on every platform: mdatk.gui.launch starts it from the bundle (the AppImage's AppRun runs
+# "mdatk rnado", whose rnado_main also takes the workflow actions)
 exes.append(EXE(
     pyz,
     scripts_for("rnado-gui"),
