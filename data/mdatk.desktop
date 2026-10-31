@@ -8,3 +8,9 @@ Icon=applications-science
 Terminal=false
 Categories=Science;Chemistry;Education;
 MimeType=application/toml;
+Actions=rnado;
+
+[Desktop Action rnado]
+Name=RNAdo (project planner)
+Exec=rnado-gui %f
+Icon=rnado

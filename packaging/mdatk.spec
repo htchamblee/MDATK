@@ -7,10 +7,16 @@
 #   mdatk      the command line interface (console program)
 #   mdatk-gui  Windows only: the GTK 3 interface without a console window, same as "mdatk gui"
 #              (on Linux the AppImage's AppRun starts "mdatk gui")
-# The build scripts then add FFmpeg (DIST/mdatk/_internal/tools) and the licence notices.
+#   rnado-gui  RNAdo, the project planner, as a program of its own (no console window on Windows):
+#              "rnado-gui [PROJECT] [ARGS]" = "python -m mdatk.gui.rnado [PROJECT] [ARGS]"; the
+#              analysis window starts it from here (mdatk.gui.launch.rnado_command)
+# All three share one Analysis, so the bundle holds every library once. The RNAdo logo and icons
+# (mdatk/assets) are bundled as package data. The build scripts then add FFmpeg
+# (DIST/mdatk/_internal/tools) and the licence notices.
 #
 # Environment:
-#   MDATK_ICON_DIR       folder with mdatk.ico (Windows program icon), from packaging/make_icon.py
+#   MDATK_ICON_DIR       folder with mdatk.ico and rnado.ico (Windows program icons), from
+#                        packaging/make_icon.py
 #   MDATK_NO_BARNABA=1   build without the barnaba base-pair engine
 #   MDATK_NO_TRIM=1      keep everything PyInstaller collects (to measure what trimming saves)
 import os
@@ -23,9 +29,18 @@ from trim import EXCLUDES, keep_entry  # noqa: E402
 
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 WINDOWS = sys.platform == "win32"
-ICON = os.path.join(os.environ.get("MDATK_ICON_DIR", ""), "mdatk.ico")
-ICON = ICON if WINDOWS and os.path.isfile(ICON) else None
 TRIM = not os.environ.get("MDATK_NO_TRIM")
+
+
+def program_icon(name):
+    """The .ico of a Windows program (MDATK_ICON_DIR); None elsewhere or when it was not made."""
+    path = os.path.join(os.environ.get("MDATK_ICON_DIR", ""), name)
+    return path if WINDOWS and os.path.isfile(path) else None
+
+
+ICON = program_icon("mdatk.ico")
+RNADO_ICON = program_icon("rnado.ico")
+ENTRIES = {"mdatk": "entry_cli", "mdatk-gui": "entry_gui", "rnado-gui": "entry_rnado"}  # program -> script
 
 # Every MDATK module (the CLI imports most of them lazily); the VTK backend's optional
 # "vtkmodules" is not bundled, so it reports VTK as unavailable.
@@ -34,7 +49,8 @@ hiddenimports = collect_submodules("mdatk")
 hiddenimports += collect_submodules(
     "MDAnalysis", filter=lambda n: not n.startswith(("MDAnalysis.analysis.", "MDAnalysis.visualization",
                                                      "MDAnalysis.tests")) or n == "MDAnalysis.analysis.rms")
-datas = []
+# the RNAdo logo and icons, read by the GUI next to the package (mdatk/assets/...)
+datas = [(os.path.join(ROOT, "mdatk", "assets", "*"), os.path.join("mdatk", "assets"))]
 if not os.environ.get("MDATK_NO_BARNABA"):
     hiddenimports += ["barnaba", "barnaba.functions"]
     hiddenimports += collect_submodules(
@@ -43,7 +59,7 @@ if not os.environ.get("MDATK_NO_BARNABA"):
     datas += collect_data_files("mdtraj", excludes=["**/tests/**", "**/testing/**"])  # PDB residue tables
 
 a = Analysis(
-    [os.path.join(SPECPATH, "entry_cli.py"), os.path.join(SPECPATH, "entry_gui.py")],
+    [os.path.join(SPECPATH, script + ".py") for script in ENTRIES.values()],
     pathex=[ROOT],
     binaries=[],
     datas=datas,
@@ -76,13 +92,15 @@ if TRIM:
 pyz = PYZ(a.pure)
 
 
-def scripts_without(name):
-    return [s for s in a.scripts if s[0] != name]
+def scripts_for(program):
+    """PyInstaller's bootstrap and runtime hooks plus the program's own entry script (not the others')."""
+    others = {script for name, script in ENTRIES.items() if name != program}
+    return [s for s in a.scripts if s[0] not in others]
 
 
 exe_cli = EXE(
     pyz,
-    scripts_without("entry_gui"),
+    scripts_for("mdatk"),
     [],
     exclude_binaries=True,
     name="mdatk",
@@ -96,7 +114,7 @@ exes = [exe_cli]
 if WINDOWS:
     exes.append(EXE(
         pyz,
-        scripts_without("entry_cli"),
+        scripts_for("mdatk-gui"),
         [],
         exclude_binaries=True,
         name="mdatk-gui",
@@ -106,6 +124,19 @@ if WINDOWS:
         console=False,
         icon=ICON,
     ))
+# RNAdo on every platform: the AppImage's AppRun and mdatk.gui.launch start it from the bundle
+exes.append(EXE(
+    pyz,
+    scripts_for("rnado-gui"),
+    [],
+    exclude_binaries=True,
+    name="rnado-gui",
+    debug=False,
+    strip=False,
+    upx=False,
+    console=False,
+    icon=RNADO_ICON,
+))
 
 coll = COLLECT(
     *exes,

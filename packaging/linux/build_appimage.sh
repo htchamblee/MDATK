@@ -3,9 +3,10 @@
 #
 #   packaging/linux/build_appimage.sh [--out DIR] [--work DIR] [--no-ffmpeg]
 #
-# Steps: application icon -> PyInstaller bundle (packaging/mdatk.spec) -> Wayland client
-# libraries into _internal/fallback (used only where the host has none) -> static FFmpeg into
-# _internal/tools -> licence notices -> AppDir (AppRun, desktop file, icon) -> appimagetool.
+# Steps: application icons (MDATK, RNAdo) -> PyInstaller bundle (packaging/mdatk.spec: mdatk,
+# rnado-gui) -> Wayland client libraries into _internal/fallback (used only where the host has
+# none) -> static FFmpeg into _internal/tools -> licence notices -> AppDir (AppRun, desktop files,
+# icons) -> appimagetool. "MDATK-*.AppImage rnado [PROJECT]" starts RNAdo (see AppRun).
 # Result: OUT/MDATK-<version>-x86_64.AppImage (default OUT: dist/) plus the unpacked bundle in
 # WORK/dist/mdatk (default WORK: build/appimage/).
 #
@@ -49,7 +50,7 @@ DIST="$WORK/dist/mdatk"
 echo "== MDATK $VERSION ($ARCH), work folder $WORK"
 mkdir -p "$WORK" "$OUT"
 
-echo "== icon"
+echo "== icons"
 "$PYTHON" "$PKG/make_icon.py" "$WORK/icons"
 
 echo "== PyInstaller"
@@ -115,15 +116,31 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp -a "$DIST" "$APPDIR/usr/lib/mdatk"
 install -m 755 "$HERE/AppRun" "$APPDIR/AppRun"
-# the desktop file of the source tree, with the bundled icon
-sed -e 's/^Icon=.*/Icon=mdatk/' -e 's/^Exec=.*/Exec=mdatk-gui %f/' "$ROOT/data/mdatk.desktop" \
+# The desktop file of the source tree, with the bundled icon. Its "RNAdo" action becomes
+# "mdatk-gui rnado %f": desktop integration (AppImageLauncher, appimaged) replaces the program of every
+# Exec line with the AppImage, and AppRun starts rnado-gui for a first argument "rnado". The
+# X-AppImage-Version line goes into the main group, before the action group.
+sed -e '/^Icon=rnado$/!s/^Icon=.*/Icon=mdatk/' -e 's/^Exec=mdatk-gui .*/Exec=mdatk-gui %f/' \
+    -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' \
+    -e "/^Actions=/i X-AppImage-Version=$VERSION" "$ROOT/data/mdatk.desktop" \
     > "$APPDIR/usr/share/applications/mdatk.desktop"
 grep -q '^X-AppImage-Version=' "$APPDIR/usr/share/applications/mdatk.desktop" ||
-    echo "X-AppImage-Version=$VERSION" >> "$APPDIR/usr/share/applications/mdatk.desktop"
+    sed -i "/^\[Desktop Entry\]/a X-AppImage-Version=$VERSION" "$APPDIR/usr/share/applications/mdatk.desktop"
 cp "$APPDIR/usr/share/applications/mdatk.desktop" "$APPDIR/mdatk.desktop"
 cp "$WORK/icons/mdatk.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/mdatk.png"
 cp "$WORK/icons/mdatk.png" "$APPDIR/mdatk.png"
 ln -sf mdatk.png "$APPDIR/.DirIcon"
+# RNAdo: its icon in every size (the action's Icon=rnado) and its own desktop file for reference;
+# only the root desktop file (MDATK) is integrated, so RNAdo is started through the action,
+# "MDATK-*.AppImage rnado [PROJECT]" or a symbolic link named "rnado" to the AppImage (see AppRun)
+for png in "$ROOT"/mdatk/assets/rnado-icon-*.png; do
+    size="$(basename "$png" .png)"
+    size="${size#rnado-icon-}"
+    install -D -m 644 "$png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/rnado.png"
+done
+install -D -m 644 "$ROOT/mdatk/assets/rnado-icon.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/rnado.svg"
+sed -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' -e '/^#/d' "$ROOT/data/rnado.desktop" \
+    > "$APPDIR/usr/share/applications/rnado.desktop"
 
 echo "== appimagetool"
 tool="${APPIMAGETOOL:-}"

@@ -45,6 +45,9 @@ mdatk-gui = "mdatk.gui.app:main"
 [tool.setuptools.packages.find]
 include = ["mdatk*"]
 
+[tool.setuptools.package-data]
+mdatk = ["assets/*"]  # RNAdo logo and icons (packaging/make_rnado_art.py), read by the GUI
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [
