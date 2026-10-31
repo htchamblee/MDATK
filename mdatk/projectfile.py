@@ -66,7 +66,7 @@ _LOG_DOCS = {
     ("step",): "What ran: 'render', 'workflow write', 'pdb clean', or the planner step number of a "
                f"generated script that {PROJECT_ABBREV} ran (e.g. '03').",
     ("title",): "Short human-readable description.",
-    ("status",): "ok, failed or cancelled.",
+    ("status",): "ok, failed, cancelled or waiting (for a script the step leaves to be run separately).",
     ("duration_s",): "Wall time in seconds.",
     ("command",): "Command line that was run (for generated scripts).",
     ("folder",): "Working folder of the command.",

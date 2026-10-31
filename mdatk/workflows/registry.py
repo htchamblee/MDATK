@@ -9,7 +9,7 @@ from .base import Tool
 TOOLS: Dict[str, Tool] = {}
 
 CATEGORIES = ("Planning", "Structure building", "Structure prediction", "Refinement", "Amber", "GROMACS",
-              "Visualisation", "Analysis")
+              "Visualisation", "Analysis", "Custom")
 
 
 def register(cls):

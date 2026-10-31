@@ -47,6 +47,34 @@ keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. The A
 the same energy) and checks that tleap really loaded L units for the L residues. Steps that existed in
 0.0.7 write the same files as before (tested against the 0.0.7 output).
 
+In 0.0.10:
+
+- With an own L-RNA library, the Amber build script checks the L residue names against the library's
+  units and the `addPdbResMap` lines **before tleap runs** and stops on a name tleap would read as the
+  lanthanum or lutetium ion (LA / LU); the planner warns about the names even when an earlier step makes
+  the structure. In the Windows build the mouse pointer no longer disappears over the structure panel.
+- **Check previous runs** (planner toolbar, right-click menu, `mdatk workflow status`) finds the
+  outputs of a step's earlier run, also under an earlier time stamp, and marks the box done, partial or
+  missing. A step can then **use those outputs**: the steps after it read them, and it is not written
+  or run again. A step whose production runs in a separate script no longer reports success before
+  that script has finished; it **waits** (exit status 75) and the steps after it do not start.
+  `mdatk workflow run --include-separate` runs the separate scripts too.
+- **Residue groups follow their names and the topology**: renaming a group renames it everywhere the
+  project uses it (analysis groups, selections, panels, charts, representations, PDB export, planner
+  steps), deleting one that is still used says where, and choosing a topology fills empty or untouched
+  default groups with one group per chain; *Groups from chains* adds the chains no group covers yet.
+- **Selection and group errors say exactly where they are**: every problem names its setting
+  ("Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did
+  you mean 'Target'?"), shows MDAnalysis' own message next to the selection as written and as expanded,
+  and says which group or part of a selection matched no atoms. The GUI checks the settings as you type:
+  red count badges on the page buttons, flagged fields with the message as tooltip, and a problems list
+  that jumps to the field (see *Residue groups and selections*).
+- **Custom scripts as planner steps** (`user-script`, under *Custom*): type a bash or Python script
+  into a step, or pick a script file, declare the files it reads and writes, and connect them to other
+  steps like any program's files. MDATK copies the script into the step folder, passes the file names
+  as `MDATK_IN_<NAME>` / `MDATK_OUT_<NAME>` and `{in:…}` / `{out:…}` arguments, and stops the step when
+  a declared output is missing (see [Custom scripts](#custom-scripts)).
+
 In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
 steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
 inputs), and a box shows an animated marker while its script runs.
@@ -243,11 +271,24 @@ sideways), opened at the Input page; the icon bar above it switches pages (hover
 | Page | Contents |
 |---|---|
 | **Input** | project notes, topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
-| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker |
+| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker; renames follow every use; *Groups from chains* |
 | **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
 | **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
 | **Layout** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
 | **Outputs** | output/cache folders, video, charts, PDB export, timestamps, *Re-render from cache* |
+
+The settings are checked as you edit them (a moment after the last change). A page with problems gets
+a **red badge with their count** on its button (amber when they are only warnings); clicking the button
+also scrolls to the page's next problem. The field itself is **flagged**: red frame and text, an error
+icon at the end of entries, and the message as its tooltip; in the group, RMSD-target and external-data
+tables the offending cell is tinted. The **problems button** next to the page title lists every
+problem with its location; click one to go to its field. Flags and badges disappear when the setting
+is fixed. A setting that *Render* would not use is flagged as a warning, not an error (e.g. the proximity
+set while the video is off, or a draft group nothing uses), and does not stop it; *Render still*,
+*Export PDBs now* and the density map's *Global search* / *Refine* check what they use themselves (see
+[Residue groups and selections](#residue-groups-and-selections)). A selection that fails during a run
+(e.g. a group that matches no atom of the structure) is flagged the same way until that setting or the
+residue groups change.
 
 The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
@@ -272,12 +313,32 @@ up to *Parallel* scripts at a time (planner toolbar, saved with the project; def
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
 - **Cancel** stops every running script.
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
-  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed) or a
-  dash (cancelled / not started) until the next run.
+  waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
+  bars (waiting for a separately run script, see below) or a dash (cancelled / not started) until the
+  next run.
 - **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
   *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
 
-Scripts marked *run separately* (production runs meant for a cluster queue) are never started.
+Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
+script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
+'run separately'* in the confirmation (or give `--include-separate`); they then run right after their
+step's main script. Such a step is complete only when its separate script has finished, and its main
+script checks that:
+
+- it runs its own stages before production (equilibration; for GROMACS also the conversion) only while
+  the separate script has not finished - once it has, they are not redone, as production started from
+  them;
+- while production has not finished, it then exits with status **75**, naming the script to run
+  (`WAITING: the production stages have not finished. Run them … with: bash …/<name>_amber-prod_….sh`).
+  MDATK reports such a step as **waiting**, not as failed, and does not start the steps that read
+  from it; `mdatk workflow run` exits with 75 too. Run the separate script (e.g. on the cluster), then
+  the step again;
+- once production has finished, the stages after it (e.g. a cooling stage) and the dry PDB run, and the
+  step succeeds.
+
+Before 0.0.10 the main script of a step whose stages were all production held only the preamble and
+"succeeded" without running anything. Main scripts written by older versions do not check; MDATK
+treats such a step as waiting and asks you to write it again.
 
 - **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
@@ -314,6 +375,35 @@ of other steps by relative paths (`../03_amber-build/apt1_03_parmed_….parm7`),
 can be copied to a cluster. Every script starts with `cd "$(dirname "$0")"`, so it can be started from
 anywhere. Each script's header cites what that step uses (see [Citations](#citations)).
 
+### Previous runs
+
+Each iteration of a project may get a new time stamp (*New stamp*), and the stamp is part of every file
+name, so after an update the plan no longer sees the outputs of its earlier runs. *Check previous runs*
+(planner toolbar; for one box or the ticked boxes in the right-click menu and the details pane) looks
+in each step's folder for the files the step's outputs name: under the plan's stamp first, otherwise
+under the newest earlier stamp with all of them. Only the files the step's scripts make count; for
+Amber MD every stage's output must also end with pmemd's closing lines, so a run still in progress is
+*partial*, and a custom script's run counts only with the marker its run script writes last (see
+[Custom scripts](#custom-scripts)). Each box then shows a footer: **done** with the stamp and the time
+its files were last written, **partial** with how many files are there (the details list the missing
+ones), or **missing**.
+
+A step with a complete run can **use it** (*Use this run* in the details, the right-click menu, or the
+offer after a check): the project file stores the run's stamp in the step (`adopted`), and the planner
+points the step's outputs at that run's files. The steps after it then read existing files, so the
+checks that look into their inputs run, and the scripts they write refer to the right files; the step
+itself is not written or run again (the master script lists it as used). *Run selected steps* / *Run
+all…* ask whether to skip such steps or run them again; *Stop using it* returns a step to normal. If a
+file of the run disappears, the planner warns. On the command line:
+
+```bash
+mdatk workflow status -p plan.mdatk.toml              # done / partial / missing for every step
+mdatk workflow status -p plan.mdatk.toml --adopt      # use every complete run found (saved)
+mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written and run again
+```
+
+`workflow run` skips steps that use an earlier run and says so.
+
 ### Step types
 
 | Step | Writes | Notes |
@@ -322,15 +412,16 @@ anywhere. Each script's header cites what that step uses (see [Citations](#citat
 | **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
-| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming, CP library, TIP4P/2005 files) and the build script | see below |
+| **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming and name check, CP library, TIP4P/2005 files) and the build script | see below |
 | **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
-| **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours, bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
+| **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours (chain groups keep to their chain), bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
 | **Structure builder (MDATK)** | a script calling `python3 -m mdatk build`: ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see Structure builder |
 | **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see Restraint dictionaries |
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see Real-space refinement |
 | **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see Real-space refinement |
+| **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see Custom scripts |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
 **Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
@@ -343,7 +434,8 @@ ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4
 models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
-a separate production script for the cluster; resuming (finished stages are skipped); a dry PDB and a
+a separate production script for the cluster (the main script then waits for it, see above); resuming
+(finished stages are skipped); a dry PDB and a
 dry, imaged production trajectory. The engine is pmemd,
 pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
 the same input, the version is recorded in the scripts. The *Environment* section adds
@@ -392,9 +484,23 @@ error.
 > A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
 > `addPdbResMap` lines under *Leap commands before loadpdb*. Without them tleap invents
 > parameterless units for LC and LG, and, without any warning, builds LA and LU as the lanthanum
-> and lutetium ions of AmberTools' `atomic_ions.lib`. The planner reads the library's unit names
-> and the map, reports every unmapped L name as an error, and suggests the map lines. The
-> topology check (below) is the second net.
+> and lutetium ions of AmberTools' `atomic_ions.lib`; the atoms it cannot place land near the origin,
+> and the solvent box grows to fill the gap (in one case 13 times the volume and an hour of tleap).
+> The planner reads the library's unit names and the map, reports every unmapped L name as an
+> error, and suggests the map lines; when an earlier step makes the structure, it checks every name
+> MDATK may write (LA LC LG LU, with *5′/3′ terminal names* also LA5 / LA3 …) and warns. Since 0.0.10
+> the build script also checks before the first tleap, for builds with own libraries (listed under
+> *Extra residue libraries* or loaded with `loadOff` in the leap commands): a small standard-library
+> helper reads the L names of the renamed PDB, the units of every library the tleap input loads
+> before `loadpdb` (a name in leap's search path is looked up in `$AMBERHOME/dat/leap`) and its
+> `addPdbResMap` lines, and stops the script on a name that is neither a unit nor mapped. A library
+> it cannot read gives a warning and the build goes on. The topology check (below) is the last net.
+> The warning for a structure from an earlier step and the check in the build script come with an
+> L-RNA set-up only: *My own files* chosen under *L-RNA library*, a structure known to have L
+> residues (*Force L for*, an L helix, an input PDB with L sugars), or an own library that looks like
+> an L-RNA one (it uses the atom types LD / LH / LE, or has nucleotide units under other names than
+> A C G U, DA DC DG DT and their 5′ / 3′ / N forms). A D build with, say, a ligand library is written
+> as before.
 
 The optional
 **two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue
@@ -531,6 +637,75 @@ converted. Checks cover grompp warnings that stop a run with
 (no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
 (GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
 
+### Custom scripts
+
+A **Custom script** step (`user-script`, *Add step → Custom*) runs a script of your own as part of a
+plan, for whatever the built-in steps do not cover: renaming residues, a quick analysis, converting a
+file for another program.
+
+- **Script.** Type it into the step (*typed here*) or choose a file (*from a file*). Either way its text
+  is copied into the step folder each time the step's files are written, so the plan folder stays
+  self-contained; after editing the original file, write the step again. *Name in the step folder*
+  names the copy (default `<project>_<step>_script_<time>.sh` / `.py`, or the file's own name without
+  a leading `.`, `-` or `+`), e.g. when a program wants an extension (`.pml` for PyMOL).
+- **Run with** bash, python3 or another command (`Rscript`, `python3.12 -u`,
+  `vmd -dispdev text -e {script} -args`: the script's name goes where `{script}` is, otherwise at the
+  end). *Arguments* follow, in shell syntax.
+- **Input files** and **Output files** are lists (*+* adds one from a template): a name and a file
+  type each, *Optional* and *Several connections* for inputs, and a file name for outputs (empty:
+  `<project>_<step>_<name>_<time>.<ext>`). Each one becomes a port of the box. An input of type *any
+  file* accepts every output; a typed input only outputs of its type, as for other steps.
+- **Environment.** A conda environment and setup lines (`module load …`), as for the other steps.
+
+The step's run script (`<project>_<step>_custom_<time>.sh`, the one *Run* starts) changes into the
+step folder and exports these variables (`<NAME>` is the declared name in upper case, `-` as `_`):
+
+| Variable | Value |
+|---|---|
+| `MDATK_IN_<NAME>` | the input's path, relative to the step folder; one path per line when it carries several files, empty for an optional input without a file |
+| `MDATK_OUT_<NAME>` | the name of the file the script must write into the step folder |
+| `MDATK_PROJECT`, `MDATK_STEP`, `MDATK_STAMP` | the parts of the plan's file names |
+
+It then replaces `{in:<name>}`, `{out:<name>}` and `{script}` in the arguments with the names, quoted
+for the shell (one word per file; do not put quotes around them). An optional input without a file
+becomes `''`, an empty word that keeps the place of a positional argument, or no word at all with
+*Several connections*. The run script removes the declared outputs of an earlier run, runs the script,
+checks that every declared output exists and is not empty, and only then writes the marker
+`<project>_<step>_custom_<time>.done`. A script that fails (non-zero exit status) or misses an output
+fails the step, so the steps that read from it are not started; a file left from an earlier run does
+not count. *Check previous runs* counts a run as done only with its marker, so a run that failed or was
+stopped half-way, perhaps after writing part of an output, is *partial*. An output with a fixed file
+name is the same file under every stamp: it belongs to the stamp whose marker is there, and a new run
+removes the markers of the step's earlier stamps too. For example, a python3 step with the input
+`structure` (PDB), the output `fixed` (PDB, file `fixed.pdb`) and the arguments
+`--model {in:structure} -o {out:fixed}` writes
+
+```bash
+export MDATK_IN_STRUCTURE=../01_build/apt1_01_helix_20261015-1432.pdb
+export MDATK_OUT_FIXED=fixed.pdb
+
+rm -f -- apt1_02_custom_20261015-1432.done fixed.pdb
+rm -f -- apt1_02_custom.done apt1_02_custom_????????-????.done
+
+python3 apt1_02_script_20261015-1432.py --model ../01_build/apt1_01_helix_20261015-1432.pdb -o fixed.pdb
+
+[ -s "fixed.pdb" ] || { echo "ERROR: apt1_02_script_20261015-1432.py did not write fixed.pdb" >&2; exit 1; }
+
+echo "MDATK: custom script finished $(date '+%Y-%m-%d %H:%M:%S')" > apt1_02_custom_20261015-1432.done
+```
+
+and an Amber build connected to `fixed` reads `../02_custom/fixed.pdb`.
+
+The planner reports as errors: a missing, unreadable or empty script; a placeholder that names no
+declared input or output, or a misspelt one (`{input:x}`); two inputs or two outputs with the same
+name; output file names that are not plain file names (letters, digits, `.`, `_`, `-` and `+`,
+starting with a letter, digit or `_`; no folders or spaces); an output that is one of the step's own
+input files (the run would remove it before the script reads it); an output file that another step
+writes too, which can happen in a plan without step folders. A `#!` line that does not match *Run
+with* is a warning. The plan summary shows the command line. MDATK cites nothing for this step and
+downloads nothing for it; what the script itself does is up to you, so review it like any other script
+before running it.
+
 ### Command line
 
 ```bash
@@ -538,10 +713,17 @@ mdatk workflow tools                       # step types; `mdatk workflow tools a
 mdatk workflow generate amber-md -o out --step 4 --project-name apt1 \
     -i topology=sys.parm7 -i coordinates=sys.rst7 -i restraints=helix.dist \
     --set engine=pmemd.MPI --set nproc=32 --set stages.5.nstlim=150000000
+mdatk workflow generate user-script -o out --step 2 -i model=model.pdb \
+    --set source=file --set script_file=fix.py --set interpreter=python3 \
+    --set 'inputs=[{"name": "model", "kind": "pdb"}]' \
+    --set 'outputs=[{"name": "fixed", "kind": "pdb", "file": "fixed.pdb"}]' \
+    --set 'arguments={in:model} {out:fixed}'          # a custom script step
 mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
 mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
+mdatk workflow run -p plan.mdatk.toml --include-separate  # ... and the scripts marked 'run separately'
+mdatk workflow status -p plan.mdatk.toml [--adopt|--forget]  # earlier runs of the steps (see above)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```
@@ -606,6 +788,74 @@ Wherever a selection is expected you can write `group:<Name>`, e.g.
 `group:Aptamer and name P C4'`. Fields that ask for a group accept its bare name. Amber
 topologies number residues 1…N in file order. Defaults are provided for the reference system
 (`Aptamer` = 1–12, `Target` = 13–24) — edit them for yours.
+
+**Renaming a group** in the Groups table (confirm the name with Enter or by leaving the cell; Escape
+cancels) renames it everywhere the project uses it: the group choices of the analyses, selections that
+are just its name or contain `group:<Name>`, *Groups shown*, the groups of 3D representations, the
+proximity set, the per-panel group choices and data keys (`contacts@Aptamer+Target/map`), chart
+series, the PDB export subset, other groups' selections and the planner steps' settings. A token that
+only starts with the name (`group:Aptamers`, `group:Aptamer_2`) is another group and stays; project
+notes are never rewritten. Automatic panel titles follow. The status line says how many places
+changed (hover it for the list). Empty names, names with spaces or other characters than letters,
+digits, `_`, `.` and `-`, and names another group has are refused, and flagged red while you type.
+Deleting a group that is still used names the settings that still refer to it; a panel keeps showing
+it as *(missing)* until you choose another group. `Project.rename_group(old, new)` does the same from
+Python and returns the changed locations; `Project.group_references(name)` lists them.
+
+**Groups from chains.** One group per polymer chain of the topology, water and ions left out: from
+the chain IDs when there are several (PDB, or a parm7 written with `RESIDUE_CHAINID`), else from
+segment ids that name several chains, else from bonded fragments numbered in order (`Chain_1`,
+`Chain_2` …; consecutive residues within covalent distance count as bonded when the file has no
+bonds). Groups are named `Chain_<ID>` and get distinct colours. Each group's residue spec is checked
+to select exactly its chain's atoms in that topology: plain ranges (`1-44`) when the residue numbers
+are unique, chain-qualified ranges (`A:1-44`) when chains repeat them, else a selection (as a last
+resort `index …`, which only holds for topologies with the same atom order).
+
+- Choosing a topology on the Input page (or taking the planner's files as inputs) fills the groups
+  **automatically only when nothing you made is overwritten** (opening a project never does): when there
+  are no groups, or the two untouched defaults. The defaults are replaced when the topology has at least
+  two chains, unless they already select one chain each (as in the demo); every reference to `Aptamer`
+  then names the first chain's group and every reference to `Target` the second's, so the analyses keep
+  comparing two groups, and further chains are added. With a single chain the defaults stay.
+- Otherwise nothing changes by itself; the status line lists the chains without a group and
+  **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
+  name gets a suffix). Your groups are never changed, and neither are the untouched defaults: the button
+  only adds.
+
+**When a group or selection is wrong, the message says where and what.** Every problem starts with
+the place of its setting, as the GUI shows it, and names the offending part:
+
+| Problem | Example message |
+|---|---|
+| unknown group | `Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did you mean 'Target'?` |
+| MDAnalysis cannot parse it | `Analyses › RMSD › Target 3 (X) › Selection: invalid selection 'group:Aptamer and nme P' (expanded: '((resid 1:12)) and nme P'): MDAnalysis says: Unknown selection token: 'nme' (did you mean 'name'?)` |
+| nothing matches (each group, then each and / or part, is tried on its own) | `Analyses › Pairwise contacts › Group B: selection 'group:Target' matched no atoms: group 'Target' (residues '100-112') matches no atoms - the structure's residues are numbered 1-24` |
+| a group's own definition | `Residue groups › Group 3 (Loop) › Selection (overrides): unknown residue group 'Aptamr' (defined: Aptamer, Target, Loop); did you mean 'Aptamer'?` |
+| a panel's group pair | `Layout & panels › Panel 4 (Contact map) › Groups: …` |
+
+The settings are checked before every run (`mdatk render` refuses with the list; warnings, e.g. a group
+in *Groups shown* that does not exist and is left out, are logged); a selection that fails while
+analysing (it can only be matched against the structure then) names its setting the same way.
+**Only what is about to run can block it**: a wrong setting is an error if the run uses it, and only a
+warning otherwise. The structure view's settings (*Groups shown*, the proximity set, the
+representations' groups, the Mg selection while the Mg analysis is off) are errors only when the
+structure view is rendered: the video is on (and the layout has a structure, sequence or
+secondary-structure panel), or *Render still*. `mdatk render --no-video`, `mdatk analyze` with the
+video off, `mdatk export-pdb` (and *Export PDBs now*) and the density fit are not refused for them;
+the density fit does use *Groups shown* and the Mg selection. The PDB atom subset is an error only when
+PDBs are exported; one made only of commas names no group and is an error too (an empty subset exports
+every atom). A selection that uses a broken group is not blamed for it: the group's definition is. That
+definition is an error when something about to run selects the group (a setting that is an error, the
+groups the rendered structure view shows, a panel or chart that is drawn), directly or through other
+groups, and a warning for a draft group nothing uses. Circular definitions (`Stem` uses `group:Loop`,
+`Loop` uses `group:Stem`) are reported at every group of the circle. A run of an analysis on a panel's
+or chart's groups (`rmsd@Loop/Heavy`) that fails is reported at that panel or chart, else at the
+group's definition, never at the analysis' own settings. In Python, `Project.validate()` (errors) and
+`Project.problems()` (errors and warnings) take what is about to run (`video`, `charts`, `pdb`: default
+the output switches; `density`) and return `mdatk.problems.Problem` strings whose text is the message
+above and which carry the setting's `field` path (`analyses.hbonds.group_b`), GUI page (`tab`), readable
+`location` and offending `token`; `SelectionError` carries the same plus `kind`, the selection as written
+and expanded and MDAnalysis' own message.
 
 ## Structural view, colouring and glow
 
@@ -1260,7 +1510,7 @@ mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selectio
 mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
-mdatk workflow tools|generate|template|check|write|run|restraints   (see Script wizard and Project Planner)
+mdatk workflow tools|generate|template|check|write|run|status|restraints   (see Script wizard and Project Planner)
 mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
@@ -1301,7 +1551,7 @@ visual     structure_groups, trace_atoms, align_frames, rotation, color_mode, co
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log
 workflow   project_name, stamp, use_stamp, out_dir, step_folders,
-           nodes[] {id, tool, step, title, x, y, settings{}, files{}},
+           nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
 
@@ -1312,11 +1562,13 @@ compatible across versions. The recent-projects list is kept in `~/.config/mdatk
 
 ```text
 mdatk/
-  config.py          parameter model, hashing
+  config.py          parameter model, hashing, validation
+  problems.py        located problems: field path, GUI page and readable location of a setting
   projectfile.py, tomlio.py   commented TOML project files, step log, parameter logs, recent projects
   pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
   citations.py       per-use citations (data in _citation_data.py)
   selections.py      residue ranges, group:<Name> expansion, frame/time specs, elements
+  chaingroups.py     residue groups from the chains of a topology
   spatial.py         cKDTree / cell-list neighbour search, Kabsch superposition
   cleaning/          cpptraj script generation, streaming execution, cached cleaned outputs;
                      conda environment detection / `conda run`
@@ -1331,11 +1583,13 @@ mdatk/
   density.py, io/mrc.py   density maps: MRC / CCP4 I/O, simulated maps, rigid-body fitting
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
-                     SimRNA, RNAMake, Amber, GROMACS, VMD; plan.py resolves the Project Planner
+                     SimRNA, RNAMake, Amber, GROMACS, VMD and custom scripts (userscript.py);
+                     plan.py resolves the Project Planner
                      graph and names files; scripts/ holds self-contained helper programs that
                      are embedded in generated workflows
   cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas,
-                     gui/wizard.py: script wizard, gui/planner.py: Project Planner)
+                     gui/wizard.py: script wizard, gui/planner.py: Project Planner,
+                     gui/problemview.py: problem badges, field flags and the problems list)
   demo.py            synthetic RNA system generator
 ```
 
@@ -1344,7 +1598,8 @@ mdatk/
 describe the outputs on the returned `AnalysisResult` (`add_series`, `add_matrix`,
 `add_pairmap`) and decorate the class with `@register`. Set `group_slots` (and `OUTPUT_LABELS`)
 to let panels choose residue groups for it. Its data keys immediately work in panels, charts,
-the cache and the GUI.
+the cache and the GUI. Select through `self.ctx.select(text, field=self.field("selection"))` (or
+`ctx.group_atoms(name, field=...)`) so a failing selection names its setting.
 
 **Adding a panel type**: subclass `mdatk.render.panels.Panel`, implement `setup` /
 `draw_frame` (and `animated_artists` for fast blitting) and decorate it with `@register_panel`.

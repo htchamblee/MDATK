@@ -1,4 +1,4 @@
-# NAMD MDFF stage 'final-min' - written by MDATK 0.0.8
+# NAMD MDFF stage 'final-min' - written by MDATK 0.0.10
 # MIN, 2000 steps, map coupling 10
 
 # Amber force field read natively from the parm7 (nothing converted)

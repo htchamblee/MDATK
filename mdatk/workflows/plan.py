@@ -43,6 +43,11 @@ class ResolvedStep:
     def ok(self) -> bool:
         return not errors(self.issues)
 
+    @property
+    def adopted(self) -> str:
+        """Stamp of the earlier run whose outputs this step uses ("": none); such a step is not run again."""
+        return self.node.adopted if self.tool is not None and self.tool.generates else ""
+
     def level(self) -> str:
         levels = {i.level for i in self.issues}
         for lvl in ("error", "warning", "info"):
@@ -56,6 +61,7 @@ class WriteReport:
     root: str
     written: List[str] = field(default_factory=list)
     skipped: Dict[str, str] = field(default_factory=dict)  # node id -> reason
+    kept: Dict[str, str] = field(default_factory=dict)  # node id -> stamp of the earlier run it uses
     master: str = ""
     summary: str = ""
 
@@ -289,9 +295,33 @@ class Plan:
         except Exception as exc:  # a generator bug must not break the planner
             step.issues.append(Issue("error", f"internal error while checking this step: {exc}"))
             step.outputs = {}
+        if step.adopted:
+            self._use_adopted_run(step)
         for pv in step.outputs.values():
             pv.source = node.id
             pv.source_label = step.label
+
+    def _use_adopted_run(self, step: ResolvedStep) -> None:
+        """Point the outputs of a step that adopted an earlier run at that run's files, so later steps
+        read (and check) them; the step itself is neither written nor run again."""
+        stamp = step.adopted
+        if stamp != self.stamp:
+            try:
+                step.outputs = step.tool.output_values(step.settings, step.ctx.with_stamp(stamp))
+            except Exception as exc:  # a generator bug must not break the planner
+                step.issues.append(Issue("error", f"internal error while naming the run of {stamp}: {exc}"))
+                step.outputs = {}
+        own = {p for v in step.ctx.inputs.values() for p in v.paths}  # passed through, not this step's
+        missing = [p for v in step.outputs.values() for p in v.paths
+                   if p not in own and self.root and not os.path.exists(self.node_path(p))]
+        if missing:
+            step.issues.append(Issue("warning", f"uses the outputs of its run of {stamp}, but "
+                                                f"{missing[0]} is missing" +
+                                     (f" (and {len(missing) - 1} more)" if len(missing) > 1 else "") +
+                                     "; check previous runs again, or run the step again"))
+        else:
+            step.issues.append(Issue("info", f"uses the outputs of its run of {stamp}: not written or run "
+                                             "again"))
 
     def _check_steps_and_names(self) -> None:
         seen: Dict[Tuple[int, str], str] = {}
@@ -306,6 +336,7 @@ class Plan:
                                                   "same folder with the same names: give one of them "
                                                   "another step number"))
             seen[key] = nid
+        self._check_shared_outputs()
         numbers: Dict[int, List[str]] = {}
         for nid in self.order:
             step = self.steps[nid]
@@ -315,6 +346,29 @@ class Plan:
             if len(labels) > 1:
                 self.issues.append(Issue("info", f"step number {step_label(num)} is used by "
                                                  f"{', '.join(labels)}"))
+
+    def _check_shared_outputs(self) -> None:
+        """Two steps must not write the same output file.  Built-in steps put their number and tag in every
+        name, but a custom script's outputs can be given any name, and in a plan without step folders the
+        steps after such a pair would read whichever file was written last."""
+        claimed: Dict[str, str] = {}  # plan-relative path -> node id of the first step that writes it
+        for nid in self.order:
+            step = self.steps[nid]
+            if step.tool is None or not step.tool.generates or step.ctx is None:
+                continue
+            # another step's files, and files chosen by hand that the step passes on (a FARFAR2 FASTA file)
+            passed = {p for v in step.ctx.inputs.values() for p in v.paths}
+            passed |= {str(step.settings.get(key) or "").strip()
+                       for key, opt in step.tool.flat_options().items() if opt.kind == "file"}
+            for port, value in step.outputs.items():
+                for path in value.paths:
+                    if os.path.isabs(path) or path in passed or os.path.dirname(path) != step.ctx.folder:
+                        continue  # not written by this step
+                    first = self.steps[claimed.setdefault(path, nid)]
+                    if first is step or (first.node.step, first.tool.tag) == (step.node.step, step.tool.tag):
+                        continue  # the same step, or a pair already reported as writing the same names
+                    step.issues.append(Issue("error", f"output '{port}': {path} is also written by "
+                                                      f"{first.label}; give one of them another file name"))
 
     # ------------------------------------------------------------ queries
     def all_issues(self) -> List[Tuple[str, Issue]]:
@@ -351,6 +405,8 @@ class Plan:
             raise ValueError("no plan folder set")
         report = WriteReport(self.root)
         targets = [n for n in self.order if node_ids is None or n in node_ids]
+        report.kept = {n: self.steps[n].adopted for n in targets if self.steps[n].adopted}
+        targets = [n for n in targets if n not in report.kept]  # their earlier files stay as they are
         for nid in targets:
             step = self.steps[nid]
             if step.tool is not None and step.tool.generates and not step.ok:
@@ -393,6 +449,9 @@ class Plan:
             if step.tool is None or not step.tool.generates:
                 continue
             lines.append(f"# {step.label}")
+            if step.adopted:
+                lines += [f"#   uses the outputs of its run of {step.adopted} (not run again)", ""]
+                continue
             if not step.files and step.ok:
                 step.files = generate_step(step)
             if not step.ok:
@@ -426,6 +485,11 @@ class Plan:
                 lines.append(f"Folder: `{step.ctx.folder or '.'}`  ")
             lines.append(f"Type: {step.tool.label}")
             lines.append("")
+            if step.adopted:
+                lines += [f"Uses the outputs of its run of `{step.adopted}` (not written or run again).", ""]
+            extra = step.tool.summary_lines(step.settings, step.ctx) if step.ctx is not None else []
+            if extra:
+                lines += extra + [""]
             if step.ctx and step.ctx.inputs:
                 lines.append("Inputs:")
                 for port, value in step.ctx.inputs.items():

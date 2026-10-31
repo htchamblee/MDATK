@@ -23,6 +23,20 @@ INTENDED = [
     (re.compile(r"(^|/|:)[^/]*_check_\d{8}-\d{4}\.py$"), None),
     # ... and runs for dry L-RNA builds too (they had no topology check)
     (re.compile(r"_amber-build_\d{8}-\d{4}\.sh$|_00_plan_\d{8}-\d{4}\.md$"), {"tool:amber-build:water=none"}),
+    # 0.0.10: the main script of a step whose production runs in a separate script stops at once when that
+    # script has finished and otherwise ends with exit status 75 ("waiting"), never with success (an
+    # all-production step used to "succeed" having run nothing); only lines are added.  Every case with a
+    # separate production script, i.e. all but separate_production=False
+    (re.compile(r"_amber-md_\d{8}-\d{4}\.sh$"),
+     {"example:rna_plan.mdatk.toml", "template:amber", "template:builder-amber", "template:farfar2-amber"}
+     | {f"tool:amber-md:{v}" for v in ("default", "amber_version=24", "dry_pdb=False", "dry_traj=True",
+                                       "engine=pmemd", "engine=pmemd.MPI", "input_velocities=True",
+                                       "min_engine=pmemd", "restraint_ref=initial", "resume=False")}),
+    (re.compile(r"_gromacs_\d{8}-\d{4}\.sh$"),
+     {"template:amber-gromacs"}
+     | {f"tool:gromacs:{v}" for v in ("default", "allow_nbfix_loss=True", "convert=acpype", "convert=none",
+                                      "gmx_version=2023", "gpu=False", "mass_repartition=True",
+                                      "update_gpu=True")}),
 ]
 
 

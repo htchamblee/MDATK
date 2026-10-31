@@ -121,7 +121,10 @@ Left out (`trim.py`): test suites and their data, translations, documentation an
 Matplotlib sample data and toolbar images, Adwaita icons above 48 px and cursors, the build
 machine's other hicolor icons, Qt / Tk / wx back-ends, optional stacks MDAnalysis and mdtraj
 import when present (pandas, scikit-learn, netCDF4 + HDF5, numba, ...), `libgcc_s` (always on the
-host). Not bundled on purpose: **cpptraj / AmberTools** (the user's own installation; MDATK
+host). Without the cursor files GDK on Windows has no cursor for names it does not map to a system
+cursor (the pointer disappeared over the structure panel, "grab"), so on Windows the GUI asks for
+cursor types that map to Win32 system cursors (`mdatk/gui/cursors.py`); on Linux the desktop's cursor
+theme is used. Not bundled on purpose: **cpptraj / AmberTools** (the user's own installation; MDATK
 detects it as before), the optional **VTK** renderer, and every program the generated workflow
 scripts call (Amber, GROMACS, Rosetta, Phenix, Coot, VMD ...).
 

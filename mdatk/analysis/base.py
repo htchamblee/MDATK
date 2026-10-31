@@ -17,7 +17,7 @@ import numpy as np
 from ..config import Project, stable_hash
 from ..data import AnalysisResult
 from ..progress import Reporter
-from ..selections import heavy, select
+from ..selections import SelectionError, heavy, select
 
 log = logging.getLogger(__name__)
 
@@ -118,12 +118,21 @@ class AnalysisContext:
         self.reporter = reporter or Reporter()
         self.use_pbc = project.analyses.use_pbc
 
-    def select(self, text: str, allow_empty: bool = False):
-        return select(self.u, text, self.project.groups, allow_empty=allow_empty)
+    def select(self, text: str, allow_empty: bool = False, field: str = ""):
+        """Atoms of ``text``; a :class:`SelectionError` names ``field``, the setting the text came from
+        (e.g. ``"analyses.mg.ligand_selection"``)."""
+        try:
+            return select(self.u, text, self.project.groups, allow_empty=allow_empty)
+        except SelectionError as exc:
+            raise exc.locate(field, self.project)
 
-    def group_atoms(self, name: str, heavy_only: bool = False):
-        ag = self.select(f"group:{name}")
+    def group_atoms(self, name: str, heavy_only: bool = False, field: str = ""):
+        ag = self.select(f"group:{name}", field=field)
         return heavy(ag) if heavy_only else ag
+
+    def fail(self, message: str, field: str) -> SelectionError:
+        """A :class:`SelectionError` of the setting ``field`` to raise (e.g. two groups that overlap)."""
+        return SelectionError(message).locate(field, self.project)
 
     def box(self, ts):
         if not self.use_pbc:
@@ -145,6 +154,8 @@ class Analysis:
     internal = False
     #: number of residue groups a data key may choose (0, 1 or 2)
     group_slots = 0
+    #: the settings (under ``analyses.<name>``) that :meth:`with_groups` rewrites for a run on other groups
+    instance_settings: Tuple[str, ...] = ("group_a", "group_b")
     #: output name -> label; ``{a}`` / ``{b}`` are replaced by the group names
     OUTPUT_LABELS: Dict[str, str] = {}
 
@@ -221,6 +232,33 @@ class Analysis:
         return AnalysisResult(name=self.instance, key=key, params=self.params_for(project),
                               arrays={}, meta=dict(meta, label=self.label, analysis=self.name))
 
+    def field(self, name: str) -> str:
+        """Project path of one of this analysis' settings: ``"group_a"`` -> ``"analyses.hbonds.group_a"``."""
+        return f"analyses.{self.name}.{name}"
+
+    def locate_error(self, exc: SelectionError) -> SelectionError:
+        """A run on other groups (``contacts@A+B``, ``rmsd@A``) got its groups from a panel or a chart
+        series: report a problem of a setting :meth:`with_groups` rewrote there (or, when neither asked
+        for the run, at the definition of the group concerned), never at the analysis' own settings,
+        which the run did not use."""
+        _, groups = parse_instance(self.instance)
+        own = [self.field(name) for name in self.instance_settings]
+        if not groups or not any(exc.field == f or exc.field.startswith(f + ".") for f in own):
+            return exc
+        project = self.project
+        for k, spec in enumerate(project.layout.panels):
+            for j, key in enumerate(spec.series):
+                if split_key(key)[0] == self.instance:
+                    return exc.locate(f"layout.panels.{k}.{'groups' if j == 0 else 'series'}", project, True)
+        if any(split_key(key)[0] == self.instance for key in project.output.charts.series):
+            return exc.locate("output.charts.series", project, True)
+        name = groups[1] if exc.field == self.field("group_b") and len(groups) > 1 else groups[0]
+        for k, g in enumerate(project.groups):
+            if g.name == name:
+                return exc.locate(f"groups.{k}.{'selection' if g.selection.strip() else 'residues'}", project,
+                                  True)
+        return exc
+
 
 def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indices: np.ndarray,
                  reporter: Optional[Reporter] = None):
@@ -233,7 +271,10 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     n = len(frame_indices)
     for a in analyses:
         reporter.log(f"Preparing {a.label} ...")
-        a.setup(frame_indices)
+        try:
+            a.setup(frame_indices)
+        except SelectionError as exc:  # name the setting the failing selection came from
+            raise a.locate_error(exc)
     times = np.empty(n, dtype=np.float64)
     traj = ctx.u.trajectory
     every = max(1, n // 200)

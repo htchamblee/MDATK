@@ -213,7 +213,8 @@ def test_amber_plan_chains_file_names():
     assert 'TOP="../01_amber-build/apt1_01_parmed_20261015-1432.parm7"' in script
     assert "-c ../01_amber-build/apt1_01_tleap_20261015-1432.rst7 -ref ../01_amber-build/" in script
     assert "-c apt1_03_min1_20261015-1432.rst7 -ref apt1_03_min1_20261015-1432.rst7" in script
-    assert "prod" not in script.split("cpptraj")[0].split("# eq-free")[0]
+    assert "-i apt1_03_prod" not in script  # production runs in its own script ...
+    assert script.rstrip().endswith("exit 75\nfi")  # ... and the main one waits for it (WAITING_STATUS)
     prod = files["apt1_03_amber-prod_20261015-1432.sh"]
     assert prod.role == "run-separate" and "-c apt1_03_eq-free_20261015-1432.rst7" in prod.content
     assert plan.steps[m.id].outputs["trajectory"].paths == ["03_amber-md/apt1_03_prod_20261015-1432.nc"]
@@ -425,7 +426,7 @@ def test_amber_md_segments_and_engines():
     assert "-o apt1_04_prod-002_20261015-1432.out" in prod and "-c apt1_04_prod-002_20261015-1432.rst7" in prod
     assert "finished" not in prod
     main = files["apt1_04_amber-md_20261015-1432.sh"].content
-    assert "\npmemd -O -i apt1_04_min1" in main and "$PMEMD -O -i apt1_04_heat" in main
+    assert "\n  pmemd -O -i apt1_04_min1" in main  # inside the block skipped after production and "$PMEMD -O -i apt1_04_heat" in main
     assert st.outputs["trajectory"].paths == [f"04_amber-md/apt1_04_prod-00{k}_20261015-1432.nc" for k in (1, 2, 3)]
 
 
@@ -696,7 +697,11 @@ def test_gmx_posre_insertion():
 
 def test_vmd_script_uses_groups(tmp_path):
     from mdatk.workflows.vmd import residue_selection
-    assert residue_selection("1-12, 20, A:30-40") == "resid 1 to 12 20 30 to 40"
+    assert residue_selection("1-12, 20") == "resid 1 to 12 20"
+    # a chain-qualified range keeps its chain (chain groups of a PDB numbered from 1 in every chain)
+    assert residue_selection("1-12, 20, A:30-40") == "(resid 1 to 12 20) or (chain A and resid 30 to 40)"
+    assert residue_selection("A:1-4, B:1-4") == "(chain A and resid 1 to 4) or (chain B and resid 1 to 4)"
+    assert residue_selection("A:1-4") == "chain A and resid 1 to 4"
     project = Project()
     wf = WorkflowParams(project_name="apt1", stamp=STAMP)
     node = PlanNode(id="x", tool="vmd", step=6, settings=TOOLS["vmd"].normalise({"render": "movie"}),
@@ -710,6 +715,27 @@ def test_vmd_script_uses_groups(tmp_path):
     assert "render TachyonInternal" in tcl and "measure fit" in tcl
     sh = files["apt1_06_vmd_20261015-1432.sh"].content
     assert "vmd -dispdev text -e apt1_06_vmd_20261015-1432.tcl" in sh and "-c:v libx264" in sh
+
+
+def test_vmd_reads_the_selections_of_chain_groups(tmp_path):
+    """A chain group without residue ranges (a selection MDATK wrote) is translated for VMD instead of
+    left out; any other selection still is."""
+    from mdatk.config import ResidueGroup
+    from mdatk.workflows.vmd import selection_for_vmd
+    assert selection_for_vmd("chainID B and resid 1:4 7") == "chain B and resid 1 to 4 7"
+    assert selection_for_vmd("segid P1 and resid 2:5") == "segname P1 and resid 2 to 5"
+    assert selection_for_vmd("index 0:128 130") == "index 0 to 128 130"
+    assert selection_for_vmd("chainID B and resid 1:4 and name P") == selection_for_vmd("name P") == ""
+    groups = [ResidueGroup("Chain_A", "A:1-4", "", "#2a78d6"),
+              ResidueGroup("Chain_B", "", "chainID B and resid 1:4", "#eb6834"),
+              ResidueGroup("Chain_C", "", "index 258:386", "#2f9e6e"), ResidueGroup("Pocket", "", "name P")]
+    node = PlanNode(id="x", tool="vmd", step=6, settings=TOOLS["vmd"].normalise({}),
+                    files={"topology": "/d/m.pdb"})
+    plan = single_step_plan(WorkflowParams(project_name="apt1", stamp=STAMP), node, str(tmp_path), groups)
+    tcl = generated(plan)["apt1_06_vmd_20261015-1432.tcl"].content
+    assert tcl.count("color change rgb") == 3 and "Pocket" not in tcl
+    assert re.findall(r"mol selection \{(.*)\}", tcl)[:3] == [
+        "chain A and resid 1 to 4", "chain B and resid 1 to 4", "index 258 to 386"]
 
 
 # ---------------------------------------------------------------------------

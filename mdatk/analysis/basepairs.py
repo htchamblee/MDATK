@@ -27,10 +27,10 @@ import numpy as np
 
 from ..data import CSRBuilder
 from ..secstruct import BarnabaRunner, PairDetector, import_barnaba, lw_kind
-from ..selections import SelectionError, heavy
+from ..selections import heavy
 from .base import Analysis, register
 from .common import labels
-from .structure import structure_groups, structure_residues
+from .structure import VIEW_GROUPS, structure_groups, structure_residues
 
 BARNABA_BATCH = 100  # stride frames written to one temporary multi-model PDB per barnaba call
 
@@ -63,7 +63,7 @@ class BasePairAnalysis(Analysis):
         bp = self.project.analyses.basepairs
         residues, _ = structure_residues(self.ctx)
         if len(residues) == 0:
-            raise SelectionError("base pairs: no residues selected for the structural view")
+            raise self.ctx.fail("base pairs: no residues selected for the structural view", VIEW_GROUPS)
         self.residues = residues
         self.engine = bp.engine
         self.stride = max(1, int(bp.stride))

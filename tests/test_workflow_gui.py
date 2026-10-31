@@ -414,3 +414,113 @@ def test_planner_ignores_callbacks_of_an_older_run(main, tmp_path):
     assert not pl._spin_id
     kw["on_state"](j, "running")  # a run still going after the window closed
     assert not pl._spin_id
+
+
+def test_planner_check_previous_runs_adopt_and_run_selected(main, tmp_path):
+    from mdatk.gui.planner import FOOT_H
+    from mdatk.workflows import runstate
+    old = "20261015-1432"
+    main.open_planner()
+    pl = main.planner
+    pl.add_template("amber")
+    pump(0.3)
+    nodes = {n.tool: n for n in main.project.workflow.nodes}
+    b, md = nodes["amber-build"], nodes["amber-md"]
+    b.files["structure"] = str(tmp_path / "model.pdb")
+    nodes["amber-restraints"].settings.update(sequence="GGGCAC GUGCCC", dotbracket="(((((( ))))))")
+    main.project.workflow.stamp = old
+    pl.changed()
+    for path in runstate.expected(pl.plan, b.id, old):  # the build has run
+        path = pl.plan.node_path(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("x\n")
+    height = pl.canvas.node_size(b)[1]
+    asked = []
+    pl._ask = lambda text, _detail: asked.append(text) or False  # offered, not taken
+    runs = pl.check_runs(None)
+    assert runs[b.id].state == "done" and runs[md.id].state == "missing" and nodes["mdatk"].id not in runs
+    assert asked == ["Use the outputs of 1 finished run(s)?"] and b.adopted == ""
+    assert pl.canvas.node_size(b)[1] == height + FOOT_H  # the footer shows what was found
+    assert pl.canvas.run_info(b)[0].startswith(f"done · {old} · 20")
+    assert pl.canvas.run_info(md)[0] == "missing · no outputs yet"
+    # the next iteration: a new stamp; the earlier run is found and used from the details pane
+    pl.new_stamp()
+    assert main.project.workflow.stamp != old
+    pl.check_runs([b.id])
+    pl.canvas.select(b.id)
+    assert f"Previous run: done: run {old} (an earlier stamp)" in pl.d_prev.get_text()
+    assert pl.d_adopt.get_sensitive() and not pl.d_forget.get_sensitive()
+    pl.d_adopt.clicked()
+    assert b.adopted == old and pl.d_forget.get_sensitive() and not pl.d_adopt.get_sensitive()
+    assert "Uses the outputs of its run of" in pl.d_prev.get_text()
+    assert pl.plan.steps[md.id].ctx.inp("topology").endswith(f"_parmed_{old}.parm7")
+    assert pl.canvas.run_info(b)[0].startswith("uses done")
+    pl.canvas.queue_draw()
+    pump(0.2)  # the footers draw
+    # Run selected with a step that uses an earlier run: skip it, cancel, or run it again
+    calls = []
+    main.run_scripts = lambda jobs, separate=(), parent=None, **kw: calls.append((jobs, list(separate), kw))
+    pl.set_checked([b.id, md.id])
+    pl._adopted_choice = lambda _text, _detail: "skip"
+    pl.run_selected()
+    jobs, separate, kw = calls[-1]
+    assert [j.node_id for j in jobs] == [md.id] and len(separate) == 1
+    assert [(j.node_id, j.role) for j in kw["with_separate"]] == [(md.id, "run"), (md.id, "run-separate")]
+    assert not os.path.exists(os.path.join(main.project.workflow_dir, "01_amber-build",
+                                           f"apt1_01_amber-build_{main.project.workflow.stamp}.sh"))
+    pl._adopted_choice = lambda _text, _detail: "cancel"
+    pl.run_selected()
+    assert len(calls) == 1
+    pl._adopted_choice = lambda _text, _detail: "rerun"
+    pl.run_selected()
+    assert b.adopted == "" and [j.node_id for j in calls[-1][0]] == [b.id, md.id]
+    # the run marks a step that waits for its separately run script
+    job = calls[-1][0][1]
+    calls[-1][2]["on_state"](job, "waiting")
+    assert pl.run_state[md.id] == "waiting"
+    pl.canvas.queue_draw()
+    pump(0.2)
+
+
+def test_run_scripts_waiting_and_the_separate_scripts_option(main, tmp_path, monkeypatch):
+    import shutil
+    if shutil.which("bash") is None:
+        pytest.skip("needs bash")
+    from mdatk.workflows.base import WAITING_STATUS
+    from mdatk.workflows.runner import ScriptJob
+    main.open_planner()
+    pl = main.planner
+    n = pl.add_step("vmd", 60, 60)
+    pump(0.2)
+    sep = tmp_path / "prod.sh"
+    sep.write_text('cd "$(dirname "$0")"\ntouch prod.done\n')
+    script = tmp_path / "main.sh"
+    script.write_text(f'cd "$(dirname "$0")"\nif [ -f prod.done ]; then exit 0; fi\nexit {WAITING_STATUS}\n')
+    job = ScriptJob(1, "md", str(script), node_id=n.id, separate=[str(sep)])
+    both = [job, ScriptJob(1, "md", str(sep), node_id=n.id, separate=[str(sep)], role="run-separate")]
+
+    def run(ticked):
+        def dialog_run(dlg):
+            boxes = [w for w in dlg.get_message_area().get_children() if isinstance(w, Gtk.CheckButton)]
+            assert len(boxes) == 1
+            boxes[0].set_active(ticked)
+            return Gtk.ResponseType.OK
+
+        monkeypatch.setattr(Gtk.MessageDialog, "run", dialog_run)
+        main.messages.clear()
+        main.run_scripts([job], [str(sep)], parent=pl, on_state=pl._on_run_state,
+                         on_finished=pl._on_run_finished, with_separate=both)
+        end = time.time() + 15
+        while time.time() < end and not main.messages:
+            pump(0.1)
+        return main.messages
+
+    msgs = run(False)
+    assert msgs and msgs[0][1] == "Waiting for separately run scripts" and str(sep) in msgs[0][2]
+    assert pl.run_state == {n.id: "waiting"} and not (tmp_path / "prod.done").exists()
+    pl.canvas.queue_draw()
+    pump(0.2)
+    msgs = run(True)  # "Also run the scripts marked 'run separately'"
+    assert msgs and msgs[0][1] == "Scripts finished", msgs
+    assert (tmp_path / "prod.done").exists() and pl.run_state == {n.id: "ok"}
