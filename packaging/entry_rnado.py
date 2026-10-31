@@ -2,7 +2,8 @@
 
 ``rnado-gui [PROJECT] [ARGS ...]`` starts RNAdo, the project planner, the same as
 ``python -m mdatk.gui.rnado``: every argument is passed on (``mdatk.gui.launch.rnado_command`` adds
-``--open TOOL``).  The AppImage's AppRun starts it for ``MDATK-*.AppImage rnado ...``.
+``--open TOOL``).  The analysis window of a bundle folder or the Windows build starts it; the AppImage's
+AppRun runs ``mdatk rnado ...`` instead, which also takes the workflow actions (``rnado write ...``).
 """
 
 import multiprocessing

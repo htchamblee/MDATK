@@ -2105,7 +2105,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def open_in_rnado(self, tool: Optional[str] = None) -> bool:
         """'Open in RNAdo…': save the project if needed (asks first), then start RNAdo on its file as a
         program of its own, with ``tool`` ("wizard", "pdb" or "builder") open as well."""
-        from .launch import launch_rnado
+        from .launch import launch_rnado, watch_start
 
         path = self.project_path
         what = {"wizard": "the script wizard", "pdb": "the PDB clean-up",
@@ -2134,12 +2134,14 @@ class MainWindow(Gtk.ApplicationWindow):
             elif response != Gtk.ResponseType.REJECT:
                 return False
         try:
-            launch_rnado(path, tool)
+            proc = launch_rnado(path, tool)
         except OSError as exc:
             self.error("Could not start RNAdo", str(exc))
             return False
-        self.append_log(f"Started RNAdo{' (' + what + ')' if tool else ''}"
-                        + (f" on {path}" if path else ""))
+        started = f"Started RNAdo{' (' + what + ')' if tool else ''}" + (f" on {path}" if path else "")
+        # logged once RNAdo still runs a moment later; an error status before that is shown instead
+        watch_start(proc, lambda: self.append_log(started),
+                    lambda why: self.error("RNAdo did not start", why))
         return True
 
     def use_plan_inputs(self, node_id: Optional[str] = None) -> bool:

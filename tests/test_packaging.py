@@ -30,6 +30,17 @@ def test_frozen_helpers_from_source(monkeypatch):
     assert os.environ["PATH"] == "/usr/bin"
 
 
+@pytest.mark.parametrize("orig, expected", [("/home/me/py", "/home/me/py"), ("", None)])
+def test_child_env_gives_the_users_pythonpath_back(monkeypatch, orig, expected):
+    """RNAdo started by the analysis window from source: MDATK on its PYTHONPATH, the user's value recorded
+    (mdatk.gui.launch); the programs it starts get the user's value back."""
+    monkeypatch.setenv("PYTHONPATH", "/src/mdatk-checkout" + (os.pathsep + orig if orig else ""))
+    monkeypatch.setenv(frozen.ORIG_PYTHONPATH, orig)
+    env = frozen.child_env()
+    assert env.get("PYTHONPATH") == expected and frozen.ORIG_PYTHONPATH not in env
+    assert os.environ[frozen.ORIG_PYTHONPATH] == orig  # this process keeps its own
+
+
 @pytest.fixture
 def fake_bundle(tmp_path, monkeypatch):
     """A PyInstaller-like onedir layout: dist/mdatk (executable) + _internal (_MEIPASS) with tools/ffmpeg."""
@@ -65,6 +76,10 @@ def test_frozen_setup_and_child_env(fake_bundle, monkeypatch):
     frozen.setup()  # idempotent
     assert os.environ["PATH"].count(tools) == 1
 
+    monkeypatch.setenv(frozen.ORIG_PYTHONPATH, "/home/me/py")
+    env = frozen.child_env()
+    assert env["PYTHONPATH"] == "/home/me/py" and frozen.ORIG_PYTHONPATH not in env
+    monkeypatch.delenv(frozen.ORIG_PYTHONPATH)
     env = frozen.child_env()
     assert "GI_TYPELIB_PATH" not in env
     assert "GDK_PIXBUF_MODULE_FILE" not in env and env["FONTCONFIG_FILE"] == "/etc/fonts/my.conf"
@@ -232,12 +247,14 @@ def _packaging_module(name):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="AppRun is a POSIX shell script")
-@pytest.mark.parametrize("args, argv0, expected", [
-    (["rnado"], None, "rnado-gui"),
-    (["rnado", "@project"], None, "rnado-gui @project"),
-    (["rnado", "@project", "--open", "wizard"], None, "rnado-gui @project --open wizard"),  # launch.py
-    (["@project"], "/home/me/bin/rnado", "rnado-gui @project"),  # a symbolic link named rnado
-    ([], "/home/me/bin/rnado-gui", "rnado-gui"),
+@pytest.mark.parametrize("args, argv0, expected", [  # "mdatk rnado": the window or a workflow action
+    (["rnado"], None, "mdatk rnado"),
+    (["rnado", "@project"], None, "mdatk rnado @project"),
+    (["rnado", "@project", "--open", "wizard"], None, "mdatk rnado @project --open wizard"),  # launch.py
+    (["rnado", "write", "-p", "@project"], None, "mdatk rnado write -p @project"),
+    (["@project"], "/home/me/bin/rnado", "mdatk rnado @project"),  # a symbolic link named rnado
+    (["status", "-p", "@project"], "/home/me/bin/rnado", "mdatk rnado status -p @project"),
+    ([], "/home/me/bin/rnado-gui", "mdatk rnado"),
     (["--version"], None, "mdatk --version"),  # everything else as before
     (["@project"], None, "mdatk gui @project"),
     (["workflow", "list"], None, "mdatk workflow list"),
@@ -261,6 +278,52 @@ def test_apprun_dispatches_rnado(tmp_path, args, argv0, expected):
         env["ARGV0"] = argv0
     out = subprocess.run([str(apprun), *args], capture_output=True, text=True, env=env, check=True).stdout
     assert out.strip() == expected.replace("@project", str(project))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="AppRun is a POSIX shell script")
+def test_apprun_rnado_actions_in_a_mock_appdir(tmp_path):
+    """The real AppRun in an AppDir whose mdatk program is this source tree's command line: 'AppImage rnado
+    ACTION ...' and a link named rnado run the workflow actions (rnado-gui itself takes none)."""
+    appdir = tmp_path / "AppDir"
+    lib = appdir / "usr" / "lib" / "mdatk"
+    lib.mkdir(parents=True)
+    exe = lib / "mdatk"
+    exe.write_text(f"#!/bin/sh\nexec '{sys.executable}' -c "
+                   "'import sys; from mdatk.cli import main; sys.exit(main())' \"$@\"\n")
+    exe.chmod(0o755)
+    gui = lib / "rnado-gui"  # never started for these
+    gui.write_text("#!/bin/sh\necho rnado-gui \"$@\"\nexit 9\n")
+    gui.chmod(0o755)
+    apprun = appdir / "AppRun"
+    apprun.write_text(open(os.path.join(PACKAGING, "linux", "AppRun"), encoding="utf-8").read())
+    apprun.chmod(0o755)
+    link = tmp_path / "bin" / "rnado"  # ln -s MDATK.AppImage ~/bin/rnado (the runtime sets ARGV0)
+    link.parent.mkdir()
+    link.symlink_to(apprun)
+    from mdatk.config import Project
+
+    plan = tmp_path / "plan.mdatk.toml"
+    project = Project()
+    project.output.out_dir = str(tmp_path / "out")
+    project.save(str(plan))
+    env = {k: v for k, v in os.environ.items() if k not in ("ARGV0", "DISPLAY", "WAYLAND_DISPLAY")}
+    env["PYTHONPATH"] = ROOT
+
+    def run(*args, program=apprun):
+        return subprocess.run([str(program), *args], capture_output=True, text=True, env=env,
+                              cwd=str(tmp_path))
+
+    out = run("rnado", "tools")
+    assert out.returncode == 0 and "user-script" in out.stdout, out.stderr
+    out = run("rnado", "template", "amber", "-p", str(plan))
+    assert out.returncode == 0, out.stderr
+    assert {n.tool for n in Project.load(str(plan)).workflow.nodes} >= {"amber-build", "amber-md"}
+    out = run("status", "-p", str(plan), program=link)
+    assert out.returncode == 0 and "Amber" in out.stdout, out.stderr
+    out = run("rnado", "--version")
+    assert out.returncode == 0 and out.stdout.startswith("RNAdo (MDATK) ")
+    out = run("--open", "planner", program=link)  # the window's arguments are checked before any window
+    assert out.returncode == 2 and "invalid choice" in out.stderr
 
 
 def _run_spec(monkeypatch, platform, icon_dir):

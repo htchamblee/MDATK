@@ -693,7 +693,8 @@ class PlannerPanel(Gtk.Box):
         self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
         self._spin_id = 0
         self._closed = False
-        self._run_token = 0  # bumped by each run and by reload: callbacks of an older run are ignored
+        self._run_token = 0  # the run whose callbacks count (a newer run or a reload replaces it)
+        self._tokens = 0  # the last token handed out
         outer = self
         outer.pack_start(self._toolbar(), False, False, 0)
         outer.pack_start(self._naming_bar(), False, False, 0)
@@ -751,7 +752,8 @@ class PlannerPanel(Gtk.Box):
         self.checked.clear()
         self.run_state.clear()
         self.prev_runs.clear()
-        self._run_token += 1
+        self._tokens += 1
+        self._run_token = self._tokens
         self.changed()
 
     def changed(self, resolve: bool = True) -> None:
@@ -1235,15 +1237,19 @@ class PlannerPanel(Gtk.Box):
             if not jobs and report.kept:
                 self.set_status(msg + "; nothing else to run")
                 return
-            self._run_token += 1
-            token = self._run_token
+            self._tokens += 1
+            token = self._tokens
             separate = separate_scripts(plan, ok_ids)
-            self.host.run_scripts(jobs, separate, parent=self.toplevel(),
-                                  parallel=int(self.parallel_spin.get_value()),
-                                  on_state=lambda j, st: self._on_run_state(j, st, token),
-                                  on_finished=lambda: self._on_run_finished(token),
-                                  with_separate=plan_jobs(plan, ok_ids, include_separate=True) if separate
-                                  else None)
+            started = self.host.run_scripts(jobs, separate, parent=self.toplevel(),
+                                            parallel=int(self.parallel_spin.get_value()),
+                                            on_state=lambda j, st: self._on_run_state(j, st, token),
+                                            on_finished=lambda: self._on_run_finished(token),
+                                            with_separate=plan_jobs(plan, ok_ids, include_separate=True)
+                                            if separate else None)
+            # only a run the host started takes over: when it refuses (scripts still running, not
+            # confirmed) the running run's marks must still reach their end (None: a host without the answer)
+            if started is not False:
+                self._run_token = token
 
     # ------------------------------------------------------- previous runs
     def _previous_run_text(self, n: PlanNode) -> str:

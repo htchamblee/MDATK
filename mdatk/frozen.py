@@ -1,7 +1,8 @@
 """Support for the stand-alone builds (PyInstaller: Linux AppImage, Windows).
 
 From a source checkout or a pip installation every function here is a no-op or
-returns ``None``.  In a frozen build:
+returns ``None`` (except :func:`child_env` in RNAdo started by the analysis
+window, below).  In a frozen build:
 
 * :func:`setup` (called by the bundle's entry scripts before anything else is
   imported) puts the bundled tools folder (FFmpeg) at the front of ``PATH``,
@@ -10,6 +11,12 @@ returns ``None``.  In a frozen build:
 * :func:`child_env` is the environment for external programs (generated
   scripts, the file manager): the bundle's GTK / GObject-introspection
   settings point into the bundle and must not leak into the user's programs.
+
+:func:`child_env` also gives external programs back the ``PYTHONPATH`` the user
+had when the analysis window started RNAdo from source: ``mdatk.gui.launch``
+may put MDATK in front of it and records the user's value in
+:data:`ORIG_PYTHONPATH`.  Another Python a script starts (AmberTools' ParmEd, a
+conda environment) must not import this Python's packages.
 
 PyInstaller's own run-time hooks already set the GObject-introspection
 typelib path, the GDK pixbuf loader cache, ``XDG_DATA_DIRS`` (icons, themes,
@@ -32,6 +39,8 @@ _HOOK_VARS = ("GI_TYPELIB_PATH", "GIO_MODULE_DIR", "GDK_PIXBUF_MODULE_FILE", "GT
 # Passed on unless they point into the bundle.
 _BUNDLE_VARS = ("GDK_PIXBUF_MODULEDIR", "GSETTINGS_SCHEMA_DIR", "FONTCONFIG_FILE", "FONTCONFIG_PATH")
 _PATH_LISTS = ("LD_LIBRARY_PATH", "XDG_DATA_DIRS", "PATH")
+# The user's PYTHONPATH ("" when unset) in a program that mdatk.gui.launch started with its own.
+ORIG_PYTHONPATH = "MDATK_ORIG_PYTHONPATH"
 
 
 def is_frozen() -> bool:
@@ -105,12 +114,27 @@ def setup() -> None:
         os.environ["PATH"] = tools + os.pathsep + path if path else tools
 
 
+def _user_pythonpath(env: Dict[str, str]) -> None:
+    """Give ``env`` the PYTHONPATH recorded in :data:`ORIG_PYTHONPATH` back."""
+    orig = env.pop(ORIG_PYTHONPATH, None)
+    if orig is None:
+        return
+    if orig:
+        env["PYTHONPATH"] = orig
+    else:
+        env.pop("PYTHONPATH", None)
+
+
 def child_env() -> Optional[Dict[str, str]]:
-    """Environment for external programs started by a frozen build (None: inherit unchanged)."""
+    """Environment for external programs: without the settings of a frozen build, and with the user's own
+    PYTHONPATH (see :data:`ORIG_PYTHONPATH`); None: inherit this process's environment unchanged."""
     root = bundle_dir()
-    if root is None:
+    if root is None and ORIG_PYTHONPATH not in os.environ:
         return None
     env = dict(os.environ)
+    _user_pythonpath(env)
+    if root is None:
+        return env
     for var in _HOOK_VARS:
         env.pop(var, None)
     for var in [v for v in env if v.startswith("_PYI_")]:  # PyInstaller's own bookkeeping

@@ -583,27 +583,27 @@ class RNAdoWindow(Gtk.ApplicationWindow):
 
     # ================================================================ running scripts
     def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None, parallel: int = 1,
-                    on_state=None, on_finished=None, with_separate=None) -> None:
+                    on_state=None, on_finished=None, with_separate=None) -> bool:
         """Run generated scripts in the background after a confirmation; their output goes to the log
         panel, each line marked with its step.  ``on_state(job, state)`` and ``on_finished()`` are called on
         the GTK main loop; ``with_separate`` (the jobs including the scripts marked 'run separately') adds
-        the choice to run those too."""
+        the choice to run those too.  False when no run started."""
         from ..workflows.runner import ScriptFailed, run_jobs, runner_problem
 
         if not jobs:
             self.error("No scripts to run", "None of the selected steps has a script to run here.")
-            return
+            return False
         problem = runner_problem()  # Windows / no bash: the scripts are written but run elsewhere
         if problem:
             self.info("Scripts written, not run",
                       problem + "\n\nScripts:\n" + "\n".join(j.path for j in jobs[:20]))
-            return
+            return False
         if self.jobs.running:
             self.error("Scripts are still running", "Wait for them to finish, or cancel them first.")
-            return
+            return False
         chosen = confirm_run(parent or self, jobs, separate, self.project_path, parallel, with_separate)
         if chosen is None:
-            return
+            return False
         jobs = chosen
         self.show_log()
         panel, project_path, total = self.log, self.project_path, len(jobs)
@@ -648,7 +648,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         at_once = f", up to {parallel} at a time" if parallel > 1 else ""
         logged_in = f"; each run is logged in {os.path.basename(project_path)}" if project_path else ""
         self.append_log(f"Running {total} script(s){at_once}{logged_in}")
-        self.jobs.start("Running generated scripts", job, done, on_failure=failed, expected=(ScriptFailed,))
+        return self.jobs.start("Running generated scripts", job, done, on_failure=failed,
+                               expected=(ScriptFailed,))
 
     def cancel(self) -> None:
         self.jobs.cancel()

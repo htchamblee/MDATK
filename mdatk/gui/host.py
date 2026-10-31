@@ -32,10 +32,11 @@ class Host(Protocol):
 
     def run_scripts(self, jobs: Sequence, separate: Sequence[str] = (), parent=None, parallel: int = 1,
                     on_state: Optional[Callable] = None, on_finished: Optional[Callable] = None,
-                    with_separate: Optional[Sequence] = None) -> None:
+                    with_separate: Optional[Sequence] = None) -> bool:
         """Run generated scripts after a confirmation; ``on_state(job, state)`` and ``on_finished()`` are
         called on the GTK main loop, ``with_separate`` (the jobs including the scripts marked 'run
-        separately') adds the choice to run those too."""
+        separately') adds the choice to run those too.  False when no run started (nothing to run, not
+        confirmed, scripts still running)."""
 
     def use_for_analysis(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
         """Hand the files an MDATK analysis step reads to the analysis window."""

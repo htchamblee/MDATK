@@ -61,9 +61,10 @@ In 0.0.11 the workflow planner becomes **RNAdo, MDATK's workflow planner**, a pr
   analysis window.
 - An **output log panel** at the bottom of RNAdo's window shows what the planner did (files written,
   previous runs checked, runs used or dropped) and every line of the scripts it runs, each marked with
-  its step; standard error and lines starting with ERROR or WAITING are highlighted, with start,
-  finish, failed, waiting and not-started lines. It filters by step, shows the stored log of the
-  selected step's last run, and copies, saves or clears its lines.
+  its step (a script that prints faster than the panel can show gets lines skipped, with a note of how
+  many, so the window stays responsive); standard error and lines starting with ERROR or WAITING are
+  highlighted, with start, finish, failed, waiting and not-started lines. It filters by step, shows the
+  stored log of the selected step's last run, and copies, saves or clears its lines.
 - The analysis window's *RNAdo* menu (Ctrl+P, Ctrl+Shift+W) starts RNAdo on the project, straight on
   the plan or one of its tools, and *Use the plan's files* (Input & cleaning) takes the topology and
   trajectories the plan's MDATK analysis step reads.
