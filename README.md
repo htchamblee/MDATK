@@ -1,143 +1,109 @@
-<p align="center"><img src="mdatk/assets/rnado-wordmark.png" alt="RNAdo" width="600"></p>
+<p align="center"><img src="mdatk/assets/rnado-wordmark.png" alt="RNAdo, MDATK's workflow planner" width="600"></p>
 
-<p align="center"><b>RNAdo</b>, MDATK's planner for RNA MD set-ups (project planner, script wizard, PDB
-hygiene and structure builder), ships with MDATK as a program of its own.</p>
+<p align="center"><b>RNAdo</b>, MDATK's workflow planner, ships with MDATK as a program of its own.</p>
 
-# Molecular Dynamic Analysis Tool Kit (MDATK)
+# MDATK
 
-MDATK is an offline, Linux-native GTK 3 desktop application (with a companion command line
-interface) for analysing molecular dynamics trajectories of RNA systems and turning them into
-multi-panel MP4 videos, high-resolution time charts and selected-frame PDB files.
+MDATK, the Molecular Dynamic Analysis Tool Kit, is a Linux-native GTK 3 desktop toolkit, with a
+companion command line, for molecular dynamics (MD) simulations of RNA systems. It is two programs that
+work on the same project file (`*.mdatk.toml`):
 
-It reads Amber topologies (`.parm7`) and NetCDF trajectories (`.nc`) directly, can strip and
-clean solvated trajectories with **cpptraj**, computes the analyses you select in a single
-streaming pass, caches every result, and renders a configurable grid of panels: a rotatable
-structural view with proximity glow (a 2D backbone projection, or VMD-style 3D representations:
-New Cartoon with base slabs, ribbon, tube, licorice, VDW spheres, surface), time series with a
-moving time cursor, per-residue heatmaps and contact maps. A cryo-EM / crystallographic density
-map can be fitted to the model and drawn as a projected shadow.
+- **The analysis window** (`mdatk-gui`, and the `mdatk` command line) analyses MD trajectories and turns
+  them into multi-panel MP4 videos, high-resolution time charts and selected-frame PDB files.
+- **RNAdo**, MDATK's workflow planner (`rnado`), lays out the steps from sequence to MD ensemble on a
+  canvas and writes, and on request runs, consistently named control files and scripts for Rosetta
+  FARFAR2, SimRNA, RNAMake, Amber, GROMACS, NAMD, VMD, Phenix, Coot and scripts of your own. Its script
+  wizard, PDB clean-up and structure builder prepare the files that go in.
 
-Everything runs locally; MDATK makes no network calls.
-
-Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
-wizard and a free-form **Project Planner** (since 0.0.11 **RNAdo, MDATK's workflow planner**, a program
-of its own) generate consistently named control files for Rosetta FARFAR2, SimRNA, RNAMake, Amber
-(tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD ensemble. You review and run these
-scripts yourself, or ask RNAdo to run them (*Run all…* or *Run selected steps*), which logs every run
-in the project file.
-
-Since 0.0.3a a project is **one commented TOML file** (`*.mdatk.toml`) holding the settings, the
-planner workflow, notes and a log of every step that ran; MDATK repairs and renames **PDB files**
-(ChimeraX damage, L-RNA detected from the sugar chirality, Amber / CCD / Rosetta names, chain ids,
-numbering, SEQRES); and every script, run log and the *About* dialog **cite** the programs, force
-fields and parameter sets the project actually uses (BibTeX export).
-
-Since 0.0.3b MDATK finds **base pairs** in every *n*-th frame (builtin canonical-pair detection or
-the optional [Barnaba](https://github.com/srnas/barnaba)) and shows them in a **secondary-structure
-arc panel**; a **sequence panel** spans the width of the video; both glow and colour with the
-structure view. The structure view can be **zoomed and centred** on a residue or the origin, saved
-in the project; and `mdatk pdb annotate` writes base pairs, stacking and dot-bracket into a PDB
-file as REMARK 950 records.
-
-In 0.0.5 the Amber build **checks the finished topology** and stops when a box meant to be neutral is not, a
-Mg²⁺ does not carry +2, or (microMg / nanoMg) the ion lacks its published Lennard-Jones terms or a
-solute atom type has no Mg²⁺ pair term. L-RNA and other non-standard atom types now get the pair
-terms of their D-RNA twins (see *Mg²⁺ models*).
-
-In 0.0.8 a new planner step runs **MDFF in NAMD on the Amber topology** (`namd-mdff`): NAMD reads the
-parm7 as built, so CP, NBfix19, 0BPh, the L-RNA types and dihedrals, the Mg²⁺ pair terms and HMR are kept,
-and a sander / NAMD energy comparison proves it before fitting. Its chirality and base-pair restraints
-keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. The Amber build can now
-**generate the L-RNA library** from the force field in use (OL3 or OL3 + CP; D and mirror image tested to
-the same energy) and checks that tleap really loaded L units for the L residues. Steps that existed in
-0.0.7 write the same files as before (tested against the 0.0.7 output).
-
-In 0.0.11 the workflow planner becomes **RNAdo, MDATK's workflow planner**, a program of its own
-(`rnado`, see [RNAdo](#rnado-mdatks-workflow-planner)):
-
-- RNAdo holds the plan canvas with its toolbar and details pane, and in its header bar the **script
-  wizard**, the **PDB clean-up** and the **structure builder**, which moved there from the analysis
-  window. It opens, saves and remembers the same project files (`*.mdatk.toml`) and runs without the
-  analysis window.
-- An **output log panel** at the bottom of RNAdo's window shows what the planner did (files written,
-  previous runs checked, runs used or dropped) and every line of the scripts it runs, each marked with
-  its step (a script that prints faster than the panel can show gets lines skipped, with a note of how
-  many, so the window stays responsive); standard error and lines starting with ERROR or WAITING are
-  highlighted, with start, finish, failed, waiting and not-started lines. It filters by step, shows the
-  stored log of the selected step's last run, and copies, saves or clears its lines.
-- The analysis window's *RNAdo* menu (Ctrl+P, Ctrl+Shift+W) starts RNAdo on the project, straight on
-  the plan or one of its tools, and *Use the plan's files* (Input & cleaning) takes the topology and
-  trajectories the plan's MDATK analysis step reads.
-- Both programs can have the same project open: RNAdo saves only the plan, the analysis window keeps
-  the plan RNAdo saved (with its own group renames), and each notices when the other saved and takes
-  the change, or asks when both changed the same part. Generated files are the same as in 0.0.10.
-
-In 0.0.10:
-
-- With an own L-RNA library, the Amber build script checks the L residue names against the library's
-  units and the `addPdbResMap` lines **before tleap runs** and stops on a name tleap would read as the
-  lanthanum or lutetium ion (LA / LU); the planner warns about the names even when an earlier step makes
-  the structure. In the Windows build the mouse pointer no longer disappears over the structure panel.
-- **Check previous runs** (planner toolbar, right-click menu, `mdatk workflow status`) finds the
-  outputs of a step's earlier run, also under an earlier time stamp, and marks the box done, partial or
-  missing. A step can then **use those outputs**: the steps after it read them, and it is not written
-  or run again. A step whose production runs in a separate script no longer reports success before
-  that script has finished; it **waits** (exit status 75) and the steps after it do not start.
-  `mdatk workflow run --include-separate` runs the separate scripts too.
-- **Residue groups follow their names and the topology**: renaming a group renames it everywhere the
-  project uses it (analysis groups, selections, panels, charts, representations, PDB export, planner
-  steps), deleting one that is still used says where, and choosing a topology fills empty or untouched
-  default groups with one group per chain; *Groups from chains* adds the chains no group covers yet.
-- **Selection and group errors say exactly where they are**: every problem names its setting
-  ("Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did
-  you mean 'Target'?"), shows MDAnalysis' own message next to the selection as written and as expanded,
-  and says which group or part of a selection matched no atoms. The GUI checks the settings as you type:
-  red count badges on the page buttons, flagged fields with the message as tooltip, and a problems list
-  that jumps to the field (see *Residue groups and selections*).
-- **Custom scripts as planner steps** (`user-script`, under *Custom*): type a bash or Python script
-  into a step, or pick a script file, declare the files it reads and writes, and connect them to other
-  steps like any program's files. MDATK copies the script into the step folder, passes the file names
-  as `MDATK_IN_<NAME>` / `MDATK_OUT_<NAME>` and `{in:…}` / `{out:…}` arguments, and stops the step when
-  a declared output is missing (see [Custom scripts](#custom-scripts)).
-
-In 0.0.6 the Project Planner can **run a selection of steps**: tick the boxes, then *Run selected
-steps*. In 0.0.7 independent steps can **run at the same time** (*Parallel*; each step waits for its
-inputs), and a box shows an animated marker while its script runs.
-
-Since 0.0.4 the builder also makes **parallel and Hoogsteen-paired duplexes and triplexes**, MDATK runs
-as a **stand-alone AppImage or Windows program** without Python, and value fields no longer change
-when the mouse wheel scrolls past them.
-
-Since 0.0.3c MDATK **builds starting structures** (ideal A-form helices of either chirality, base
-mutations with compensatory partners, rigid-body fits into a map), writes **restraint dictionaries**
-for the L-RNA terminal residues Coot and Phenix do not know (acedrg / phenix.elbow from built-in L
-SMILES, renamed to the model's atom names), and adds planner steps for **real-space refinement** with
-Phenix 1.21 / 2.x and Coot 0.9 / 1.x (batch). microMg is now available with TIP4P-D as well.
+Everything runs locally; MDATK makes no network calls of its own, with one exception you ask for:
+PubChem look-ups of SMILES for restraint dictionaries (`mdatk dict pubchem`, or *Fetch SMILES from
+PubChem when writing (network)* in the restraint-dictionary step, off by default). The downloads in
+`packaging/` (FFmpeg, appimagetool, the MSYS2 and pip packages that the Windows build's
+`--install-deps` installs, and `pin_ffmpeg_url.py` asking GitHub which release holds the FFmpeg build)
+happen only when the stand-alone versions are built, never when MDATK runs. Generated
+scripts run only when you start them or ask RNAdo to; what they do is up to the programs they call.
 
 ---
 
 ## Contents
 
+- [What's new in 0.0.11](#whats-new-in-0011)
 - [Installation](#installation)
+  - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
+  - [Installing from source](#installing-from-source)
+  - [Optional: cpptraj](#optional-cpptraj)
 - [Quick start](#quick-start)
-- [Workflow](#workflow)
-- [RNAdo, MDATK's workflow planner](#rnado-mdatks-workflow-planner)
+- [The GUI](#the-gui)
+  - [The analysis window](#the-analysis-window)
+  - [RNAdo's window](#rnados-window)
+  - [One project in both programs](#one-project-in-both-programs)
+- [Analysis workflow](#analysis-workflow)
 - [Analyses](#analyses)
+  - [Residue groups and selections](#residue-groups-and-selections)
 - [Structural view, colouring and glow](#structural-view-colouring-and-glow)
 - [3D representations](#3d-representations)
 - [Density maps](#density-maps)
 - [Panels, data keys and layouts](#panels-data-keys-and-layouts)
 - [Outputs](#outputs)
 - [Caching and reproducibility](#caching-and-reproducibility)
+- [RNAdo, MDATK's workflow planner](#rnado-mdatks-workflow-planner)
+  - [Starting RNAdo](#starting-rnado)
+  - [The plan](#the-plan)
+  - [Script wizard](#script-wizard)
+  - [Running steps](#running-steps)
+  - [File names](#file-names)
+  - [Previous runs](#previous-runs)
+  - [Step types](#step-types)
+  - [Custom scripts](#custom-scripts)
+  - [Command line](#command-line)
+  - [What was tested](#what-was-tested)
 - [PDB clean-up](#pdb-clean-up)
+  - [Base-pair annotation](#base-pair-annotation)
 - [Structure builder](#structure-builder)
 - [Restraint dictionaries, real-space refinement and MDFF](#restraint-dictionaries-real-space-refinement-and-mdff)
+  - [Restraint dictionaries for L-RNA (Coot / Phenix)](#restraint-dictionaries-for-l-rna-coot--phenix)
+  - [Real-space refinement (Phenix / Coot)](#real-space-refinement-phenix--coot)
+  - [MDFF with NAMD on the Amber topology (`namd-mdff`)](#mdff-with-namd-on-the-amber-topology-namd-mdff)
 - [Citations](#citations)
 - [Command line reference](#command-line-reference)
 - [Project files](#project-files)
 - [Architecture and extending MDATK](#architecture-and-extending-mdatk)
 - [Testing](#testing)
 - [Notes and limitations](#notes-and-limitations)
+- [License](#license)
+
+---
+
+## What's new in 0.0.11
+
+- **RNAdo is a program of its own.** The workflow planner (the *Project Planner* until 0.0.10) moved
+  out of the analysis window, together with the **script wizard**, the **PDB clean-up** and the
+  **structure builder**. RNAdo's window holds the plan canvas with its toolbar and details pane, the
+  three tools in its header bar, and a status bar with progress and *Cancel*; it opens, saves and
+  remembers the same project files and runs without the analysis window (see [RNAdo's
+  window](#rnados-window)).
+- **Output log panel.** The bottom of RNAdo's window shows what the planner did (files written,
+  previous runs checked, runs used or dropped) and every line of the scripts it runs, marked with its
+  step; standard error and lines starting with ERROR or WAITING are highlighted. It filters by step,
+  shows the stored log of a step's last run, and copies, saves or clears its lines.
+- **One project in both programs.** RNAdo saves only the plan, the analysis window keeps the plan RNAdo
+  saved (with its own residue-group renames), and each program notices when the other saved: it takes
+  the change, or asks when both changed the same part (see [One project in both
+  programs](#one-project-in-both-programs)).
+- **Generated workflow files** are unchanged from 0.0.10, apart from the version in their headers.
+- **Starting RNAdo:** `rnado [PROJECT]` (`rnado-gui` without a terminal), `mdatk rnado`, or *RNAdo →
+  Open in RNAdo…* (Ctrl+P) in the analysis window; the stand-alone builds start it too (see [Starting
+  RNAdo](#starting-rnado)).
+- **The plan's files for the analysis:** *Use the plan's files* (analysis window, Input & cleaning, also
+  in its *RNAdo* menu) takes the topology and trajectories the plan's MDATK analysis step reads.
+- **A logo drawn from a real RNA model:** RNAdo's logo, wordmark and icons are drawn from the ideal
+  A-form duplex of MDATK's own structure builder, so the helix has 11 bp per turn, pairs off the axis
+  and inclined, a narrow, deep major groove and a wide, shallow minor groove.
+- **Fixes from the release review** (saving a project both programs have open, the `PYTHONPATH` of
+  the scripts RNAdo runs, a bounded output log, RNAdo's actions in the AppImage): see
+  [CHANGELOG.md](CHANGELOG.md#fixes-from-the-release-review).
+
+Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -154,35 +120,41 @@ No virtual environment, conda or system packages are needed for analysis and vid
 
 ```bash
 chmod +x MDATK-<version>-x86_64.AppImage
-./MDATK-<version>-x86_64.AppImage                          # the GUI
-./MDATK-<version>-x86_64.AppImage project.mdatk.toml       # the GUI with a project
+./MDATK-<version>-x86_64.AppImage                          # the analysis window
+./MDATK-<version>-x86_64.AppImage project.mdatk.toml       # the analysis window with a project
 ./MDATK-<version>-x86_64.AppImage rnado project.mdatk.toml # RNAdo, the workflow planner
+./MDATK-<version>-x86_64.AppImage rnado write -p plan.mdatk.toml  # = mdatk workflow write
 ./MDATK-<version>-x86_64.AppImage --help                   # the command line (any mdatk command)
 ./MDATK-<version>-x86_64.AppImage demo ~/mdatk-demo        # e.g. the synthetic demo system
 ```
 
-With no argument (or a project file) the AppImage starts the GUI; with a command it is the
-`mdatk` command line. For a shorter name, link it: `ln -s ~/Apps/MDATK-<version>-x86_64.AppImage
-~/.local/bin/mdatk` (a link named `mdatk-gui` always starts the GUI). If the AppImage does not
-start because FUSE is missing (some containers and minimal installs), run it with
-`--appimage-extract-and-run` or install `fuse`/`libfuse2`.
+With no argument (or a project file) the AppImage starts the analysis window; with `rnado` it is
+`rnado` (RNAdo, or with an action `mdatk workflow ACTION`); with any other command it is the `mdatk`
+command line. For shorter names, link it: `ln -s ~/Apps/MDATK-<version>-x86_64.AppImage
+~/.local/bin/mdatk`; a link named `mdatk-gui` always starts the analysis window, and one named `rnado`
+(or `rnado-gui`) is `rnado` with all its arguments. Once the AppImage is integrated into the desktop
+(AppImageLauncher, appimaged), the MDATK launcher has an *RNAdo (project planner)* action
+(right-click). If the AppImage does not start because FUSE is missing (some containers and minimal
+installs), run it with `--appimage-extract-and-run` or install `fuse`/`libfuse2`; *Open in RNAdo…* then
+starts RNAdo the same way.
 
 **Windows 10 / 11** (64-bit) - **beta, not yet tested on real machines**: run
 `MDATK-<version>-windows-x64-setup.exe` (installs per user, no administrator rights needed;
-Start-menu entry "MDATK", optional PATH entry for `mdatk.exe`) or unzip
-`MDATK-<version>-windows-x64.zip` anywhere and start `mdatk-gui.exe` (`rnado-gui.exe` is RNAdo, the
-workflow planner; `mdatk.exe` is the command line). On Windows:
+Start-menu entries "MDATK" and "RNAdo", optional desktop shortcuts, optional PATH entry for
+`mdatk.exe`) or unzip `MDATK-<version>-windows-x64.zip` anywhere and start `mdatk-gui.exe` (the
+analysis window), `rnado-gui.exe` (RNAdo, the workflow planner) or `mdatk.exe` (the command line). On
+Windows:
 
 - the generated workflow scripts (Amber, GROMACS, Rosetta, Phenix, Coot ...) are bash scripts:
   MDATK writes them but does not run them - run them on a Linux machine, a cluster or in
-  [WSL](https://learn.microsoft.com/windows/wsl/); the GUI's *Run* says so;
+  [WSL](https://learn.microsoft.com/windows/wsl/); RNAdo's *Run* says so;
 - cpptraj (AmberTools) does not run natively, so clean trajectories on Linux / WSL first, or
   analyse trajectories that are already cleaned.
 
 **What you still install yourself** (both platforms):
 
-- **cpptraj / AmberTools** - only for automatic solvent stripping and cleaning (see *Optional:
-  cpptraj* below); the stand-alone builds detect it exactly like the source installation
+- **cpptraj / AmberTools** - only for automatic solvent stripping and cleaning (see [Optional:
+  cpptraj](#optional-cpptraj)); the stand-alone builds detect it exactly like the source installation
   (`PATH`, `$AMBERHOME`, conda environments such as `AmberTools26`).
 - The programs the generated workflow scripts call (Amber, GROMACS, Rosetta, Phenix, Coot, VMD
   ...), on the machine where you run those scripts.
@@ -230,25 +202,27 @@ pip install '.[barnaba]' # optional: Barnaba for Leontis-Westhof base-pair class
 ```
 
 This installs four commands: `mdatk` (CLI), `mdatk-gui` (the analysis window), `rnado` and
-`rnado-gui` (RNAdo, the workflow planner); `python -m mdatk` works too.
-Activate the venv (`. .venv/bin/activate`) in each new shell before using them. A desktop
-entry is provided in `data/mdatk.desktop`.
+`rnado-gui` (RNAdo, the workflow planner); `python -m mdatk` works too. Activate the venv
+(`. .venv/bin/activate`) in each new shell before using them. Desktop entries are provided in
+`data/mdatk.desktop` and `data/rnado.desktop`.
 
-**Optional: cpptraj.** cpptraj (part of [AmberTools](https://ambermd.org/AmberTools.php), e.g.
+### Optional: cpptraj
+
+cpptraj (part of [AmberTools](https://ambermd.org/AmberTools.php), e.g.
 `conda install -c conda-forge ambertools`) is only needed for automated solvent stripping and
 cleaning. Everything else works without it, e.g. on trajectories you have already cleaned. If
 you use it, set the **conda environment** that provides it (e.g. `AmberTools26`) in the cleaning
 options or with `--conda-env`; every cpptraj call then runs through `conda run -n <env>`, which is
 equivalent to `conda activate <env>`. When no environment is set, MDATK uses cpptraj from `PATH`
 or `$AMBERHOME/bin`, and otherwise finds an environment by looking for `bin/cpptraj` in
-`~/miniforge3`, `~/mambaforge`, `~/miniconda3`, `~/anaconda3`, `/opt/conda`, … (the GUI
-pre-fills the field with what it finds; `mdatk list` prints the candidates).
+`~/miniforge3`, `~/mambaforge`, `~/miniconda3`, `~/anaconda3`, `/opt/conda`, … (the analysis
+window pre-fills the field with what it finds; `mdatk list` prints the candidates).
 
 ## Quick start
 
 ```bash
 mdatk demo ./demo                        # synthetic solvated RNA aptamer/target system + project
-mdatk gui ./demo/demo.mdatk.toml         # open it in the GUI and press "Render"
+mdatk gui ./demo/demo.mdatk.toml         # open it in the analysis window and press "Render"
 rnado ./demo/demo.mdatk.toml             # plan the steps before the analysis in RNAdo
 # or headless:
 mdatk render -p ./demo/demo.mdatk.toml   # add --clean to strip solvent with cpptraj first
@@ -260,33 +234,26 @@ re-anneals, a Mg²⁺ bridge between the strands breaks and reforms, and another
 phosphate. It exists to exercise every feature without real data; its geometry is schematic.
 
 For your own system start from `examples/aptamer_target.mdatk.toml` (relative paths in a
-project file are resolved against its folder) or from the GUI. The GUI opens empty: nothing is
-loaded at start-up; *Open project* has a drop-down with the recent projects, the demo project and
-*Browse…*.
+project file are resolved against its folder) or from the analysis window, which opens empty: nothing
+is loaded at start-up; *Open project* has a drop-down with the recent projects, the demo project and
+*Browse…*. RNAdo without a project opens an empty plan; `examples/rna_plan.mdatk.toml` is a complete
+example plan.
 
-## Workflow
+## The GUI
 
-1. **Load** a topology (`.parm7` preferred; cleaned PDB or any MDAnalysis topology) and one or
-   more trajectories (`.nc` preferred; DCD, XTC, … are concatenated in order).
-2. **Clean** (optional): MDATK writes a cpptraj script that strips solvent and ions (Mg²⁺ is
-   kept by default), images/re-centres (`autoimage`), optionally fits to the first frame, a
-   numbered frame or a reference file, and writes a cleaned trajectory plus the matching stripped
-   topology and a reference PDB. The cpptraj log streams into the GUI. Results are cached and
-   reused while inputs and cleaning parameters are unchanged.
-3. **Configure** residue groups, analysis parameters, colouring, proximity glow, orientation,
-   grid layout and panel contents.
-4. **Render**: MDATK computes the analyses the enabled outputs need (with progress), caches them,
-   then writes the MP4, the charts and the PDB files, plus a parameter log.
-5. **Reproduce**: save/open project files, re-render from the cache, or replay a run from its
-   `MDATK_params_log.toml`.
+Each program has one main window. Both open, save and remember the same project files, run long jobs in
+a background thread that can be cancelled, and name the extensions their file choosers accept, e.g.
+"Trajectory files (.nc, .mdcrd, .crd, .trj, .dcd, .trr, .gro, .xtc, .pdb, .xyz, .binpos, .ncdf)". Value
+fields (spin buttons, drop-downs, sliders) ignore the mouse wheel, so scrolling a form never changes a
+value.
 
-### The GUI
+### The analysis window
 
-The main window *is* the figure: it shows the selected layout drawn by the same code that renders
-the video, at the video's aspect ratio, filled with **example data** (sine-like traces, residue
-heatmaps sized from your groups and a schematic duplex) so the layout can be arranged without
-computing anything. *Load real frame* replaces the schematic with the reference frame of your
-trajectory.
+`mdatk-gui` (or `mdatk gui [PROJECT]`) opens the analysis window. It *is* the figure: it shows the
+selected layout drawn by the same code that renders the video, at the video's aspect ratio, filled with
+**example data** (sine-like traces, residue heatmaps sized from your groups and a schematic duplex) so
+the layout can be arranged without computing anything. *Load real frame* replaces the schematic with the
+reference frame of your trajectory.
 
 - **Drag a panel** onto another slot to swap them; panels snap to the slots of the grid preset.
 - **Drag the structure panel** to rotate the model (drag its title strip, or hold Shift, to move
@@ -294,16 +261,17 @@ trajectory.
 - **Double-click a panel** to edit its settings.
 
 The settings live in a permanent side bar on the left (fixed 520 px wide, never scrolled
-sideways), opened at the Input page; the icon bar above it switches pages (hover for the name):
+sideways), opened at the *Input & cleaning* page; the icon bar above it switches pages (hover for the
+name):
 
 | Page | Contents |
 |---|---|
-| **Input** | project notes, topology/trajectory/external-data choosers, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
-| **Groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker; renames follow every use; *Groups from chains* |
-| **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking and intermolecular energy |
-| **Structure** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance |
-| **Layout** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
-| **Outputs** | output/cache folders, video, charts, PDB export, timestamps, *Re-render from cache* |
+| **Input & cleaning** | project notes, topology/trajectory/external-data choosers, *Use the plan's files*, frame range, time-step override, display time unit, cpptraj cleaning options (conda environment, masks, imaging, fitting), *Run cleaning now*, *Inspect system* |
+| **Residue groups** | table of named groups (residue ranges or selections) with colour swatches and a colour picker; renames follow every use; *Groups from chains* |
+| **Analyses** | enable switches and parameters for RMSD, contacts, H-bonds, O–Mg–O / Mg occupancy, π–π stacking, base pairs and intermolecular energy |
+| **Structure view** | orientation sliders, residue-number tags, colouring, proximity and glow, appearance, 3D representations, density map |
+| **Layout & panels** | grid preset and, per slot, panel type, data, residue groups, extra keys, title (follows the data until you type your own) and options; *Render still* renders one frame from real data |
+| **Outputs** | output/cache folders, video, charts, PDB export, timestamps, *Re-render video + charts from cache* |
 
 The settings are checked as you edit them (a moment after the last change). A page with problems gets
 a **red badge with their count** on its button (amber when they are only warnings); clicking the button
@@ -318,70 +286,489 @@ set while the video is off, or a draft group nothing uses), and does not stop it
 (e.g. a group that matches no atom of the structure) is flagged the same way until that setting or the
 residue groups change.
 
-The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output folder** (shown in
-your file manager) and **Open video** (the most recent video); the log of the pipeline and of
-cpptraj is in the expander above it. Projects are opened/saved from the header bar (Ctrl+O /
-Ctrl+S, Ctrl+R renders); the main menu has *Project log…* (the steps that ran), *Export citations
-(BibTeX)…* and *About and citations*. The *RNAdo* menu next to them starts RNAdo, the workflow planner,
-on the project (see below). File choosers name the extensions they accept, e.g.
-"Trajectory files (.nc, .ncdf, .mdcrd, .crd, .trj, .dcd, .trr, .gro, .xtc, .pdb, .xyz, .binpos)".
-Long jobs run in a background thread and can be cancelled.
+The bottom bar holds **Render** (Ctrl+R), **Cancel**, the progress bar, **Open output folder** (shown
+in your file manager) and **Open video** (the most recent video); the log of the pipeline and of
+cpptraj is in the expander above it. The header bar has *Open project* (Ctrl+O; its drop-down lists the
+recent projects, the demo project and *Browse…*), *Save* (Ctrl+S) and *Save as…* (Ctrl+Shift+S). The
+main menu has *New project (defaults)*, *Create demo system…*, *Project log…* (the steps that ran),
+*Export citations (BibTeX)…* and *About and citations*. The **RNAdo** menu next to them starts RNAdo on
+the project:
+
+- *Open in RNAdo…* (Ctrl+P) opens the plan;
+- *Script wizard: open in RNAdo…* (Ctrl+Shift+W), *PDB clean-up: open in RNAdo…* and *Structure
+  builder: open in RNAdo…* open the plan and that tool;
+- *Use the plan's files as inputs* is the *Use the plan's files* button of the Input & cleaning page
+  (see [The plan](#the-plan)).
+
+RNAdo reads the project file, so the window first offers to save unsaved changes (a project that was
+never saved can also be left out: RNAdo then opens without it). A start of RNAdo that fails within a few
+seconds is reported in the analysis window.
+
+### RNAdo's window
+
+`rnado` opens RNAdo's window (see [Starting RNAdo](#starting-rnado) for the other ways). Top to bottom:
+
+- **Header bar:** *Open* (Ctrl+O; its drop-down lists the recent projects and *Browse…*), *Save* (Ctrl+S;
+  it saves the plan into the project file), the tools *Script wizard* (Ctrl+Shift+W), *PDB clean-up* and
+  *Structure builder*, and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…*
+  (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…* and *About RNAdo* (with the
+  citations of the plan and *Export BibTeX…*).
+- **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
+  previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Parallel*, *Open folder*), the
+  naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, the plan folder and *Change…*),
+  the canvas and the details pane of the selected box (see [The plan](#the-plan)).
+- **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
+  unfolds it. It shows the planner's messages (files written, previous runs checked, runs used or
+  dropped), MDATK's warnings, and every line the scripts print, marked with their step (`[03] …`).
+  Standard error is red, lines starting with ERROR (and failed steps) bold red, lines starting with
+  WAITING (and waiting steps) amber. Each step gets a start line, a finished / failed / cancelled line,
+  and a waiting or not-started line when it does not run to the end. *Step* shows the lines of one step
+  only; *Last run* shows the stored log of the selected box's last run, from the project's step log. The
+  other buttons follow new lines (auto-scroll), copy or save the lines shown as text, or clear them.
+  Lines are inserted in batches and the panel keeps the last 5 000–6 000 lines; a script that prints
+  faster than the panel can show them gets lines skipped, with a note per step of how many, so the
+  window stays responsive and *Cancel* reachable. Every run is also recorded in the project file.
+- **Status bar:** the planner's status line (steps, connections, errors, warnings, plan folder), the
+  progress bar and *Cancel*, which stops every running script. Closing RNAdo during a run asks first
+  and stops the scripts.
+
+### One project in both programs
+
+Both programs can have one project open at the same time; each owns one part of the file.
+
+- RNAdo writes only the plan (the file's `workflow` section) and leaves the analysis settings as the
+  file has them. When the file brings new analysis settings it takes them; renamed residue groups are
+  followed in its unsaved plan, so a plan changed only by those renames is no conflict.
+- The analysis window writes the analysis settings and the plan it finds in the file, with its own
+  residue-group renames applied to it.
+- When the file changed on disk (the window gets the focus, or the file monitor reports it), each
+  program takes the other's part, and reloads its own part when it has no unsaved changes there.
+  Otherwise it asks in a bar above its content: *Reload it* / *Keep mine* in RNAdo (the plan), *Reload
+  them* / *Keep mine* in the analysis window (the analysis settings). After *Keep mine*, saving replaces
+  the other program's version without asking again.
+- Saving asks first when the other program saved the same part meanwhile (*Replace with mine* /
+  *Reload theirs* in RNAdo, *Replace them* in the analysis window), then re-reads the file and writes
+  it under the file's lock after any question, so nothing the other program saved meanwhile is lost.
+  *Save* without changes of your own takes the newer version instead ("Nothing to save").
+- Opening a script wizard is no change to the plan.
+
+## Analysis workflow
+
+The analysis window and the `mdatk` command line read Amber topologies (`.parm7`) and NetCDF
+trajectories (`.nc`) directly, can strip and clean solvated trajectories with **cpptraj**, compute the
+analyses you select in a single streaming pass, cache every result, and render a configurable grid of
+panels: a rotatable structural view with proximity glow (a 2D backbone projection, or VMD-style 3D
+representations: New Cartoon with base slabs, ribbon, tube, licorice, VDW spheres, surface), time
+series with a moving time cursor, per-residue heatmaps and contact maps. A cryo-EM / crystallographic
+density map can be fitted to the model and drawn as a projected shadow.
+
+1. **Load** a topology (`.parm7` preferred; cleaned PDB or any MDAnalysis topology) and one or
+   more trajectories (`.nc` preferred; DCD, XTC, … are concatenated in order).
+2. **Clean** (optional): MDATK writes a cpptraj script that strips solvent and ions (Mg²⁺ is
+   kept by default), images/re-centres (`autoimage`), optionally fits to the first frame, a
+   numbered frame or a reference file, and writes a cleaned trajectory plus the matching stripped
+   topology and a reference PDB. The cpptraj log streams into the analysis window. Results are cached and
+   reused while inputs and cleaning parameters are unchanged.
+3. **Configure** residue groups, analysis parameters, colouring, proximity glow, orientation,
+   grid layout and panel contents.
+4. **Render**: MDATK computes the analyses the enabled outputs need (with progress), caches them,
+   then writes the MP4, the charts and the PDB files, plus a parameter log.
+5. **Reproduce**: save/open project files, re-render from the cache, or replay a run from its
+   `MDATK_params_log.toml`.
+
+## Analyses
+
+All analyses run over the selected frames in **one streaming pass** (MDAnalysis keeps a single
+frame in memory). Neighbour searches use `scipy.spatial.cKDTree` (or MDAnalysis' cell-list grid
+when periodic distances are enabled), so the cost grows roughly linearly with system size.
+
+| Analysis | What is computed | Key parameters |
+|---|---|---|
+| **RMSD** | RMSD of each target selection to a reference frame, optionally after superposition on a separate fit selection; default targets are all heavy atoms (`rmsd/Complex`) and the C4′ backbone (`rmsd/Backbone`) | targets (label, selection, fit selection), reference frame, superposition, mass weighting |
+| **Pairwise contacts** | heavy-atom pairs between group A and B within the cutoff; residue–residue contact counts per frame (sparse), per-residue contact heatmaps, fraction of native residue contacts *Q* | groups, cutoff (4.5 Å) |
+| **H-bonds** | inter-group H-bonds: donor–acceptor distance ≤ cutoff and D–H···A angle ≥ cutoff. Donor hydrogens come from topology bonds (or are assigned by distance); N atoms bearing H or three heavy neighbours are not acceptors; without hydrogens a distance-only criterion is used | groups, distance (3.5 Å), angle (135°) |
+| **O–Mg–O / Mg occupancy** | Mg–O inner-sphere (≤ 2.6 Å) and outer-sphere (≤ 4.5 Å) contacts with oxygens of the selected ranges; O–Mg–O bridges (pairs of oxygens on one ion), bridges between group A and B and the ions forming them; optional octahedral geometry check (O–Mg–O ≈ 90°/180° ± tolerance); per-residue occupancy class per frame (none / outer / inner sphere) | Mg selection, ligand selection/elements, cutoffs, bridge shell, geometry |
+| **π–π stacking** | ring centroids, least-squares normals and planarity per base (purine: 9 ring atoms, pyrimidine: 6; aromatic amino acids too); a pair is stacked when both rings are planar, centroids are within the distance cutoff, normals within the angle cutoff and the lateral offset is small | distance (4.5 Å), angle (30°), offset (2.5 Å), planarity (0.25 Å RMS), scope (all pairs or A vs B) |
+| **Intermolecular energy** | Coulomb + Lennard-Jones energy between group A and B within a cutoff (exact Amber LJ tables when the topology is parm7; approximate element parameters otherwise), plus the magnitude of the net force of B on A; a target value can be drawn on charts/panels | cutoff (12 Å), dielectric (optionally distance dependent, ε·r), bonded-pair exclusions, target |
+
+Three internal analyses feed the structure panel: **trace** (one point per residue — the first
+available atom of the *trace atoms* list such as `C4'` or `P`, or the heavy-atom centroid for
+ligands — superposed onto the reference frame), **proximity** (per residue minimum distance
+to the proximity set, stored up to the *proximity search radius* so the render-time cutoff can be
+changed without recomputation) and **atoms** (per-atom coordinates of the structure-view residues,
+superposed like the trace, for the 3D representations and the density fit).
+
+A fourth internal analysis, **basepairs**, feeds the secondary-structure panel (it runs only when a
+`secondary` panel needs it). Every *stride*-th frame (10) it finds the base pairs; the frames in
+between reuse the last result. Two engines are available (*Analyses → Base pairs*):
+
+- **builtin** (default, no extra dependency): canonical pairs from donor–acceptor distances
+  ≤ *cutoff* (3.5 Å). G–C needs 2 of its 3 Watson–Crick H-bonds, A–U / A–T both; G–U wobble
+  pairs (both H-bonds) are optional. The C1′ atoms must be 8.5–12.5 Å apart (about 10.5 Å in a
+  real pair), which keeps stacked neighbours such as a 5′-GpC-3′ step out. Each base pairs at most
+  once (the pair with the shortest summed distance wins; near-ties go to the C1′–C1′ distance closer
+  to 10.5 Å). It works for L-RNA too, because it uses
+  distances only.
+- **barnaba** (optional, `pip install barnaba`): Leontis–Westhof classes of all pairs, including
+  non-canonical ones (*Barnaba: keep non-canonical pairs* draws them too). Barnaba's classification
+  assumes D-nucleotide geometry; for L-RNA the edges and cis/trans may be mirrored, so the builtin
+  engine is the safer choice there.
+
+The result is a sparse residue × residue map per frame (1 = Watson–Crick, 2 = wobble, 3 = other),
+cached like the other analyses.
+
+### Residue groups and selections
+
+Groups are named residue ranges such as `1-40, 45, 50-60` (chain/segment qualified: `A:1-40`)
+or raw [MDAnalysis selections](https://docs.mdanalysis.org/stable/documentation_pages/selections.html).
+Wherever a selection is expected you can write `group:<Name>`, e.g.
+`group:Aptamer and name P C4'`. Fields that ask for a group accept its bare name. Amber
+topologies number residues 1…N in file order. Defaults are provided for the reference system
+(`Aptamer` = 1–12, `Target` = 13–24) — edit them for yours.
+
+**Renaming a group** in the Groups table (confirm the name with Enter or by leaving the cell; Escape
+cancels) renames it everywhere the project uses it: the group choices of the analyses, selections that
+are just its name or contain `group:<Name>`, *Groups shown*, the groups of 3D representations, the
+proximity set, the per-panel group choices and data keys (`contacts@Aptamer+Target/map`), chart
+series, the PDB export subset, other groups' selections and the planner steps' settings. A token that
+only starts with the name (`group:Aptamers`, `group:Aptamer_2`) is another group and stays; project
+notes are never rewritten. Automatic panel titles follow. The status line says how many places
+changed (hover it for the list). Empty names, names with spaces or other characters than letters,
+digits, `_`, `.` and `-`, and names another group has are refused, and flagged red while you type.
+Deleting a group that is still used names the settings that still refer to it; a panel keeps showing
+it as *(missing)* until you choose another group. `Project.rename_group(old, new)` does the same from
+Python and returns the changed locations; `Project.group_references(name)` lists them.
+
+**Groups from chains.** One group per polymer chain of the topology, water and ions left out: from
+the chain IDs when there are several (PDB, or a parm7 written with `RESIDUE_CHAINID`), else from
+segment ids that name several chains, else from bonded fragments numbered in order (`Chain_1`,
+`Chain_2` …; consecutive residues within covalent distance count as bonded when the file has no
+bonds). Groups are named `Chain_<ID>` and get distinct colours. Each group's residue spec is checked
+to select exactly its chain's atoms in that topology: plain ranges (`1-44`) when the residue numbers
+are unique, chain-qualified ranges (`A:1-44`) when chains repeat them, else a selection (as a last
+resort `index …`, which only holds for topologies with the same atom order).
+
+- Choosing a topology on the Input & cleaning page (or taking the plan's files with *Use the plan's
+  files*) fills the groups
+  **automatically only when nothing you made is overwritten** (opening a project never does): when there
+  are no groups, or the two untouched defaults. The defaults are replaced when the topology has at least
+  two chains, unless they already select one chain each (as in the demo); every reference to `Aptamer`
+  then names the first chain's group and every reference to `Target` the second's, so the analyses keep
+  comparing two groups, and further chains are added. With a single chain the defaults stay.
+- Otherwise nothing changes by itself; the status line lists the chains without a group and
+  **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
+  name gets a suffix). Your groups are never changed, and neither are the untouched defaults: the button
+  only adds.
+
+**When a group or selection is wrong, the message says where and what.** Every problem starts with
+the place of its setting, as the analysis window shows it, and names the offending part:
+
+| Problem | Example message |
+|---|---|
+| unknown group | `Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did you mean 'Target'?` |
+| MDAnalysis cannot parse it | `Analyses › RMSD › Target 3 (X) › Selection: invalid selection 'group:Aptamer and nme P' (expanded: '((resid 1:12)) and nme P'): MDAnalysis says: Unknown selection token: 'nme' (did you mean 'name'?)` |
+| nothing matches (each group, then each and / or part, is tried on its own) | `Analyses › Pairwise contacts › Group B: selection 'group:Target' matched no atoms: group 'Target' (residues '100-112') matches no atoms - the structure's residues are numbered 1-24` |
+| a group's own definition | `Residue groups › Group 3 (Loop) › Selection (overrides): unknown residue group 'Aptamr' (defined: Aptamer, Target, Loop); did you mean 'Aptamer'?` |
+| a panel's group pair | `Layout & panels › Panel 4 (Contact map) › Groups: …` |
+
+The settings are checked before every run (`mdatk render` refuses with the list; warnings, e.g. a group
+in *Groups shown* that does not exist and is left out, are logged); a selection that fails while
+analysing (it can only be matched against the structure then) names its setting the same way.
+**Only what is about to run can block it**: a wrong setting is an error if the run uses it, and only a
+warning otherwise. The structure view's settings (*Groups shown*, the proximity set, the
+representations' groups, the Mg selection while the Mg analysis is off) are errors only when the
+structure view is rendered: the video is on (and the layout has a structure, sequence or
+secondary-structure panel), or *Render still*. `mdatk render --no-video`, `mdatk analyze` with the
+video off, `mdatk export-pdb` (and *Export PDBs now*) and the density fit are not refused for them;
+the density fit does use *Groups shown* and the Mg selection. The PDB atom subset is an error only when
+PDBs are exported; one made only of commas names no group and is an error too (an empty subset exports
+every atom). A selection that uses a broken group is not blamed for it: the group's definition is. That
+definition is an error when something about to run selects the group (a setting that is an error, the
+groups the rendered structure view shows, a panel or chart that is drawn), directly or through other
+groups, and a warning for a draft group nothing uses. Circular definitions (`Stem` uses `group:Loop`,
+`Loop` uses `group:Stem`) are reported at every group of the circle. A run of an analysis on a panel's
+or chart's groups (`rmsd@Loop/Heavy`) that fails is reported at that panel or chart, else at the
+group's definition, never at the analysis' own settings. In Python, `Project.validate()` (errors) and
+`Project.problems()` (errors and warnings) take what is about to run (`video`, `charts`, `pdb`: default
+the output switches; `density`) and return `mdatk.problems.Problem` strings whose text is the message
+above and which carry the setting's `field` path (`analyses.hbonds.group_b`), GUI page (`tab`), readable
+`location` and offending `token`; `SelectionError` carries the same plus `kind`, the selection as written
+and expanded and MDAnalysis' own message.
+
+## Structural view, colouring and glow
+
+- 2D projection of the backbone trace of the selected groups (consecutive residues of the same
+  chain are linked), Mg²⁺ ions and a time label, with depth cueing (size, width and fog).
+- **Orientation**: drag the preview of the reference frame with the mouse, or use the X/Y/Z
+  sliders. The angles (degrees and radians) are stored in the project (`visual.rotation`,
+  `R = Rz·Ry·Rx` about the reference-frame centroid) and applied to every frame. Frames are
+  superposed onto the reference frame first (*superpose frames*), so the model does not drift.
+- **Zoom and centre** (`visual.zoom`, `visual.center_on`, `visual.center_follow`): the mouse wheel
+  over the structure panel (or *Zoom* on the Structure view page) magnifies the view; *Centre on* puts a
+  residue (`12`, `B:12`) or the coordinate origin (`origin`) in the middle instead of the model's
+  centre, and *Follow the centre residue* keeps it there in every frame. All three are saved in the
+  project and used in the video, e.g. to stay on one interface.
+- **Colouring modes**: `chain` (chainID, segment or bonded fragment), `groups` (group colours) and
+  `proximity` (residues within the cutoff of the proximity set blend from the base colour to the
+  proximity colour; set members keep their group colour).
+- **Proximity glow** around residues near the proximity set:
+  1. `ever` — glows for the entire movie if the residue ever meets the cutoff;
+  2. `fade` — glows while in proximity, then fades over *fade frames* after separation;
+  3. `current` — glows only while in proximity (no fade).
+- **Residue-number tags** on every N-th residue (`visual.label_every`) and/or listed residues
+  (`visual.label_residues`, e.g. `1, 12, 24, 40-45`), placed just outside the trace, in the video
+  and in the analysis window.
+- The view is framed by the model's bounding sphere, so changing the orientation never zooms.
+
+## 3D representations
+
+Instead of the 2D trace, the structural view can draw residue groups as VMD-style
+representations (*Structure view → Representations (3D)*, `visual.representations`). Each row is a
+style, the groups it draws (empty: every shown group), a colouring, a size factor, an opacity
+and, for cartoons, a *sugars* switch. Representations intersect correctly by depth, so a cartoon
+of the aptamer and licorice of a binding pocket can share the view.
+
+| Style | What it draws |
+|---|---|
+| `cartoon` | New Cartoon for nucleic acids: an elliptical tube along a spline through P (or C4′, `visual.backbone_atom`), a rung from the backbone through C1′ to the glycosidic N (N9 / N1; C5 for pseudouridine), and each base as a closed slab (purines as the whole fused 9-atom outline). With *sugars*, the ribose ring is a lighter slab and the rung runs backbone → C4′, C1′ → N. |
+| `ribbon` | a flat band through the backbone points, facing the bases |
+| `tube` | a round tube through the backbone points |
+| `licorice` | bonds as sticks with atom balls (r = 0.3 Å); bonds leaving the group run to the neighbouring atom, so it reaches a neighbouring cartoon |
+| `vdw` | van der Waals spheres (Bondi radii) |
+| `surf` | a smooth molecular surface (sum of atomic Gaussians, like VMD QuickSurf), coloured by the nearest residue |
+| `trace` | a ball at each backbone point and sticks to its neighbours (the 2D trace, but in 3D) |
+
+- **Base positioning.** The cartoon deliberately differs from VMD where it hides base geometry:
+  the rung bends at C1′, so the glycosidic angle (*syn*/*anti*) shows; the full purine outline
+  shows inclination, propeller twist, buckle and stacking; the optional sugar slab shows the
+  pucker; the backbone keeps the analysis colours (groups / proximity / glow) while bases are
+  coloured by nucleotide (A blue, G green, C gold, U/T red; Amber, CHARMM and other names, or the
+  base's own atoms for unknown names). The spline is computed along whole strands, so a
+  representation of part of a strand has the same shape as the full one.
+- **Colouring.** `auto`: residue colours for backbones, carbons and surfaces, nucleotide colours
+  for cartoon bases, element colours for other atoms; or `residue`, `element` (surfaces by the
+  nearest atom), `nucleotide` throughout.
+- **Other residues.** Residues no representation draws (including those a style cannot draw, such
+  as a small-molecule target under a cartoon) are shown as a `trace`, ligands without a backbone
+  atom as `licorice` (default), or hidden (`visual.rep_rest: hide`). Mg²⁺ ions are spheres in the
+  scene.
+- **Look.** Lit surfaces, the same depth cue (fog toward the panel colour) as the 2D trace, ink
+  outlines at depth steps (they separate stacked bases of the same colour) and anti-aliased edges.
+  Glowing residues get a soft halo and a tint in the glow colour. Translucent representations show
+  what is behind them (the front-most translucent surface over the opaque ones).
+- **Renderer.** `visual.renderer: auto` (default) uses the built-in renderer: a numpy z-buffer
+  rasteriser that needs no OpenGL, so the same video comes out of a laptop, the analysis window and
+  a headless cluster node. It costs roughly 50–80 ms per 1080p frame for cartoon or licorice of a
+  ~500-atom RNA, about 150 ms for surfaces, on top of the figure itself; while you drag the
+  preview it renders at half resolution. `renderer: vtk` uses VTK (`pip install '.[vtk]'`) where it
+  can render (a display, or EGL / OSMesa libraries on a headless machine, e.g. `libegl1
+  libegl-mesa0`); this is checked once in a separate process, and where VTK cannot render, the
+  built-in renderer is used with a note in the log. With VTK the glow is drawn the same way;
+  translucent representations use VTK's own blending (all layers show).
+
+## Density maps
+
+A cryo-EM or crystallographic map (MRC2014 / CCP4: `.mrc`, `.map`, `.ccp4`) can be drawn behind the
+structural view as a projected **shadow**: the density above the contour level, summed along the
+viewing direction, in one colour with adjustable opacity. The model stays where it is and the map is
+placed on it by a rigid-body fit.
+
+- **Fit.** MDATK simulates a map from the model (one Gaussian per heavy atom, weighted by atomic
+  number, σ = 0.225 × resolution and a grid spacing of resolution / 3, as ChimeraX `molmap` does). It
+  then maximises the correlation about the mean between that map and yours, using the grid points
+  inside the model's envelope.
+  - *Global search*: about 550 orientations at 30° (`density.angular_step`, 5–45°).
+    - For each orientation, an FFT finds the best translations on a coarse grid. The score is a
+      locally normalised correlation, so other molecules in the map (protein in an RNP, for example)
+      do not attract the fit.
+    - The 12 best distinct poses, spread over several sites, are refined against a map smoothed to
+      8 Å.
+    - The best poses and their 180° flips about the model's principal axes are then refined at the
+      real resolution.
+  - *Refine*: a local optimisation from the current placement.
+  - Points of the model outside the map box are ignored. A pose needs at least half of the model
+    inside the map to get its full score.
+  - A search takes 10–60 s, depending on the map size and resolution. On synthetic maps with noise,
+    with unrelated density next to the model, or with half the model outside the box, it recovers
+    the true pose to within about a degree.
+- **Frame.** The fit uses the reference frame (the first analysed frame, which the video is
+  superposed on) or any trajectory frame number (`density.fit_frame`). That frame is superposed
+  exactly like the video frames, so the placement applies to every frame.
+- **Manual start.**
+  1. Choose *Centre on model*, which puts the density centre on the model.
+  2. Toggle *Move the map with the mouse* and drag the shadow in the structure panel; Shift + drag
+     rotates it about its centre.
+  3. Choose *Refine*.
+- **Automatic fitting.** With *Fit automatically before rendering* (`density.auto_fit`), a render
+  without a stored placement runs the global search first. The placement (`density.transform`: a 3×3
+  rotation and a translation from model to map), its correlation and a summary are stored in the
+  project file.
+- **Appearance.**
+  - Contour level `density.level`, in σ above the map mean; default 2. Lower it for faint maps.
+  - Colour, opacity (0–1) and *show*.
+  - The shadow sits under the molecule, glow and labels. With 3D representations, *in front*
+    (`density.front`) draws it over them instead, since opaque cartoons hide much of it. In the
+    video it is part of the static background (no per-frame cost). In the analysis window it
+    follows rotations, coarser while dragging.
+
+```bash
+mdatk density info map.mrc                               # grid, voxel size, origin, statistics
+mdatk density fit -p run.mdatk.toml --map map.mrc --resolution 4.5 --save   # store the placement
+mdatk density fit -p run.mdatk.toml --search manual --frame 250             # refine on another frame
+mdatk density simulate -p run.mdatk.toml --resolution 6 -O model_6A.mrc [--placed]
+```
+
+## Panels, data keys and layouts
+
+Every analysis output is addressed by a data key `<analysis>/<output>`:
+
+| Kind | Keys |
+|---|---|
+| time series | `rmsd/<label>`, `contacts/atom_pairs`, `contacts/residue_pairs`, `contacts/q_native`, `hbonds/count`, `mg/contacts`, `mg/outer_contacts`, `mg/bridges`, `mg/inter_bridges`, `mg/bridging_ions`, `mg/inner_residues`, `stacking/count`, `stacking/inter`, `stacking/intra`, `energy/total`, `energy/elec`, `energy/vdw`, `energy/net_force`, `external/<label>.<column>` |
+| per-residue matrices | `contacts/per_residue_a`, `contacts/per_residue_b`, `hbonds/per_residue_a`, `hbonds/per_residue_b`, `mg/occupancy`, `proximity/min_distance` |
+| residue maps | `contacts/map`, `hbonds/map`, `stacking/map` |
+
+**Residue groups per panel.** By default an analysis compares the groups set in its settings
+(e.g. contacts between *Aptamer* and *Target*). A data key can name its own groups after `@`:
+`contacts@Target+Mg/atom_pairs`, `hbonds@Aptamer+Target/count`, `energy@Aptamer+Target/total`,
+or a single group for RMSD (`rmsd@Aptamer/Heavy`, `rmsd@Aptamer/Backbone`). Each group choice is
+computed on demand in the same pass over the trajectory and cached on its own; in the analysis
+window the *Groups* drop-downs of a panel build these keys. Group names may contain letters, digits,
+`_`, `.` and `-`.
+
+Panel titles default to the label of the data shown. Count series (contacts, H-bonds, Mg
+bridges, stacked pairs …) always get whole-number axis ticks, in panels and charts.
+
+Panel types (`mdatk list` prints them):
+
+| Type | Shows | Options (JSON) |
+|---|---|---|
+| `structure` | structural view described above | — |
+| `timeseries` | one or more series vs time, moving cursor and value markers, optional target line | `progressive` (reveal over time), `smooth` (frames), `target`, `ylim` |
+| `dual_axis` | two series on independent left/right axes | — |
+| `heatmap` | residues × time (counts, values or occupancy classes) with cursor | `vmin`, `vmax`, `max_ticks` |
+| `contact_map` | residue × residue map: `instant` (evolves with the movie), `frame` (fixed) or `frequency` (fraction of frames); `transpose` puts the first group along x | `mode`, `frame`, `max_ticks`, `transpose` |
+| `sequence` | one-letter sequence of the structure-view residues (chains separated, chain letters shown) in the structure panel's colours, proximity glow and number tags; wraps into rows, and more than two rows log a warning to choose a smaller range | `residues` (e.g. `A:1-20, B:5-30`), `per_row` |
+| `secondary` | arc diagram on a fixed layout: residues along a line (same colours, glow and tags), base pairs within a chain as arcs above it, pairs between chains as transparent yellow arcs below it | `source`: `dynamic` (pairs re-detected every *n* frames by the base-pair analysis), `first` (first frame) or `dotbracket` (with `dotbracket`, `&` or a space between chains); `residues` |
+
+Layout presets: `single`; `large_plus_2`, `large_plus_3`, `large_plus_4` (one large panel and 2–4
+small ones on the right); `large_top_2`, `large_top_3` (small panels below); `equal_2` …
+`equal_6` (2–6 equal panels); `single_strip`, `large_plus_2_strip`, `large_plus_3_strip`,
+`large_top_3_strip`, `equal_4_strip` add a thin full-width strip at the bottom (their last slot) for
+a sequence or secondary-structure panel. Panels fill the slots in order; the first slot is the
+large one.
+The pipeline computes exactly the analyses that the chosen panels and charts need.
+
+## Outputs
+
+All outputs go to the output directory (default `MDATK_output/`):
+
+| File | Content |
+|---|---|
+| `MDATK_video_<timestamp>.mp4` | H.264 video of the multi-panel figure (FPS, resolution, DPI, frame stride, codec and CRF configurable). Rendering is headless (Matplotlib Agg) and frames are piped straight into FFmpeg; static content is drawn once and only moving artists are redrawn per frame. |
+| `MDATK_chart_<key>_<timestamp>.png/svg/pdf` | standalone time charts (all series or a chosen subset), optionally per-residue heatmaps; DPI, size, Matplotlib style (or MDATK's own chrome), colour, labels, title template, running-mean smoothing and target line are configurable |
+| `MDATK_frame_<n>_<timestamp>.pdb` | selected frames by number (`0, 10, 20-50:10, last`) and/or time (`1.5ns, 2000ps`, nearest frame), optionally restricted to groups or a selection |
+| `MDATK_params_log.toml` | full parameters, software versions, input fingerprints, cache keys, the run's timestamp, the list of outputs and the project's citations; open it as a project to repeat the run |
+| `MDATK_cache/` | analysis cache (see below) and cleaned trajectories |
+
+All outputs of one run share a timestamp such as `2026-10-15_143205`, so runs never overwrite
+each other; the cache and the parameter log keep fixed names. Set
+`output.timestamp_files` to `false` for plain names.
+
+## Caching and reproducibility
+
+- Each analysis result is stored as a compressed `<analysis>-<key>.npz` with a JSON sidecar; the
+  manifest `MDATK_cache.json` records the system, frame selection, time axis, residue groups,
+  available data keys and the entries of the latest run.
+- The key hashes everything that influences the numbers: input file fingerprints (path, size,
+  modification time), frame selection, the analysis parameters and the definitions of the
+  residue groups it uses. Changing a contact cutoff recomputes only contacts; changing colours,
+  orientation, layout, glow or chart style recomputes nothing.
+- `mdatk render --from-cache` (or *Re-render video + charts from cache* in the analysis window)
+  re-renders video and charts from the manifest without touching the trajectory.
+- Cleaned trajectories live in `MDATK_cache/cleaned/<key>/` with the generated `cpptraj.in`,
+  the full `cpptraj.log` and a completion marker.
+- Any project file or `MDATK_params_log.toml` can be passed back with `-p` to reproduce a run.
 
 ## RNAdo, MDATK's workflow planner
 
-**RNAdo** is MDATK's workflow planner, a program of its own: a canvas on which the steps from sequence
-to MD ensemble are laid out, their control files and scripts written and, on request, run. The script
-wizard, the PDB clean-up and the structure builder are in its header bar. Start it with
+RNAdo lays the steps from sequence to MD ensemble out on a canvas (the plan), writes their control files
+and scripts with consistent names and, on request, runs them. Its script wizard writes the files of one
+program at a time; its [PDB clean-up](#pdb-clean-up) and [structure builder](#structure-builder)
+prepare the structures that go in. The window is described in [RNAdo's window](#rnados-window);
+everything it writes can also be written from the command line (`mdatk workflow`, see [Command
+line](#command-line)).
 
-- `rnado` (an empty plan) or `rnado project.mdatk.toml`; `rnado --open wizard|pdb|builder` opens
-  one of its tools as well, and `rnado-gui` is the same without a terminal;
-- the analysis window (`mdatk-gui`): *RNAdo → Open in RNAdo…* (Ctrl+P), or *Script wizard / PDB
-  clean-up / Structure builder: open in RNAdo…* (Ctrl+Shift+W for the wizard). It saves the project
-  first if it has unsaved changes (it asks), then starts RNAdo on the project file;
-- the stand-alone builds: `MDATK-<version>-x86_64.AppImage rnado [PROJECT]`, `rnado-gui.exe` on
-  Windows;
-- `mdatk gui --rnado [PROJECT]`, or `python -m mdatk.gui.rnado [PROJECT]` from a source checkout.
+### Starting RNAdo
+
+- `rnado` (an empty plan) or `rnado project.mdatk.toml`; `rnado --open wizard|pdb|builder` opens one of
+  its tools as well, and `rnado-gui` is the same without a terminal;
+- the analysis window's *RNAdo* menu (see [The analysis window](#the-analysis-window));
+- the stand-alone builds: `MDATK-<version>-x86_64.AppImage rnado [PROJECT]` or a link to the AppImage
+  named `rnado`; on Windows `rnado-gui.exe` or the Start-menu entry *RNAdo* (see
+  [Installation](#installation));
+- `mdatk rnado [PROJECT]`, `mdatk gui --rnado [PROJECT]` (or `--planner`; `--open TOOL` alone starts
+  RNAdo too), or `python -m mdatk.gui.rnado [PROJECT]` from a source checkout.
 
 `rnado ACTION …` with an action of `mdatk workflow` (`write`, `run`, `status`, `check`, `template`,
-`generate`, `tools`, `restraints`) is the same as `mdatk workflow ACTION …`, see [Command
-line](#command-line).
+`generate`, `tools`, `restraints`) is the same as `mdatk workflow ACTION …`.
 
-RNAdo opens, saves and remembers the same project files as the analysis window (header bar: *Open*
-with the recent projects, *Save*; the menu has *New project*, *Save as…*, *Project log…* and *About
-RNAdo*). Both programs can have one project open at the same time. RNAdo writes only the file's plan (the
-`workflow` section) and leaves the analysis settings as the file has them; the analysis window saves
-the plan it finds in the file, with its own residue-group renames applied to it, and RNAdo follows
-those renames in its unsaved plan. Both re-read the file and write it under the file's lock after
-any question, so nothing the other program saved meanwhile is lost. When the file changed on disk
-(the window gets the focus, or the file monitor reports it), each program takes the other's part. It
-reloads its own part when it has no unsaved changes there (also when you save), and otherwise asks in
-a bar above its content (*Reload it* / *Keep mine*). Opening a script wizard is no change to the plan.
+### The plan
+
+Place boxes (steps) with *Add step* or the canvas's right-click menu, and connect them by dragging from
+an output port (right edge) to an input port (left edge); only compatible files connect, and loops are
+refused. Double-click a box to edit it in the wizard. The details pane of the selected box has *Edit in
+wizard…*, *Write step*, *Run step…*, the previous-run buttons (see [Previous runs](#previous-runs)) and,
+on an MDATK analysis box, *Use for analysis…*. *Templates* insert pre-connected chains (FARFAR2 → models
+→ Amber build → helix restraints → MD → MDATK analysis + VMD; Amber protocol; Amber → GROMACS; ideal
+helix → Amber build → restraints → MD; model + map → restraint dictionaries → Phenix RSR → Coot RSR;
+model + map → Amber build → NAMD MDFF). *Write all files* writes every step, a master script that runs
+the steps in order, and a Markdown summary of the plan.
+
+Each step box has a check box in its title bar (also Space on the selected box, or the right-click
+menu; *Tick all steps* / *Untick all steps* on the canvas): *Run selected steps (N)* writes the ticked
+steps' files and runs their main scripts in plan order, whatever order you ticked them in. Steps they
+read from are not written or run again, so their outputs must exist already. The ticks are not saved
+with the project.
+
+The plan is saved in the project file (`workflow` section), so one file holds the plan and the analysis
+settings. The analysis window's *Use the plan's files* (Input & cleaning, also in its *RNAdo* menu) puts
+the topology and trajectories an MDATK analysis box reads into Input & cleaning, from the plan saved in
+the project file (*Use for analysis…* on the box in RNAdo saves the plan for it); with several analysis
+boxes it asks which. `examples/rna_plan.mdatk.toml` is a complete example plan (open it in RNAdo and set
+the output folder).
+
+### Script wizard
+
+*Script wizard* in RNAdo's header bar (Ctrl+Shift+W) writes the files of one step on its own; a box's
+*Edit in wizard…* opens the same form for that box. Pick a program on the left, fill in its options
+(check boxes, radio buttons, text fields; every option has a tooltip), choose input files, and *Write
+files*, or *Write and run…*. The options are the RNA-relevant ones for each program plus a free-text box
+for anything else. Logic checks run on every change: **errors** (conflicting or impossible settings)
+block writing, **warnings** flag likely mistakes and **infos** point out redundant or noteworthy
+choices; the offending fields are highlighted and clicking a message jumps to the field. A live preview
+shows every file that will be written. On the command line, `mdatk workflow generate` is the wizard.
+
+### Running steps
 
 The plan writes files and scripts; nothing is executed unless you ask for it with *Run all…* /
-*Run selected steps* (planner), *Run step…* (a box's details) or *Write and run…* (wizard). RNAdo then
-asks for confirmation and runs each step's main script with `bash`. Each step starts once the steps it
-reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
+*Run selected steps* (planner toolbar), *Run step…* (a box's details) or *Write and run…* (wizard).
+RNAdo then asks for confirmation and runs each step's main script with `bash`. Each step starts once the
+steps it reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
 up to *Parallel* scripts at a time (planner toolbar, saved with the project; default 1).
 
-- **Output log panel:** the bottom of RNAdo's window (drag its edge to resize it; the arrow or Ctrl+L
-  folds it away; a run unfolds it). It shows the planner's messages (files written, previous runs
-  checked, runs used or dropped) and every line the scripts print, marked with their step
-  (`[03] …`). Standard error is red, lines starting with ERROR (and failed steps) bold red, lines
-  starting with WAITING (and waiting steps) amber. Each step gets a start line, a finished / failed /
-  cancelled line, and a waiting or not-started line when it does not run to the end. *Step* shows the
-  lines of one step only; *Last run* shows the stored log of the selected box's last run, from the
-  project's step log. The other buttons follow new lines (auto-scroll), copy or save the lines shown
-  as text, or clear them. The panel keeps the last 5 000-6 000 lines. Every run is also recorded in
-  the project file.
+- **Output:** every line goes to the [output log panel](#rnados-window), marked with its step, and
+  every run is recorded in the project file.
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
-- **Cancel** (status bar) stops every running script; closing RNAdo during a run asks first and stops
-  them.
+- **Cancel** (status bar) stops every running script.
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
   bars (waiting for a separately run script, see below) or a dash (cancelled / not started) until the
   next run.
 - **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
   *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
+- **Windows:** the generated scripts are bash scripts for Linux; RNAdo on Windows writes them but does
+  not run them (*Run* says so), see [Installation](#installation).
 
 Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
 script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
@@ -400,34 +787,8 @@ script checks that:
 - once production has finished, the stages after it (e.g. a cooling stage) and the dry PDB run, and the
   step succeeds.
 
-Before 0.0.10 the main script of a step whose stages were all production held only the preamble and
-"succeeded" without running anything. Main scripts written by older versions do not check; MDATK
-treats such a step as waiting and asks you to write it again.
-
-- **Script wizard** (RNAdo's header bar, Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
-  radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
-  The options are the RNA-relevant ones for each program plus a free-text box for anything else.
-  Logic checks run on every change: **errors** (conflicting or impossible settings) block writing,
-  **warnings** flag likely mistakes and **infos** point out redundant or noteworthy choices; the
-  offending fields are highlighted and clicking a message jumps to the field. A live preview shows
-  every file that will be written.
-- **The plan** (RNAdo's canvas): place boxes (steps) and connect them by
-  dragging from an output port (right edge) to an input port (left edge); only compatible files
-  connect, and loops are refused. Double-click a box to edit it in the wizard. *Templates* insert
-  pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
-  VMD; Amber protocol; Amber → GROMACS; ideal helix → Amber build → restraints → MD; model + map →
-  restraint dictionaries → Phenix RSR → Coot RSR). *Write all files* writes every step, a master script that
-  runs the steps in order, and a Markdown summary of the plan. Each step box has a check box in its
-  title bar (also Space on the selected box, or the right-click menu; *Tick all steps* / *Untick all
-  steps* on the canvas): *Run selected steps (N)* writes the ticked steps' files and runs their main
-  scripts in plan order, whatever order you ticked them in. Steps they read from are not written or
-  run again, so their outputs must exist already. The ticks are not saved with the project.
-  The analysis window's *Use the plan's files* (Input & cleaning, also in its *RNAdo* menu) puts the
-  topology and trajectories an MDATK analysis box reads into Input & cleaning, from the plan saved in
-  the project file (*Use for analysis…* on the box in RNAdo saves the plan for it); with several
-  analysis boxes it asks which. The plan is saved in the project file (`workflow` section), so one file
-  holds the plan and the analysis settings. `examples/rna_plan.mdatk.toml` is a complete example plan
-  (open it in RNAdo and set the output folder).
+Main scripts written before 0.0.10 do not make this check; MDATK treats such a step as waiting and
+asks you to write it again.
 
 ### File names
 
@@ -482,11 +843,12 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
 | **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours (chain groups keep to their chain), bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
-| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build`: ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see Structure builder |
-| **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see Restraint dictionaries |
-| **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see Real-space refinement |
-| **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see Real-space refinement |
-| **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see Custom scripts |
+| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build` (the step's *Python*; from the Linux AppImage, the AppImage itself): ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see [Structure builder](#structure-builder) |
+| **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see [Restraint dictionaries](#restraint-dictionaries-for-l-rna-coot--phenix) |
+| **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see [Real-space refinement](#real-space-refinement-phenix--coot) |
+| **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see [Real-space refinement](#real-space-refinement-phenix--coot) |
+| **NAMD · MDFF (Amber topology)** | NAMD configurations per stage, the sander / NAMD energy comparison, a preparation helper and the run script | NAMD reads the Amber topology natively; see [MDFF with NAMD](#mdff-with-namd-on-the-amber-topology-namd-mdff) |
+| **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see [Custom scripts](#custom-scripts) |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
 **Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
@@ -513,7 +875,7 @@ for* (e.g. `C:45-73`) overrides the detection, and *5′/3′ terminal names* ca
 libraries that map chain ends with `addPdbResMap` (plain LG, as `to_lrna.sh` wrote). This replaces
 `to_lrna.sh`.
 
-*L-RNA library* (new in 0.0.8) decides where the L units and their parameters come from:
+*L-RNA library* decides where the L units and their parameters come from:
 
 - **Generated by MDATK.** The build script writes `LRNA.lib` and `frcmod.lrna` from the force field in
   use (OL3, or OL3 + CP with the retyped library or your own CP frcmod) with a small standard-library
@@ -553,8 +915,8 @@ error.
 > and the solvent box grows to fill the gap (in one case 13 times the volume and an hour of tleap).
 > The planner reads the library's unit names and the map, reports every unmapped L name as an
 > error, and suggests the map lines; when an earlier step makes the structure, it checks every name
-> MDATK may write (LA LC LG LU, with *5′/3′ terminal names* also LA5 / LA3 …) and warns. Since 0.0.10
-> the build script also checks before the first tleap, for builds with own libraries (listed under
+> MDATK may write (LA LC LG LU, with *5′/3′ terminal names* also LA5 / LA3 …) and warns. The build
+> script also checks before the first tleap, for builds with own libraries (listed under
 > *Extra residue libraries* or loaded with `loadOff` in the leap commands): a small standard-library
 > helper reads the L names of the renamed PDB, the units of every library the tleap input loads
 > before `loadpdb` (a name in leap's search path is looked up in `$AMBERHOME/dat/leap`) and its
@@ -563,9 +925,9 @@ error.
 > The warning for a structure from an earlier step and the check in the build script come with an
 > L-RNA set-up only: *My own files* chosen under *L-RNA library*, a structure known to have L
 > residues (*Force L for*, an L helix, an input PDB with L sugars), or an own library that looks like
-> an L-RNA one (it uses the atom types LD / LH / LE, or has nucleotide units under other names than
-> A C G U, DA DC DG DT and their 5′ / 3′ / N forms). A D build with, say, a ligand library is written
-> as before.
+> an L-RNA one (it uses the atom types LD / LH / LE, or has nucleotide units named the L-RNA ways:
+> LA…, A0…, 0A…, with their 5′ / 3′ / N forms; D libraries of modified nucleotides such as
+> `all_modrna08.lib` do not count). A D build with, say, a ligand library is written as before.
 
 The optional
 **two-pass build** (L-RNA naming → dry tleap → ParmEd → ambpdb, keeping the dry topology's residue
@@ -674,10 +1036,10 @@ the published σ/ε in `[ nonbond_params ]` (checked by the opt-in integration t
   - with microMg / nanoMg, the ion's own Lennard-Jones terms are not the published ones;
   - with microMg / nanoMg, a solute atom type with Lennard-Jones terms has no explicit Mg²⁺ pair term;
   - a residue named as a nucleotide (A, G5, LA, LU3 …) has fewer than 10 atoms: tleap matched the name to
-    another unit, such as the lanthanum ion LA (since 0.0.8; also for dry L-RNA builds).
+    another unit, such as the lanthanum ion LA (also for dry L-RNA builds).
   - with the generated L-RNA library, the number of topology residues carrying LD / LH / LE differs from
     the number of L residues in the PDB that the final tleap read: D units were loaded for L residues,
-    and the L strand would be simulated as D (since 0.0.8).
+    and the L strand would be simulated as D.
 
   The report is written to `…_check_….log`. It reads the stored coefficients, so it also catches a
   misspelt mask or a later `addLJType` that reset a pair.
@@ -807,323 +1169,11 @@ For Rosetta, SimRNA, RNAMake, VMD and x3dna-dssr, the flags were checked against
 source or documentation. The scripts were tested with stand-in executables. Review the generated
 scripts before running them on your machines.
 
-## Analyses
-
-All analyses run over the selected frames in **one streaming pass** (MDAnalysis keeps a single
-frame in memory). Neighbour searches use `scipy.spatial.cKDTree` (or MDAnalysis' cell-list grid
-when periodic distances are enabled), so the cost grows roughly linearly with system size.
-
-| Analysis | What is computed | Key parameters |
-|---|---|---|
-| **RMSD** | RMSD of each target selection to a reference frame, optionally after superposition on a separate fit selection; default targets are all heavy atoms (`rmsd/Complex`) and the C4′ backbone (`rmsd/Backbone`) | targets (label, selection, fit selection), reference frame, superposition, mass weighting |
-| **Pairwise contacts** | heavy-atom pairs between group A and B within the cutoff; residue–residue contact counts per frame (sparse), per-residue contact heatmaps, fraction of native residue contacts *Q* | groups, cutoff (4.5 Å) |
-| **H-bonds** | inter-group H-bonds: donor–acceptor distance ≤ cutoff and D–H···A angle ≥ cutoff. Donor hydrogens come from topology bonds (or are assigned by distance); N atoms bearing H or three heavy neighbours are not acceptors; without hydrogens a distance-only criterion is used | groups, distance (3.5 Å), angle (135°) |
-| **O–Mg–O / Mg occupancy** | Mg–O inner-sphere (≤ 2.6 Å) and outer-sphere (≤ 4.5 Å) contacts with oxygens of the selected ranges; O–Mg–O bridges (pairs of oxygens on one ion), bridges between group A and B and the ions forming them; optional octahedral geometry check (O–Mg–O ≈ 90°/180° ± tolerance); per-residue occupancy class per frame (none / outer / inner sphere) | Mg selection, ligand selection/elements, cutoffs, bridge shell, geometry |
-| **π–π stacking** | ring centroids, least-squares normals and planarity per base (purine: 9 ring atoms, pyrimidine: 6; aromatic amino acids too); a pair is stacked when both rings are planar, centroids are within the distance cutoff, normals within the angle cutoff and the lateral offset is small | distance (4.5 Å), angle (30°), offset (2.5 Å), planarity (0.25 Å RMS), scope (all pairs or A vs B) |
-| **Intermolecular energy** | Coulomb + Lennard-Jones energy between group A and B within a cutoff (exact Amber LJ tables when the topology is parm7; approximate element parameters otherwise), plus the magnitude of the net force of B on A; a target value can be drawn on charts/panels | cutoff (12 Å), dielectric (optionally distance dependent, ε·r), bonded-pair exclusions, target |
-
-Two internal analyses feed the structure panel: **trace** (one point per residue — the first
-available atom of the *trace atoms* list such as `C4'` or `P`, or the heavy-atom centroid for
-ligands — superposed onto the reference frame) and **proximity** (per residue minimum distance
-to the proximity set, stored up to the *proximity search radius* so the render-time cutoff can be
-changed without recomputation).
-
-A third internal analysis, **basepairs**, feeds the secondary-structure panel (it runs only when a
-`secondary` panel needs it). Every *stride*-th frame (10) it finds the base pairs; the frames in
-between reuse the last result. Two engines are available (*Analyses → Base pairs*):
-
-- **builtin** (default, no extra dependency): canonical pairs from donor–acceptor distances
-  ≤ *cutoff* (3.5 Å). G–C needs 2 of its 3 Watson–Crick H-bonds, A–U / A–T both; G–U wobble
-  pairs (both H-bonds) are optional. The C1′ atoms must be 8.5–12.5 Å apart (about 10.5 Å in a
-  real pair), which keeps stacked neighbours such as a 5′-GpC-3′ step out. Each base pairs at most
-  once (the pair with the shortest summed distance wins; near-ties go to the C1′–C1′ distance closer
-  to 10.5 Å). It works for L-RNA too, because it uses
-  distances only.
-- **barnaba** (optional, `pip install barnaba`): Leontis–Westhof classes of all pairs, including
-  non-canonical ones (*Non-canonical pairs* draws them too). Barnaba's classification assumes
-  D-nucleotide geometry; for L-RNA the edges and cis/trans may be mirrored, so the builtin engine
-  is the safer choice there.
-
-The result is a sparse residue × residue map per frame (1 = Watson–Crick, 2 = wobble, 3 = other),
-cached like the other analyses.
-
-### Residue groups and selections
-
-Groups are named residue ranges such as `1-40, 45, 50-60` (chain/segment qualified: `A:1-40`)
-or raw [MDAnalysis selections](https://docs.mdanalysis.org/stable/documentation_pages/selections.html).
-Wherever a selection is expected you can write `group:<Name>`, e.g.
-`group:Aptamer and name P C4'`. Fields that ask for a group accept its bare name. Amber
-topologies number residues 1…N in file order. Defaults are provided for the reference system
-(`Aptamer` = 1–12, `Target` = 13–24) — edit them for yours.
-
-**Renaming a group** in the Groups table (confirm the name with Enter or by leaving the cell; Escape
-cancels) renames it everywhere the project uses it: the group choices of the analyses, selections that
-are just its name or contain `group:<Name>`, *Groups shown*, the groups of 3D representations, the
-proximity set, the per-panel group choices and data keys (`contacts@Aptamer+Target/map`), chart
-series, the PDB export subset, other groups' selections and the planner steps' settings. A token that
-only starts with the name (`group:Aptamers`, `group:Aptamer_2`) is another group and stays; project
-notes are never rewritten. Automatic panel titles follow. The status line says how many places
-changed (hover it for the list). Empty names, names with spaces or other characters than letters,
-digits, `_`, `.` and `-`, and names another group has are refused, and flagged red while you type.
-Deleting a group that is still used names the settings that still refer to it; a panel keeps showing
-it as *(missing)* until you choose another group. `Project.rename_group(old, new)` does the same from
-Python and returns the changed locations; `Project.group_references(name)` lists them.
-
-**Groups from chains.** One group per polymer chain of the topology, water and ions left out: from
-the chain IDs when there are several (PDB, or a parm7 written with `RESIDUE_CHAINID`), else from
-segment ids that name several chains, else from bonded fragments numbered in order (`Chain_1`,
-`Chain_2` …; consecutive residues within covalent distance count as bonded when the file has no
-bonds). Groups are named `Chain_<ID>` and get distinct colours. Each group's residue spec is checked
-to select exactly its chain's atoms in that topology: plain ranges (`1-44`) when the residue numbers
-are unique, chain-qualified ranges (`A:1-44`) when chains repeat them, else a selection (as a last
-resort `index …`, which only holds for topologies with the same atom order).
-
-- Choosing a topology on the Input page (or taking the planner's files as inputs) fills the groups
-  **automatically only when nothing you made is overwritten** (opening a project never does): when there
-  are no groups, or the two untouched defaults. The defaults are replaced when the topology has at least
-  two chains, unless they already select one chain each (as in the demo); every reference to `Aptamer`
-  then names the first chain's group and every reference to `Target` the second's, so the analyses keep
-  comparing two groups, and further chains are added. With a single chain the defaults stay.
-- Otherwise nothing changes by itself; the status line lists the chains without a group and
-  **Groups from chains** adds them (a chain that a group already selects exactly is skipped, an existing
-  name gets a suffix). Your groups are never changed, and neither are the untouched defaults: the button
-  only adds.
-
-**When a group or selection is wrong, the message says where and what.** Every problem starts with
-the place of its setting, as the GUI shows it, and names the offending part:
-
-| Problem | Example message |
-|---|---|
-| unknown group | `Analyses › Hydrogen bonds › Group B: unknown residue group 'Tagret' (defined: Aptamer, Target); did you mean 'Target'?` |
-| MDAnalysis cannot parse it | `Analyses › RMSD › Target 3 (X) › Selection: invalid selection 'group:Aptamer and nme P' (expanded: '((resid 1:12)) and nme P'): MDAnalysis says: Unknown selection token: 'nme' (did you mean 'name'?)` |
-| nothing matches (each group, then each and / or part, is tried on its own) | `Analyses › Pairwise contacts › Group B: selection 'group:Target' matched no atoms: group 'Target' (residues '100-112') matches no atoms - the structure's residues are numbered 1-24` |
-| a group's own definition | `Residue groups › Group 3 (Loop) › Selection (overrides): unknown residue group 'Aptamr' (defined: Aptamer, Target, Loop); did you mean 'Aptamer'?` |
-| a panel's group pair | `Layout & panels › Panel 4 (Contact map) › Groups: …` |
-
-The settings are checked before every run (`mdatk render` refuses with the list; warnings, e.g. a group
-in *Groups shown* that does not exist and is left out, are logged); a selection that fails while
-analysing (it can only be matched against the structure then) names its setting the same way.
-**Only what is about to run can block it**: a wrong setting is an error if the run uses it, and only a
-warning otherwise. The structure view's settings (*Groups shown*, the proximity set, the
-representations' groups, the Mg selection while the Mg analysis is off) are errors only when the
-structure view is rendered: the video is on (and the layout has a structure, sequence or
-secondary-structure panel), or *Render still*. `mdatk render --no-video`, `mdatk analyze` with the
-video off, `mdatk export-pdb` (and *Export PDBs now*) and the density fit are not refused for them;
-the density fit does use *Groups shown* and the Mg selection. The PDB atom subset is an error only when
-PDBs are exported; one made only of commas names no group and is an error too (an empty subset exports
-every atom). A selection that uses a broken group is not blamed for it: the group's definition is. That
-definition is an error when something about to run selects the group (a setting that is an error, the
-groups the rendered structure view shows, a panel or chart that is drawn), directly or through other
-groups, and a warning for a draft group nothing uses. Circular definitions (`Stem` uses `group:Loop`,
-`Loop` uses `group:Stem`) are reported at every group of the circle. A run of an analysis on a panel's
-or chart's groups (`rmsd@Loop/Heavy`) that fails is reported at that panel or chart, else at the
-group's definition, never at the analysis' own settings. In Python, `Project.validate()` (errors) and
-`Project.problems()` (errors and warnings) take what is about to run (`video`, `charts`, `pdb`: default
-the output switches; `density`) and return `mdatk.problems.Problem` strings whose text is the message
-above and which carry the setting's `field` path (`analyses.hbonds.group_b`), GUI page (`tab`), readable
-`location` and offending `token`; `SelectionError` carries the same plus `kind`, the selection as written
-and expanded and MDAnalysis' own message.
-
-## Structural view, colouring and glow
-
-- 2D projection of the backbone trace of the selected groups (consecutive residues of the same
-  chain are linked), Mg²⁺ ions and a time label, with depth cueing (size, width and fog).
-- **Orientation**: drag the preview of the reference frame with the mouse, or use the X/Y/Z
-  sliders. The angles (degrees and radians) are stored in the project (`visual.rotation`,
-  `R = Rz·Ry·Rx` about the reference-frame centroid) and applied to every frame. Frames are
-  superposed onto the reference frame first (*superpose frames*), so the model does not drift.
-- **Zoom and centre** (`visual.zoom`, `visual.center_on`, `visual.center_follow`): the mouse wheel
-  over the structure panel (or *Zoom* on the Structure page) magnifies the view; *Centre on* puts a
-  residue (`12`, `B:12`) or the coordinate origin (`origin`) in the middle instead of the model's
-  centre, and *Follow the centre residue* keeps it there in every frame. All three are saved in the
-  project and used in the video, e.g. to stay on one interface.
-- **Colouring modes**: `chain` (chainID, segment or bonded fragment), `groups` (group colours) and
-  `proximity` (residues within the cutoff of the proximity set blend from the base colour to the
-  proximity colour; set members keep their group colour).
-- **Proximity glow** around residues near the proximity set:
-  1. `ever` — glows for the entire movie if the residue ever meets the cutoff;
-  2. `fade` — glows while in proximity, then fades over *fade frames* after separation;
-  3. `current` — glows only while in proximity (no fade).
-- **Residue-number tags** on every N-th residue (`visual.label_every`) and/or listed residues
-  (`visual.label_residues`, e.g. `1, 12, 24, 40-45`), placed just outside the trace, in the video
-  and in the GUI.
-- The view is framed by the model's bounding sphere, so changing the orientation never zooms.
-
-## 3D representations
-
-Instead of the 2D trace, the structural view can draw residue groups as VMD-style
-representations (*Visual → Representations (3D)*, `visual.representations`). Each row is a
-style, the groups it draws (empty: every shown group), a colouring, a size factor, an opacity
-and, for cartoons, a *sugars* switch. Representations intersect correctly by depth, so a cartoon
-of the aptamer and licorice of a binding pocket can share the view.
-
-| Style | What it draws |
-|---|---|
-| `cartoon` | New Cartoon for nucleic acids: an elliptical tube along a spline through P (or C4′, `visual.backbone_atom`), a rung from the backbone through C1′ to the glycosidic N (N9 / N1; C5 for pseudouridine), and each base as a closed slab (purines as the whole fused 9-atom outline). With *sugars*, the ribose ring is a lighter slab and the rung runs backbone → C4′, C1′ → N. |
-| `ribbon` | a flat band through the backbone points, facing the bases |
-| `tube` | a round tube through the backbone points |
-| `licorice` | bonds as sticks with atom balls (r = 0.3 Å); bonds leaving the group run to the neighbouring atom, so it reaches a neighbouring cartoon |
-| `vdw` | van der Waals spheres (Bondi radii) |
-| `surf` | a smooth molecular surface (sum of atomic Gaussians, like VMD QuickSurf), coloured by the nearest residue |
-| `trace` | a ball at each backbone point and sticks to its neighbours (the 2D trace, but in 3D) |
-
-- **Base positioning.** The cartoon deliberately differs from VMD where it hides base geometry:
-  the rung bends at C1′, so the glycosidic angle (*syn*/*anti*) shows; the full purine outline
-  shows inclination, propeller twist, buckle and stacking; the optional sugar slab shows the
-  pucker; the backbone keeps the analysis colours (groups / proximity / glow) while bases are
-  coloured by nucleotide (A blue, G green, C gold, U/T red; Amber, CHARMM and other names, or the
-  base's own atoms for unknown names). The spline is computed along whole strands, so a
-  representation of part of a strand has the same shape as the full one.
-- **Colouring.** `auto`: residue colours for backbones, carbons and surfaces, nucleotide colours
-  for cartoon bases, element colours for other atoms; or `residue`, `element` (surfaces by the
-  nearest atom), `nucleotide` throughout.
-- **Other residues.** Residues no representation draws (including those a style cannot draw, such
-  as a small-molecule target under a cartoon) are shown as a `trace`, ligands without a backbone
-  atom as `licorice` (default), or hidden (`visual.rep_rest: hide`). Mg²⁺ ions are spheres in the
-  scene.
-- **Look.** Lit surfaces, the same depth cue (fog toward the panel colour) as the 2D trace, ink
-  outlines at depth steps (they separate stacked bases of the same colour) and anti-aliased edges.
-  Glowing residues get a soft halo and a tint in the glow colour. Translucent representations show
-  what is behind them (the front-most translucent surface over the opaque ones).
-- **Renderer.** `visual.renderer: auto` (default) uses the built-in renderer: a numpy z-buffer
-  rasteriser that needs no OpenGL, so the same video comes out of a laptop, the GUI and a
-  headless cluster node. It costs roughly 50–80 ms per 1080p frame for cartoon or licorice of a
-  ~500-atom RNA, about 150 ms for surfaces, on top of the figure itself; while you drag the
-  preview it renders at half resolution. `renderer: vtk` uses VTK (`pip install '.[vtk]'`) where it
-  can render (a display, or EGL / OSMesa libraries on a headless machine, e.g. `libegl1
-  libegl-mesa0`); this is checked once in a separate process, and where VTK cannot render, the
-  built-in renderer is used with a note in the log. With VTK the glow is drawn the same way;
-  translucent representations use VTK's own blending (all layers show).
-
-## Density maps
-
-A cryo-EM or crystallographic map (MRC2014 / CCP4: `.mrc`, `.map`, `.ccp4`) can be drawn behind the
-structural view as a projected **shadow**: the density above the contour level, summed along the
-viewing direction, in one colour with adjustable opacity. The model stays where it is and the map is
-placed on it by a rigid-body fit.
-
-- **Fit.** MDATK simulates a map from the model (one Gaussian per heavy atom, weighted by atomic
-  number, σ = 0.225 × resolution and a grid spacing of resolution / 3, as ChimeraX `molmap` does). It
-  then maximises the correlation about the mean between that map and yours, using the grid points
-  inside the model's envelope.
-  - *Global search*: about 550 orientations at 30° (`density.angular_step`, 5–45°).
-    - For each orientation, an FFT finds the best translations on a coarse grid. The score is a
-      locally normalised correlation, so other molecules in the map (protein in an RNP, for example)
-      do not attract the fit.
-    - The 12 best distinct poses, spread over several sites, are refined against a map smoothed to
-      8 Å.
-    - The best poses and their 180° flips about the model's principal axes are then refined at the
-      real resolution.
-  - *Refine*: a local optimisation from the current placement.
-  - Points of the model outside the map box are ignored. A pose needs at least half of the model
-    inside the map to get its full score.
-  - A search takes 10–60 s, depending on the map size and resolution. On synthetic maps with noise,
-    with unrelated density next to the model, or with half the model outside the box, it recovers
-    the true pose to within about a degree.
-- **Frame.** The fit uses the reference frame (the first analysed frame, which the video is
-  superposed on) or any trajectory frame number (`density.fit_frame`). That frame is superposed
-  exactly like the video frames, so the placement applies to every frame.
-- **Manual start.**
-  1. Choose *Centre on model*, which puts the density centre on the model.
-  2. Toggle *Move the map with the mouse* and drag the shadow in the structure panel; Shift + drag
-     rotates it about its centre.
-  3. Choose *Refine*.
-- **Automatic fitting.** With *Fit automatically before rendering* (`density.auto_fit`), a render
-  without a stored placement runs the global search first. The placement (`density.transform`: a 3×3
-  rotation and a translation from model to map), its correlation and a summary are stored in the
-  project file.
-- **Appearance.**
-  - Contour level `density.level`, in σ above the map mean; default 2. Lower it for faint maps.
-  - Colour, opacity (0–1) and *show*.
-  - The shadow sits under the molecule, glow and labels. With 3D representations, *in front*
-    (`density.front`) draws it over them instead, since opaque cartoons hide much of it. In the
-    video it is part of the static background (no per-frame cost). In the GUI it follows
-    rotations, coarser while dragging.
-
-```bash
-mdatk density info map.mrc                               # grid, voxel size, origin, statistics
-mdatk density fit -p run.mdatk.toml --map map.mrc --resolution 4.5 --save   # store the placement
-mdatk density fit -p run.mdatk.toml --search manual --frame 250             # refine on another frame
-mdatk density simulate -p run.mdatk.toml --resolution 6 -O model_6A.mrc [--placed]
-```
-
-## Panels, data keys and layouts
-
-Every analysis output is addressed by a data key `<analysis>/<output>`:
-
-| Kind | Keys |
-|---|---|
-| time series | `rmsd/<label>`, `contacts/atom_pairs`, `contacts/residue_pairs`, `contacts/q_native`, `hbonds/count`, `mg/contacts`, `mg/outer_contacts`, `mg/bridges`, `mg/inter_bridges`, `mg/bridging_ions`, `mg/inner_residues`, `stacking/count`, `stacking/inter`, `stacking/intra`, `energy/total`, `energy/elec`, `energy/vdw`, `energy/net_force`, `external/<label>.<column>` |
-| per-residue matrices | `contacts/per_residue_a`, `contacts/per_residue_b`, `hbonds/per_residue_a`, `hbonds/per_residue_b`, `mg/occupancy`, `proximity/min_distance` |
-| residue maps | `contacts/map`, `hbonds/map`, `stacking/map` |
-
-**Residue groups per panel.** By default an analysis compares the groups set in its settings
-(e.g. contacts between *Aptamer* and *Target*). A data key can name its own groups after `@`:
-`contacts@Target+Mg/atom_pairs`, `hbonds@Aptamer+Target/count`, `energy@Aptamer+Target/total`,
-or a single group for RMSD (`rmsd@Aptamer/Heavy`, `rmsd@Aptamer/Backbone`). Each group choice is
-computed on demand in the same pass over the trajectory and cached on its own; in the GUI the
-*Groups* drop-downs of a panel build these keys. Group names may contain letters, digits, `_`,
-`.` and `-`.
-
-Panel titles default to the label of the data shown. Count series (contacts, H-bonds, Mg
-bridges, stacked pairs …) always get whole-number axis ticks, in panels and charts.
-
-Panel types (`mdatk list` prints them):
-
-| Type | Shows | Options (JSON) |
-|---|---|---|
-| `structure` | structural view described above | — |
-| `timeseries` | one or more series vs time, moving cursor and value markers, optional target line | `progressive` (reveal over time), `smooth` (frames), `target`, `ylim` |
-| `dual_axis` | two series on independent left/right axes | — |
-| `heatmap` | residues × time (counts, values or occupancy classes) with cursor | `vmin`, `vmax`, `max_ticks` |
-| `contact_map` | residue × residue map: `instant` (evolves with the movie), `frame` (fixed) or `frequency` (fraction of frames); `transpose` puts the first group along x | `mode`, `frame`, `max_ticks`, `transpose` |
-| `sequence` | one-letter sequence of the structure-view residues (chains separated, chain letters shown) in the structure panel's colours, proximity glow and number tags; wraps into rows, and more than two rows log a warning to choose a smaller range | `residues` (e.g. `A:1-20, B:5-30`), `per_row` |
-| `secondary` | arc diagram on a fixed layout: residues along a line (same colours, glow and tags), base pairs within a chain as arcs above it, pairs between chains as transparent yellow arcs below it | `source`: `dynamic` (pairs re-detected every *n* frames by the base-pair analysis), `first` (first frame) or `dotbracket` (with `dotbracket`, `&` or a space between chains); `residues` |
-
-Layout presets: `single`; `large_plus_2`, `large_plus_3`, `large_plus_4` (one large panel and 2–4
-small ones on the right); `large_top_2`, `large_top_3` (small panels below); `equal_2` …
-`equal_6` (2–6 equal panels); `single_strip`, `large_plus_2_strip`, `large_plus_3_strip`,
-`large_top_3_strip`, `equal_4_strip` add a thin full-width strip at the bottom (their last slot) for
-a sequence or secondary-structure panel. Panels fill the slots in order; the first slot is the
-large one.
-The pipeline computes exactly the analyses that the chosen panels and charts need.
-
-## Outputs
-
-All outputs go to the output directory (default `MDATK_output/`):
-
-| File | Content |
-|---|---|
-| `MDATK_video_<timestamp>.mp4` | H.264 video of the multi-panel figure (FPS, resolution, DPI, frame stride, codec and CRF configurable). Rendering is headless (Matplotlib Agg) and frames are piped straight into FFmpeg; static content is drawn once and only moving artists are redrawn per frame. |
-| `MDATK_chart_<key>_<timestamp>.png/svg/pdf` | standalone time charts (all series or a chosen subset), optionally per-residue heatmaps; DPI, size, Matplotlib style (or MDATK's own chrome), colour, labels, title template, running-mean smoothing and target line are configurable |
-| `MDATK_frame_<n>_<timestamp>.pdb` | selected frames by number (`0, 10, 20-50:10, last`) and/or time (`1.5ns, 2000ps`, nearest frame), optionally restricted to groups or a selection |
-| `MDATK_params_log.toml` | full parameters, software versions, input fingerprints, cache keys, the run's timestamp, the list of outputs and the project's citations; open it as a project to repeat the run |
-| `MDATK_cache/` | analysis cache (see below) and cleaned trajectories |
-
-All outputs of one run share a timestamp such as `2026-10-15_143205`, so runs never overwrite
-each other; the cache and the parameter log keep fixed names. Set
-`output.timestamp_files` to `false` for plain names.
-
-## Caching and reproducibility
-
-- Each analysis result is stored as a compressed `<analysis>-<key>.npz` with a JSON sidecar; the
-  manifest `MDATK_cache.json` records the system, frame selection, time axis, residue groups,
-  available data keys and the entries of the latest run.
-- The key hashes everything that influences the numbers: input file fingerprints (path, size,
-  modification time), frame selection, the analysis parameters and the definitions of the
-  residue groups it uses. Changing a contact cutoff recomputes only contacts; changing colours,
-  orientation, layout, glow or chart style recomputes nothing.
-- `mdatk render --from-cache` (or *Re-render from cache* in the GUI) re-renders video and charts
-  from the manifest without touching the trajectory.
-- Cleaned trajectories live in `MDATK_cache/cleaned/<key>/` with the generated `cpptraj.in`,
-  the full `cpptraj.log` and a completion marker.
-- Any project file or `MDATK_params_log.toml` can be passed back with `-p` to reproduce a run.
-
 ## PDB clean-up
 
 *PDB clean-up* in RNAdo's header bar (or *RNAdo → PDB clean-up: open in RNAdo…* in the analysis
-window) and `mdatk pdb` on the command line repair and rewrite PDB
-files with fixed-column output that keeps coordinates, occupancies and B-factors verbatim:
+window) and `mdatk pdb` on the command line repair and rewrite PDB files with fixed-column output that
+keeps coordinates, occupancies and B-factors verbatim:
 
 - **ChimeraX damage** such as a residue name fused with the chain id (`GC:` = residue G of chain C)
   is repaired automatically; only the first MODEL is kept.
@@ -1138,7 +1188,7 @@ files with fixed-column output that keeps coordinates, occupancies and B-factors
   residues as HETATM). Any of these, plus common aliases (RA, G5, ADE …), is recognised on input;
   DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
 - **CONECT** records are stripped by default (until final deposition processing).
-- **5′ phosphates**: `--strip-5p` (GUI: *Remove 5′-terminal phosphates*, ticked automatically for
+- **5′ phosphates**: `--strip-5p` (window: *Remove 5′-terminal phosphates*, ticked automatically for
   the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
   (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was.
 - **Chains**: restore the chain ids of a cpptraj PDB by copying them residue by residue from a
@@ -1164,8 +1214,9 @@ copied into Amber build steps, so generated scripts need only `python3`.
 writes the base pairs of a PDB file into its header as REMARK 950 records. Pairs come from the
 first model; every other line (all models, atom serials, CONECT) is copied unchanged, an earlier
 annotation is replaced and a MASTER record is dropped. `mdatk pdb clean` drops the records (they name
-the input's residues), so annotate after cleaning; the clean-up window does this when *Annotation* is on. Strands are TER segments, so files with blank chain ids (Amber, cpptraj)
-still get a `&` between strands:
+the input's residues), so annotate after cleaning; the clean-up window does this when *Annotation* is
+on. Strands are TER segments, so files with blank chain ids (Amber, cpptraj) still get a `&` between
+strands:
 
 ```text
 REMARK 950 MDATK BASE-PAIR ANNOTATION
@@ -1188,9 +1239,9 @@ step (with the Barnaba citation when it was used).
 
 ## Structure builder
 
-*Structure builder* in RNAdo's header bar, `mdatk build` and the planner step *Structure builder
-(MDATK)* make
-starting structures without external programs.
+*Structure builder* in RNAdo's header bar (or *RNAdo → Structure builder: open in RNAdo…* in the
+analysis window), `mdatk build` and the planner step *Structure builder (MDATK)* make starting
+structures without external programs.
 
 **Ideal helices.** An A-form RNA duplex (Watson-Crick complement, or an explicit partner 5'→3' of the
 same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fiber
@@ -1203,9 +1254,9 @@ the PDB clean-up schemes: by default A/C/G/U and 0A/0C/0G/0U (all ATOM, no termi
 approximate wobble geometry (bases turned in their plane about C1'); other mismatches keep the
 Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre at the origin.
 
-**Other pairings, parallel duplexes and triplexes.** `--pairing` (GUI: *Pairing*; planner option
-*Pairing*) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form duplex above,
-unchanged. The Leontis-Westhof rules fix the strand orientation:
+**Other pairings, parallel duplexes and triplexes.** `--pairing` (*Pairing* in the builder window and
+in the planner step) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form
+duplex above, unchanged. The Leontis-Westhof rules fix the strand orientation:
 
 | `--pairing` | pairs (strand 1 · strand 2) | strands | Leontis-Westhof |
 |---|---|---|---|
@@ -1275,8 +1326,9 @@ mdatk build fit model.pdb map.mrc --resolution 4 [--search local] [--step 30] -o
 ```
 
 Add `-p project.mdatk.toml` to log the step (the fit logs its correlation). The planner step writes a
-short script calling `python3 -m mdatk build …` (MDATK must be importable by that Python); its inputs
-are the model (mutate, fit) and the map (fit), its output the PDB.
+short script calling `python3 -m mdatk build …` (the step's *Python*, which must be able to import
+MDATK; with the default `python3`, a step written from the Linux AppImage calls the AppImage itself);
+its inputs are the model (mutate, fit) and the map (fit), its output the PDB.
 
 ## Restraint dictionaries, real-space refinement and MDFF
 
@@ -1293,16 +1345,16 @@ identical to the model's. The CCD has the L-ribonucleotides 0A, 0C, 0G and 0U, b
 acedrg (CCP4) and phenix.elbow (Phenix) build restraints from a SMILES string but invent their own atom names;
 MDATK supplies the SMILES and renames the result:
 
-* `mdatk dict list` - the twelve codes with the isomeric SMILES given to the programs (all four sugar centres
+- `mdatk dict list` - the twelve codes with the isomeric SMILES given to the programs (all four sugar centres
   L; `--json` for scripts). `mdatk dict smiles 0G5` prints one.
-* `mdatk dict finish work_0G5/ --code 0G5 -o 0G5.cif` - finds the dictionary acedrg / eLBOW wrote (a file,
+- `mdatk dict finish work_0G5/ --code 0G5 -o 0G5.cif` - finds the dictionary acedrg / eLBOW wrote (a file,
   a folder or a glob), maps every atom to the CCD names by graph matching (element + bonds; hydrogens by
   their heavy atom: H5'/H5'', H61/H62 ... from the generated coordinates), checks the sugar chirality and sets
   `_chem_comp.id`, name and `group` (`RNA` by default so the residue is linked into the chain;
   `--group non-polymer` for a free ligand). `--project` records the step in the project log.
-* `mdatk dict pubchem CID` - the only command that uses the network: fetches the isomeric SMILES of a PubChem
+- `mdatk dict pubchem CID` - the only command that uses the network: fetches the isomeric SMILES of a PubChem
   compound and reports which code it matches (wrong stereochemistry or compound is refused).
-* Planner step **Restraint dictionaries · acedrg / eLBOW** (Refinement): program acedrg or phenix.elbow
+- Planner step **Restraint dictionaries · acedrg / eLBOW** (Refinement): program acedrg or phenix.elbow
   (Phenix 1.21 / 2.x, sourcing `phenix_env.sh`; or a CCP4 setup script), the codes (by default the 5'/3'
   variants the connected model needs - detected from the sugar geometry, so Amber or cpptraj names work - or
   all eight), custom `code = SMILES` lines and, off by default, "Fetch SMILES from PubChem when writing
@@ -1483,10 +1535,11 @@ VMD and writes its own restraints:
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
     agree with its coordinates. Some L-RNA libraries write D names (G5, C3 …) into their units; for
     such a topology, list the L residues under *L residues* (topology numbers, e.g. `45-73`). Every
-    other nucleotide is then D, and the geometry must still agree with the declaration. A residue named D whose sugar is L, or the reverse, stops the run.
-    So does any clearly defined sugar centre of the other hand, even in a residue whose overall
-    geometry is ambiguous: its restraint would invert it. The planner reports these as soon as the
-    files exist (for a NetCDF restart, the script does once it has converted the restart).
+    other nucleotide is then D, and the geometry must still agree with the declaration. A residue
+    named D whose sugar is L, or the reverse, stops the run. So does any clearly defined sugar centre
+    of the other hand, even in a residue whose overall geometry is ambiguous: its restraint would
+    invert it. The planner reports these as soon as the files exist (for a NetCDF restart, the
+    script does once it has converted the restart).
 - **Secondary-structure dihedrals** (`…_ssdihedrals_….txt`, NAMD `extraBonds`), the RNA restraints
   of the MDFF paper (Trabuco et al. 2008).
   - α, β, γ, δ, ε, ζ and χ of every base-paired residue in the secondary structure are held at their
@@ -1558,20 +1611,21 @@ are used. The citations appear
 
 - in the header of every generated script (that step only),
 - in the step log entries and in `MDATK_params_log.toml` (the whole project),
-- in *About and citations* (the whole project), with *Export citations (BibTeX)…*.
+- in the analysis window's *About and citations* (the whole project), with *Export citations
+  (BibTeX)…*, and in RNAdo's *About RNAdo* (the plan), with *Export BibTeX…*.
 
 The reference data live in `mdatk/_citation_data.py`; each entry records where its details were
 checked (the paper's PDF, the project's own citation file, or a reference list).
 
 ## Command line reference
 
+The analysis window and the analysis commands:
+
 ```text
-mdatk gui [PROJECT]                start the GUI (opens PROJECT if given; nothing otherwise)
-mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   start RNAdo instead (same as: rnado)
-rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo, the workflow planner (rnado-gui: no terminal)
-rnado ACTION ...                   the same as mdatk workflow ACTION ... (write, run, status ...)
-mdatk demo DIR [--n-frames N] [--no-solvent] [--run]
-mdatk init OUT.mdatk.toml          write a project with the defaults (accepts the overrides below)
+mdatk gui [PROJECT]                the analysis window (opens PROJECT if given; nothing otherwise);
+                                   mdatk-gui [PROJECT] is the same without a terminal
+mdatk demo DIR [--n-frames N] [--dt PS] [--no-solvent] [--run]
+mdatk init OUT.mdatk.toml [--overwrite]   write a project with the defaults (accepts the overrides below)
 mdatk info      -p PROJECT         system summary and residue-group check (JSON)
 mdatk list                         analyses, panel types, layout presets
 mdatk clean     -p PROJECT [--force]
@@ -1582,15 +1636,46 @@ mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selectio
 mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
-mdatk workflow tools|generate|template|check|write|run|status|restraints   (see RNAdo)
+```
+
+`mdatk render` also takes `--video`, `--charts` and `--pdb` to switch an output on that the project has
+off.
+
+RNAdo and its tools:
+
+```text
+rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo, the workflow planner (rnado-gui: no terminal)
+rnado ACTION ...                   the same as mdatk workflow ACTION ... (tools, check, write, run,
+                                   status, generate, template, restraints)
+mdatk rnado ...                    the same as rnado ...
+mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo instead of the analysis window
+                                   (--planner is the same as --rnado; --open alone starts RNAdo too)
+mdatk workflow tools [TOOL]        step types, or the options of one
+mdatk workflow template [NAME] [-p PROJECT]   list templates, or add one to a project's plan
+mdatk workflow check  -p PROJECT   resolve the plan and list its problems
+mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--run [--parallel N] [--include-separate]]
+mdatk workflow run    -p PROJECT [--step N] [--parallel N] [--include-separate]
+mdatk workflow status -p PROJECT [--step N] [--adopt | --forget] [--json]
+mdatk workflow generate TOOL [-o DIR] [--step N] [-i PORT=PATH ...] [-s KEY=VALUE ...] [--dry-run] [--run]
+mdatk workflow generate user-script -i NAME=PATH --set source=file --set script_file=SCRIPT \
+    --set interpreter=bash|python3|custom [--set command=CMD] --set 'inputs=[...]' \
+    --set 'outputs=[...]' --set 'arguments=...'      a custom script step (see Custom scripts)
+mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] -o OUT.dist
 mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 ```
 
-Common options: `--top`, `--traj …`, `--frames start:stop:step`, `--clean/--no-clean`,
-`--cpptraj PATH`, `--conda-env NAME`, `-o/--out-dir`, `--cache-dir`, `-q/--quiet`, `-v/--verbose` and
-`-s/--set KEY=VALUE` (repeatable; values are JSON when they parse as JSON), for example:
+`run` and `write --run` exit with status 75 when a step waits for a separately run script (see [Running
+steps](#running-steps)); `status` without `--adopt` / `--forget` only reports. The planner commands
+share `-p/--project`, `-o/--out-dir` (the plan folder), `--project-name`, `--stamp`, `--no-stamp` and
+`-q/--quiet`; `mdatk workflow ACTION --help` lists the rest. Examples are in [Command
+line](#command-line) and the sections on the tools.
+
+Common options of the analysis commands: `--top`, `--traj …`, `--frames start:stop:step`,
+`--clean/--no-clean`, `--cpptraj PATH`, `--conda-env NAME`, `-o/--out-dir`, `--cache-dir`,
+`-q/--quiet`, `-v/--verbose` and `-s/--set KEY=VALUE` (repeatable; values are JSON when they parse as
+JSON), for example:
 
 ```bash
 mdatk render -p run.mdatk.toml --set analyses.contacts.cutoff=5.0 \
@@ -1617,15 +1702,21 @@ cleaning   enabled, cpptraj_path, solvent/ion/extra masks, autoimage(+anchor), f
            fit_reference (first|frame|file), reference_frame/file, remove_box_after_fit,
            start/stop/offset, extra_commands
 groups[]   name, residues, selection, color
-analyses   rmsd, contacts, hbonds, mg, stacking, energy, use_pbc, proximity_search_radius
-visual     structure_groups, trace_atoms, align_frames, rotation, color_mode, colours,
-           proximity_set/cutoff, glow_mode/color/fade_frames/strength, theme, sizes, title
+analyses   rmsd, contacts, hbonds, mg, stacking, energy, basepairs, use_pbc, proximity_search_radius
+visual     structure_groups, trace_atoms, representations[], renderer, rep_rest, align_frames, rotation,
+           zoom, center_on, center_follow, color_mode, colours, proximity_set/cutoff,
+           glow_mode/color/fade_frames/strength, theme, sizes, label_every, label_residues, title
+density    map_path, show, resolution, level, color, opacity, front, fit_frame, search, angular_step,
+           auto_fit, transform, anchor, fit_cc, fit_info (the stored placement, its correlation)
 layout     preset, panels[] {type, series[], title, options{}}
-output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log
-workflow   project_name, stamp, use_stamp, out_dir, step_folders,
+output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log, timestamp_files
+workflow   project_name, stamp, use_stamp, out_dir, step_folders, parallel,
            nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
+
+RNAdo writes only the `workflow` section; the analysis window writes the rest and keeps the plan RNAdo
+saved (see [One project in both programs](#one-project-in-both-programs)).
 
 Unknown keys are ignored with a warning and missing keys take their defaults, so project files stay
 compatible across versions. The recent-projects list is kept in `~/.config/mdatk/settings.toml`.
@@ -1634,38 +1725,62 @@ compatible across versions. The recent-projects list is kept in `~/.config/mdatk
 
 ```text
 mdatk/
-  config.py          parameter model, hashing, validation
+  config.py          parameter model, hashing, validation; group renames and references
   problems.py        located problems: field path, GUI page and readable location of a setting
-  projectfile.py, tomlio.py   commented TOML project files, step log, parameter logs, recent projects
-  pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
-  citations.py       per-use citations (data in _citation_data.py)
+  projectfile.py, tomlio.py   commented TOML project files, the file lock, step log, parameter logs,
+                     recent projects
   selections.py      residue ranges, group:<Name> expansion, frame/time specs, elements
   chaingroups.py     residue groups from the chains of a topology
   spatial.py         cKDTree / cell-list neighbour search, Kabsch superposition
+  progress.py        progress reporting and cancellation shared by the CLI and the GUI
   cleaning/          cpptraj script generation, streaming execution, cached cleaned outputs;
                      conda environment detection / `conda run`
-  io/                trajectory loading, parm7 parser/writer, cache store, external data, PDB export
+  io/                trajectory loading, parm7 parser/writer, cache store, external data, PDB export,
+                     MRC / CCP4 maps (mrc.py)
   analysis/          registry + single-pass runner; rmsd, contacts, hbonds, mg, stacking, energy,
-                     structure (trace, proximity)
+                     basepairs, structure (trace, proximity)
+  secstruct.py       dot-bracket notation and base-pair detection
   data.py            standardised results: series, matrices, sparse residue maps; Dataset
-  render/            layouts, panels, colouring/glow, orientation, theme, video (FFmpeg), charts,
-                     example data for the GUI preview; molecule/ holds the 3D representations
-                     (topology roles, geometry per style, surface nets, scene colours, the
-                     built-in z-buffer renderer and the optional VTK one)
-  density.py, io/mrc.py   density maps: MRC / CCP4 I/O, simulated maps, rigid-body fitting
+  render/            layouts, panels (seqpanels.py: sequence and arc panels), colouring/glow,
+                     orientation, theme, video (FFmpeg), charts, example data for the GUI preview;
+                     molecule/ holds the 3D representations (topology roles, geometry per style,
+                     surface nets, scene colours, the built-in z-buffer renderer and the optional
+                     VTK one)
+  density.py         density maps: simulated maps, rigid-body fitting, projected shadows
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
-  workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
-                     SimRNA, RNAMake, Amber, GROMACS, VMD and custom scripts (userscript.py);
-                     plan.py resolves the plan
-                     graph and names files; scripts/ holds self-contained helper programs that
-                     are embedded in generated workflows
-  cli.py, gui/       command line and GTK 3 front ends: gui/app.py the analysis window
-                     (gui/canvas.py: WYSIWYG figure canvas, gui/problemview.py: problem badges,
-                     field flags and the problems list); gui/rnado.py RNAdo, the workflow
-                     planner (gui/planner.py: the plan canvas, gui/logpanel.py: output log,
-                     gui/wizard.py, gui/pdbdialog.py, gui/builderdialog.py: its tools, which use
-                     only gui/host.py); gui/projectui.py: project files both programs share
+  pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
+  annotate.py        REMARK 950 base-pair / stacking / dot-bracket annotation
+  builder.py         structure builder: ideal and non-canonical helices (D / L), mutations, map fits
+  dictionaries.py    restraint dictionaries for L-RNA residues (SMILES, renaming, PubChem lookup)
+  citations.py       per-use citations (data in _citation_data.py)
+  workflows/         script generators: schema.py (option schemas, shared with the wizard),
+                     base.py, registry.py, naming.py, rna.py; farfar2.py, simrna.py, rnamake.py,
+                     amber.py (+ mg_params.py), gromacs.py, vmd.py, namd.py (MDFF), buildstep.py,
+                     dictstep.py, refine.py (Phenix, Coot), userscript.py (custom scripts), misc.py
+                     (notes, existing files, MDATK analysis); plan.py resolves the plan graph and
+                     names files; runner.py runs generated scripts on request; runstate.py finds
+                     earlier runs
+    scripts/         self-contained helper programs embedded in generated workflows: prep_pdb.py,
+                     cp_retype.py, tip4p2005.py, lrna_lib.py (generated L-RNA library),
+                     lrna_names.py (L names before tleap), topcheck.py (topology check),
+                     helix_dist.py, amber2gmx.py, gmx_posre.py, namd_mdff.py, namd_energy.py
+  cli.py             the mdatk and rnado commands
+  gui/               GTK 3 front ends:
+    app.py           the analysis window (canvas.py: WYSIWYG figure canvas; problemview.py: problem
+                     badges, field flags and the problems list; cursors.py: cursors that show on
+                     every platform)
+    rnado.py         RNAdo's window (planner.py: the plan canvas; logpanel.py: the output log panel;
+                     wizard.py, pdbdialog.py, builderdialog.py: its tools, which use only host.py)
+    host.py          what the planner and the tools need from the window that hosts them
+    jobs.py          background jobs, progress, Cancel and the run confirmation of both windows
+    launch.py        starting RNAdo from the analysis window (source, bundle, AppImage)
+    projectui.py     project files in both programs: open menu, file choosers, co-editing
+    about.py         About dialogs and BibTeX export; widgets.py, worker.py, desktop.py: helpers
+  assets/            RNAdo's logo, wordmark and icons (drawn by packaging/make_rnado_art.py)
+  frozen.py          stand-alone builds: bundled FFmpeg, environments of the programs MDATK starts
   demo.py            synthetic RNA system generator
+packaging/           stand-alone builds (see packaging/README.md)
+tests/               the test suite (see Testing); examples/: example projects; data/: desktop entries
 ```
 
 **Adding an analysis**: subclass `mdatk.analysis.base.Analysis`, implement `enabled`,
@@ -1689,25 +1804,51 @@ names, from `ctx.name(tag, ext)`) and `generate` (return `GeneratedFile`s); deco
 
 ```bash
 pip install '.[test]'
-xvfb-run -a pytest                                # GUI tests need a display (Xvfb works)
-MDATK_TEST_CPPTRAJ=/path/to/cpptraj pytest        # also run the real-cpptraj test
-MDATK_TEST_AMBERHOME=$AMBERHOME pytest tests/test_workflow_integration.py
-                                                  # run generated Amber scripts with tleap, ParmEd,
-                                                  # ambpdb, sander, cpptraj (add MDATK_TEST_GROMACS=1
-                                                  # with gmx on PATH for the GROMACS conversion + run)
+xvfb-run -a python -m pytest                    # the whole suite; the GUI tests need a display (Xvfb)
+python -m pytest tests/test_golden.py           # only the regression test of released planner output
+MDATK_TEST_CPPTRAJ=/path/to/cpptraj python -m pytest tests/test_cleaning.py   # with real cpptraj
+MDATK_TEST_AMBERHOME=$AMBERHOME python -m pytest tests/test_workflow_integration.py
+                                                # run generated Amber scripts with tleap, ParmEd,
+                                                # ambpdb, sander, cpptraj (add MDATK_TEST_GROMACS=1
+                                                # with gmx on PATH for the GROMACS conversion + run)
 ```
+
+Run the suite with the Python MDATK is installed in (`python` in the venv; for example `xvfb-run -a
+python3.12 -m pytest` with a system Python 3.12). Without a display the GUI tests (both windows) are
+skipped, and tests that need cpptraj, AmberTools or GROMACS are skipped without them.
+
+- **Optional AmberTools tests.** `MDATK_TEST_AMBERHOME` names an AmberTools installation:
+  `tests/test_workflow_integration.py` runs the generated Amber chain end to end (sander standing in
+  for pmemd), `tests/test_lrna_library.py` builds a D duplex and its mirror image with tleap and
+  compares sander energies term by term for OL3 and OL3 + CP, and `tests/test_workflows.py` retypes
+  AmberTools' `RNA.lib` for CP. The last two also take `$AMBERHOME` (the library test also the `tleap`
+  on PATH).
+- **Golden regression test.** `tests/test_golden.py` regenerates, with the current code, every file the
+  planner writes and every planner message for every template, every step type (defaults, then each
+  check box flipped and each radio / combo choice, one at a time), typed secondary structures and the
+  example projects, and compares their hashes with `tests/data/golden_v0.0.7.json`, recorded from the
+  0.0.7 release (`python3 tests/golden.py --write OUT.json` with that release importable). Only the
+  "written by MDATK x.y.z" version and dates are normalised. A step type of 0.0.7 must not change its
+  output unless the change is intended; the intended changes are listed in the test with their reasons
+  (see [CHANGELOG.md](CHANGELOG.md)).
+- **Shipped example.** `examples/namd_mdff` must be what `python3 tests/mdff_system.py --example
+  examples/namd_mdff` makes now, apart from the date in script headers.
 
 The suite covers exact geometric criteria of every analysis on hand-built systems, cache keys
 and reuse, cpptraj script generation (with a stand-in executable, and with real cpptraj when
 available), the full pipeline including FFmpeg output, the CLI and GUI smoke tests. For the 3D
 view it checks the rasteriser against analytic spheres and cylinders, closed meshes without
 pinholes, depth order beyond the panel's range, registration and handedness in the final figure,
-fog, glow and translucency, thread safety and a render without a display.
+fog, glow and translucency, thread safety and a render without a display. For RNAdo it covers the
+script generators and their checks with stand-in executables, the plan, previous runs, custom scripts,
+the run machinery (parallel runs, waiting steps, Cancel), the output log panel under a flood of lines,
+how RNAdo is started, both programs saving one project, and the stand-alone packaging (spec, AppRun,
+desktop entries, assets).
 
 ## Notes and limitations
 
-- MDATK produces finished files; there is no interactive playback or frame scrubbing (the GUI
-  preview shows example data, or one real frame, for arranging the layout).
+- MDATK produces finished files; there is no interactive playback or frame scrubbing (the analysis
+  window's preview shows example data, or one real frame, for arranging the layout).
 - Interaction energies are non-bonded pair sums within a cutoff (no PME / long-range
   electrostatics, no solvent); use them for trends and comparisons against a target value.
 - Without a parm7 topology, Lennard-Jones parameters are approximate element defaults and the
@@ -1718,14 +1859,14 @@ fog, glow and translucency, thread safety and a render without a display.
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
 - RNAdo's planner and script wizard write files; they run them only on request (*Run all…*, *Run
-  selected steps*). Generated
-  scripts call the programs by name
+  selected steps*, *Run step…*, *Write and run…*). Generated scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
-  step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
+  step (conda environment, `module load`, `source amber.sh`) when they are not on PATH. Scripts get
+  your own `PYTHONPATH`, also when the analysis window started RNAdo.
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
-  any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame (tens of ms for a few thousand atoms; the grid
-  coarsens to 1.5 Å above 5 000 atoms).
+  any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame
+  (tens of ms for a few thousand atoms; the grid coarsens to 1.5 Å above 5 000 atoms).
 - The builtin base-pair engine knows canonical Watson–Crick and G–U wobble pairs only; use
   Barnaba for non-canonical pairs and stacking. The arc diagram keeps one fixed layout (residues
   in file order), so pseudoknots appear as crossing arcs.
