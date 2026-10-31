@@ -30,6 +30,10 @@ class Host(Protocol):
     def save_project(self, save_as: bool = False) -> bool:
         """Save the project (its plan); False when it was not saved."""
 
+    def without_edit(self, change: Callable[[], None]) -> None:
+        """Run ``change``, which adjusts the plan without the user's edit (a script wizard opens and fills
+        in its step's defaults); a plan without unsaved edits still has none afterwards."""
+
     def run_scripts(self, jobs: Sequence, separate: Sequence[str] = (), parent=None, parallel: int = 1,
                     on_state: Optional[Callable] = None, on_finished: Optional[Callable] = None,
                     with_separate: Optional[Sequence] = None) -> bool:

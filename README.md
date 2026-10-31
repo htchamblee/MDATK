@@ -350,10 +350,12 @@ RNAdo opens, saves and remembers the same project files as the analysis window (
 with the recent projects, *Save*; the menu has *New project*, *Save as…*, *Project log…* and *About
 RNAdo*). Both programs can have one project open at the same time. RNAdo writes only the file's plan (the
 `workflow` section) and leaves the analysis settings as the file has them; the analysis window saves
-the plan it finds in the file, with its own residue-group renames applied to it. When the file changed
-on disk (the window gets the focus, or the file monitor reports it), each program takes the other's
-part. It reloads its own part when it has no unsaved changes there, and otherwise asks in a bar
-above its content (*Reload it* / *Keep mine*).
+the plan it finds in the file, with its own residue-group renames applied to it, and RNAdo follows
+those renames in its unsaved plan. Both re-read the file and write it under the file's lock after
+any question, so nothing the other program saved meanwhile is lost. When the file changed on disk
+(the window gets the focus, or the file monitor reports it), each program takes the other's part. It
+reloads its own part when it has no unsaved changes there (also when you save), and otherwise asks in
+a bar above its content (*Reload it* / *Keep mine*). Opening a script wizard is no change to the plan.
 
 The plan writes files and scripts; nothing is executed unless you ask for it with *Run all…* /
 *Run selected steps* (planner), *Run step…* (a box's details) or *Write and run…* (wizard). RNAdo then

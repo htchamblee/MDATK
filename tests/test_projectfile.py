@@ -208,6 +208,49 @@ def test_concurrent_saves_and_log_appends_keep_every_entry(tmp_path):
     assert [e["step"] for e in PF.read_log(path)] == [str(i) for i in range(40)]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="file locks are flock based")
+def test_a_locked_read_merge_write_keeps_other_programs_out(tmp_path):
+    """The GUIs re-read, merge and write under the project's lock: a save inside it does not wait for
+    itself, while another program's save waits until the lock is released."""
+    import subprocess
+    import sys
+
+    from mdatk.workflows.plan import add_node
+
+    path = str(tmp_path / "p.mdatk.toml")
+    Project().save(path)
+    other = ("import sys; from mdatk.projectfile import edit_workflow; "
+             "from mdatk.workflows.plan import add_node; print('saving', flush=True); "
+             "edit_workflow(sys.argv[1], lambda wf: add_node(wf, 'vmd', 1, 1))")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(PF.__file__)))
+    paths = [root] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
+    done = []
+
+    def merge_and_write():
+        with PF.locked(path):
+            proc = subprocess.Popen([sys.executable, "-c", other, path], env=env, stdout=subprocess.PIPE,
+                                    text=True)
+            p = Project.load(path)
+            add_node(p.workflow, "note", 1, 1)
+            p.save(path)  # takes the lock again
+            PF.edit_workflow(path, lambda wf: add_node(wf, "note", 2, 2))
+            PF.append_log(path, PF.LogEntry(step="01"))
+            assert proc.stdout.readline().strip() == "saving"
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                done.append("the other program waited")
+        done.append(proc.wait(timeout=60))
+
+    t = threading.Thread(target=merge_and_write, daemon=True)
+    t.start()
+    t.join(60)
+    assert done == ["the other program waited", 0]  # no deadlock, and the other save came after
+    assert [n.tool for n in Project.load(path).workflow.nodes] == ["note", "note", "vmd"]
+    assert [e["step"] for e in PF.read_log(path)] == ["01"]
+
+
 def test_undecodable_file_names_do_not_break_the_log(tmp_path):
     path = str(tmp_path / "p.mdatk.toml")
     Project().save(path)

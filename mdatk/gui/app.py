@@ -48,7 +48,7 @@ from .about import citation_text, export_bibtex  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
 from .jobs import JobControl  # noqa: E402
 from .problemview import ProblemView  # noqa: E402
-from .projectui import (DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
+from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
                         choose_save_path, fill_open_menu, other_data, renamed_workflow)
 from .worker import call_soon  # noqa: E402
 
@@ -122,6 +122,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._disk: Optional[DiskState] = None
         self._mem_other: Dict = {}  # the analysis settings as last loaded or saved (edits differ from it)
         self._group_renames: List[Tuple[str, str, List[str]]] = []  # (old, new, group names before)
+        self._offered: Optional[Dict] = None  # another program's analysis settings the change bar offers
         # live problems: badges on the page buttons, flags on the fields (revalidated after edits)
         self.problem_view = ProblemView(self.jump_to_problem)
         self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
@@ -1858,6 +1859,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _remember_file(self, path: Optional[str], state: Optional[DiskState] = None) -> None:
         """What the project file holds now (``state``, else read here), to notice RNAdo's saves."""
         self._group_renames = []
+        self._offered = None
         self._disk = None
         if path and os.path.isfile(path):
             try:
@@ -1938,15 +1940,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def save_project(self, save_as: bool = False) -> bool:
         """Save the project.  When RNAdo (or the command line) saved the file since this window read it,
-        the plan found there is saved, with this window's group renames applied to it."""
-        from ..projectfile import add_recent
+        the plan found there is saved, with this window's group renames applied to it: after any question
+        the file is re-read and written under its lock, so a plan saved meanwhile is not lost."""
+        from ..projectfile import add_recent, locked
 
         try:
             project = self.collect(validate=False)
         except ValueError as exc:
             self.error("Some settings are invalid", str(exc))
-            return False
-        if not self._take_newer_plan(project):
             return False
         path = self.project_path
         if save_as or not path:
@@ -1954,11 +1955,46 @@ class MainWindow(Gtk.ApplicationWindow):
             path = choose_save_path(self, name)
             if not path:
                 return False
-        try:
-            project.save(path)
-            state = DiskState.read(path)[0]
-        except (OSError, ValueError) as exc:
-            self.error("Could not save the project", str(exc))
+        into_file = self._disk is not None and os.path.realpath(path) == os.path.realpath(self._disk.path)
+        agreed = self._offered  # the other program's analysis settings that saving replaces (the bar)
+        for _attempt in range(SAVE_ATTEMPTS):
+            newer = self._newer_settings(agreed)
+            if newer is not None:  # another program saved other analysis settings since this window read them
+                state, disk = newer
+                if not self.analysis_changed():  # saving would only put back the older ones: take theirs
+                    self._take_disk(state, disk)
+                    if not into_file:
+                        continue  # the copy gets the newest settings
+                    self.append_log(f"Nothing to save: reloaded the analysis settings another program saved "
+                                    f"in {state.path}")
+                    return True
+                if into_file:
+                    response = ask(self, "Another program changed the analysis settings in this project file",
+                                   f"{state.path} was saved with other analysis settings after this window "
+                                   "read it. Replace them with yours?",
+                                   [("Cancel", Gtk.ResponseType.CANCEL),
+                                    ("Replace them", Gtk.ResponseType.ACCEPT)],
+                                   Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
+                    if response != Gtk.ResponseType.ACCEPT:
+                        return False
+                agreed = state.other
+            try:  # after the question: the settings as they are now (it may have taken RNAdo's plan)
+                project = self.collect(validate=False)
+            except ValueError as exc:
+                self.error("Some settings are invalid", str(exc))
+                return False
+            try:
+                with locked(path):
+                    if not self._take_newer_plan(project, agreed):
+                        continue  # their analysis settings changed again: ask about the new ones
+                    project.save(path)
+                    state = DiskState.read(path)[0]
+            except (OSError, ValueError) as exc:
+                self.error("Could not save the project", str(exc))
+                return False
+            break
+        else:
+            self.error("Could not save the project", f"Other programs kept saving {path}; try again.")
             return False
         self.project = project
         self.project_path = path
@@ -1976,9 +2012,22 @@ class MainWindow(Gtk.ApplicationWindow):
         except ValueError:  # an invalid field: an edit
             return True
 
-    def _take_newer_plan(self, project: Project) -> bool:
-        """Before a save: put the plan RNAdo saved meanwhile into ``project`` (with this window's group
-        renames).  Asks before replacing analysis settings another program changed too; False: cancel."""
+    def _newer_settings(self, agreed: Optional[Dict]) -> Optional[Tuple[DiskState, Project]]:
+        """The file (its state and project) when another program saved analysis settings in it that are
+        neither the ones this window read nor ``agreed`` (those saving replaces); else None."""
+        disk_state = self._disk
+        if disk_state is None or not disk_state.changed():
+            return None
+        try:
+            state, disk = DiskState.read(disk_state.path)
+        except (OSError, ValueError):  # reported when the save reads it again
+            return None
+        return (state, disk) if state.other not in (disk_state.other, agreed) else None
+
+    def _take_newer_plan(self, project: Project, agreed: Optional[Dict]) -> bool:
+        """Under the file's lock, before a save: put the plan RNAdo saved meanwhile into ``project`` (with
+        this window's group renames).  False when the file has analysis settings that are neither the
+        ones this window read nor ``agreed``: another program saved them after the question."""
         disk_state = self._disk
         if disk_state is None or not disk_state.changed():
             return True
@@ -1987,17 +2036,12 @@ class MainWindow(Gtk.ApplicationWindow):
         except (OSError, ValueError) as exc:
             self.append_log(f"WARNING: could not re-read {disk_state.path} ({exc}); its plan is not merged")
             return True
+        if state.other not in (disk_state.other, agreed):
+            return False
         if state.workflow != disk_state.workflow:
             project.workflow = renamed_workflow(disk.workflow, self._group_renames)
             self.append_log(f"Kept the plan RNAdo saved in {os.path.basename(state.path)}"
                             + (" (with this window's group renames)" if self._group_renames else ""))
-        if state.other != disk_state.other and other_data(project) != self._mem_other:
-            response = ask(self, "Another program changed the analysis settings in this project file",
-                           f"{state.path} was saved with other analysis settings after this window read it. "
-                           "Replace them with yours?",
-                           [("Cancel", Gtk.ResponseType.CANCEL), ("Replace them", Gtk.ResponseType.ACCEPT)],
-                           Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
-            return response == Gtk.ResponseType.ACCEPT
         return True
 
     def check_disk(self) -> None:
@@ -2011,6 +2055,12 @@ class MainWindow(Gtk.ApplicationWindow):
         except (OSError, ValueError) as exc:  # e.g. half-written by a text editor: look again later
             log.warning("could not re-read %s: %s", disk_state.path, exc)
             return
+        self._take_disk(state, disk)
+
+    def _take_disk(self, state: DiskState, disk: Project) -> None:
+        """Take what another program saved (the file's ``state``, read as ``disk``): RNAdo's plan, and the
+        analysis settings when there are no unsaved edits here, otherwise offer to reload them."""
+        disk_state = self._disk
         if state.workflow != disk_state.workflow:
             self.project.workflow = renamed_workflow(disk.workflow, self._group_renames)
             self.append_log(f"RNAdo saved the plan in {os.path.basename(state.path)}: taken over")
@@ -2026,6 +2076,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         # both changed: the stamp is taken (no new question at every focus), the old settings stay the base
         self._disk = DiskState(state.path, state.stamp, state.workflow, disk_state.other)
+        self._offered = state.other  # saving replaces them (the bar says so)
         self.change_bar.label.set_text(f"Another program saved other analysis settings in "
                                        f"{os.path.basename(state.path)}. Reload them (your unsaved changes "
                                        "are lost), or keep yours (saving replaces them)?")
@@ -2040,16 +2091,14 @@ class MainWindow(Gtk.ApplicationWindow):
         except (OSError, ValueError) as exc:
             self.error(f"Could not read {self._disk.path}", str(exc))
             return
-        if response == 1:  # reload: the file's settings, the plan with this window's renames
-            renames = self._group_renames
-            disk.workflow = renamed_workflow(disk.workflow, renames)
+        if response == 1:  # reload: the file as it is; this window's group renames go with its other edits
             self.load_project(disk, state.path, state)
-            self._group_renames = renames
             self.append_log(f"Reloaded the analysis settings from {state.path}")
         elif response == 2:  # keep: theirs becomes the base, so saving replaces it without asking again
             if state.workflow != self._disk.workflow:
                 self.project.workflow = renamed_workflow(disk.workflow, self._group_renames)
             self._disk = state
+            self._offered = None
             self.append_log("Kept your analysis settings; saving replaces the other program's")
 
     def show_project_log(self):
@@ -2206,9 +2255,11 @@ class MainWindow(Gtk.ApplicationWindow):
         if clean:
             project.cleaning.enabled = True
         offered = self._chains_offered
-        disk, mem, renames = self._disk, self._mem_other, self._group_renames
-        self.load_project(project, self.project_path)
-        self._disk, self._mem_other, self._group_renames = disk, mem, renames  # unsaved edits, not a reload
+        # unsaved edits, not a reload: what the file held and a pending question about it stay as they were
+        kept = self._disk, self._mem_other, self._group_renames, self._offered, self.change_bar.get_visible()
+        self.load_project(project, self.project_path, self._disk)
+        self._disk, self._mem_other, self._group_renames, self._offered, bar = kept
+        self.change_bar.set_visible(bar)
         self._chains_offered = offered  # the same project with a new topology: offer its chains
         self._on_topology_changed()  # chain groups for empty or untouched default groups
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]

@@ -395,8 +395,8 @@ class WizardWindow(Gtk.Window):
         right.pack_start(self._actions(), False, False, 0)
         self.connect("delete-event", self._on_close)
 
-        if self.planner_mode:
-            self._load_node(self.node)
+        if self.planner_mode:  # filling in the step's defaults is no edit of the plan
+            self.host.without_edit(lambda: self._load_node(self.node))
         else:
             first = tool or self._last_tool()
             self.select_tool(first)
@@ -541,6 +541,17 @@ class WizardWindow(Gtk.Window):
             self.select_tool(row.tool_name)
 
     def select_tool(self, name: str) -> None:
+        """Show the stand-alone wizard's settings of tool ``name``.  Choosing a tool is no edit of the plan
+        (though its settings are created or moved last in the scratch area, to reopen on it)."""
+        self.host.without_edit(lambda: self._select_tool(name))
+
+    def reload(self) -> None:
+        """Show the step's settings anew (another program changed them, e.g. renamed a residue group)."""
+        page = self.notebook.get_current_page()
+        self._load_node(self.node)
+        self.notebook.set_current_page(page)
+
+    def _select_tool(self, name: str) -> None:
         if name not in TOOLS or not TOOLS[name].generates:
             name = "amber-md"
         node = scratch_node(self.workflow, name)
