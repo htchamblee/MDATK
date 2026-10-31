@@ -832,3 +832,24 @@ def test_opening_a_script_wizard_is_no_edit_of_the_plan(app, windows, tmp_path, 
     assert not rn.change_bar.get_visible() and rn.project.workflow.nodes[-1].tool == "vmd"
     rn.wizard.title_entry.set_text("My GROMACS run")  # an edit in the wizard still is one
     assert rn.plan_changed() and rn._on_delete() and asked
+
+
+
+def test_a_start_watch_leaves_a_closed_analysis_window_alone(app, windows, tmp_path, monkeypatch):
+    """The analysis window closed within the moment 'Open in RNAdo' watches the start: nothing is logged
+    or shown on the destroyed window."""
+    from mdatk.gui import launch
+
+    calls = []
+    monkeypatch.setattr(launch, "watch_start", lambda proc, ok, failed, **_: calls.append((ok, failed)))
+    monkeypatch.setattr(launch, "launch_rnado", lambda *a, **k: object())
+    win = analysis_window(app, windows, project_file(tmp_path))
+    assert win.open_in_rnado()
+    shown = []
+    monkeypatch.setattr(win, "append_log", shown.append)
+    monkeypatch.setattr(win, "error", lambda *a: shown.append(a))
+    win.destroy()
+    ok, failed = calls[0]
+    ok()
+    failed("RNAdo ended right after it started")
+    assert shown == []

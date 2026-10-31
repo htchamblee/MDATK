@@ -127,6 +127,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.problem_view = ProblemView(self.jump_to_problem)
         self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
         self._check_source = 0
+        self._destroyed = False  # set on destroy: callbacks still pending must leave the window alone
         self._next_problem: Dict[str, int] = {}
 
         self._build_header()
@@ -389,6 +390,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _stop_timers(self) -> None:
         """A destroyed window must not be checked or read into by timers still pending."""
+        self._destroyed = True
         self._stop_topology_timer()
         if self._check_source:
             GLib.source_remove(self._check_source)
@@ -2189,8 +2191,9 @@ class MainWindow(Gtk.ApplicationWindow):
             return False
         started = f"Started RNAdo{' (' + what + ')' if tool else ''}" + (f" on {path}" if path else "")
         # logged once RNAdo still runs a moment later; an error status before that is shown instead
-        watch_start(proc, lambda: self.append_log(started),
-                    lambda why: self.error("RNAdo did not start", why))
+        # the watch outlives this window when it is closed within the moment it takes
+        watch_start(proc, lambda: None if self._destroyed else self.append_log(started),
+                    lambda why: None if self._destroyed else self.error("RNAdo did not start", why))
         return True
 
     def use_plan_inputs(self, node_id: Optional[str] = None) -> bool:
