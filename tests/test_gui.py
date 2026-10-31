@@ -57,6 +57,24 @@ def window(demo_dry, tmp_path):
     win.destroy()
 
 
+@pytest.fixture
+def rnado(demo_dry, tmp_path):
+    """RNAdo's window on the demo project: the PDB clean-up, the builder and the wizard live there."""
+    from mdatk.gui.rnado import RNAdoWindow
+
+    app = Gtk.Application(application_id=None)
+    app.register(None)
+    p = Project.load(demo_dry["preset"])
+    p.output.out_dir = str(tmp_path / "gui_out")
+    win = RNAdoWindow(app, p, demo_dry["preset"])
+    win.messages = []
+    win.info = lambda t, d="": win.messages.append(("info", t, d))
+    win.error = lambda t, d="": win.messages.append(("error", t, d))
+    win.show_all()
+    yield win
+    win.destroy()
+
+
 def test_widgets_roundtrip_project(window):
     assert window.collect(validate=False).to_dict() == window.project.to_dict()
 
@@ -226,15 +244,16 @@ def test_representation_editor_and_3d_preview(window):
     assert window.collect(validate=False).to_dict() == p.to_dict()
 
 
-def test_pdb_tools_window_checks_and_cleans(window, tmp_path):
+def test_pdb_tools_window_checks_and_cleans(rnado, tmp_path):
     from test_pdbtools import make_pdb
 
     from mdatk import pdbtools
     src = tmp_path / "in.pdb"
     src.write_text(make_pdb([("A", [("G", 1, "G", False), ("C", 2, "C", False)]),
                              ("B", [("0G", 3, "G", True), ("0U", 4, "U", True)])]))
-    window.open_pdb_tools()
-    dlg = window.pdb_tools
+    rnado.open_pdb_tools()
+    dlg = rnado.pdb_tools
+    assert dlg.get_transient_for() is rnado
     dlg.input.entry.set_text(str(src))
     assert dlg.output.entry.get_text().endswith("in_clean.pdb")  # suggested from the input
     dlg.run_check()
@@ -256,8 +275,9 @@ def test_pdb_tools_window_checks_and_cleans(window, tmp_path):
     text = open(dlg.output.entry.get_text()).read()
     assert "REMARK 950 ENGINE builtin" in text and "REMARK 950 DBN" in text
     assert [r.name for r in pdbtools.read_pdb(text).residues()] == names
+    assert f"PDB clean-up: wrote {dlg.output.entry.get_text()}" in rnado.log.text()  # RNAdo's output log
     dlg.destroy()
-    assert window.pdb_tools is None
+    assert rnado.pdb_tools is None
 
 
 def test_citation_text_lists_project_resources(window):
@@ -278,12 +298,11 @@ def test_slot_defaults_for_residue_panels_and_wheel_zoom(window):
     assert window.collect(validate=False).visual.zoom == pytest.approx(z0 * 1.15)
 
 
-def test_value_widgets_ignore_the_mouse_wheel(window):
+def test_value_widgets_ignore_the_mouse_wheel(window, rnado):
     from mdatk.gui import widgets as W
-    window.open_wizard("amber-build")
-    window.open_planner()
-    window.open_pdb_tools()
-    window.open_builder()
+    rnado.open_wizard("amber-build")  # the planner and its log panel are in RNAdo's window
+    rnado.open_pdb_tools()
+    rnado.open_builder()
     pump(lambda: False, 0.5)
     missing = []
 
@@ -307,9 +326,9 @@ def test_value_widgets_ignore_the_mouse_wheel(window):
     assert spin.get_value() == 5
 
 
-def test_builder_non_wc_helix_builds_in_the_background(window, tmp_path):
-    window.open_builder()
-    dlg = window.builder
+def test_builder_non_wc_helix_builds_in_the_background(rnado, tmp_path):
+    rnado.open_builder()
+    dlg = rnado.builder
     dlg.seq.set_text("AAAA")
     dlg.pairing.set_active_id("hh")
     out = tmp_path / "hh.pdb"
@@ -320,6 +339,7 @@ def test_builder_non_wc_helix_builds_in_the_background(window, tmp_path):
     assert pump(lambda: dlg.worker is None, 120) and out.exists()
     buf = dlg.report.get_buffer()
     assert "Wrote" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    assert f"Structure builder: wrote {out}" in rnado.log.text()
     dlg.destroy()
 
 

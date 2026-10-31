@@ -1,4 +1,4 @@
-"""Project Planner: a free-form canvas of steps (boxes) and file connections.
+"""The planner of RNAdo: a free-form canvas of steps (boxes) and file connections.
 
 Boxes are generator steps (FARFAR2, Amber build, MD stages, GROMACS, VMD ...),
 notes, existing files and the MDATK analysis step.  Dragging from an output
@@ -7,6 +7,10 @@ hands the upstream file names to the downstream step, so every generated
 script refers to the files the previous step will write
 (``<project>_<step>_<tool>_<time>.<ext>``).  Double-click a box to edit it in
 the wizard.  The plan is stored in the project file (``workflow`` section).
+
+:class:`PlannerPanel` is the canvas with its toolbar and details pane; RNAdo (:mod:`mdatk.gui.rnado`)
+embeds it and is its host (:class:`mdatk.gui.host.Host`): the project, the output log, saving and
+running scripts.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from __future__ import annotations
 import copy
 import math
 import os
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import gi
 
@@ -32,6 +36,7 @@ from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .host import Host  # noqa: E402
 from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
 
 NODE_W = 236
@@ -79,7 +84,7 @@ def checkable(node: PlanNode) -> bool:
 class PlannerCanvas(Gtk.DrawingArea):
     """Draws the plan and handles moving, connecting and selecting."""
 
-    def __init__(self, window: "PlannerWindow"):
+    def __init__(self, window: "PlannerPanel"):
         super().__init__()
         self.win = window
         self.zoom = 1.0
@@ -669,12 +674,14 @@ class PlannerCanvas(Gtk.DrawingArea):
         menu.append(item)
 
 
-class PlannerWindow(Gtk.Window):
-    """The Project Planner window (one per main window)."""
+class PlannerPanel(Gtk.Box):
+    """The planner: toolbar, naming bar, canvas, details pane and status line (one per RNAdo window)."""
 
-    def __init__(self, main):
-        super().__init__(title="Project Planner")
-        self.main = main
+    def __init__(self, host: Host):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.host = host
+        self.on_select: Optional[Callable[[Optional[PlanNode]], None]] = None  # a box was (de)selected
+        self.on_plan_changed: Optional[Callable[[], None]] = None  # the plan was resolved anew
         self.plan: Optional[Plan] = None
         self.wizards: Dict[str, WizardWindow] = {}
         self._resolve_id = 0
@@ -687,11 +694,7 @@ class PlannerWindow(Gtk.Window):
         self._spin_id = 0
         self._closed = False
         self._run_token = 0  # bumped by each run and by reload: callbacks of an older run are ignored
-        self.set_default_size(1400, 860)
-        if main is not None:
-            self.set_transient_for(None)
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.add(outer)
+        outer = self
         outer.pack_start(self._toolbar(), False, False, 0)
         outer.pack_start(self._naming_bar(), False, False, 0)
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -707,25 +710,30 @@ class PlannerWindow(Gtk.Window):
         self.status.set_margin_bottom(6)
         self.status.set_margin_top(4)
         outer.pack_start(self.status, False, False, 0)
-        self.connect("delete-event", self._on_close)
+        self.connect("destroy", lambda *_: self.shutdown())
         self.reload()
         self.show_all()
         self.show_details(None)
 
+    def toplevel(self) -> Optional[Gtk.Window]:
+        """The window around the planner (parent of its dialogs)."""
+        top = self.get_toplevel()
+        return top if isinstance(top, Gtk.Window) else None
+
     # ------------------------------------------------------------ model
     @property
     def workflow(self):
-        return self.main.project.workflow
+        return self.host.project.workflow
 
     def node(self, node_id: str) -> Optional[PlanNode]:
         return next((n for n in self.workflow.nodes if n.id == node_id), None)
 
     def resolve(self) -> Plan:
-        self.plan = Plan(self.workflow, self.main.project.workflow_dir, self.main.project.groups)
+        self.plan = Plan(self.workflow, self.host.project.workflow_dir, self.host.project.groups)
         return self.plan
 
     def reload(self) -> None:
-        """Re-read everything from the main window's project (after a project was opened)."""
+        """Re-read everything from the host's project (after a project was opened or reloaded)."""
         for win in list(self.wizards.values()):
             win.destroy()
         self.wizards.clear()
@@ -755,6 +763,8 @@ class PlannerWindow(Gtk.Window):
             self._refresh_naming()
             for win in list(self.wizards.values()):
                 win.schedule_refresh()
+            if self.on_plan_changed is not None:
+                self.on_plan_changed()
         self.canvas.update_size()
         self.canvas.queue_draw()
         if self._details_node is not None:
@@ -766,7 +776,7 @@ class PlannerWindow(Gtk.Window):
         n_warn = sum(1 for _n, i in issues if i.level == "warning")
         steps = sum(1 for n in self.workflow.nodes if TOOLS.get(n.tool) and TOOLS[n.tool].generates)
         self.set_status(f"{steps} steps · {len(self.workflow.edges)} connections · {n_err} errors · "
-                        f"{n_warn} warnings · folder {self.main.project.workflow_dir}")
+                        f"{n_warn} warnings · folder {self.host.project.workflow_dir}")
 
     def set_status(self, text: str, error: bool = False) -> None:
         if error:
@@ -850,9 +860,6 @@ class PlannerWindow(Gtk.Window):
                          "document-save-symbolic")
         write.get_style_context().add_class("suggested-action")
         bar.pack_end(write, False, False, 0)
-        bar.pack_end(W.button("Save project", self._save, "Save the plan with the other settings (Ctrl+S in "
-                                                           "the main window)", "document-save-symbolic"),
-                     False, False, 0)
         return bar
 
     def _naming_bar(self) -> Gtk.Widget:
@@ -889,7 +896,7 @@ class PlannerWindow(Gtk.Window):
         stamp = self.plan.stamp if self.plan else ""
         self.stamp_label.set_text((stamp + ("" if wf.stamp else " (set on first write)")) if wf.use_stamp
                                   else "")
-        self.folder_label.set_text(self.main.project.workflow_dir)
+        self.folder_label.set_text(self.host.project.workflow_dir)
 
     def _details(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
@@ -926,8 +933,10 @@ class PlannerWindow(Gtk.Window):
         self.d_run = W.button("Run step…", lambda: self.write([self._details_node], run=True),
                               "Write this step's files, then run its main script on this computer")
         btns.pack_start(self.d_run, False, False, 0)
-        self.d_use = W.button("Use for analysis", lambda: self.use_for_analysis(self.node(self._details_node)),
-                              "Copy the topology / trajectory paths into Input & cleaning")
+        self.d_use = W.button("Use for analysis…",
+                              lambda: self.use_for_analysis(self.node(self._details_node)),
+                              "Hand the topology and trajectories this step reads to the MDATK analysis "
+                              "window (Input & cleaning)")
         btns.pack_start(self.d_use, False, False, 0)
         box.pack_start(btns, False, False, 0)
         self.d_files = W.label("", wrap=True)
@@ -961,6 +970,8 @@ class PlannerWindow(Gtk.Window):
     def show_details(self, node_id: Optional[str], edge: Optional[int] = None) -> None:
         self._details_node = node_id
         n = self.node(node_id) if node_id else None
+        if self.on_select is not None:
+            self.on_select(n)
         for child in list(self.d_issues.get_children()):
             self.d_issues.remove(child)
         self._loading = True
@@ -1068,8 +1079,8 @@ class PlannerWindow(Gtk.Window):
         if x is None or y is None:
             x, y = self._free_spot()
         settings = {}
-        if tool in ("amber-build", "amber-md", "amber-restraints") and self.main.project.cleaning.conda_env:
-            settings["conda_env"] = self.main.project.cleaning.conda_env
+        if tool in ("amber-build", "amber-md", "amber-restraints") and self.host.project.cleaning.conda_env:
+            settings["conda_env"] = self.host.project.cleaning.conda_env
         node = add_node(self.workflow, tool, x, y, settings=settings)
         self.canvas.select(node.id)
         self.changed()
@@ -1078,10 +1089,10 @@ class PlannerWindow(Gtk.Window):
     def add_template(self, name: str) -> None:
         x, y = self._free_spot()
         nodes = apply_template(self.workflow, name, x, y)
-        if self.main.project.cleaning.conda_env:
+        if self.host.project.cleaning.conda_env:
             for n in nodes:
                 if n.tool.startswith("amber"):
-                    n.settings["conda_env"] = self.main.project.cleaning.conda_env
+                    n.settings["conda_env"] = self.host.project.cleaning.conda_env
         self.set_status(f"Added {len(nodes)} steps")
         self.changed()
         self.fit(only_shrink=True)
@@ -1155,7 +1166,7 @@ class PlannerWindow(Gtk.Window):
         self.changed()
 
     def choose_folder(self) -> None:
-        dlg = Gtk.FileChooserDialog(title="Plan folder", transient_for=self,
+        dlg = Gtk.FileChooserDialog(title="Plan folder", transient_for=self.toplevel(),
                                     action=Gtk.FileChooserAction.SELECT_FOLDER)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Select", Gtk.ResponseType.OK)
         if dlg.run() == Gtk.ResponseType.OK and dlg.get_filename():
@@ -1171,9 +1182,9 @@ class PlannerWindow(Gtk.Window):
         if win is not None:
             win.present()
             return
-        win = WizardWindow(self.main, node=node, plan_provider=self.resolve,
+        win = WizardWindow(self.host, node=node, plan_provider=self.resolve,
                            on_changed=lambda: self._wizard_changed())
-        win.set_transient_for(self)
+        win.set_transient_for(self.toplevel())
         win.connect("destroy", lambda *_: self.wizards.pop(node.id, None))
         self.wizards[node.id] = win
 
@@ -1201,8 +1212,7 @@ class PlannerWindow(Gtk.Window):
                              "with errors are skipped."):
                 return
         try:
-            with logged(getattr(self.main, "project_path", None), "workflow write",
-                        "Generated the plan's files") as entry:
+            with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
                 report = plan.write(node_ids)
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
@@ -1216,11 +1226,10 @@ class PlannerWindow(Gtk.Window):
         if report.kept:
             msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
         self.set_status(msg)
-        if hasattr(self.main, "append_log"):
-            self.main.append_log("Project Planner: " + msg)
-            if report.master:
-                self.main.append_log(f"Master script: {report.master}")
-        if run and hasattr(self.main, "run_scripts"):
+        self.host.append_log("Planner: " + msg)
+        if report.master:
+            self.host.append_log(f"Master script: {report.master}")
+        if run:
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
             jobs = plan_jobs(plan, ok_ids)
             if not jobs and report.kept:
@@ -1229,7 +1238,8 @@ class PlannerWindow(Gtk.Window):
             self._run_token += 1
             token = self._run_token
             separate = separate_scripts(plan, ok_ids)
-            self.main.run_scripts(jobs, separate, parent=self, parallel=int(self.parallel_spin.get_value()),
+            self.host.run_scripts(jobs, separate, parent=self.toplevel(),
+                                  parallel=int(self.parallel_spin.get_value()),
                                   on_state=lambda j, st: self._on_run_state(j, st, token),
                                   on_finished=lambda: self._on_run_finished(token),
                                   with_separate=plan_jobs(plan, ok_ids, include_separate=True) if separate
@@ -1264,6 +1274,10 @@ class PlannerWindow(Gtk.Window):
         counts = {s: sum(1 for r in runs.values() if r.state == s) for s in ("done", "partial", "missing")}
         self.set_status(f"Previous runs: {counts['done']} done, {counts['partial']} partial, "
                         f"{counts['missing']} missing (folder {plan.root})")
+        self.host.append_log(f"Check previous runs: {counts['done']} done, {counts['partial']} partial, "
+                             f"{counts['missing']} missing (folder {plan.root})")
+        for nid, run in runs.items():
+            self.host.append_log(f"  {plan.steps[nid].label}: {run.summary()}")
         self.changed(resolve=False)
         offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
         if offer:
@@ -1283,6 +1297,8 @@ class PlannerWindow(Gtk.Window):
         changed = runstate.adopt(plan, {n: self.prev_runs[n] for n in node_ids if n in self.prev_runs})
         for nid in changed:
             self.prev_runs[nid].adopted = True
+            self.host.append_log(f"Planner: {plan.steps[nid].label} uses the outputs of its run of "
+                                 f"{plan.steps[nid].node.adopted}")
         if changed:
             self.set_status(f"{len(changed)} step(s) use the outputs of an earlier run")
         self.changed()
@@ -1292,14 +1308,18 @@ class PlannerWindow(Gtk.Window):
         changed = runstate.forget(self.workflow, node_ids)
         for nid in changed:
             self.prev_runs.pop(nid, None)
+            n = self.node(nid)
+            self.host.append_log(f"Planner: {step_title(n) if n else nid} no longer uses an earlier run "
+                                 "(it is written and run again)")
         if changed:
             self.set_status(f"{len(changed)} step(s) will be written and run again")
         self.changed()
 
     def _adopted_choice(self, text: str, detail: str) -> str:
         """'skip', 'rerun' or 'cancel' for steps of a run that use the outputs of an earlier run."""
-        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                buttons=Gtk.ButtonsType.NONE, text=text)
+        dlg = Gtk.MessageDialog(transient_for=self.toplevel(), modal=True,
+                                message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,
+                                text=text)
         dlg.format_secondary_text(detail)
         dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Run them again", Gtk.ResponseType.REJECT,
                         "Skip them", Gtk.ResponseType.OK)
@@ -1400,13 +1420,14 @@ class PlannerWindow(Gtk.Window):
             self.write(ids, run=True)
 
     def open_folder(self) -> None:
-        path = self.main.project.workflow_dir
+        path = self.host.project.workflow_dir
         if not os.path.isdir(path):
             self._message("Nothing written yet", f"{path} does not exist yet; use 'Write all files' first.")
             return
         desktop.open_folder(path)
 
     def use_for_analysis(self, node: Optional[PlanNode]) -> None:
+        """Hand the files an MDATK analysis step reads to the analysis window (through the host)."""
         if node is None:
             return
         plan = self.resolve()
@@ -1415,43 +1436,35 @@ class PlannerWindow(Gtk.Window):
             self._message("No topology", "Connect a topology (and trajectory) to the analysis step first.")
             return
         clean = bool(plan.steps[node.id].settings.get("clean", True))
-        self.main.apply_inputs(top, trajs, clean)
-        self.set_status(f"Analysis inputs set: {os.path.basename(top)} + {len(trajs)} trajectory file(s)")
-
-    def _save(self) -> None:
-        self.main.save_project()
-        self.reload_keep()
-
-    def reload_keep(self) -> None:
-        self.changed()
+        self.host.use_for_analysis(top, trajs, clean)
 
     def _ask(self, text: str, detail: str) -> bool:
-        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
-                                buttons=Gtk.ButtonsType.YES_NO, text=text)
+        dlg = Gtk.MessageDialog(transient_for=self.toplevel(), modal=True,
+                                message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.YES_NO,
+                                text=text)
         dlg.format_secondary_text(detail)
         ok = dlg.run() == Gtk.ResponseType.YES
         dlg.destroy()
         return ok
 
     def _message(self, text: str, detail: str = "", kind=Gtk.MessageType.INFO) -> None:
-        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=kind,
+        dlg = Gtk.MessageDialog(transient_for=self.toplevel(), modal=True, message_type=kind,
                                 buttons=Gtk.ButtonsType.CLOSE, text=text)
         if detail:
             dlg.format_secondary_text(detail)
         dlg.run()
         dlg.destroy()
 
-    def _on_close(self, *_):
+    def shutdown(self) -> None:
+        """The window closes: close the step wizards and stop the timers (callbacks of a run that goes on
+        are ignored from now on)."""
         for win in list(self.wizards.values()):
             win.destroy()
         self.wizards.clear()
         if self._resolve_id:
             GLib.source_remove(self._resolve_id)
             self._resolve_id = 0
-        self._closed = True  # the run (if any) goes on; its later callbacks are ignored
+        self._closed = True
         if self._spin_id:
             GLib.source_remove(self._spin_id)
             self._spin_id = 0
-        if getattr(self.main, "planner", None) is self:
-            self.main.planner = None
-        return False

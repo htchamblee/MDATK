@@ -38,9 +38,11 @@ test = ["pytest>=7"]
 
 [project.scripts]
 mdatk = "mdatk.cli:main"
+rnado = "mdatk.cli:rnado_main"
 
 [project.gui-scripts]
 mdatk-gui = "mdatk.gui.app:main"
+rnado-gui = "mdatk.gui.rnado:main"
 
 [tool.setuptools.packages.find]
 include = ["mdatk*"]

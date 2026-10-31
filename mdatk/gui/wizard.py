@@ -1,11 +1,12 @@
-"""Script wizard: a pop-out window that edits one generator step.
+"""Script wizard: a pop-out window of RNAdo that edits one generator step.
 
 The forms are built from each tool's option schema (check boxes, radio
 buttons, combo boxes, spin buttons, text fields - each with its tooltip).
 Logic checks run on every change; problems are listed below the form and the
 offending fields are highlighted.  A live preview shows the files that
 "Write files" will create.  Programs only run when "Write and run" is used
-(after a confirmation; each run is logged in the project file).
+(after a confirmation; each run is logged in the project file).  The wizard uses only RNAdo's host
+interface (:class:`mdatk.gui.host.Host`).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from ..workflows.schema import (FILE_KINDS, Issue, Option, Section, kind_label, 
                                 requirements_met)
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .host import Host  # noqa: E402
 
 LEVEL_COLORS = {"error": "#c01c28", "warning": "#b56a00", "info": "#1a5fb4"}
 TYPE_KEYS = ("kind", "integrator")  # record options that switch whole groups of fields
@@ -354,11 +356,11 @@ class WizardWindow(Gtk.Window):
     node's tool is fixed and its inputs come from the plan's connections.
     """
 
-    def __init__(self, main, node: Optional[PlanNode] = None,
+    def __init__(self, host: Host, node: Optional[PlanNode] = None,
                  plan_provider: Optional[Callable[[], Plan]] = None,
                  on_changed: Optional[Callable[[], None]] = None, tool: Optional[str] = None):
-        super().__init__(title="Script wizard")
-        self.main = main
+        super().__init__(title="Script wizard · RNAdo")
+        self.host = host
         self.planner_mode = node is not None
         self.plan_provider = plan_provider
         self.on_changed = on_changed
@@ -372,8 +374,8 @@ class WizardWindow(Gtk.Window):
         self._refresh_id = 0
         self._loading = False
         self.set_default_size(1180, 820)
-        if main is not None:
-            self.set_transient_for(main)
+        if isinstance(host, Gtk.Window):
+            self.set_transient_for(host)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.add(outer)
@@ -403,7 +405,7 @@ class WizardWindow(Gtk.Window):
     # ----------------------------------------------------------- chrome
     @property
     def workflow(self):
-        return self.main.project.workflow
+        return self.host.project.workflow
 
     def _last_tool(self) -> str:
         if self.workflow.scratch:
@@ -567,7 +569,7 @@ class WizardWindow(Gtk.Window):
             self.stamp_check.set_active(self.workflow.use_stamp)
             self.project_entry.set_sensitive(not self.planner_mode)
             self.stamp_check.set_sensitive(not self.planner_mode)
-            self.set_title(f"Script wizard - {tool.label}")
+            self.set_title(f"Script wizard - {tool.label} · RNAdo")
         finally:
             self._loading = False
         self._build_pages()
@@ -738,8 +740,8 @@ class WizardWindow(Gtk.Window):
     def _resolve(self) -> Plan:
         if self.planner_mode and self.plan_provider is not None:
             return self.plan_provider()
-        return single_step_plan(self.workflow, self.node, self.main.project.workflow_dir,
-                                self.main.project.groups)
+        return single_step_plan(self.workflow, self.node, self.host.project.workflow_dir,
+                                self.host.project.groups)
 
     def refresh_now(self) -> None:
         if self.node is None:
@@ -749,7 +751,7 @@ class WizardWindow(Gtk.Window):
         issues: List[Issue] = list(step.issues) if step else []
         stamp = plan.stamp if self.workflow.use_stamp else ""
         self.stamp_label.set_text(stamp + ("" if self.workflow.stamp or not stamp else " (provisional)"))
-        root = self.main.project.workflow_dir
+        root = self.host.project.workflow_dir
         folder = step.ctx.folder if step and step.ctx else ""
         self.folder_label.set_text(os.path.join(root, folder))
         self.files = []
@@ -857,7 +859,7 @@ class WizardWindow(Gtk.Window):
             self.refresh_now()
             return
         try:
-            with logged(getattr(self.main, "project_path", None), "workflow write",
+            with logged(self.host.project_path, "workflow write",
                         f"Script wizard: {step.tool.label}") as entry:
                 report = plan.write([self.node.id], master=False)
                 entry.files = list(report.written)
@@ -870,29 +872,28 @@ class WizardWindow(Gtk.Window):
         if report.skipped:
             self._error("Some files were not written", "\n".join(report.skipped.values()))
         written = [p for p in report.written]
-        if self.main is not None and hasattr(self.main, "append_log"):
-            self.main.append_log(f"Wizard wrote {len(written)} files to {os.path.dirname(written[0])}"
-                                 if written else "Wizard wrote no files")
+        self.host.append_log(f"Script wizard wrote {len(written)} files to {os.path.dirname(written[0])}"
+                             if written else "Script wizard wrote no files")
         self.status.set_text(f"Wrote {len(written)} files to "
                              f"{os.path.dirname(written[0]) if written else '-'}")
         self.refresh_now()
-        if run and not report.skipped and hasattr(self.main, "run_scripts"):
+        if run and not report.skipped:
             ids = [self.node.id]
             jobs = plan_jobs(plan, ids)
             separate = separate_scripts(plan, ids)
             both = plan_jobs(plan, ids, include_separate=True) if separate else None
-            self.main.run_scripts(jobs, separate, parent=self, with_separate=both)
+            self.host.run_scripts(jobs, separate, parent=self, with_separate=both)
 
     def step_folder(self) -> str:
         plan = self.plan or self._resolve()
         step = plan.steps.get(self.node.id)
         folder = step.ctx.folder if step and step.ctx else ""
-        return os.path.join(self.main.project.workflow_dir, folder)
+        return os.path.join(self.host.project.workflow_dir, folder)
 
     def open_folder(self) -> None:
         path = self.step_folder()
         if not os.path.isdir(path):
-            path = self.main.project.workflow_dir
+            path = self.host.project.workflow_dir
         if not os.path.isdir(path):
             self._error("Nothing written yet", f"{path} does not exist yet; write the files first.")
             return
@@ -914,6 +915,4 @@ class WizardWindow(Gtk.Window):
         if self._refresh_id:
             GLib.source_remove(self._refresh_id)
             self._refresh_id = 0
-        if self.main is not None and getattr(self.main, "wizard", None) is self:
-            self.main.wizard = None
         return False

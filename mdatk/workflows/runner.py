@@ -165,8 +165,12 @@ def adopted_steps(plan, node_ids: Optional[Sequence[str]] = None) -> List[str]:
     return [nid for nid in plan.order if (node_ids is None or nid in node_ids) and plan.steps[nid].adopted]
 
 
-def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = None) -> "tuple[int, str]":
-    """Run ``bash path`` in the script's folder; returns (exit status, captured output)."""
+def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = None,
+               on_stderr: Optional[LineFn] = None) -> "tuple[int, str]":
+    """Run ``bash path`` in the script's folder; returns (exit status, captured output).
+
+    The script's standard error goes to ``on_line`` with its output, or to ``on_stderr`` when given
+    (RNAdo highlights it); the captured output holds both streams in the order their lines arrived."""
     problem = runner_problem()
     if problem:
         raise ScriptFailed(problem)
@@ -175,9 +179,11 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = N
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build)
     proc = subprocess.Popen([bash, path], cwd=os.path.dirname(path) or ".", stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
-                            start_new_session=True, env=child_env())
+                            stderr=subprocess.PIPE if on_stderr is not None else subprocess.STDOUT,
+                            text=True, errors="replace", bufsize=1, start_new_session=True, env=child_env())
     captured: List[str] = []
+    lock = threading.Lock()  # the two streams' readers both capture
+    broken: List[BaseException] = []  # an error in on_stderr: re-raised like one of on_line
     stop = threading.Event()
 
     def watch():
@@ -186,17 +192,40 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = N
                 _stop(proc)
                 return
 
+    def read_stderr():
+        try:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                line = line.rstrip("\n")
+                with lock:
+                    captured.append(line)
+                on_stderr(line)
+        except BaseException as exc:  # noqa: BLE001 - stop the script; the caller re-raises it
+            broken.append(exc)
+            _stop(proc)
+
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
+    err_reader = None
+    if on_stderr is not None:
+        err_reader = threading.Thread(target=read_stderr, name="mdatk-script-stderr", daemon=True)
+        err_reader.start()
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip("\n")
-            captured.append(line)
+            with lock:
+                captured.append(line)
             on_line(line)
         code = proc.wait()
-    except BaseException as exc:  # Ctrl-C (KeyboardInterrupt) or an error in on_line
+        if err_reader is not None:
+            err_reader.join()
+        if broken:
+            raise broken[0]
+    except BaseException as exc:  # Ctrl-C (KeyboardInterrupt) or an error in on_line / on_stderr
         _stop(proc)  # the script has its own session, so it never sees the terminal's SIGINT
+        if err_reader is not None:
+            err_reader.join(1.0)
         if isinstance(exc, KeyboardInterrupt):
             raise ScriptCancelled("script run interrupted", "\n".join(captured)) from None
         raise
@@ -232,11 +261,16 @@ def _dependencies(jobs: Sequence[ScriptJob]) -> List[Set[int]]:
 
 def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
              on_line: LineFn = print, cancel: Optional[threading.Event] = None,
-             parallel: int = 1, on_state: Optional[StateFn] = None) -> List[ScriptResult]:
+             parallel: int = 1, on_state: Optional[StateFn] = None,
+             on_stderr: Optional[LineFn] = None, step_marks: Optional[bool] = None) -> List[ScriptResult]:
     """Run ``jobs``: each when the jobs it depends on succeeded, at most ``parallel`` at a time,
     otherwise in the given (plan) order.  Raises ScriptFailed when a script failed (after the
     independent ones finished) and ScriptCancelled when the run was cancelled.  An error of
     ``on_line`` itself (e.g. a closed output pipe) stops every script and is re-raised.
+
+    Each line a script prints starts with its step number (``[03] ``) when ``step_marks`` is true
+    (default: when scripts run in parallel); ``on_stderr`` receives the scripts' standard error
+    separately (see :func:`run_script`).
 
     A main script that exits with WAITING_STATUS leaves its step *waiting* (result status
     "waiting", not an exception) and its dependents not started - unless the step's separate
@@ -263,8 +297,11 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     def run_one(i: int) -> None:
         job = jobs[i]
         rel = os.path.basename(job.path)
-        prefix = f"[{job.step:02d}] " if parallel > 1 else ""
+        prefix = f"[{job.step:02d}] " if (parallel > 1 if step_marks is None else step_marks) else ""
         line_fn = (lambda line: on_line(prefix + line)) if prefix else on_line
+        err_fn = None
+        if on_stderr is not None:
+            err_fn = (lambda line: on_stderr(prefix + line)) if prefix else on_stderr
         t0 = time.monotonic()
         outcome, code, message = "failed", None, ""
         try:
@@ -276,7 +313,7 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                 entry.command = f"bash {rel}"
                 entry.folder = os.path.dirname(job.path)
                 try:
-                    code, output = run_script(job.path, line_fn, stop)
+                    code, output = run_script(job.path, line_fn, stop, on_stderr=err_fn)
                 except ScriptCancelled as exc:
                     entry.output = exc.output
                     outcome = "cancelled"

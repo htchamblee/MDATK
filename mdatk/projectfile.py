@@ -323,14 +323,35 @@ def save(path: str, project) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     with _locked(path):
-        log_part, log_file = _existing_log(path)
-        text = project_text(project, log_file)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            if log_part:
-                fh.write("\n" + log_part)
-        os.replace(tmp, path)
+        _write(path, project)
+
+
+def _write(path: str, project) -> None:
+    """Write the settings, keeping the step log (the caller holds the project's lock)."""
+    log_part, log_file = _existing_log(path)
+    text = project_text(project, log_file)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        if log_part:
+            fh.write("\n" + log_part)
+    os.replace(tmp, path)
+
+
+def edit_workflow(path: str, edit) -> None:
+    """Change only the workflow part of project ``path``: re-read the file, call ``edit(workflow)`` and
+    write it back, so the other settings stay as the file has them (relative paths stay relative; the
+    step log is kept).  RNAdo saves its plan this way while the analysis window may have the file open;
+    the read and the write happen under the project's lock, so no other save slips in between."""
+    from .config import Project
+
+    _reject_json(path)
+    if is_params_log(path):
+        raise ValueError(f"{path} is the parameter log of a run; save the project under another name")
+    with _locked(path):
+        project = Project.from_dict(read(path))  # no path resolution: relative paths stay relative
+        edit(project.workflow)
+        _write(path, project)
 
 
 def _existing_log(path: str) -> Tuple[str, str]:

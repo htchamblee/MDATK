@@ -1,4 +1,10 @@
-"""GTK 3 desktop interface for MDATK."""
+"""GTK 3 desktop interface for MDATK: the analysis window.
+
+The workflow planner, the script wizard, the PDB clean-up and the structure builder live in RNAdo
+(:mod:`mdatk.gui.rnado`), a program of its own that this window starts ("Open in RNAdo…").  Both may
+have the same project file open: this window owns the analysis settings and keeps the plan RNAdo saved
+(see :mod:`mdatk.gui.projectui`).
+"""
 
 from __future__ import annotations
 
@@ -30,7 +36,6 @@ from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeri
                       layout_warnings, stable_hash)
 from ..problems import Problem, field_parents  # noqa: E402
 from ..problems import problem as make_problem  # noqa: E402
-from ..progress import Cancelled  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
 from ..render.example import example_dataset  # noqa: E402
 from ..render.layout import PRESET_LABELS, PRESETS, n_slots  # noqa: E402
@@ -39,9 +44,13 @@ from ..render.panels import PANEL_TYPES  # noqa: E402
 from ..selections import SelectionError  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .about import citation_text, export_bibtex  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
+from .jobs import JobControl  # noqa: E402
 from .problemview import ProblemView  # noqa: E402
-from .worker import Worker, call_soon  # noqa: E402
+from .projectui import (DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
+                        choose_save_path, fill_open_menu, other_data, renamed_workflow)
+from .worker import call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -66,8 +75,6 @@ TRAJECTORY_FILES = ("Trajectory files", ["*.nc", "*.mdcrd", "*.crd", "*.trj", "*
 REFERENCE_FILES = ("Structure files", ["*.pdb", "*.rst7", "*.ncrst", "*.inpcrd", "*.crd", "*.gro", "*.cif"])
 DATA_FILES = ("Data files", ["*.dat", "*.csv", "*.tsv", "*.txt"])
 MAP_FILES = ("MRC / CCP4 maps", ["*.mrc", "*.map", "*.ccp4", "*.map.gz", "*.mrc.gz"])
-PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
-RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
 
 
 # option templates filled in when a slot switches to these panel types (edit them in Options)
@@ -96,7 +103,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.project = project or Project()
         self.project_path = project_path
         self.binder = W.Binder()
-        self.worker: Optional[Worker] = None
         self.preview_data = None  # reference-frame trace once "Load real frame" ran
         self.last_video: Optional[str] = None
         self._syncing = False
@@ -112,10 +118,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.busy_widgets: List[Gtk.Widget] = []
         self.pages: Dict[str, Gtk.Widget] = {}
         self.sections: Dict[str, List[Gtk.Frame]] = {}
-        self.planner = None  # Project Planner window (created on demand)
-        self.wizard = None  # stand-alone script wizard window
-        self.pdb_tools = None  # PDB clean-up window
-        self.builder = None  # structure builder window
+        # co-editing with RNAdo: the file as last read or written, and this window's group renames since
+        self._disk: Optional[DiskState] = None
+        self._mem_other: Dict = {}  # the analysis settings as last loaded or saved (edits differ from it)
+        self._group_renames: List[Tuple[str, str, List[str]]] = []  # (old, new, group names before)
         # live problems: badges on the page buttons, flags on the fields (revalidated after edits)
         self.problem_view = ProblemView(self.jump_to_problem)
         self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
@@ -145,6 +151,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.log_expander.add(self._build_log())
         outer.pack_start(self.log_expander, False, False, 0)
         outer.pack_start(self._build_action_bar(), False, False, 0)
+        self.change_bar = change_bar("", [("Reload them", 1), ("Keep mine", 2)], self._on_change_bar)
+        outer.pack_start(self.change_bar, False, False, 0)
+        outer.reorder_child(self.change_bar, 0)
+        self.watch = FileWatch(self, self.check_disk)
         self._install_actions()
         self._register_fields()
         W.watch_tree(self.side_stack, self.schedule_check)
@@ -178,15 +188,25 @@ class MainWindow(Gtk.ApplicationWindow):
         hb.pack_start(W.button("Save as…", lambda: self.save_project(True),
                                "Save the project to a new file (Ctrl+Shift+S)"))
         wf_menu = Gtk.Menu()
-        for text, cb, tip in (("Project Planner…", self.open_planner,
-                               "Lay out the steps from sequence to MD ensemble on a canvas (Ctrl+P)"),
-                              ("Script wizard…", self.open_wizard,
-                               "Write control files and scripts for one program (Ctrl+Shift+W)"),
-                              ("PDB clean-up…", self.open_pdb_tools,
-                               "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files"),
-                              ("Structure builder…", self.open_builder,
+        for text, cb, tip in (("Open in RNAdo…", self.open_in_rnado,
+                               "RNAdo, MDATK's workflow planner: lay out the steps from sequence to MD "
+                               "ensemble, write their scripts and run them (Ctrl+P; saves the project "
+                               "first)"),
+                              ("Script wizard: open in RNAdo…", lambda: self.open_in_rnado("wizard"),
+                               "Write control files and scripts for one program, in RNAdo (Ctrl+Shift+W)"),
+                              ("PDB clean-up: open in RNAdo…", lambda: self.open_in_rnado("pdb"),
+                               "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files, "
+                               "in RNAdo"),
+                              ("Structure builder: open in RNAdo…", lambda: self.open_in_rnado("builder"),
                                "Ideal A-form helices (D / L), base mutations and rigid-body fits into a "
-                               "density map")):
+                               "density map, in RNAdo"),
+                              (None, None, None),
+                              ("Use the plan's files as inputs", self.use_plan_inputs,
+                               "Take the topology and trajectories that the plan's MDATK analysis step reads "
+                               "(Input & cleaning)")):
+            if text is None:
+                wf_menu.append(Gtk.SeparatorMenuItem())
+                continue
             item = Gtk.MenuItem(label=text)
             item.set_tooltip_text(tip)
             item.connect("activate", lambda _w, c=cb: c())
@@ -196,12 +216,13 @@ class MainWindow(Gtk.ApplicationWindow):
         wf_box = Gtk.Box(spacing=4)
         wf_box.pack_start(Gtk.Image.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON),
                           False, False, 0)
-        wf_box.pack_start(Gtk.Label(label="Workflow"), False, False, 0)
+        wf_box.pack_start(Gtk.Label(label="RNAdo"), False, False, 0)
         wf_box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON),
                           False, False, 0)
         wf.add(wf_box)
-        wf.set_tooltip_text("Project Planner, script wizard (Rosetta FARFAR2, SimRNA, RNAMake, Amber, "
-                            "GROMACS, VMD) and PDB clean-up")
+        wf.set_tooltip_text("RNAdo, MDATK's workflow planner (a program of its own): the plan, the script "
+                            "wizard (Rosetta FARFAR2, SimRNA, RNAMake, Amber, GROMACS, VMD), PDB clean-up "
+                            "and the structure builder")
         wf.set_popup(wf_menu)
         self.workflow_button = wf
         hb.pack_start(wf)
@@ -221,29 +242,10 @@ class MainWindow(Gtk.ApplicationWindow):
         hb.pack_end(mb)
 
     def _fill_open_menu(self) -> None:
-        from ..projectfile import recent_projects
-
-        for child in self.open_menu.get_children():
-            self.open_menu.remove(child)
-        recent = recent_projects()
-        if recent:
-            head = Gtk.MenuItem(label="Recent projects")
-            head.set_sensitive(False)
-            self.open_menu.append(head)
-            for path in recent:
-                item = Gtk.MenuItem(label=os.path.basename(path))
-                item.set_tooltip_text(path)
-                item.connect("activate", lambda _w, p=path: self.open_path(p))
-                self.open_menu.append(item)
-            self.open_menu.append(Gtk.SeparatorMenuItem())
-        for text, cb, tip in (("Demo project…", self.create_demo,
-                               "Write the synthetic aptamer/target demo system into a folder and open it"),
-                              ("Browse…", self.open_project, "Choose a project file")):
-            item = Gtk.MenuItem(label=text)
-            item.set_tooltip_text(tip)
-            item.connect("activate", lambda _w, c=cb: c())
-            self.open_menu.append(item)
-        self.open_menu.show_all()
+        fill_open_menu(self.open_menu, self.open_path,
+                       [("Demo project…", self.create_demo,
+                         "Write the synthetic aptamer/target demo system into a folder and open it"),
+                        ("Browse…", self.open_project, "Choose a project file")])
 
     def _build_toolbar(self):
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, margin=4)
@@ -541,7 +543,14 @@ class MainWindow(Gtk.ApplicationWindow):
                               "Show the output folder in the file manager", "folder-open-symbolic"),
                      False, False, 0)
         self.busy_widgets.append(self.render_button)
+        self.jobs = JobControl(self.progress, self.cancel_button, self.append_log,
+                               lambda text, detail: self.error(text, detail), self.busy_widgets)
         return bar
+
+    @property
+    def worker(self):
+        """The running background job (None when idle)."""
+        return self.jobs.worker
 
     def _install_actions(self):
         app = self.get_application()
@@ -549,8 +558,8 @@ class MainWindow(Gtk.ApplicationWindow):
                                  ("save", self.save_project, ["<Control>s"]),
                                  ("saveas", lambda: self.save_project(True), ["<Control><Shift>s"]),
                                  ("render", self.render, ["<Control>r"]),
-                                 ("planner", self.open_planner, ["<Control>p"]),
-                                 ("wizard", self.open_wizard, ["<Control><Shift>w"])):
+                                 ("rnado", self.open_in_rnado, ["<Control>p"]),
+                                 ("wizard", lambda: self.open_in_rnado("wizard"), ["<Control><Shift>w"])):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", lambda _a, _p, c=cb: c())
             self.add_action(action)
@@ -590,6 +599,11 @@ class MainWindow(Gtk.ApplicationWindow):
         b._add("inputs.trajectories", self.traj_editor,
                lambda: [r[0].strip() for r in self.traj_editor.rows() if r[0].strip()],
                lambda v: self.traj_editor.set_rows([[x] for x in v]))
+        plan_files = W.button("Use the plan's files", self.use_plan_inputs,
+                              "Take the topology and trajectories that the plan's MDATK analysis step reads "
+                              "(the plan RNAdo saved in this project file)", "network-workgroup-symbolic")
+        plan_files.set_halign(Gtk.Align.START)
+        files.add_wide(plan_files)
         box.pack_start(W.frame("Input files", files), False, False, 0)
 
         fr = W.Form()
@@ -864,7 +878,9 @@ class MainWindow(Gtk.ApplicationWindow):
         try:
             project = self.collect(validate=False)
             before = project.copy()
+            names = project.group_names()
             refs = project.rename_group(old, new)
+            self._group_renames.append((old, new, names))  # replayed on a plan RNAdo saves meanwhile
         except ValueError as exc:
             self._group_message(f"Group {old} not renamed; fix these settings first: {exc}", error=True)
             return False
@@ -910,8 +926,6 @@ class MainWindow(Gtk.ApplicationWindow):
             self._loading = loading
         self._group_names = [r[0].strip() for r in self.group_editor.rows() if r[0].strip()]
         self._groups_changed()
-        if self.planner is not None and any(c.startswith("workflow.") for c in changed):
-            self.planner.reload()
         self.refresh_canvas()
         return changed
 
@@ -977,6 +991,10 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         before = project.copy()
         merge = chaingroups.merge_chain_groups(project, chains, auto=auto)
+        names = before.group_names()
+        for old, new in merge.replaced.items():  # defaults renamed after chains: replayed on RNAdo's plan
+            self._group_renames.append((old, new, list(names)))
+            names = [new if n == old else n for n in names]
         if merge.changed:
             merge.references = [c for c in self._adopt_project(project, merge.references + ["groups"], before)
                                 if c != "groups"]
@@ -1810,7 +1828,9 @@ class MainWindow(Gtk.ApplicationWindow):
         return W.scrolled(box)
 
     # ============================================================ model sync
-    def load_project(self, project: Project, path: Optional[str] = None) -> None:
+    def load_project(self, project: Project, path: Optional[str] = None,
+                     state: Optional[DiskState] = None) -> None:
+        """Show ``project`` (read from ``path``; ``state``: the file as read)."""
         self.project = project
         self.project_path = path
         self._loading = True
@@ -1826,11 +1846,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_canvas()
         self.runtime_problems = []
         self.check_problems()
-        if self.wizard is not None:
-            self.wizard.destroy()
-            self.wizard = None
-        if self.planner is not None:
-            self.planner.reload()
+        self._remember_file(path, state)
+
+    def _remember_file(self, path: Optional[str], state: Optional[DiskState] = None) -> None:
+        """What the project file holds now (``state``, else read here), to notice RNAdo's saves."""
+        self._group_renames = []
+        self._disk = None
+        if path and os.path.isfile(path):
+            try:
+                self._disk = state or DiskState.read(path)[0]
+            except (OSError, ValueError):
+                self._disk = None
+        try:
+            self._mem_other = other_data(self.collect(validate=False))
+        except ValueError:
+            self._mem_other = other_data(self.project)
+        self.change_bar.hide()
+        self.watch.watch(path if self._disk is not None else None)
 
     def _prefill_conda(self) -> None:
         """Suggest an AmberTools environment when cpptraj is not on PATH."""
@@ -1858,8 +1890,7 @@ class MainWindow(Gtk.ApplicationWindow):
         """The project as the side bar shows it; ``validate`` refuses the errors of what is about to run,
         which ``uses`` names as :meth:`Project.problems` does (default: the output switches)."""
         project = self.project.copy()
-        # the planner / wizard edit the live workflow object; keep sharing it
-        project.workflow = self.project.workflow
+        project.workflow = self.project.workflow  # the plan (RNAdo's) as read; the same object
         errors = self.binder.store(project, skip=() if include_layout else ("layout",))
         if errors:
             raise ValueError("\n".join(errors))
@@ -1877,26 +1908,20 @@ class MainWindow(Gtk.ApplicationWindow):
         self.append_log("New project with default settings (unsaved).")
 
     def open_project(self):
-        dlg = Gtk.FileChooserDialog(title="Open project", transient_for=self,
-                                    action=Gtk.FileChooserAction.OPEN)
-        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
-        W.add_filters(dlg, [PROJECT_FILES, RUN_LOG_FILES])
-        resp = dlg.run()
-        path = dlg.get_filename()
-        dlg.destroy()
-        if resp == Gtk.ResponseType.OK and path:
+        path = choose_project(self)
+        if path:
             self.open_path(path)
 
     def open_path(self, path: str):
         from ..projectfile import add_recent, is_params_log
 
         try:
-            project = Project.load(path)
+            state, project = DiskState.read(path)
         except (OSError, ValueError) as exc:
             self.error(f"Could not open {path}", str(exc))
             return
         replay = is_params_log(path)
-        self.load_project(project, None if replay else path)
+        self.load_project(project, None if replay else path, None if replay else state)
         if replay:
             self.append_log(f"Loaded the settings of the run logged in {path} (save them as a project to "
                             "keep them)")
@@ -1905,40 +1930,120 @@ class MainWindow(Gtk.ApplicationWindow):
             self.append_log(f"Opened project {path}")
 
     def save_project(self, save_as: bool = False) -> bool:
-        from ..projectfile import PROJECT_SUFFIX, add_recent
+        """Save the project.  When RNAdo (or the command line) saved the file since this window read it,
+        the plan found there is saved, with this window's group renames applied to it."""
+        from ..projectfile import add_recent
 
         try:
             project = self.collect(validate=False)
         except ValueError as exc:
             self.error("Some settings are invalid", str(exc))
             return False
+        if not self._take_newer_plan(project):
+            return False
         path = self.project_path
         if save_as or not path:
-            dlg = Gtk.FileChooserDialog(title="Save project", transient_for=self,
-                                        action=Gtk.FileChooserAction.SAVE)
-            dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
-            dlg.set_do_overwrite_confirmation(True)
-            W.add_filters(dlg, [PROJECT_FILES])
             name = project.workflow.project_name if project.workflow.project_name != "project" else PROJECT_ABBREV
-            dlg.set_current_name(f"{name}{PROJECT_SUFFIX}")
-            resp = dlg.run()
-            path = dlg.get_filename()
-            dlg.destroy()
-            if resp != Gtk.ResponseType.OK or not path:
+            path = choose_save_path(self, name)
+            if not path:
                 return False
-            if not path.endswith(".toml"):
-                path += PROJECT_SUFFIX
         try:
             project.save(path)
-        except OSError as exc:
+            state = DiskState.read(path)[0]
+        except (OSError, ValueError) as exc:
             self.error("Could not save the project", str(exc))
             return False
         self.project = project
         self.project_path = path
         self.header.set_subtitle(path)
+        self._remember_file(path, state)
         add_recent(path)
         self.append_log(f"Saved project {path}")
         return True
+
+    # ------------------------------------------------------------ co-editing with RNAdo
+    def analysis_changed(self) -> bool:
+        """The analysis settings have edits that are not saved."""
+        try:
+            return other_data(self.collect(validate=False)) != self._mem_other
+        except ValueError:  # an invalid field: an edit
+            return True
+
+    def _take_newer_plan(self, project: Project) -> bool:
+        """Before a save: put the plan RNAdo saved meanwhile into ``project`` (with this window's group
+        renames).  Asks before replacing analysis settings another program changed too; False: cancel."""
+        disk_state = self._disk
+        if disk_state is None or not disk_state.changed():
+            return True
+        try:
+            state, disk = DiskState.read(disk_state.path)
+        except (OSError, ValueError) as exc:
+            self.append_log(f"WARNING: could not re-read {disk_state.path} ({exc}); its plan is not merged")
+            return True
+        if state.workflow != disk_state.workflow:
+            project.workflow = renamed_workflow(disk.workflow, self._group_renames)
+            self.append_log(f"Kept the plan RNAdo saved in {os.path.basename(state.path)}"
+                            + (" (with this window's group renames)" if self._group_renames else ""))
+        if state.other != disk_state.other and other_data(project) != self._mem_other:
+            response = ask(self, "Another program changed the analysis settings in this project file",
+                           f"{state.path} was saved with other analysis settings after this window read it. "
+                           "Replace them with yours?",
+                           [("Cancel", Gtk.ResponseType.CANCEL), ("Replace them", Gtk.ResponseType.ACCEPT)],
+                           Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
+            return response == Gtk.ResponseType.ACCEPT
+        return True
+
+    def check_disk(self) -> None:
+        """The project file changed on disk (focus, file monitor): take RNAdo's plan; reload the analysis
+        settings another program changed when there are no unsaved edits here, otherwise offer to."""
+        disk_state = self._disk
+        if disk_state is None or not disk_state.changed():
+            return
+        try:
+            state, disk = DiskState.read(disk_state.path)
+        except (OSError, ValueError) as exc:  # e.g. half-written by a text editor: look again later
+            log.warning("could not re-read %s: %s", disk_state.path, exc)
+            return
+        if state.workflow != disk_state.workflow:
+            self.project.workflow = renamed_workflow(disk.workflow, self._group_renames)
+            self.append_log(f"RNAdo saved the plan in {os.path.basename(state.path)}: taken over")
+        if state.other == disk_state.other:
+            self._disk = state
+            return
+        if not self.analysis_changed():
+            renames = self._group_renames
+            disk.workflow = self.project.workflow
+            self.load_project(disk, state.path, state)
+            self._group_renames = renames
+            self.append_log(f"Reloaded the analysis settings another program saved in {state.path}")
+            return
+        # both changed: the stamp is taken (no new question at every focus), the old settings stay the base
+        self._disk = DiskState(state.path, state.stamp, state.workflow, disk_state.other)
+        self.change_bar.label.set_text(f"Another program saved other analysis settings in "
+                                       f"{os.path.basename(state.path)}. Reload them (your unsaved changes "
+                                       "are lost), or keep yours (saving replaces them)?")
+        self.change_bar.show()
+
+    def _on_change_bar(self, response: int) -> None:
+        self.change_bar.hide()
+        if self._disk is None:
+            return
+        try:
+            state, disk = DiskState.read(self._disk.path)
+        except (OSError, ValueError) as exc:
+            self.error(f"Could not read {self._disk.path}", str(exc))
+            return
+        if response == 1:  # reload: the file's settings, the plan with this window's renames
+            renames = self._group_renames
+            disk.workflow = renamed_workflow(disk.workflow, renames)
+            self.load_project(disk, state.path, state)
+            self._group_renames = renames
+            self.append_log(f"Reloaded the analysis settings from {state.path}")
+        elif response == 2:  # keep: theirs becomes the base, so saving replaces it without asking again
+            if state.workflow != self._disk.workflow:
+                self.project.workflow = renamed_workflow(disk.workflow, self._group_renames)
+            self._disk = state
+            self.append_log("Kept your analysis settings; saving replaces the other program's")
 
     def show_project_log(self):
         from ..projectfile import read_log
@@ -1990,24 +2095,98 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.start_job("Creating demo", job, done)
 
-    def open_planner(self):
-        from .planner import PlannerWindow
-        if self.planner is None:
-            self.planner = PlannerWindow(self)
-            self.planner.connect("destroy", lambda *_: setattr(self, "planner", None))
-        self.planner.present()
+    def open_in_rnado(self, tool: Optional[str] = None) -> bool:
+        """'Open in RNAdo…': save the project if needed (asks first), then start RNAdo on its file as a
+        program of its own, with ``tool`` ("wizard", "pdb" or "builder") open as well."""
+        from .launch import launch_rnado
 
-    def open_wizard(self, tool: Optional[str] = None):
-        from .wizard import WizardWindow
-        if self.wizard is None:
-            self.wizard = WizardWindow(self, tool=tool)
-            self.wizard.connect("destroy", lambda *_: setattr(self, "wizard", None))
-        elif tool:
-            self.wizard.select_tool(tool)
-        self.wizard.present()
+        path = self.project_path
+        what = {"wizard": "the script wizard", "pdb": "the PDB clean-up",
+                "builder": "the structure builder"}.get(tool or "", "the plan")
+        if not path:
+            response = ask(self, "Save the project for RNAdo?",
+                           f"RNAdo opens {what} on the project file; this project has not been saved yet.",
+                           [("Cancel", Gtk.ResponseType.CANCEL),
+                            ("Open RNAdo without it", Gtk.ResponseType.REJECT),
+                            ("Save…", Gtk.ResponseType.ACCEPT)], Gtk.ResponseType.ACCEPT)
+            if response == Gtk.ResponseType.ACCEPT:
+                if not self.save_project():
+                    return False
+                path = self.project_path
+            elif response != Gtk.ResponseType.REJECT:
+                return False
+        elif self.analysis_changed():
+            response = ask(self, "Save the changes first?",
+                           f"RNAdo reads {os.path.basename(path)}; it does not see the unsaved changes of "
+                           "this window (they stay here, and saving later keeps the plan RNAdo saves).",
+                           [("Cancel", Gtk.ResponseType.CANCEL), ("Don't save", Gtk.ResponseType.REJECT),
+                            ("Save", Gtk.ResponseType.ACCEPT)], Gtk.ResponseType.ACCEPT)
+            if response == Gtk.ResponseType.ACCEPT:
+                if not self.save_project():
+                    return False
+            elif response != Gtk.ResponseType.REJECT:
+                return False
+        try:
+            launch_rnado(path, tool)
+        except OSError as exc:
+            self.error("Could not start RNAdo", str(exc))
+            return False
+        self.append_log(f"Started RNAdo{' (' + what + ')' if tool else ''}"
+                        + (f" on {path}" if path else ""))
+        return True
+
+    def use_plan_inputs(self, node_id: Optional[str] = None) -> bool:
+        """'Use the plan's files as inputs': the topology and trajectories that the plan's MDATK analysis
+        step reads (the plan RNAdo saved last; asks which step when there are several)."""
+        from ..workflows.plan import Plan, analysis_inputs, step_title
+
+        self.check_disk()  # the newest plan RNAdo saved
+        try:
+            project = self.collect(validate=False)
+        except ValueError:
+            project = self.project
+        boxes = [n for n in project.workflow.nodes if n.tool == "mdatk"]
+        if node_id is not None:
+            boxes = [n for n in boxes if n.id == node_id]
+        if not boxes:
+            self.error("The plan has no MDATK analysis step",
+                       "Add an 'MDATK analysis' step in RNAdo (Open in RNAdo…), connect a topology and "
+                       "trajectories to it and save the plan.")
+            return False
+        node = boxes[0]
+        if len(boxes) > 1:
+            node = self._choose_box(boxes)
+            if node is None:
+                return False
+        plan = Plan(project.workflow, project.workflow_dir, project.groups)
+        top, trajs = analysis_inputs(plan, node.id)
+        if not top:
+            self.error("No topology", f"{step_title(node)}: connect a topology (and trajectories) to the "
+                                      "analysis step in RNAdo first.")
+            return False
+        self.apply_inputs(top, trajs, bool(plan.steps[node.id].settings.get("clean", True)))
+        return True
+
+    def _choose_box(self, boxes):
+        from ..workflows.plan import step_title
+
+        dlg = Gtk.Dialog(title="Which analysis step?", transient_for=self, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use its files", Gtk.ResponseType.OK)
+        combo = W.combo([(n.id, step_title(n)) for n in boxes])
+        combo.set_active(0)
+        box = dlg.get_content_area()
+        box.set_border_width(12)
+        box.set_spacing(6)
+        box.pack_start(W.label("The plan has several MDATK analysis steps:"), False, False, 0)
+        box.pack_start(combo, False, False, 0)
+        dlg.show_all()
+        ok = dlg.run() == Gtk.ResponseType.OK
+        chosen = combo.get_active_id()
+        dlg.destroy()
+        return next((n for n in boxes if n.id == chosen), None) if ok else None
 
     def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
-        """Use files planned by the Project Planner as this project's analysis inputs."""
+        """Use files of the plan as this project's analysis inputs."""
         try:
             project = self.collect(validate=False)
         except ValueError:
@@ -2017,84 +2196,32 @@ class MainWindow(Gtk.ApplicationWindow):
         project.inputs.trajectories = list(trajectories)
         if clean:
             project.cleaning.enabled = True
-        planner, wizard = self.planner, self.wizard
-        self.planner = self.wizard = None  # same workflow object: keep the windows as they are
         offered = self._chains_offered
-        try:
-            self.load_project(project, self.project_path)
-        finally:
-            self.planner, self.wizard = planner, wizard
+        disk, mem, renames = self._disk, self._mem_other, self._group_renames
+        self.load_project(project, self.project_path)
+        self._disk, self._mem_other, self._group_renames = disk, mem, renames  # unsaved edits, not a reload
         self._chains_offered = offered  # the same project with a new topology: offer its chains
         self._on_topology_changed()  # chain groups for empty or untouched default groups
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
                         f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))
 
-    def open_pdb_tools(self):
-        from .pdbdialog import PDBToolsWindow
-        if self.pdb_tools is None:
-            self.pdb_tools = PDBToolsWindow(self)
-            self.pdb_tools.connect("destroy", lambda *_: setattr(self, "pdb_tools", None))
-        self.pdb_tools.show_all()
-        self.pdb_tools.present()
-
-    def open_builder(self):
-        from .builderdialog import BuilderWindow
-        if self.builder is None:
-            self.builder = BuilderWindow(self)
-            self.builder.connect("destroy", lambda *_: setattr(self, "builder", None))
-        self.builder.show_all()
-        self.builder.present()
-
-    def _citation_keys(self):
-        from ..citations import grouped, keys_for, project_resources
+    def _citation_resources(self):
+        from ..citations import project_resources
         try:
             project = self.collect(validate=False)
         except ValueError:
             project = self.project
-        resources = project_resources(project)
-        return project, grouped(resources), keys_for(resources)
+        return project, project_resources(project)
 
     def export_citations(self):
-        from ..citations import bibtex
-        project, _groups, keys = self._citation_keys()
-        if not keys:
-            self.info("Nothing to cite yet", "The project uses no external resource with a reference.")
-            return
-        dlg = Gtk.FileChooserDialog(title="Export citations (BibTeX)", transient_for=self,
-                                    action=Gtk.FileChooserAction.SAVE)
-        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
-        dlg.set_do_overwrite_confirmation(True)
-        W.add_filters(dlg, [("BibTeX files", ["*.bib"])])
+        project, resources = self._citation_resources()
         base = os.path.dirname(self.project_path) if self.project_path else project.out_dir
-        if base and os.path.isdir(base):
-            dlg.set_current_folder(base)
-        dlg.set_current_name(f"{project.workflow.project_name or PROJECT_ABBREV}_citations.bib")
-        path = dlg.get_filename() if dlg.run() == Gtk.ResponseType.OK else None
-        dlg.destroy()
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(bibtex(keys))
-        except OSError as exc:
-            self.error("Could not write the BibTeX file", str(exc))
-            return
-        self.append_log(f"Wrote {len(keys)} references to {path}")
+        export_bibtex(self, resources, base, project.workflow.project_name or PROJECT_ABBREV, self.append_log,
+                      self.info, self.error)
 
     def citation_text(self) -> str:
-        _project, groups, keys = self._citation_keys()
-        if not keys:
-            return "This project uses no external resource with a reference yet."
-        lines = [f"Resources this project uses ({len(keys)} references; each generated script lists only "
-                 "its own):", ""]
-        for res, refs in groups:
-            if not refs:
-                continue
-            lines.append(res.name + (f" - {res.note}" if res.note else ""))
-            lines += [f"    {r.text}" for r in refs]
-            lines.append("")
-        return "\n".join(lines)
+        return citation_text(self._citation_resources()[1])
 
     def show_about(self):
         dlg = Gtk.Dialog(title=f"About {PROJECT_ABBREV}", transient_for=self, modal=True)
@@ -2106,8 +2233,9 @@ class MainWindow(Gtk.ApplicationWindow):
         box.pack_start(W.label(f"<big><b>{GLib.markup_escape_text(PROJECT_TITLE)}</b></big>  {__version__}",
                                markup=True), False, False, 0)
         box.pack_start(W.label("Offline analysis and multi-panel video rendering of molecular dynamics "
-                               "trajectories of RNA systems, with script generators for structure prediction "
-                               "and simulation. Licensed under the GNU GPL v3.", wrap=True), False, False, 0)
+                               "trajectories of RNA systems. RNAdo, MDATK's workflow planner, writes and "
+                               "runs the scripts for structure prediction and simulation. Licensed under the "
+                               "GNU GPL v3.", wrap=True), False, False, 0)
         view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
         view.get_buffer().set_text(self.citation_text())
         sw = Gtk.ScrolledWindow()
@@ -2310,133 +2438,20 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ------------------------------------------------------------ job runner
     def start_job(self, title: str, job, on_success):
-        if self.worker is not None and self.worker.running:
+        if self.jobs.running:
             self.error("Another job is still running.")
             return
-        self.progress.set_fraction(0.0)
-        self.progress.set_text(f"{title} …")
-        for w in self.busy_widgets:
-            w.set_sensitive(False)
-        self.cancel_button.set_sensitive(True)
-        self.append_log(f"--- {title} ---")
         if self.runtime_problems:  # the last job's problems: this job tells anew
             self.runtime_problems = []
             self.check_problems()
-
-        def done(result, exc, tb):
-            for w in self.busy_widgets:
-                w.set_sensitive(True)
-            self.cancel_button.set_sensitive(False)
-            self.worker = None
-            if isinstance(exc, Cancelled):
-                self.progress.set_text("Cancelled")
-                self.append_log("Cancelled.")
-                return
-            if exc is not None:
-                self.progress.set_text("Failed")
-                if tb:
-                    self.append_log(tb.rstrip())
-                self._note_failure(exc)  # a selection error flags its field (and page)
-                self.error(f"{title} failed", str(exc))
-                return
-            self.progress.set_fraction(1.0)
-            self.progress.set_text(f"{title}: done")
-            on_success(result)
-
-        self.worker = Worker(job, self.append_log, self._on_progress, done)
-        self.worker.start()
-
-    def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None, parallel: int = 1,
-                    on_state=None, on_finished=None, with_separate=None) -> None:
-        """Run generated scripts (Planner / wizard 'Run') in the background after a confirmation.
-        ``on_state(job, state)`` and ``on_finished()`` are called on the GTK main loop.  ``with_separate``
-        (the jobs including the scripts marked 'run separately') adds a choice to run those too."""
-        from ..workflows.runner import run_jobs, runner_problem
-
-        parent = parent or self
-        if not jobs:
-            self.error("No scripts to run", "None of the selected steps has a script to run here.")
-            return
-        problem = runner_problem()  # Windows / no bash: the scripts are written but run elsewhere
-        if problem:
-            self.info("Scripts written, not run", problem + "\n\nScripts:\n" + "\n".join(j.path for j in jobs[:20]))
-            return
-        lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}" for j in jobs]
-        detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
-        if parallel > 1 and len(jobs) > 1:
-            detail += (f"\n\nUp to {parallel} scripts run at the same time on this computer; each step starts "
-                       "when the steps it reads from have finished. A failure stops the steps that depend "
-                       "on it, Cancel stops every running script. Their output appears in the log, each line "
-                       "marked with its step number.")
-        else:
-            detail += ("\n\nThe scripts run one after the other on this computer; a failure stops the steps "
-                       "that depend on it, Cancel stops the running script. Their output appears in the log.")
-        if separate:
-            detail += (f"\n\n{len(separate)} script(s) marked 'run separately' (e.g. production) are not "
-                       "started: until they have finished, their step waits and the steps that read from it "
-                       "do not start.")
-        if self.project_path:
-            detail += f"\n\nEach run is logged in {os.path.basename(self.project_path)}."
-        else:
-            detail += "\n\nThe project has not been saved, so the runs are not logged (save it first to keep a log)."
-        dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                buttons=Gtk.ButtonsType.OK_CANCEL, text=f"Run {len(jobs)} generated script(s)?")
-        dlg.format_secondary_text(detail)
-        include = None
-        if separate and with_separate:
-            include = Gtk.CheckButton(label="Also run the scripts marked 'run separately' here, each after "
-                                            "its step's main script")
-            include.set_tooltip_text("For production runs that are meant for this computer rather than a "
-                                     "cluster queue; finished ones are not run again")
-            dlg.get_message_area().pack_start(include, False, False, 0)
-            include.show()
-        ok = dlg.run() == Gtk.ResponseType.OK
-        if ok and include is not None and include.get_active():
-            jobs, separate = list(with_separate), ()
-        dlg.destroy()
-        if not ok:
-            return
-        self.log_expander.set_expanded(True)
-        project_path = self.project_path
-
-        state_cb = (lambda j, st: call_soon(on_state, j, st)) if on_state else None
-
-        def job(rep):
-            try:
-                return run_jobs(jobs, project_path, on_line=rep.raw_log, cancel=rep.cancel_event,
-                                parallel=parallel, on_state=state_cb)
-            finally:
-                if on_finished:
-                    call_soon(on_finished)
-
-        def done(results):
-            waiting = [r for r in results if r.status == "waiting"]
-            if waiting:  # not a failure: the user runs those scripts, then the step again
-                skipped = sum(1 for r in results if r.status == "skipped")
-                text = "\n".join(f"Step {r.job.step:02d} ({r.job.title}) is complete once its separately run "
-                                 f"script has finished: run {', '.join(r.job.separate) or 'it'} (e.g. on a "
-                                 "cluster), then the step again." for r in waiting)
-                if skipped:
-                    text += f"\n\n{skipped} script(s) of the steps that read from it were not started."
-                self.info("Waiting for separately run scripts", text)
-                return
-            self.info("Scripts finished", f"{len(results)} script(s) finished")
-
-        self.start_job("Running generated scripts", job, done)
-
-    def _on_progress(self, fraction: float, message: str):
-        self.progress.set_fraction(min(1.0, max(0.0, fraction)))
-        if message:
-            self.progress.set_text(f"{fraction * 100:4.0f}%  {message}")
+        # a selection error flags its field (and page)
+        self.jobs.start(title, job, on_success, on_failure=self._note_failure)
 
     def cancel(self):
-        if self.worker is not None:
-            self.worker.cancel()
-            self.progress.set_text("Cancelling …")
+        self.jobs.cancel()
 
     def _on_close(self, *_):
-        if self.worker is not None and self.worker.running:
-            self.worker.cancel()
+        self.jobs.stop()
         return False
 
     # -------------------------------------------------------------- feedback

@@ -196,7 +196,7 @@ def test_gui_run_explains_where_scripts_run(monkeypatch):
     """GUI 'Run' on Windows (or without bash): an explanation instead of a run."""
     pytest.importorskip("gi")
     try:
-        from mdatk.gui.app import MainWindow
+        from mdatk.gui.rnado import RNAdoWindow
     except (ImportError, ValueError):  # pragma: no cover - no GTK 3 typelibs
         pytest.skip("GTK 3 not available")
 
@@ -211,7 +211,7 @@ def test_gui_run_explains_where_scripts_run(monkeypatch):
     monkeypatch.setattr(runner.os, "name", "nt")
     try:
         fake = Fake()
-        MainWindow.run_scripts(fake, [runner.ScriptJob(1, "Amber build", "/p/01_build.sh")])
+        RNAdoWindow.run_scripts(fake, [runner.ScriptJob(1, "Amber build", "/p/01_build.sh")])
     finally:
         monkeypatch.undo()
     ((kind, title, detail),) = fake.messages

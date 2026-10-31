@@ -20,11 +20,11 @@ map can be fitted to the model and drawn as a projected shadow.
 Everything runs locally; MDATK makes no network calls.
 
 Since 0.0.2b MDATK also **writes the inputs and scripts that come before the analysis**: a script
-wizard and a free-form **Project Planner** generate consistently named control files for Rosetta
-FARFAR2, SimRNA, RNAMake, Amber (tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD
-ensemble. You review and run these scripts yourself, or ask MDATK to run them (*Run all…* or *Run
-selected steps*), which logs
-every run in the project file.
+wizard and a free-form **Project Planner** (since 0.0.11 **RNAdo, MDATK's workflow planner**, a program
+of its own) generate consistently named control files for Rosetta FARFAR2, SimRNA, RNAMake, Amber
+(tleap / ParmEd / pmemd), GROMACS and VMD, from sequence to MD ensemble. You review and run these
+scripts yourself, or ask RNAdo to run them (*Run all…* or *Run selected steps*), which logs every run
+in the project file.
 
 Since 0.0.3a a project is **one commented TOML file** (`*.mdatk.toml`) holding the settings, the
 planner workflow, notes and a log of every step that ran; MDATK repairs and renames **PDB files**
@@ -51,6 +51,25 @@ keep L-RNA sugars L, and it never uses VMD's D-only stereochemistry tools. The A
 **generate the L-RNA library** from the force field in use (OL3 or OL3 + CP; D and mirror image tested to
 the same energy) and checks that tleap really loaded L units for the L residues. Steps that existed in
 0.0.7 write the same files as before (tested against the 0.0.7 output).
+
+In 0.0.11 the workflow planner becomes **RNAdo, MDATK's workflow planner**, a program of its own
+(`rnado`, see [RNAdo](#rnado-mdatks-workflow-planner)):
+
+- RNAdo holds the plan canvas with its toolbar and details pane, and in its header bar the **script
+  wizard**, the **PDB clean-up** and the **structure builder**, which moved there from the analysis
+  window. It opens, saves and remembers the same project files (`*.mdatk.toml`) and runs without the
+  analysis window.
+- An **output log panel** at the bottom of RNAdo's window shows what the planner did (files written,
+  previous runs checked, runs used or dropped) and every line of the scripts it runs, each marked with
+  its step; standard error and lines starting with ERROR or WAITING are highlighted, with start,
+  finish, failed, waiting and not-started lines. It filters by step, shows the stored log of the
+  selected step's last run, and copies, saves or clears its lines.
+- The analysis window's *RNAdo* menu (Ctrl+P, Ctrl+Shift+W) starts RNAdo on the project, straight on
+  the plan or one of its tools, and *Use the plan's files* (Input & cleaning) takes the topology and
+  trajectories the plan's MDATK analysis step reads.
+- Both programs can have the same project open: RNAdo saves only the plan, the analysis window keeps
+  the plan RNAdo saved (with its own group renames), and each notices when the other saved and takes
+  the change, or asks when both changed the same part. Generated files are the same as in 0.0.10.
 
 In 0.0.10:
 
@@ -101,7 +120,7 @@ Phenix 1.21 / 2.x and Coot 0.9 / 1.x (batch). microMg is now available with TIP4
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Workflow](#workflow)
-- [Script wizard and Project Planner](#script-wizard-and-project-planner)
+- [RNAdo, MDATK's workflow planner](#rnado-mdatks-workflow-planner)
 - [Analyses](#analyses)
 - [Structural view, colouring and glow](#structural-view-colouring-and-glow)
 - [3D representations](#3d-representations)
@@ -136,6 +155,7 @@ No virtual environment, conda or system packages are needed for analysis and vid
 chmod +x MDATK-<version>-x86_64.AppImage
 ./MDATK-<version>-x86_64.AppImage                          # the GUI
 ./MDATK-<version>-x86_64.AppImage project.mdatk.toml       # the GUI with a project
+./MDATK-<version>-x86_64.AppImage rnado project.mdatk.toml # RNAdo, the workflow planner
 ./MDATK-<version>-x86_64.AppImage --help                   # the command line (any mdatk command)
 ./MDATK-<version>-x86_64.AppImage demo ~/mdatk-demo        # e.g. the synthetic demo system
 ```
@@ -149,8 +169,8 @@ start because FUSE is missing (some containers and minimal installs), run it wit
 **Windows 10 / 11** (64-bit) - **beta, not yet tested on real machines**: run
 `MDATK-<version>-windows-x64-setup.exe` (installs per user, no administrator rights needed;
 Start-menu entry "MDATK", optional PATH entry for `mdatk.exe`) or unzip
-`MDATK-<version>-windows-x64.zip` anywhere and start `mdatk-gui.exe` (`mdatk.exe` is the command
-line). On Windows:
+`MDATK-<version>-windows-x64.zip` anywhere and start `mdatk-gui.exe` (`rnado-gui.exe` is RNAdo, the
+workflow planner; `mdatk.exe` is the command line). On Windows:
 
 - the generated workflow scripts (Amber, GROMACS, Rosetta, Phenix, Coot ...) are bash scripts:
   MDATK writes them but does not run them - run them on a Linux machine, a cluster or in
@@ -208,7 +228,8 @@ pip install '.[vtk]'     # optional: VTK as an alternative 3D renderer (see 3D r
 pip install '.[barnaba]' # optional: Barnaba for Leontis-Westhof base-pair classes and stacking
 ```
 
-This installs two commands: `mdatk` (CLI) and `mdatk-gui` (GUI); `python -m mdatk` works too.
+This installs four commands: `mdatk` (CLI), `mdatk-gui` (the analysis window), `rnado` and
+`rnado-gui` (RNAdo, the workflow planner); `python -m mdatk` works too.
 Activate the venv (`. .venv/bin/activate`) in each new shell before using them. A desktop
 entry is provided in `data/mdatk.desktop`.
 
@@ -227,6 +248,7 @@ pre-fills the field with what it finds; `mdatk list` prints the candidates).
 ```bash
 mdatk demo ./demo                        # synthetic solvated RNA aptamer/target system + project
 mdatk gui ./demo/demo.mdatk.toml         # open it in the GUI and press "Render"
+rnado ./demo/demo.mdatk.toml             # plan the steps before the analysis in RNAdo
 # or headless:
 mdatk render -p ./demo/demo.mdatk.toml   # add --clean to strip solvent with cpptraj first
 ```
@@ -299,24 +321,58 @@ The bottom bar holds **Render**, **Cancel**, the progress bar, **Open output fol
 your file manager) and **Open video** (the most recent video); the log of the pipeline and of
 cpptraj is in the expander above it. Projects are opened/saved from the header bar (Ctrl+O /
 Ctrl+S, Ctrl+R renders); the main menu has *Project log…* (the steps that ran), *Export citations
-(BibTeX)…* and *About and citations*. File choosers name the extensions they accept, e.g.
+(BibTeX)…* and *About and citations*. The *RNAdo* menu next to them starts RNAdo, the workflow planner,
+on the project (see below). File choosers name the extensions they accept, e.g.
 "Trajectory files (.nc, .ncdf, .mdcrd, .crd, .trj, .dcd, .trr, .gro, .xtc, .pdb, .xyz, .binpos)".
 Long jobs run in a background thread and can be cancelled.
 
-## Script wizard and Project Planner
+## RNAdo, MDATK's workflow planner
 
-The **Workflow** menu in the header bar opens two windows (they also work from the command
-line, see below) and the PDB clean-up window. They write files and scripts; nothing is executed
-unless you ask for it with *Run all…* / *Run selected steps* (planner), *Run step…* (a planner box's
-details) or *Write and run…* (wizard). MDATK then asks for
-confirmation and runs each step's main script with `bash`. Each step starts once the steps it
+**RNAdo** is MDATK's workflow planner, a program of its own: a canvas on which the steps from sequence
+to MD ensemble are laid out, their control files and scripts written and, on request, run. The script
+wizard, the PDB clean-up and the structure builder are in its header bar. Start it with
+
+- `rnado` (an empty plan) or `rnado project.mdatk.toml`; `rnado --open wizard|pdb|builder` opens
+  one of its tools as well, and `rnado-gui` is the same without a terminal;
+- the analysis window (`mdatk-gui`): *RNAdo → Open in RNAdo…* (Ctrl+P), or *Script wizard / PDB
+  clean-up / Structure builder: open in RNAdo…* (Ctrl+Shift+W for the wizard). It saves the project
+  first if it has unsaved changes (it asks), then starts RNAdo on the project file;
+- the stand-alone builds: `MDATK-<version>-x86_64.AppImage rnado [PROJECT]`, `rnado-gui.exe` on
+  Windows;
+- `mdatk gui --rnado [PROJECT]`, or `python -m mdatk.gui.rnado [PROJECT]` from a source checkout.
+
+`rnado ACTION …` with an action of `mdatk workflow` (`write`, `run`, `status`, `check`, `template`,
+`generate`, `tools`, `restraints`) is the same as `mdatk workflow ACTION …`, see [Command
+line](#command-line).
+
+RNAdo opens, saves and remembers the same project files as the analysis window (header bar: *Open*
+with the recent projects, *Save*; the menu has *New project*, *Save as…*, *Project log…* and *About
+RNAdo*). Both programs can have one project open at the same time. RNAdo writes only the file's plan (the
+`workflow` section) and leaves the analysis settings as the file has them; the analysis window saves
+the plan it finds in the file, with its own residue-group renames applied to it. When the file changed
+on disk (the window gets the focus, or the file monitor reports it), each program takes the other's
+part. It reloads its own part when it has no unsaved changes there, and otherwise asks in a bar
+above its content (*Reload it* / *Keep mine*).
+
+The plan writes files and scripts; nothing is executed unless you ask for it with *Run all…* /
+*Run selected steps* (planner), *Run step…* (a box's details) or *Write and run…* (wizard). RNAdo then
+asks for confirmation and runs each step's main script with `bash`. Each step starts once the steps it
 reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
 up to *Parallel* scripts at a time (planner toolbar, saved with the project; default 1).
 
-- **Output and logging:** the output streams into the log, each line marked with its step number
-  when scripts run side by side. Every run is recorded in the project file.
+- **Output log panel:** the bottom of RNAdo's window (drag its edge to resize it; the arrow or Ctrl+L
+  folds it away; a run unfolds it). It shows the planner's messages (files written, previous runs
+  checked, runs used or dropped) and every line the scripts print, marked with their step
+  (`[03] …`). Standard error is red, lines starting with ERROR (and failed steps) bold red, lines
+  starting with WAITING (and waiting steps) amber. Each step gets a start line, a finished / failed /
+  cancelled line, and a waiting or not-started line when it does not run to the end. *Step* shows the
+  lines of one step only; *Last run* shows the stored log of the selected box's last run, from the
+  project's step log. The other buttons follow new lines (auto-scroll), copy or save the lines shown
+  as text, or clear them. The panel keeps the last 5 000-6 000 lines. Every run is also recorded in
+  the project file.
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
-- **Cancel** stops every running script.
+- **Cancel** (status bar) stops every running script; closing RNAdo during a run asks first and stops
+  them.
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
   bars (waiting for a separately run script, see below) or a dash (cancelled / not started) until the
@@ -345,14 +401,14 @@ Before 0.0.10 the main script of a step whose stages were all production held on
 "succeeded" without running anything. Main scripts written by older versions do not check; MDATK
 treats such a step as waiting and asks you to write it again.
 
-- **Script wizard** (Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
+- **Script wizard** (RNAdo's header bar, Ctrl+Shift+W): pick a program on the left, fill in its options (check boxes,
   radio buttons, text fields; every option has a tooltip), choose input files, and *Write files*.
   The options are the RNA-relevant ones for each program plus a free-text box for anything else.
   Logic checks run on every change: **errors** (conflicting or impossible settings) block writing,
   **warnings** flag likely mistakes and **infos** point out redundant or noteworthy choices; the
   offending fields are highlighted and clicking a message jumps to the field. A live preview shows
   every file that will be written.
-- **Project Planner** (Ctrl+P): a canvas on which you place boxes (steps) and connect them by
+- **The plan** (RNAdo's canvas): place boxes (steps) and connect them by
   dragging from an output port (right edge) to an input port (left edge); only compatible files
   connect, and loops are refused. Double-click a box to edit it in the wizard. *Templates* insert
   pre-connected chains (FARFAR2 → models → Amber build → helix restraints → MD → MDATK analysis +
@@ -363,11 +419,12 @@ treats such a step as waiting and asks you to write it again.
   steps* on the canvas): *Run selected steps (N)* writes the ticked steps' files and runs their main
   scripts in plan order, whatever order you ticked them in. Steps they read from are not written or
   run again, so their outputs must exist already. The ticks are not saved with the project.
-  *Use for analysis* (on an MDATK
-  analysis box) puts the planned topology / trajectory into Input & cleaning. The plan is saved in
-  the project file (`workflow` section), so one file holds the plan and the analysis settings.
-  `examples/rna_plan.mdatk.toml` is a complete example plan (open it, set the output folder, and
-  open the planner).
+  The analysis window's *Use the plan's files* (Input & cleaning, also in its *RNAdo* menu) puts the
+  topology and trajectories an MDATK analysis box reads into Input & cleaning, from the plan saved in
+  the project file (*Use for analysis…* on the box in RNAdo saves the plan for it); with several
+  analysis boxes it asks which. The plan is saved in the project file (`workflow` section), so one file
+  holds the plan and the analysis settings. `examples/rna_plan.mdatk.toml` is a complete example plan
+  (open it in RNAdo and set the output folder).
 
 ### File names
 
@@ -712,6 +769,8 @@ downloads nothing for it; what the script itself does is up to you, so review it
 before running it.
 
 ### Command line
+
+Every `mdatk workflow ACTION` is also `rnado ACTION` (e.g. `rnado write -p plan.mdatk.toml --run`).
 
 ```bash
 mdatk workflow tools                       # step types; `mdatk workflow tools amber-md` lists options
@@ -1059,7 +1118,8 @@ each other; the cache and the parameter log keep fixed names. Set
 
 ## PDB clean-up
 
-*Workflow → PDB clean-up…* in the GUI and `mdatk pdb` on the command line repair and rewrite PDB
+*PDB clean-up* in RNAdo's header bar (or *RNAdo → PDB clean-up: open in RNAdo…* in the analysis
+window) and `mdatk pdb` on the command line repair and rewrite PDB
 files with fixed-column output that keeps coordinates, occupancies and B-factors verbatim:
 
 - **ChimeraX damage** such as a residue name fused with the chain id (`GC:` = residue G of chain C)
@@ -1125,7 +1185,8 @@ step (with the Barnaba citation when it was used).
 
 ## Structure builder
 
-*Workflow → Structure builder…*, `mdatk build` and the planner step *Structure builder (MDATK)* make
+*Structure builder* in RNAdo's header bar, `mdatk build` and the planner step *Structure builder
+(MDATK)* make
 starting structures without external programs.
 
 **Ideal helices.** An A-form RNA duplex (Watson-Crick complement, or an explicit partner 5'→3' of the
@@ -1503,6 +1564,9 @@ checked (the paper's PDF, the project's own citation file, or a reference list).
 
 ```text
 mdatk gui [PROJECT]                start the GUI (opens PROJECT if given; nothing otherwise)
+mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   start RNAdo instead (same as: rnado)
+rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo, the workflow planner (rnado-gui: no terminal)
+rnado ACTION ...                   the same as mdatk workflow ACTION ... (write, run, status ...)
 mdatk demo DIR [--n-frames N] [--no-solvent] [--run]
 mdatk init OUT.mdatk.toml          write a project with the defaults (accepts the overrides below)
 mdatk info      -p PROJECT         system summary and residue-group check (JSON)
@@ -1515,7 +1579,7 @@ mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selectio
 mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
-mdatk workflow tools|generate|template|check|write|run|status|restraints   (see Script wizard and Project Planner)
+mdatk workflow tools|generate|template|check|write|run|status|restraints   (see RNAdo)
 mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
@@ -1589,12 +1653,15 @@ mdatk/
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   workflows/         script generators (option schemas, checks, file generation) for FARFAR2,
                      SimRNA, RNAMake, Amber, GROMACS, VMD and custom scripts (userscript.py);
-                     plan.py resolves the Project Planner
+                     plan.py resolves the plan
                      graph and names files; scripts/ holds self-contained helper programs that
                      are embedded in generated workflows
-  cli.py, gui/       command line and GTK 3 front ends (gui/canvas.py: WYSIWYG figure canvas,
-                     gui/wizard.py: script wizard, gui/planner.py: Project Planner,
-                     gui/problemview.py: problem badges, field flags and the problems list)
+  cli.py, gui/       command line and GTK 3 front ends: gui/app.py the analysis window
+                     (gui/canvas.py: WYSIWYG figure canvas, gui/problemview.py: problem badges,
+                     field flags and the problems list); gui/rnado.py RNAdo, the workflow
+                     planner (gui/planner.py: the plan canvas, gui/logpanel.py: output log,
+                     gui/wizard.py, gui/pdbdialog.py, gui/builderdialog.py: its tools, which use
+                     only gui/host.py); gui/projectui.py: project files both programs share
   demo.py            synthetic RNA system generator
 ```
 
@@ -1647,8 +1714,8 @@ fog, glow and translucency, thread safety and a render without a display.
 - Very large systems: restrict groups and the structure selection to the region of interest;
   only selected atoms are processed per frame and cached results are compact (sparse maps,
   float32 traces).
-- The script wizard and planner write files; they run them only on request (*Run all…*, *Run selected
-  steps*). Generated
+- RNAdo's planner and script wizard write files; they run them only on request (*Run all…*, *Run
+  selected steps*). Generated
   scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH.
