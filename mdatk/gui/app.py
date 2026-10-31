@@ -160,7 +160,7 @@ class MainWindow(Gtk.ApplicationWindow):
         W.watch_tree(self.side_stack, self.schedule_check)
         self.load_project(self.project, project_path)
         self.connect("delete-event", self._on_close)
-        self.connect("destroy", lambda *_: self._stop_topology_timer())
+        self.connect("destroy", lambda *_: self._stop_timers())
         self.append_log(f"{PROJECT_TITLE} {__version__} ready. Everything runs locally and offline.")
 
     # ================================================================ chrome
@@ -385,6 +385,13 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._check_source:
             GLib.source_remove(self._check_source)
         self._check_source = GLib.timeout_add(CHECK_DELAY_MS, self._check_due)
+
+    def _stop_timers(self) -> None:
+        """A destroyed window must not be checked or read into by timers still pending."""
+        self._stop_topology_timer()
+        if self._check_source:
+            GLib.source_remove(self._check_source)
+            self._check_source = 0
 
     def _check_due(self) -> bool:
         self._check_source = 0
