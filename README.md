@@ -1,3 +1,8 @@
+<p align="center"><img src="mdatk/assets/rnado-wordmark.png" alt="RNAdo" width="600"></p>
+
+<p align="center"><b>RNAdo</b>, MDATK's planner for RNA MD set-ups (project planner, script wizard, PDB
+hygiene and structure builder), ships with MDATK as a program of its own.</p>
+
 # Molecular Dynamic Analysis Tool Kit (MDATK)
 
 MDATK is an offline, Linux-native GTK 3 desktop application (with a companion command line

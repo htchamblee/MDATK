@@ -3,11 +3,15 @@
 #
 #   ./MDATK-x86_64.AppImage                    the GTK interface
 #   ./MDATK-x86_64.AppImage project.mdatk.toml the GTK interface with that project
+#   ./MDATK-x86_64.AppImage rnado [PROJECT]    RNAdo, the project planner (rnado-gui; further
+#                                              arguments are passed on)
 #   ./MDATK-x86_64.AppImage COMMAND ...        the command line (mdatk --help lists the commands)
 #
-# A symbolic link to the AppImage named "mdatk-gui" always starts the interface.
+# A symbolic link to the AppImage named "mdatk-gui" always starts the interface, one named "rnado"
+# (or "rnado-gui") always starts RNAdo with all arguments.
 HERE="$(dirname "$(readlink -f "$0")")"
 MDATK="$HERE/usr/lib/mdatk/mdatk"
+RNADO="$HERE/usr/lib/mdatk/rnado-gui"
 
 # The Wayland client libraries GTK links against are not bundled with the rest: they must match
 # the host's graphics drivers, and every desktop has them. Hosts without them (minimal or server
@@ -31,7 +35,12 @@ done
 
 case "$(basename "${ARGV0:-$0}")" in
     mdatk-gui*) exec "$MDATK" gui "$@" ;;
+    rnado*) exec "$RNADO" "$@" ;;
 esac
+if [ "${1:-}" = rnado ]; then
+    shift
+    exec "$RNADO" "$@"
+fi
 if [ $# -eq 0 ]; then
     exec "$MDATK" gui
 fi

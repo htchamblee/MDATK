@@ -10,24 +10,28 @@ This folder builds MDATK as programs that need no Python, conda or virtual envir
 Both are [PyInstaller](https://pyinstaller.org) "one-folder" bundles of the MDATK source tree
 with Python 3.12, GTK 3 + PyGObject, NumPy, SciPy, Matplotlib, MDAnalysis, Barnaba (+ mdtraj)
 and a static GPL build of FFmpeg. The GitHub Actions workflow `.github/workflows/release.yml`
-builds, tests and publishes them (see [CI](#ci-and-releases)).
+builds, tests and publishes them (see [CI](#ci-and-releases)). Each build holds two programs:
+MDATK (analysis and videos) and **RNAdo**, the project planner for RNA MD set-ups, as a program of
+its own (see [RNAdo](#rnado)).
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `mdatk.spec` | PyInstaller spec: one Analysis, the `mdatk` console program (+ `mdatk-gui.exe` without console on Windows) |
+| `mdatk.spec` | PyInstaller spec: one Analysis, the `mdatk` console program (+ `mdatk-gui.exe` without console on Windows) and `rnado-gui` (RNAdo, windowed); bundles `mdatk/assets` |
 | `entry_cli.py`, `entry_gui.py` | entry scripts; call `mdatk.frozen.setup()` first, then `mdatk.cli.main` |
+| `entry_rnado.py` | entry script of `rnado-gui`: `mdatk.frozen.setup()`, then `mdatk.gui.rnado.main` with every argument |
 | `trim.py` | what the builds leave out (module excludes, data/library filters); `python packaging/trim.py DIR` prints a size report |
-| `make_icon.py` | draws the application icon (PNG + ICO) with Pillow at build time |
+| `make_icon.py` | draws the MDATK icon (PNG + ICO) with Pillow at build time; puts `rnado.ico` together from the committed RNAdo PNGs |
+| `make_rnado_art.py` | draws the RNAdo logo, wordmark banner and icons (`mdatk/assets`, committed) from MDATK's own A-form RNA model; run it after changing the art |
 | `collect_licenses.py` | writes `licenses/` into the bundle: licence files of every bundled Python distribution, system package copyright files (dpkg / rpm / pacman), FFmpeg notice, `THIRD_PARTY_NOTICES.txt` |
 | `notices/FFMPEG.txt` | FFmpeg licence / source notice template |
-| `smoke_test.py` | tests a finished build (`--version`, `demo`, `analyze`, `render`, barnaba, GUI start); stdlib only |
+| `smoke_test.py` | tests a finished build (`--version`, `demo`, `analyze`, `render`, barnaba, GUI and RNAdo start); stdlib only |
 | `linux/build_appimage.sh` | the Linux build: PyInstaller → FFmpeg → licences → AppDir → `appimagetool` |
-| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, otherwise the command line; adds `_internal/fallback` (Wayland libraries) to the library path on hosts without them |
+| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, `rnado ...` (or a link named `rnado`) → RNAdo, otherwise the command line; adds `_internal/fallback` (Wayland libraries) to the library path on hosts without them |
 | `linux/check_glibc.sh` | newest glibc symbol version the bundle needs (RHEL 9 = 2.34) |
 | `windows/build_windows.sh` | the Windows build, in an MSYS2 UCRT64 shell (optionally installs the dependencies) |
-| `windows/mdatk.iss` | Inno Setup installer (per-user by default, optional PATH entry) |
+| `windows/mdatk.iss` | Inno Setup installer (per-user by default, optional PATH entry; Start-menu entries and optional desktop shortcuts for MDATK and RNAdo) |
 | `windows/README-Windows.txt` | `README.txt` of the Windows build |
 
 Frozen-app support inside the package is in `mdatk/frozen.py`: the bundled FFmpeg
@@ -60,7 +64,8 @@ pip install . && pip uninstall -y mdatk                  # MDATK's dependencies 
 pip install mdtraj future && pip install --no-deps barnaba
 PYTHON=python packaging/linux/build_appimage.sh          # -> dist/MDATK-<version>-x86_64.AppImage
 packaging/linux/check_glibc.sh build/appimage/dist/mdatk 2.34
-xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --render --bundled-ffmpeg --barnaba --gui 15
+xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --render --bundled-ffmpeg --barnaba --gui 15 \
+    --rnado 15
 ```
 
 Options: `--work DIR` (default `build/appimage`, holds the unpacked bundle `dist/mdatk`),
@@ -93,7 +98,7 @@ new tag pushes one), on pushes to any branch that change `packaging/` or the wor
 manual dispatch:
 
 1. **appimage** (`rockylinux:9` container, Rocky's Python 3.12 and GTK 3): build, glibc check
-   (fails if anything needs more than 2.34), smoke test including the GUI under Xvfb.
+   (fails if anything needs more than 2.34), smoke test including the GUI and RNAdo under Xvfb.
 2. **rhel9** and **ubuntu2204**: the same smoke test of the AppImage on a clean `rockylinux:9`
    container (no GTK installed) and on Ubuntu 22.04.
 3. **windows** (windows-2022, MSYS2 UCRT64): build zip + installer, smoke test (`--version`,
@@ -107,9 +112,40 @@ Branch and manual runs only upload the files as workflow artifacts. The actions 
 (versions in the comments); the FFmpeg download is BtbN's current `n8.1` "gpl" build (falls back
 to the `master` build when BtbN drops the branch) - its sha256 is printed in the build log.
 
+## RNAdo
+
+RNAdo is the project planner (with the script wizard, PDB hygiene and the structure builder) as a
+program of its own; the analysis window starts it with `mdatk.gui.launch.rnado_command`. The builds
+start it like this:
+
+| Build | RNAdo |
+|---|---|
+| AppImage | `./MDATK-<version>-x86_64.AppImage rnado [PROJECT]`, or a symbolic link to the AppImage named `rnado` (`ln -s MDATK-*.AppImage ~/bin/rnado`); the MDATK desktop entry has an "RNAdo" action (right-click on the launcher) once the AppImage is integrated (AppImageLauncher, appimaged) |
+| bundle folder (Linux, Windows) | `rnado-gui [PROJECT]` (`rnado-gui.exe` on Windows) next to `mdatk` |
+| Windows installer | Start menu "RNAdo", optional desktop shortcut |
+| source / pip install | `rnado` / `rnado-gui` (console and gui scripts of `pyproject.toml`); `data/rnado.desktop` is the desktop entry |
+
+Every further argument is passed on (the analysis window adds `--open TOOL`). An AppImage has
+one integrated desktop entry, so RNAdo is not a separate launcher there: the AppDir carries
+`usr/share/applications/rnado.desktop` and the RNAdo icon in every size
+(`usr/share/icons/hicolor/*/apps/rnado.png`, `scalable/apps/rnado.svg`) for tools that read them,
+and the MDATK entry's "RNAdo" action becomes `AppImage rnado %f` when desktop integration replaces
+the program of each `Exec` line.
+
+The logo, wordmark banner and icons in `mdatk/assets` (installed and bundled as package data) are
+drawn by `make_rnado_art.py` from the ideal A-form duplex of MDATK's own builder (P-atom ribbons,
+C1'/N1·N3 rungs, 32.7° twist, 2.81 Å rise; the funnel taper scales only the radius), so the
+helix keeps real A-RNA geometry: 11 bp per turn, pairs off the axis and inclined, a narrow, deep
+major groove and a wide, shallow minor groove. The script is seeded and reproducible (same font,
+same bytes) and needs pycairo, Pillow, NumPy, SciPy and matplotlib; the PNGs are committed, so
+neither the GUI nor the builds draw anything. The wordmark's letters are outlines of Inter Black
+Italic (SIL Open Font License 1.1, which allows its use in a logo); no font file is shipped. The
+art is GPL v3 like the rest of MDATK.
+
 ## What is bundled and what is not
 
-Bundled: MDATK (with the `.py` sources: workflow generators embed some of them), Python 3.12,
+Bundled: MDATK (with the `.py` sources: workflow generators embed some of them, and the RNAdo art
+in `mdatk/assets`), Python 3.12,
 GTK 3, PyGObject / pycairo, NumPy, SciPy, Matplotlib (Agg/PDF/PS/SVG back-ends), MDAnalysis,
 Barnaba + mdtraj (only what `barnaba.annotate` needs), FFmpeg (`_internal/tools`), the Adwaita
 icon theme and the licence texts (`licenses/`). The AppImage also carries the host's Wayland

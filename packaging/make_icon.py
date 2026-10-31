@@ -1,10 +1,15 @@
-"""Draw the MDATK application icon (PNG for Linux, ICO for Windows) with Pillow.
+"""Program icons of the stand-alone builds (PNG for Linux, ICO for Windows) with Pillow.
 
-The source tree has no bitmap icon (the desktop file uses the theme icon
-``applications-science``); the stand-alone builds need one, so it is drawn
-here at build time: an RNA double helix on a dark rounded square.
+MDATK: the source tree has no bitmap icon (the desktop file uses the theme icon
+``applications-science``); the builds need one, so it is drawn here at build
+time: an RNA double helix on a dark rounded square.
 
-    python packaging/make_icon.py OUT_DIR      # writes mdatk.png (256 px) and mdatk.ico
+RNAdo: the icon is committed as PNGs in ``mdatk/assets`` (drawn by
+``packaging/make_rnado_art.py``); its ICO is put together from those PNGs, one
+image per size, so Windows shows the simplified small sizes as drawn.
+
+    python packaging/make_icon.py OUT_DIR
+        # writes mdatk.png (256 px), mdatk.ico, rnado.png (256 px) and rnado.ico
 """
 
 from __future__ import annotations
@@ -14,6 +19,9 @@ import os
 import sys
 
 from PIL import Image, ImageDraw
+
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mdatk", "assets")
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)  # 256 px is the largest size an ICO holds
 
 SIZE = 1024  # drawn large, scaled down (anti-aliasing)
 BG = (28, 45, 72, 255)
@@ -46,6 +54,19 @@ def draw() -> Image.Image:
     return img
 
 
+def rnado(out: str, assets: str = ASSETS) -> None:
+    """rnado.png (256 px) and rnado.ico from the committed PNGs (the largest one is the ICO's base image,
+    the others are stored as they are; sizes without a PNG are scaled from it)."""
+    images = {n: Image.open(os.path.join(assets, f"rnado-icon-{n}.png")).convert("RGBA")
+              for n in ICO_SIZES if os.path.isfile(os.path.join(assets, f"rnado-icon-{n}.png"))}
+    if 256 not in images:
+        raise SystemExit(f"{assets}/rnado-icon-256.png is missing: run packaging/make_rnado_art.py")
+    base = images.pop(256)
+    base.save(os.path.join(out, "rnado.png"))
+    base.save(os.path.join(out, "rnado.ico"), sizes=[(n, n) for n in ICO_SIZES],
+              append_images=[images[n] for n in sorted(images)])
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     out = argv[0] if argv else "."
@@ -53,8 +74,8 @@ def main(argv=None) -> int:
     img = draw()
     img.resize((256, 256), Image.LANCZOS).save(os.path.join(out, "mdatk.png"))
     img.resize((256, 256), Image.LANCZOS).save(os.path.join(out, "mdatk.ico"),
-                                                sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64),
-                                                       (128, 128), (256, 256)])
+                                                sizes=[(n, n) for n in ICO_SIZES])
+    rnado(out)
     return 0
 
 
