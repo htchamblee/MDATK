@@ -294,13 +294,22 @@ def _reject_json(path: str) -> None:
 
 
 _THREAD_LOCK = threading.RLock()
+_HELD: Dict[str, int] = {}  # lock files this process holds (changed under _THREAD_LOCK only)
 
 
 @contextlib.contextmanager
 def _locked(path: str):
-    """Serialise saves and log appends of one project (threads of this process and other processes)."""
+    """Serialise saves and log appends of one project (threads of this process and other processes).
+    Re-entrant: a save inside :func:`locked` takes the lock again (a second flock would wait for itself)."""
     with _THREAD_LOCK:
         lock = os.path.join(os.path.dirname(os.path.abspath(path)), f".{os.path.basename(path)}.lock")
+        if _HELD.get(lock):  # the thread lock is held too, so this is the same thread
+            _HELD[lock] += 1
+            try:
+                yield
+            finally:
+                _HELD[lock] -= 1
+            return
         try:
             import fcntl
             fh = open(lock, "a")
@@ -309,10 +318,18 @@ def _locked(path: str):
             return
         try:
             fcntl.flock(fh, fcntl.LOCK_EX)
+            _HELD[lock] = 1
             yield
         finally:
+            _HELD.pop(lock, None)
             fcntl.flock(fh, fcntl.LOCK_UN)
             fh.close()
+
+
+def locked(path: str):
+    """Hold the lock of project ``path`` while re-reading the file and writing it (a context manager):
+    other programs' saves wait, so whatever they saved before is read and nothing slips in between."""
+    return _locked(path)
 
 
 def save(path: str, project) -> None:

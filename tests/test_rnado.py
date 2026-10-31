@@ -487,3 +487,204 @@ def test_use_for_analysis_in_rnado_saves_the_plan_for_the_analysis_window(app, w
     assert [n.title for n in Project.load(path).workflow.nodes if n.tool == "mdatk"] == ["Analysis of the duplex"]
     kind, title, detail = rn.messages[-1]
     assert title == "Files for the MDATK analysis" and ".parm7" in detail and "Use the plan's files" in detail
+
+
+def _groups_project(tmp_path):
+    p = Project()
+    p.output.out_dir = str(tmp_path / "out")
+    add_node(p.workflow, "note", 40, 40, settings={"text": "select group:Aptamer"})
+    path = str(tmp_path / "groups.mdatk.toml")
+    p.save(path)
+    return path
+
+
+def _other_program(path, **cleaning):
+    """Another program (a second analysis window, `mdatk density fit --save`) saves analysis settings."""
+    p = Project.load(path)
+    for key, value in cleaning.items():
+        setattr(p.cleaning, key, value)
+    p.save(path)
+
+
+def test_reloading_the_analysis_settings_drops_the_windows_group_renames(app, windows, tmp_path):
+    path = _groups_project(tmp_path)
+    win = analysis_window(app, windows, path)
+    row = [r[0] for r in win.group_editor.store].index("Aptamer")
+    assert win.commit_group_name(row, "Apt")  # not saved
+    _other_program(path, extra_strip_mask=":K+")
+    win.check_disk()
+    assert win.change_bar.get_visible()
+    win._on_change_bar(1)  # "Reload them (your unsaved changes are lost)": the rename is one of them
+    assert win.project.group_names()[:1] == ["Aptamer"] and not win._group_renames
+    assert win.project.workflow.nodes[0].settings["text"] == "select group:Aptamer"
+    # RNAdo's next plan is taken as it is (no rename replayed on it), and saving keeps it
+    rn = rnado_window(app, windows, path)
+    rn.project.workflow.nodes[0].settings["text"] = "select group:Aptamer and name P"
+    assert rn.plan_changed() and rn.save_project()
+    win.check_disk()
+    assert win.save_project()
+    saved = Project.load(path)
+    assert saved.group_names()[:1] == ["Aptamer"] and saved.cleaning.extra_strip_mask == ":K+"
+    assert saved.workflow.nodes[0].settings["text"] == "select group:Aptamer and name P"
+
+
+def test_a_plan_rnado_saves_while_the_analysis_window_asks_is_kept(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import app as analysis
+
+    path = project_file(tmp_path)
+    win = analysis_window(app, windows, path)
+    rn = rnado_window(app, windows, path)
+    steps = []
+
+    def ask(_parent, text, *_a, **_k):  # "Replace them?" - meanwhile RNAdo (another process) saves a step
+        assert text.startswith("Another program changed the analysis settings")
+        steps.append(rn.planner.add_step("note", 40, 40 + 200 * len(steps)))
+        assert rn.save_project()
+        pump(1.0 if len(steps) == 1 else 0)  # the first time the file monitors fire during the question
+        return Gtk.ResponseType.ACCEPT
+
+    monkeypatch.setattr(analysis, "ask", ask)
+    for mask in (":K+", ":Cl-"):
+        bound(win, "cleaning.solvent_mask").set_text(f":SOL,{mask}")  # unsaved edit
+        _other_program(path, extra_strip_mask=mask)
+        assert win.save_project()
+        saved = Project.load(path)
+        assert (saved.cleaning.solvent_mask, saved.cleaning.extra_strip_mask) == (f":SOL,{mask}", "")
+        assert [n.id for n in saved.workflow.nodes] == [s.id for s in steps]  # RNAdo's steps kept
+        assert [n.id for n in win.project.workflow.nodes] == [s.id for s in steps]
+        rn.check_disk()
+        assert [n.id for n in rn.project.workflow.nodes] == [s.id for s in steps] and not rn.plan_changed()
+    assert len(steps) == 2
+
+
+def test_rnado_follows_group_renames_in_its_unsaved_plan(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import rnado
+    from mdatk.projectfile import edit_workflow
+
+    path = _groups_project(tmp_path)
+    win = analysis_window(app, windows, path)
+    rn = rnado_window(app, windows, path)
+    added = rn.planner.add_step("vmd", 300, 40)  # unsaved plan edit in RNAdo
+    rn.planner.open_wizard(added)
+    pump(0.3)
+    monkeypatch.setattr(rnado, "ask", lambda *_a, **_k: pytest.fail("asked about a plan changed by renames"))
+    row = [r[0] for r in win.group_editor.store].index("Aptamer")
+    assert win.commit_group_name(row, "Apt") and win.save_project()
+    rn.check_disk()  # the file's plan differs from RNAdo's only by the rename: no conflict
+    assert not rn.change_bar.get_visible() and rn.plan_changed() and added.id in rn.planner.wizards
+    assert rn.project.group_names()[:1] == ["Apt"]
+    assert rn.project.workflow.nodes[0].settings["text"] == "select group:Apt"
+    assert rn.save_project()
+    saved = Project.load(path)
+    assert saved.workflow.nodes[0].settings["text"] == "select group:Apt"
+    assert [n.id for n in saved.workflow.nodes][-1] == added.id
+    # RNAdo saves before its file monitor noticed the rename: the same
+    added = rn.planner.add_step("note", 300, 300)
+    row = [r[0] for r in win.group_editor.store].index("Apt")
+    assert win.commit_group_name(row, "Aptamer2") and win.save_project()
+    assert rn.save_project()
+    saved = Project.load(path)
+    assert saved.group_names()[:1] == ["Aptamer2"]
+    assert saved.workflow.nodes[0].settings["text"] == "select group:Aptamer2"
+    assert [n.id for n in saved.workflow.nodes][-1] == added.id and not rn.plan_changed()
+    # a plan another program really changed is still offered
+    rn.planner.add_step("note", 600, 40)
+    edit_workflow(path, lambda wf: add_node(wf, "vmd", 40, 600))
+    rn.check_disk()
+    assert rn.change_bar.get_visible()
+
+
+def test_saving_without_edits_takes_the_newer_analysis_settings(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import app as analysis
+
+    path = project_file(tmp_path)
+    win = analysis_window(app, windows, path)
+    _other_program(path, extra_strip_mask=":K+")
+    assert not win.analysis_changed()
+    assert win.save_project()  # Ctrl+S before the window noticed: nothing to save, theirs are taken
+    assert Project.load(path).cleaning.extra_strip_mask == ":K+"
+    assert bound(win, "cleaning.extra_strip_mask").get_text() == ":K+" and not win.analysis_changed()
+    _other_program(path, extra_strip_mask=":Cl-")
+    copy = str(tmp_path / "copy.mdatk.toml")
+    monkeypatch.setattr(analysis, "choose_save_path", lambda *_a, **_k: copy)
+    assert win.save_project(True)  # Save as: the copy gets the newest settings too
+    assert Project.load(copy).cleaning.extra_strip_mask == ":Cl-" and win.project_path == copy
+    assert Project.load(path).cleaning.extra_strip_mask == ":Cl-"
+
+
+def test_rnado_takes_the_settings_its_save_merged_with(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import rnado
+    from mdatk.projectfile import edit_workflow
+
+    path = project_file(tmp_path)
+    win = analysis_window(app, windows, path)
+    rn = rnado_window(app, windows, path)
+    for mask, residues, wait in ((":SOL", "1-5", 0), (":WAT", "1-6", 1.5)):
+        rn.planner.add_step("note", 40, 40)  # unsaved RNAdo edit
+        edit_workflow(path, lambda wf: add_node(wf, "vmd", 40, 400))  # e.g. 'rnado template -p' in a terminal
+
+        def ask(*_a, **_k):  # "Another program changed the plan": meanwhile the analysis window saves
+            bound(win, "cleaning.solvent_mask").set_text(mask)
+            win.group_editor.store[0][1] = residues
+            assert win.save_project()
+            pump(wait)  # the second time RNAdo's file monitor fires during the question
+            return rnado.KEEP
+
+        monkeypatch.setattr(rnado, "ask", ask)
+        assert rn.save_project()
+        saved = Project.load(path)
+        assert (saved.cleaning.solvent_mask, saved.groups[0].residues) == (mask, residues)
+        assert [n.tool for n in saved.workflow.nodes] == [n.tool for n in rn.project.workflow.nodes]
+        assert (rn.project.cleaning.solvent_mask, rn.project.groups[0].residues) == (mask, residues)
+        rn.check_disk()
+        assert not rn._disk.changed() and not rn.plan_changed() and not rn.change_bar.get_visible()
+
+
+def test_using_the_plans_files_keeps_a_pending_question(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import app as analysis
+
+    path = project_file(tmp_path, template="amber")
+    win = analysis_window(app, windows, path)
+    bound(win, "cleaning.solvent_mask").set_text(":SOL")  # unsaved edit
+    _other_program(path, extra_strip_mask=":K+")
+    assert win.use_plan_inputs()
+    assert win.change_bar.get_visible() and bound(win, "cleaning.solvent_mask").get_text() == ":SOL"
+    _other_program(path, extra_strip_mask=":Cl-")  # newer settings than the ones the bar offers: asked
+    asked = []
+    monkeypatch.setattr(analysis, "ask", lambda *a, **_k: asked.append(a[1]) or Gtk.ResponseType.CANCEL)
+    assert not win.save_project() and asked and Project.load(path).cleaning.extra_strip_mask == ":Cl-"
+    win.check_disk()
+    win._on_change_bar(1)  # reload them
+    assert bound(win, "cleaning.extra_strip_mask").get_text() == ":Cl-" and not win.change_bar.get_visible()
+
+
+def test_opening_a_script_wizard_is_no_edit_of_the_plan(app, windows, tmp_path, monkeypatch):
+    from mdatk.gui import rnado
+    from mdatk.projectfile import edit_workflow
+
+    path = project_file(tmp_path, template="amber")
+
+    def older(wf):  # a project file from an older version: an option of the build step is missing
+        for n in wf.nodes:
+            if n.tool == "amber-build":
+                del n.settings["mg_types"]
+
+    edit_workflow(path, older)
+    rn = rnado_window(app, windows, path)
+    rn.open_tool("wizard")  # 'rnado --open wizard', the analysis window's "Script wizard: open in RNAdo…"
+    pump(0.3)
+    assert rn.project.workflow.scratch and not rn.plan_changed()
+    rn.wizard.select_tool("gromacs")  # choosing a tool is no edit either
+    pump(0.3)
+    build = next(n for n in rn.project.workflow.nodes if n.tool == "amber-build")
+    rn.planner.open_wizard(build)  # fills in the missing option
+    pump(0.3)
+    assert "mg_types" in build.settings and not rn.plan_changed()
+    asked = []
+    monkeypatch.setattr(rnado, "ask_unsaved", lambda *a, **_k: asked.append(a) or "cancel")
+    assert not rn._on_delete() and not asked  # closing does not ask to save
+    edit_workflow(path, lambda wf: add_node(wf, "vmd", 40, 600))  # another program saves the plan
+    rn.check_disk()
+    assert not rn.change_bar.get_visible() and rn.project.workflow.nodes[-1].tool == "vmd"
+    rn.wizard.title_entry.set_text("My GROMACS run")  # an edit in the wizard still is one
+    assert rn.plan_changed() and rn._on_delete() and asked

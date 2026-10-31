@@ -6,6 +6,9 @@ RNAdo owns the file's ``workflow`` section (the plan) and writes only that part
 on disk since it last read it, saves the plan it finds there.  Each window remembers what it last read
 (:class:`DiskState`), notices a newer file when it gets the focus or the file monitor fires
 (:class:`FileWatch`), takes the other program's part and offers to reload its own when both changed.
+Residue-group renames reach the other side's plan (:func:`renamed_workflow`, :func:`group_renames`), and
+a save asks its questions first, then re-reads, merges and writes under the file's lock
+(:func:`mdatk.projectfile.locked`).
 """
 
 from __future__ import annotations
@@ -20,12 +23,13 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
-from ..config import Project, ResidueGroup, _to_plain  # noqa: E402
+from ..config import Project, ResidueGroup, WorkflowParams, _from_plain, _to_plain  # noqa: E402
 from . import widgets as W  # noqa: E402
 
 PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
 RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
 WATCH_DELAY_MS = 300  # file monitor events within this time are checked once
+SAVE_ATTEMPTS = 5  # a save asks again when the file changed while it asked, then gives up
 
 
 # ---------------------------------------------------------------------------
@@ -81,18 +85,68 @@ class DiskState:
         return file_stamp(self.path) != self.stamp
 
 
-def renamed_workflow(workflow, renames: Sequence[Tuple[str, str, Sequence[str]]]):
-    """A copy of ``workflow`` with residue-group renames applied: (old, new, the group names before the
-    rename), as :meth:`Project.rename_group` changes every reference.  The analysis window replays its
-    renames on a plan RNAdo saved meanwhile, so neither side's edit is lost."""
-    wf = copy.deepcopy(workflow)
+Renames = Sequence[Tuple[str, str, Sequence[str]]]
+
+
+def rename_groups_in(workflow, renames: Renames) -> None:
+    """Apply residue-group renames to ``workflow`` in place: (old, new, the group names before the
+    rename), as :meth:`Project.rename_group` changes every reference."""
     for old, new, names in renames:
-        tmp = Project(groups=[ResidueGroup(name=n) for n in names], workflow=wf)
+        tmp = Project(groups=[ResidueGroup(name=n) for n in names], workflow=workflow)
         try:
             tmp.rename_group(old, new)
         except (KeyError, ValueError):  # the group or its new name does not fit any more: nothing to follow
             pass
+
+
+def renamed_workflow(workflow, renames: Renames):
+    """A copy of ``workflow`` with residue-group renames applied.  The analysis window replays its renames
+    on a plan RNAdo saved meanwhile, so neither side's edit is lost."""
+    wf = copy.deepcopy(workflow)
+    rename_groups_in(wf, renames)
     return wf
+
+
+def renamed_data(data: Dict[str, Any], renames: Renames) -> Dict[str, Any]:
+    """:func:`renamed_workflow` for a plan as plain data (:func:`workflow_data`)."""
+    if not renames:
+        return data
+    wf = _from_plain(WorkflowParams, copy.deepcopy(data), "workflow")
+    rename_groups_in(wf, renames)
+    return _to_plain(wf)
+
+
+def group_renames(before: Sequence[ResidueGroup],
+                  after: Sequence[ResidueGroup]) -> List[Tuple[str, str, List[str]]]:
+    """The renames (as :func:`renamed_workflow` takes them) that another program made when the residue
+    groups ``before`` became ``after``: a name that is gone paired with a new one that has the same
+    residues and selection, else with the new name in its row (the analysis window renames in place and
+    adds rows at the end).  RNAdo follows them in its unsaved plan."""
+    old_names = [g.name for g in before]
+    new_names = {h.name for h in after}
+    gone = [k for k, g in enumerate(before) if g.name not in new_names]
+    added = [j for j, h in enumerate(after) if h.name not in old_names]
+    pairs: Dict[int, int] = {}  # index in before -> index in after
+
+    def key(g: ResidueGroup) -> Tuple[str, str]:
+        return g.residues, g.selection
+
+    for k in gone:
+        same = [j for j in added if key(after[j]) == key(before[k])]
+        if len(same) == 1 and [key(before[i]) for i in gone].count(key(before[k])) == 1:
+            pairs[k] = same[0]
+            added.remove(same[0])
+    for k in gone:
+        if k not in pairs and k in added:  # renamed in its row, residues edited as well
+            pairs[k] = k
+            added.remove(k)
+    out: List[Tuple[str, str, List[str]]] = []
+    names = list(old_names)
+    for k in sorted(pairs):
+        old, new = before[k].name, after[pairs[k]].name
+        out.append((old, new, list(names)))
+        names = [new if n == old else n for n in names]
+    return out
 
 
 class FileWatch:

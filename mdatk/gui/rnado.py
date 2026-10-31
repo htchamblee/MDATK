@@ -19,7 +19,7 @@ import os
 import sys
 import threading
 import warnings
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import gi
 
@@ -38,8 +38,9 @@ from .about import citation_text, export_bibtex  # noqa: E402
 from .jobs import JobControl, confirm_run, waiting_text  # noqa: E402
 from .logpanel import LogPanel  # noqa: E402
 from .planner import PlannerPanel, checkable  # noqa: E402
-from .projectui import (DiskState, FileWatch, ask, ask_unsaved, change_bar, choose_project,  # noqa: E402
-                        choose_save_path, fill_open_menu, workflow_data)
+from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, ask_unsaved, change_bar,  # noqa: E402
+                        choose_project, choose_save_path, fill_open_menu, group_renames, rename_groups_in,
+                        renamed_data, workflow_data)
 from .worker import call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -328,11 +329,33 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             self.wizard.select_tool(self.wizard.tool.name)
         self._mem_wf = workflow_data(self.project)  # after the planner's own adjustments
 
+    def without_edit(self, change: Callable[[], None]) -> None:
+        """Run ``change``, which adjusts the plan without the user's edit (a script wizard opens and fills
+        in its step's defaults): a plan without unsaved edits still has none afterwards."""
+        unedited = not self.plan_changed()
+        change()
+        if unedited:
+            self._mem_wf = workflow_data(self.project)
+
     def _take_other(self, disk: Project) -> None:
-        """The settings besides the plan as the file has them now (groups and folders the plan uses)."""
+        """The settings besides the plan as the file has them now (groups and folders the plan uses).
+        Residue groups another program renamed are renamed in RNAdo's plan as well, in the plan last
+        read (``_disk``) and in the saved one (``_mem_wf``): a plan that differs from the file's only by
+        those renames is not a conflict, and saving does not bring the old names back."""
+        renames = group_renames(self.project.groups, disk.groups)
         for f in dataclasses.fields(Project):
             if f.name != "workflow":
                 setattr(self.project, f.name, getattr(disk, f.name))
+        if renames:
+            rename_groups_in(self.project.workflow, renames)  # in place: the planner keeps its steps
+            self._mem_wf = renamed_data(self._mem_wf, renames)
+            if self._disk is not None:
+                self._disk.workflow = renamed_data(self._disk.workflow, renames)
+            for win in [self.wizard] + list(self.planner.wizards.values()):
+                if win is not None:  # their forms show the old names, and a form writes all it shows
+                    win.reload()
+            self.append_log("Residue groups renamed by another program, followed in the plan: "
+                            + ", ".join(f"{old} → {new}" for old, new, _names in renames))
         self.planner.changed()
         if self.wizard is not None:
             self.wizard.schedule_refresh()
@@ -380,7 +403,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
     def save_project(self, save_as: bool = False) -> bool:
         """Save the plan.  Into the open project file only the plan is written (the analysis window may
         have the other settings open); Save as writes a complete project file."""
-        from ..projectfile import add_recent, edit_workflow
+        from ..projectfile import add_recent, edit_workflow, locked
 
         if save_as or not self.project_path or not os.path.isfile(self.project_path):
             name = self.project.workflow.project_name
@@ -405,44 +428,57 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             self.append_log(f"Saved project {path}")
             return True
         path = self.project_path
-        try:
-            state, disk = DiskState.read(path)
-        except (OSError, ValueError) as exc:
-            self.error(f"Could not read {path}", str(exc))
-            return False
-        base = self._disk.workflow if self._disk is not None else state.workflow
-        if state.workflow != base:  # another program saved a plan since RNAdo read the file
-            if not self.plan_changed():
-                self._take_other(disk)
-                self._take_plan(disk.workflow)
-                self._disk = state
-                self.change_bar.hide()
-                self.append_log(f"Nothing to save: reloaded the plan another program saved in {path}")
-                return True
-            choice = ask(self, "Another program changed the plan in this project file",
-                         f"{path} holds a plan saved after RNAdo read it. Replace it with yours, or reload "
-                         "it (your unsaved changes are lost)?",
-                         [("Cancel", Gtk.ResponseType.CANCEL), ("Reload theirs", RELOAD),
-                          ("Replace with mine", KEEP)], Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
-            if choice == RELOAD:
-                self._reload_from_disk()
-                return False
-            if choice != KEEP:
-                return False
-        ours = self.project.workflow
+        agreed: Optional[tuple] = None  # (plan, groups) of the file the user chose to replace
 
         def replace(wf) -> None:
             for f in dataclasses.fields(wf):
-                setattr(wf, f.name, getattr(ours, f.name))
+                setattr(wf, f.name, getattr(self.project.workflow, f.name))
 
-        try:
-            edit_workflow(path, replace)
-            new_state, _project = DiskState.read(path)
-        except (OSError, ValueError) as exc:
-            self.error("Could not save the plan", str(exc))
+        for _attempt in range(SAVE_ATTEMPTS):
+            try:
+                state, disk = DiskState.read(path)
+            except (OSError, ValueError) as exc:
+                self.error(f"Could not read {path}", str(exc))
+                return False
+            self._take_newer_other(state, disk)  # renamed groups first: a plan renamed only is no conflict
+            base = self._disk.workflow if self._disk is not None else state.workflow
+            if state.workflow != base and not self._agreed(agreed, state, disk):
+                # another program saved a plan since RNAdo read the file
+                if not self.plan_changed():
+                    self._take_plan(disk.workflow)
+                    self._disk = state
+                    self.change_bar.hide()
+                    self.append_log(f"Nothing to save: reloaded the plan another program saved in {path}")
+                    return True
+                choice = ask(self, "Another program changed the plan in this project file",
+                             f"{path} holds a plan saved after RNAdo read it. Replace it with yours, or "
+                             "reload it (your unsaved changes are lost)?",
+                             [("Cancel", Gtk.ResponseType.CANCEL), ("Reload theirs", RELOAD),
+                              ("Replace with mine", KEEP)], Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
+                if choice == RELOAD:
+                    self._reload_from_disk()
+                    return False
+                if choice != KEEP:
+                    return False
+                agreed = (state.workflow, disk.groups)
+            # after any question: re-read, compare and write under the file's lock, so a plan or settings
+            # another program saved while the question was open are not overwritten unseen
+            try:
+                with locked(path):
+                    now, disk = DiskState.read(path)
+                    self._take_newer_other(now, disk)
+                    base = self._disk.workflow if self._disk is not None else now.workflow
+                    if now.workflow != base and not self._agreed(agreed, now, disk):
+                        continue  # a newer plan: ask about that one
+                    edit_workflow(path, replace)
+                    new_state, _project = DiskState.read(path)  # what was merged and written
+            except (OSError, ValueError) as exc:
+                self.error("Could not save the plan", str(exc))
+                return False
+            break
+        else:
+            self.error("Could not save the plan", f"Other programs kept saving {path}; try again.")
             return False
-        if state.other != (self._disk.other if self._disk is not None else state.other):
-            self._take_other(disk)
         self._disk = new_state
         self._mem_wf = workflow_data(self.project)
         self.change_bar.hide()
@@ -461,11 +497,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         except (OSError, ValueError) as exc:  # e.g. a text editor left it half-written: look again later
             log.warning("could not re-read %s: %s", self._disk.path, exc)
             return
-        if state.other != self._disk.other:
-            self._take_other(disk)
-            self.append_log(f"{os.path.basename(state.path)} changed on disk: took its new analysis settings "
-                            "(residue groups, folders)")
-        if state.workflow == self._disk.workflow:
+        self._take_newer_other(state, disk)
+        if state.workflow == self._disk.workflow:  # also when the plan changed only by group renames
             self._disk = state
             return
         if not self.plan_changed():
@@ -493,13 +526,30 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         self.change_bar.hide()
         self.append_log(f"Reloaded the plan from {state.path}")
 
+    def _take_newer_other(self, state: DiskState, disk: Project) -> None:
+        """Take the settings besides the plan when the file (``state``, read as ``disk``) has new ones."""
+        if self._disk is None or state.other == self._disk.other:
+            return
+        self._take_other(disk)
+        self._disk.other = state.other
+        self.append_log(f"{os.path.basename(state.path)} changed on disk: took its new analysis settings "
+                        "(residue groups, folders)")
+
+    @staticmethod
+    def _agreed(agreed: Optional[tuple], state: DiskState, disk: Project) -> bool:
+        """The file (``state``, read as ``disk``) holds the plan the user chose to replace (``agreed``:
+        that plan and the residue groups then), with the groups renamed since followed in it."""
+        if agreed is None:
+            return False
+        plan, groups = agreed
+        return state.workflow == renamed_data(plan, group_renames(groups, disk.groups))
+
     def _refresh_other(self) -> None:
         try:
             state, disk = DiskState.read(self._disk.path)
         except (OSError, ValueError):
             return
-        if state.other != self._disk.other:
-            self._take_other(disk)
+        self._take_newer_other(state, disk)
 
     def _on_change_bar(self, response: int) -> None:
         if response == RELOAD:
@@ -511,8 +561,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                 state, disk = DiskState.read(self._disk.path)
             except (OSError, ValueError):
                 return
-            if state.other != self._disk.other:
-                self._take_other(disk)
+            self._take_newer_other(state, disk)
             self._disk = state
             self.append_log("Kept your plan; saving replaces the one the other program saved")
 
