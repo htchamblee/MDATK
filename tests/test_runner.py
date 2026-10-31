@@ -141,3 +141,42 @@ def test_failure_message_keeps_the_reason(tmp_path):
     missing = ScriptJob(1, "gone", str(tmp_path / "gone.sh"), node_id="g")
     with pytest.raises(ScriptFailed, match=r"gone\.sh \(step 01\) failed: .*does not exist"):
         run_jobs([missing], None, on_line=lambda line: None)
+
+
+def test_step_marks_and_stderr_apart(tmp_path):
+    """RNAdo's log panel: every line marked with its step, stderr apart (and still in the step log)."""
+    from mdatk.projectfile import read_log
+    from mdatk.config import Project
+
+    project = tmp_path / "p.mdatk.toml"
+    Project().save(str(project))
+    script = tmp_path / "s.sh"
+    script.write_text('echo "to stdout"\necho "to stderr" >&2\necho "ERROR: bad" >&2\nexit 0\n')
+    out, err = [], []
+    results = run_jobs([ScriptJob(7, "Step seven", str(script), node_id="n7")], str(project),
+                       on_line=out.append, on_stderr=err.append, step_marks=True)
+    assert [r.status for r in results] == ["ok"]
+    assert "[07] to stdout" in out and "[07] to stderr" not in out
+    assert err == ["[07] to stderr", "[07] ERROR: bad"]
+    assert any(line.startswith("==== step 07: Step seven - bash s.sh") for line in out)
+    entry = read_log(str(project))[-1]
+    assert entry["step"] == "07"
+    assert all(t in entry["output"] for t in ("to stdout", "to stderr", "ERROR: bad"))
+    # by default (one script at a time) nothing changes: no marks, stderr merged into on_line
+    lines = []
+    run_jobs([ScriptJob(7, "Step seven", str(script), node_id="n7")], None, on_line=lines.append)
+    assert "to stdout" in lines and "to stderr" in lines and "ERROR: bad" in lines
+
+
+def test_a_broken_stderr_callback_stops_the_script(tmp_path):
+    script = tmp_path / "s.sh"
+    script.write_text('echo "first" >&2\nsleep 5\necho "never"\n')
+
+    def broken(_line):
+        raise BrokenPipeError("closed")
+
+    t0 = time.monotonic()
+    with pytest.raises(BrokenPipeError):
+        run_jobs([ScriptJob(1, "s", str(script), node_id="n")], None, on_line=lambda _l: None,
+                 on_stderr=broken)
+    assert time.monotonic() - t0 < 4

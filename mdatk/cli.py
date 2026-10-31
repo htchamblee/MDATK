@@ -13,6 +13,9 @@ Every GUI action is available here, driven by the same TOML project file::
     mdatk pdb clean model.pdb -o model_amber.pdb --scheme amber --chain-reference start.pdb
     mdatk build helix --seq GGCAU --chirality L -o helix.pdb
     mdatk dict finish acedrg_out/ --code 0A5 -o 0A5.cif
+
+``rnado`` (RNAdo, MDATK's workflow planner) opens the planner on a project; ``rnado write -p plan.mdatk.toml``
+and the other actions are the same as ``mdatk workflow write ...`` (see :func:`rnado_main`).
 """
 
 from __future__ import annotations
@@ -181,6 +184,11 @@ def _project_file(args) -> Optional[str]:
 
 
 def cmd_gui(args) -> int:
+    if args.rnado or args.open:
+        from .gui.rnado import main as rnado_gui
+
+        argv = [args.params] if args.params else []
+        return rnado_gui(argv + (["--open", args.open] if args.open else []))
     from .gui.app import main as gui_main
 
     return gui_main([args.params] if args.params else [])
@@ -835,11 +843,9 @@ def cmd_workflow_template(args) -> int:
 
 def _edit_project_workflow(path: str, edit) -> None:
     """Change the workflow part of a project file (paths stay as written; the step log is kept)."""
-    from .projectfile import read
+    from .projectfile import edit_workflow
 
-    project = Project.from_dict(read(path))  # no path resolution: relative paths stay relative
-    edit(project.workflow)
-    project.save(path)
+    edit_workflow(path, edit)
 
 
 def cmd_workflow_restraints(args) -> int:
@@ -890,9 +896,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="command")
 
-    p = sub.add_parser("gui", help="start the GTK 3 interface")
+    p = sub.add_parser("gui", help="start the GTK 3 interface (the analysis window, or RNAdo)")
     p.add_argument("params", nargs="?", help="project file to open")
+    p.add_argument("--rnado", "--planner", action="store_true",
+                   help="start RNAdo, the workflow planner, instead of the analysis window (same as: rnado)")
+    p.add_argument("--open", choices=RNADO_TOOLS, help="start RNAdo with this tool open as well")
     p.set_defaults(func=cmd_gui)
+    sub.add_parser("rnado", help="RNAdo, the workflow planner: 'mdatk rnado [PROJECT]' opens it, 'mdatk "
+                                 "rnado ACTION ...' is 'mdatk workflow ACTION ...' (see: rnado --help)")
 
     p = sub.add_parser("demo", help="write a synthetic RNA aptamer/target system and project file")
     p.add_argument("out_dir")
@@ -1118,7 +1129,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# ---------------------------------------------------------------------------
+# rnado: the workflow planner's own command
+# ---------------------------------------------------------------------------
+
+RNADO_TOOLS = ("wizard", "pdb", "builder")  # mdatk.gui.launch.TOOLS (that module stays free of the CLI)
+WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "generate", "template", "restraints")
+
+
+def rnado_gui_parser() -> argparse.ArgumentParser:
+    """Arguments of the RNAdo program (``rnado`` without an action, ``rnado-gui``)."""
+    parser = argparse.ArgumentParser(
+        prog="rnado", description="RNAdo, MDATK's workflow planner: lay out the steps from sequence to MD "
+        "ensemble, write their scripts and run them. 'rnado ACTION ...' is 'mdatk workflow ACTION ...' "
+        f"(actions: {', '.join(WORKFLOW_ACTIONS)}).")
+    parser.add_argument("--version", action="version", version=f"RNAdo ({PROJECT_ABBREV}) {__version__}")
+    parser.add_argument("project", nargs="?", help="project file (.mdatk.toml) to open")
+    parser.add_argument("--open", choices=RNADO_TOOLS,
+                        help="also open the script wizard, the PDB clean-up or the structure builder")
+    return parser
+
+
+def rnado_main(argv: Optional[List[str]] = None) -> int:
+    """``rnado``: without arguments or with a project file the RNAdo window; ``rnado ACTION ...`` (an
+    action of ``mdatk workflow``: write, run, status ...) is ``mdatk workflow ACTION ...``."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in WORKFLOW_ACTIONS:
+        return main(["workflow"] + argv)
+    rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    from .gui.rnado import main as rnado_gui
+
+    return rnado_gui(argv)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["rnado"]:  # everything after it belongs to rnado (the AppImage runs 'mdatk rnado ...')
+        return rnado_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

@@ -500,13 +500,13 @@ def main_window(demo_dry, tmp_path):
     if not Gtk.init_check([])[0]:  # pragma: no cover
         pytest.skip("cannot initialise GTK")
     from mdatk.config import Project
-    from mdatk.gui.app import MainWindow
+    from mdatk.gui.rnado import RNAdoWindow  # the structure builder lives in RNAdo
 
     app = Gtk.Application(application_id=None)
     app.register(None)
     p = Project.load(demo_dry["preset"])
     p.output.out_dir = str(tmp_path / "gui_out")
-    win = MainWindow(app, p, demo_dry["preset"])
+    win = RNAdoWindow(app, p, demo_dry["preset"])
     win.messages = []
     win.info = lambda t, d="": win.messages.append(("info", t, d))
     win.error = lambda t, d="": win.messages.append(("error", t, d))
