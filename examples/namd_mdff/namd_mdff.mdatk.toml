@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.11"
 # When the settings were last saved.
-saved = 2026-10-31T10:24:54
+saved = 2026-11-01T02:12:54
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -471,7 +471,7 @@ selection = ""
 # File name prefix
 prefix = "MDATK_frame"
 
-# Project Planner and script wizard
+# RNAdo's plan and script wizard
 [workflow]
 # Project name used in every generated file name
 project_name = "mixeddl"

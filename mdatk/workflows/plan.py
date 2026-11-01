@@ -1,4 +1,4 @@
-"""Project Planner: turn a plan (steps + connections) into consistently named files.
+"""RNAdo's plan: turn a plan (steps + connections) into consistently named files.
 
 A plan is a directed graph stored in :class:`mdatk.config.WorkflowParams`.
 Resolving it walks the steps in dependency order, hands every step the file

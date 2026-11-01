@@ -1,4 +1,4 @@
-"""Registry of script generators (Project Planner step types)."""
+"""Registry of script generators (the step types of RNAdo's plan)."""
 
 from __future__ import annotations
 

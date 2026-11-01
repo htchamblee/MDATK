@@ -375,7 +375,7 @@ def cmd_preview(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# workflow: script generators and the Project Planner
+# workflow: script generators and RNAdo's plan
 # ---------------------------------------------------------------------------
 
 
@@ -1039,8 +1039,9 @@ def build_parser() -> argparse.ArgumentParser:
         c.set_defaults(func=cmd_dict)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
-    p = sub.add_parser("workflow", help="script generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, "
-                                        "VMD, custom scripts) and the Project Planner")
+    p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
+                                        "generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, NAMD, VMD, "
+                                        "Phenix, Coot, custom scripts ...)")
     wsub = p.add_subparsers(dest="wcommand", metavar="action")
     w = wsub.add_parser("tools", help="list step types, or the options of one")
     w.add_argument("tool", nargs="?")

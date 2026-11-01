@@ -1,7 +1,7 @@
 """MDATK project files (TOML).
 
-One human-readable file holds a project's settings, its Project Planner
-workflow, free-text notes and the log of the steps run in it::
+One human-readable file holds a project's settings, its RNAdo plan
+(workflow), free-text notes and the log of the steps run in it::
 
     format = "mdatk-project"
     notes = "..."     # free-text project notes

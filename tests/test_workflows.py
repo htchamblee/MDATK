@@ -1,4 +1,4 @@
-"""0.0.2b: script generators, logic checks and the Project Planner (no GUI)."""
+"""Script generators, logic checks and RNAdo's plan (no GUI)."""
 
 import json
 import os

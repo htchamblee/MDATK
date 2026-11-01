@@ -128,7 +128,7 @@ class StepContext:
 
 
 class Tool:
-    """A script generator, i.e. a step type of the Project Planner.
+    """A script generator, i.e. a step type of RNAdo's plan.
 
     Subclasses define ``sections`` (the options), ``inputs`` / ``outputs``
     (planner ports) and implement :meth:`check`, :meth:`output_values` and
