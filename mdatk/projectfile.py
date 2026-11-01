@@ -294,13 +294,22 @@ def _reject_json(path: str) -> None:
 
 
 _THREAD_LOCK = threading.RLock()
+_HELD: Dict[str, int] = {}  # lock files this process holds (changed under _THREAD_LOCK only)
 
 
 @contextlib.contextmanager
 def _locked(path: str):
-    """Serialise saves and log appends of one project (threads of this process and other processes)."""
+    """Serialise saves and log appends of one project (threads of this process and other processes).
+    Re-entrant: a save inside :func:`locked` takes the lock again (a second flock would wait for itself)."""
     with _THREAD_LOCK:
         lock = os.path.join(os.path.dirname(os.path.abspath(path)), f".{os.path.basename(path)}.lock")
+        if _HELD.get(lock):  # the thread lock is held too, so this is the same thread
+            _HELD[lock] += 1
+            try:
+                yield
+            finally:
+                _HELD[lock] -= 1
+            return
         try:
             import fcntl
             fh = open(lock, "a")
@@ -309,10 +318,18 @@ def _locked(path: str):
             return
         try:
             fcntl.flock(fh, fcntl.LOCK_EX)
+            _HELD[lock] = 1
             yield
         finally:
+            _HELD.pop(lock, None)
             fcntl.flock(fh, fcntl.LOCK_UN)
             fh.close()
+
+
+def locked(path: str):
+    """Hold the lock of project ``path`` while re-reading the file and writing it (a context manager):
+    other programs' saves wait, so whatever they saved before is read and nothing slips in between."""
+    return _locked(path)
 
 
 def save(path: str, project) -> None:
@@ -323,14 +340,35 @@ def save(path: str, project) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     with _locked(path):
-        log_part, log_file = _existing_log(path)
-        text = project_text(project, log_file)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            if log_part:
-                fh.write("\n" + log_part)
-        os.replace(tmp, path)
+        _write(path, project)
+
+
+def _write(path: str, project) -> None:
+    """Write the settings, keeping the step log (the caller holds the project's lock)."""
+    log_part, log_file = _existing_log(path)
+    text = project_text(project, log_file)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        if log_part:
+            fh.write("\n" + log_part)
+    os.replace(tmp, path)
+
+
+def edit_workflow(path: str, edit) -> None:
+    """Change only the workflow part of project ``path``: re-read the file, call ``edit(workflow)`` and
+    write it back, so the other settings stay as the file has them (relative paths stay relative; the
+    step log is kept).  RNAdo saves its plan this way while the analysis window may have the file open;
+    the read and the write happen under the project's lock, so no other save slips in between."""
+    from .config import Project
+
+    _reject_json(path)
+    if is_params_log(path):
+        raise ValueError(f"{path} is the parameter log of a run; save the project under another name")
+    with _locked(path):
+        project = Project.from_dict(read(path))  # no path resolution: relative paths stay relative
+        edit(project.workflow)
+        _write(path, project)
 
 
 def _existing_log(path: str) -> Tuple[str, str]:

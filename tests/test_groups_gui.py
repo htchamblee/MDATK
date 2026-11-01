@@ -312,12 +312,14 @@ def test_chains_of_a_topology_replaced_while_read_are_dropped(tmp_path, held_rea
                                                            ("Chain_C", "17-24"), ("Chain_D", "25-32")]
 
         reads.gate.clear()
+        before = len(reads.started)
         win.groups_from_chains()
         assert win.group_status.get_text() == "Reading the chains of right.parm7 …"
+        assert pump(lambda: len(reads.started) == before + 1, 5)  # its thread has started the read
         win.topology_entry.set_text("")
         reads.release()
-        assert win.group_status.get_text() == ("Groups not changed: the topology changed while the chains "
-                                               "of right.parm7 were read")
+        dropped = ("Groups not changed: the topology changed while the chains of right.parm7 were read")
+        assert pump(lambda: win.group_status.get_text() == dropped, 10), win.group_status.get_text()
         assert len(win.collect(validate=False).groups) == 4
     finally:
         win.destroy()

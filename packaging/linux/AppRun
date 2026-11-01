@@ -3,9 +3,13 @@
 #
 #   ./MDATK-x86_64.AppImage                    the GTK interface
 #   ./MDATK-x86_64.AppImage project.mdatk.toml the GTK interface with that project
+#   ./MDATK-x86_64.AppImage rnado [PROJECT]    RNAdo, the project planner ("mdatk rnado": further
+#                                              arguments are passed on, and "rnado ACTION ..." is
+#                                              "mdatk workflow ACTION ...")
 #   ./MDATK-x86_64.AppImage COMMAND ...        the command line (mdatk --help lists the commands)
 #
-# A symbolic link to the AppImage named "mdatk-gui" always starts the interface.
+# A symbolic link to the AppImage named "mdatk-gui" always starts the interface, one named "rnado"
+# (or "rnado-gui") is "mdatk rnado" with all arguments.
 HERE="$(dirname "$(readlink -f "$0")")"
 MDATK="$HERE/usr/lib/mdatk/mdatk"
 
@@ -29,9 +33,15 @@ for lib in "$FALLBACK"/*; do
     fi
 done
 
+# rnado: mdatk's rnado_main runs the workflow actions and otherwise opens the RNAdo window (rnado-gui
+# itself takes only a project and --open)
 case "$(basename "${ARGV0:-$0}")" in
     mdatk-gui*) exec "$MDATK" gui "$@" ;;
+    rnado*) exec "$MDATK" rnado "$@" ;;
 esac
+if [ "${1:-}" = rnado ]; then
+    exec "$MDATK" "$@"
+fi
 if [ $# -eq 0 ]; then
     exec "$MDATK" gui
 fi

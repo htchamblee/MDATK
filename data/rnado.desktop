@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=RNAdo
+GenericName=RNA MD set-up planner
+Comment=Plan RNA molecular dynamics set-ups: project planner, script wizard, PDB hygiene and structure builder
+Exec=rnado-gui %f
+Icon=rnado
+Terminal=false
+Categories=Science;Chemistry;Education;
+MimeType=application/toml;
+Keywords=RNA;molecular dynamics;planner;Amber;GROMACS;MDATK;
+# The icon is in mdatk/assets; to add it to the icon theme of a source or pip installation:
+#   xdg-icon-resource install --novendor --size 256 mdatk/assets/rnado-icon-256.png rnado

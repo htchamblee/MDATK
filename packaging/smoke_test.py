@@ -1,7 +1,7 @@
 """Smoke test of a stand-alone MDATK build (AppImage, bundle folder or Windows mdatk.exe).
 
     python packaging/smoke_test.py EXE [--work DIR] [--render] [--barnaba] [--gui SECONDS]
-                                       [--bundled-ffmpeg] [--version X.Y.Z]
+                                       [--rnado SECONDS] [--bundled-ffmpeg] [--version X.Y.Z]
 
 EXE is the AppImage, ``dist/mdatk/mdatk`` or ``dist\\mdatk\\mdatk.exe``.  Runs, in order:
 
@@ -13,6 +13,8 @@ EXE is the AppImage, ``dist/mdatk/mdatk`` or ``dist\\mdatk\\mdatk.exe``.  Runs, 
   and ``EXE workflow generate amber-build --dry-run`` (embedded module sources)
 * ``--gui N``: ``EXE gui PROJECT`` must still be running after N seconds without errors
   (run under ``xvfb-run -a`` on a headless Linux machine)
+* ``--rnado N``: the same for RNAdo: ``EXE rnado PROJECT`` for the AppImage, otherwise the
+  ``rnado-gui`` program next to EXE (``rnado-gui PROJECT``)
 
 Uses the standard library only; exits with 1 when a check fails.
 """
@@ -71,10 +73,11 @@ def run(label: str, cmd: List[str], env: Dict[str, str], timeout: float = 900,
     return out if ok else None
 
 
-def gui(exe: str, project: str, seconds: float, env: Dict[str, str]) -> None:
-    label = f"gui runs for {seconds:g} s"
+def gui(cmd: List[str], seconds: float, env: Dict[str, str], name: str = "gui") -> None:
+    """``cmd`` (an interface with a project) must still be running after ``seconds``, without errors."""
+    label = f"{name} runs for {seconds:g} s"
     with tempfile.TemporaryFile() as log:
-        proc = subprocess.Popen([exe, "gui", project], stdout=log, stderr=subprocess.STDOUT, env=env)
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
         try:
             proc.wait(seconds)
             exited = True
@@ -99,6 +102,13 @@ def gui(exe: str, project: str, seconds: float, env: Dict[str, str]) -> None:
             print("     " + out[-1500:].replace("\n", "\n     "))
 
 
+def rnado_command(exe: str) -> List[str]:
+    """How a build starts RNAdo: ``AppImage rnado`` (AppRun), or the bundle's rnado-gui program."""
+    if exe.endswith(".AppImage"):
+        return [exe, "rnado"]
+    return [os.path.join(os.path.dirname(exe), "rnado-gui.exe" if os.name == "nt" else "rnado-gui")]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("exe")
@@ -108,6 +118,7 @@ def main(argv=None) -> int:
     ap.add_argument("--bundled-ffmpeg", action="store_true")
     ap.add_argument("--barnaba", action="store_true")
     ap.add_argument("--gui", type=float, default=0.0, metavar="SECONDS")
+    ap.add_argument("--rnado", type=float, default=0.0, metavar="SECONDS")
     ap.add_argument("--frames", type=int, default=12)
     args = ap.parse_args(argv)
 
@@ -143,7 +154,9 @@ def main(argv=None) -> int:
                                                      "--out-dir", os.path.join(work, "wf"),
                                                      "-i", f"structure={helix}"], env)
     if args.gui and os.path.isfile(project):
-        gui(exe, project, args.gui, env)
+        gui([exe, "gui", project], args.gui, env)
+    if args.rnado and os.path.isfile(project):
+        gui([*rnado_command(exe), project], args.rnado, env, "rnado")
 
     print(f"\n{'FAILED: ' + ', '.join(FAILED) if FAILED else 'all checks passed'}")
     return 1 if FAILED else 0

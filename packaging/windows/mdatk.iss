@@ -5,6 +5,8 @@
 ;
 ; packaging/windows/build_windows.sh calls it with these values. Installs per user by default
 ; (no administrator rights needed); "Install for all users" is offered in the setup dialog.
+; Start-menu shortcuts: MDATK (mdatk-gui.exe) and RNAdo, the project planner (rnado-gui.exe, with its
+; own icon built into the program), each with an optional desktop shortcut.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -51,6 +53,8 @@ ChangesEnvironment=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "rnadodesktopicon"; Description: "Create a desktop shortcut for RNAdo (project planner)"; \
+    GroupDescription: "{cm:AdditionalIcons}"
 Name: "addtopath"; Description: "Add the mdatk command line program to PATH"; GroupDescription: "Command line:"; Flags: unchecked
 
 [Files]
@@ -58,11 +62,15 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 
 [Icons]
 Name: "{group}\MDATK"; Filename: "{app}\mdatk-gui.exe"
+Name: "{group}\RNAdo"; Filename: "{app}\rnado-gui.exe"; IconFilename: "{app}\rnado-gui.exe"; \
+    Comment: "RNAdo: plan RNA MD set-ups (project planner, script wizard, PDB hygiene, structure builder)"
 Name: "{group}\MDATK command prompt"; Filename: "{cmd}"; Parameters: "/k ""{app}\mdatk.exe"" --help"; \
     WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Licences"; Filename: "{app}\licenses\THIRD_PARTY_NOTICES.txt"
 Name: "{group}\{cm:UninstallProgram,MDATK}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\MDATK"; Filename: "{app}\mdatk-gui.exe"; Tasks: desktopicon
+Name: "{autodesktop}\RNAdo"; Filename: "{app}\rnado-gui.exe"; IconFilename: "{app}\rnado-gui.exe"; \
+    Tasks: rnadodesktopicon
 
 [Registry]
 ; per-user or all-users PATH entry, depending on the install mode
@@ -74,6 +82,8 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 
 [Run]
 Filename: "{app}\mdatk-gui.exe"; Description: "{cm:LaunchProgram,MDATK}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\rnado-gui.exe"; Description: "{cm:LaunchProgram,RNAdo}"; \
+    Flags: nowait postinstall skipifsilent unchecked
 
 [Code]
 function NeedsAddPath(Dir: string): Boolean;

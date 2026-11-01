@@ -1,4 +1,4 @@
-"""GTK tests of the script wizard and the Project Planner (run under xvfb-run -a)."""
+"""GTK tests of RNAdo's script wizard and planner (run under xvfb-run -a)."""
 
 import os
 import time
@@ -38,24 +38,21 @@ class Ev:
 
 @pytest.fixture
 def main(tmp_path):
-    from mdatk.gui.app import MainWindow
+    """RNAdo's window: the host of the planner and the wizard."""
+    from mdatk.gui.rnado import RNAdoWindow
 
     app = Gtk.Application(application_id=None)
     app.register(None)
     p = Project()
     p.output.out_dir = str(tmp_path / "out")
     p.workflow.project_name = "apt1"
-    win = MainWindow(app, p, None)
+    win = RNAdoWindow(app, p, None)
     win.messages = []
     win.info = lambda t, d="": win.messages.append(("info", t, d))
     win.error = lambda t, d="": win.messages.append(("error", t, d))
     win.show_all()
     pump(0.5)
     yield win
-    if win.planner is not None:
-        win.planner.destroy()
-    if win.wizard is not None:
-        win.wizard.destroy()
     win.destroy()
 
 
@@ -139,7 +136,6 @@ def test_wizard_stage_editor(main):
 
 
 def test_planner_template_connect_and_write(main, tmp_path):
-    main.open_planner()
     pl = main.planner
     pump()
     pl.add_template("amber")
@@ -197,16 +193,19 @@ def test_planner_template_connect_and_write(main, tmp_path):
     wz.title_entry.set_text("Production MD")
     pump(0.6)
     assert nodes["amber-md"].title == "Production MD"
-    # use the plan for analysis
+    # the analysis step hands its files to the analysis window (RNAdo saves the plan for it)
+    handed = []
+    main.use_for_analysis = lambda top, trajs, clean=True: handed.append((top, trajs, clean))
     pl.use_for_analysis(nodes["mdatk"])
     pump(0.2)
-    assert main.project.inputs.topology.endswith(".parm7") and main.project.inputs.trajectories
-    assert main.project.cleaning.enabled
-    assert main.planner is pl and main.project.workflow.nodes  # same workflow, windows kept
+    (top, trajs, clean), = handed
+    assert top.endswith(".parm7") and trajs and clean
+    assert main.planner is pl and main.project.workflow.nodes
 
 
-def test_planner_delete_and_project_roundtrip(main, tmp_path):
-    main.open_planner()
+def test_planner_delete_and_project_roundtrip(main, tmp_path, monkeypatch):
+    from mdatk.gui import rnado
+
     pl = main.planner
     pl.add_template("amber-gromacs")
     pump(0.2)
@@ -221,9 +220,9 @@ def test_planner_delete_and_project_roundtrip(main, tmp_path):
     pump(0.6)
     assert note.settings["text"] == "check the Mg count"
     path = str(tmp_path / "plan.mdatk.toml")
-    main.project_path = path
-    project = main.collect(validate=False)
-    project.save(path)
+    assert main.plan_changed()
+    monkeypatch.setattr(rnado, "choose_save_path", lambda *_a, **_k: path)
+    assert main.save_project() and main.project_path == path and not main.plan_changed()
     loaded = Project.load(path)
     assert [n.tool for n in loaded.workflow.nodes] == [n.tool for n in main.project.workflow.nodes]
     main.open_path(path)
@@ -232,9 +231,8 @@ def test_planner_delete_and_project_roundtrip(main, tmp_path):
 
 
 def test_selecting_a_step_keeps_the_scroll_position(main):
-    main.open_planner()
     pl = main.planner
-    pl.resize(1100, 600)
+    main.resize(1100, 900)
     nodes = [pl.add_step("note", 60 + 500 * (k % 3), 60 + 450 * k) for k in range(6)]
     pump(0.5)
     h, v = pl.scroller.get_hadjustment(), pl.scroller.get_vadjustment()
@@ -254,7 +252,6 @@ def test_selecting_a_step_keeps_the_scroll_position(main):
 
 
 def test_planner_run_selected_steps(main, tmp_path):
-    main.open_planner()
     pl = main.planner
     pl.add_template("amber")
     note = pl.add_step("note", 40, 700)
@@ -307,8 +304,6 @@ def test_planner_run_selected_steps(main, tmp_path):
 
 
 def test_planner_running_marks_and_parallel_setting(main, tmp_path):
-    from mdatk.workflows.runner import ScriptJob
-    main.open_planner()
     pl = main.planner
     pl.add_template("amber")
     pump(0.3)
@@ -352,8 +347,7 @@ def test_planner_running_marks_and_parallel_setting(main, tmp_path):
     pump(0.2)  # every marker draws
     # saved with the project
     path = str(tmp_path / "p.mdatk.toml")
-    main.project_path = path
-    main.collect(validate=False).save(path)
+    main.project.save(path)
     assert Project.load(path).workflow.parallel == 3
 
 
@@ -362,7 +356,6 @@ def test_run_scripts_end_to_end_with_running_marks(main, tmp_path, monkeypatch):
     if shutil.which("bash") is None:
         pytest.skip("needs bash")
     from mdatk.workflows.runner import ScriptJob
-    main.open_planner()
     pl = main.planner
     a, b, c = (pl.add_step("vmd", 60 + 300 * k, 60) for k in range(3))
     pump(0.2)
@@ -375,7 +368,7 @@ def test_run_scripts_end_to_end_with_running_marks(main, tmp_path, monkeypatch):
     seen = []
     orig = pl._on_run_state
     pl._on_run_state = lambda j, st: (seen.append((j.node_id, st)), orig(j, st))
-    main.run_scripts(jobs, parent=pl, parallel=2, on_state=pl._on_run_state,
+    main.run_scripts(jobs, parent=main, parallel=2, on_state=pl._on_run_state,
                      on_finished=pl._on_run_finished)
     end = time.time() + 15
     while time.time() < end and not any(m[1] == "Scripts finished" for m in main.messages):
@@ -384,13 +377,12 @@ def test_run_scripts_end_to_end_with_running_marks(main, tmp_path, monkeypatch):
     assert pl.run_state == {a.id: "ok", b.id: "ok", c.id: "ok"}
     running = [n for n, st in seen if st == "running"]
     assert running.index(c.id) == 2 and set(running[:2]) == {a.id, b.id}
-    log = main.log_buffer.get_text(main.log_buffer.get_start_iter(), main.log_buffer.get_end_iter(), False)
-    assert "[03] done 2" in log
+    log = main.log.text()  # RNAdo's output log panel
+    assert "[03] done 2" in log and "==== step 03: vmd - finished (s2.sh)" in log
 
 
 def test_planner_ignores_callbacks_of_an_older_run(main, tmp_path):
     from mdatk.workflows.runner import ScriptJob
-    main.open_planner()
     pl = main.planner
     n = pl.add_step("vmd", 60, 60)
     pump(0.2)
@@ -409,7 +401,7 @@ def test_planner_ignores_callbacks_of_an_older_run(main, tmp_path):
     assert pl.run_state == {}
     pl.parallel_spin.set_value(100)
     assert pl.parallel_spin.get_value() == 64 and main.project.workflow.parallel == 64
-    pl.close()
+    pl.shutdown()  # the window closes
     pump(0.3)
     assert not pl._spin_id
     kw["on_state"](j, "running")  # a run still going after the window closed
@@ -420,7 +412,6 @@ def test_planner_check_previous_runs_adopt_and_run_selected(main, tmp_path):
     from mdatk.gui.planner import FOOT_H
     from mdatk.workflows import runstate
     old = "20261015-1432"
-    main.open_planner()
     pl = main.planner
     pl.add_template("amber")
     pump(0.3)
@@ -489,7 +480,6 @@ def test_run_scripts_waiting_and_the_separate_scripts_option(main, tmp_path, mon
         pytest.skip("needs bash")
     from mdatk.workflows.base import WAITING_STATUS
     from mdatk.workflows.runner import ScriptJob
-    main.open_planner()
     pl = main.planner
     n = pl.add_step("vmd", 60, 60)
     pump(0.2)
@@ -509,7 +499,7 @@ def test_run_scripts_waiting_and_the_separate_scripts_option(main, tmp_path, mon
 
         monkeypatch.setattr(Gtk.MessageDialog, "run", dialog_run)
         main.messages.clear()
-        main.run_scripts([job], [str(sep)], parent=pl, on_state=pl._on_run_state,
+        main.run_scripts([job], [str(sep)], parent=main, on_state=pl._on_run_state,
                          on_finished=pl._on_run_finished, with_separate=both)
         end = time.time() + 15
         while time.time() < end and not main.messages:

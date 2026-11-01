@@ -1,4 +1,4 @@
-# Single-point energy for the comparison with sander - written by MDATK 0.0.10
+# Single-point energy for the comparison with sander - written by MDATK 0.0.11
 # no map, no restraints, no rigid bonds, no long-range LJ correction: the force field alone
 
 # Amber force field read natively from the parm7 (nothing converted)

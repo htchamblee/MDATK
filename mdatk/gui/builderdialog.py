@@ -1,4 +1,9 @@
-"""Structure builder window: the GUI of :mod:`mdatk.builder` ('mdatk build helix' / 'mutate' / 'fit')."""
+"""Structure builder window of RNAdo: the GUI of :mod:`mdatk.builder` ('mdatk build helix' / 'mutate' /
+'fit').
+
+It uses only RNAdo's host interface (:class:`mdatk.gui.host.Host`): the project file that logs the
+builds and the output log.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from .. import builder, pdbtools  # noqa: E402
 from ..citations import keys_for  # noqa: E402
 from ..projectfile import logged  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .host import Host  # noqa: E402
 
 PDB_FILES = ("PDB files", ["*.pdb", "*.ent"])
 MAP_FILES = ("Density maps", ["*.mrc", "*.map", "*.ccp4"])
@@ -37,9 +43,10 @@ PAGES = ("helix", "mutate", "fit")
 
 
 class BuilderWindow(Gtk.Window):
-    def __init__(self, main):
-        super().__init__(title="Structure builder", transient_for=main)
-        self.main = main
+    def __init__(self, host: Host):
+        super().__init__(title="Structure builder · RNAdo",
+                         transient_for=host if isinstance(host, Gtk.Window) else None)
+        self.host = host
         self.worker = None
         self._auto = {"mutate": "", "fit": ""}
         self.set_default_size(980, 680)
@@ -294,11 +301,10 @@ class BuilderWindow(Gtk.Window):
         {"helix": self.run_helix, "mutate": self.run_mutate, "fit": self.run_fit}[self.page()]()
 
     def _project(self):
-        return getattr(self.main, "project_path", None)
+        return self.host.project_path
 
     def _log(self, text: str) -> None:
-        if hasattr(self.main, "append_log"):
-            self.main.append_log(text)
+        self.host.append_log(text)
 
     def run_helix(self) -> None:
         out = self._output(self.helix_out)

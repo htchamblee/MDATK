@@ -1,4 +1,8 @@
-"""PDB clean-up window: the GUI of :mod:`mdatk.pdbtools` ('mdatk pdb clean' / 'check')."""
+"""PDB clean-up window of RNAdo: the GUI of :mod:`mdatk.pdbtools` ('mdatk pdb clean' / 'check').
+
+It uses only RNAdo's host interface (:class:`mdatk.gui.host.Host`): the project file that logs the
+clean-ups and the output log.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ from ..annotate import annotate  # noqa: E402
 from ..citations import keys_for  # noqa: E402
 from ..projectfile import logged  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .host import Host  # noqa: E402
 
 PDB_FILES = ("PDB files", ["*.pdb", "*.ent", "*.pdb1"])
 FASTA_FILES = ("FASTA files", ["*.fasta", "*.fa", "*.fas"])
@@ -37,9 +42,10 @@ CHAIN_LABELS = [("keep", "keep the chain ids"), ("reference", "copy from a refer
 
 
 class PDBToolsWindow(Gtk.Window):
-    def __init__(self, main):
-        super().__init__(title="PDB clean-up", transient_for=main)
-        self.main = main
+    def __init__(self, host: Host):
+        super().__init__(title="PDB clean-up · RNAdo",
+                         transient_for=host if isinstance(host, Gtk.Window) else None)
+        self.host = host
         self._auto_output = ""
         self.set_default_size(980, 720)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -270,7 +276,7 @@ class PDBToolsWindow(Gtk.Window):
         opts = self.options()
         ann_opts = self.annotation_options()
         fasta_path = self.fasta.entry.get_text().strip()
-        project_path = getattr(self.main, "project_path", None)
+        project_path = self.host.project_path
         try:
             with logged(project_path, "pdb clean", f"PDB clean-up of {os.path.basename(path)}") as entry:
                 res = pdbtools.clean(path, **opts)
@@ -294,5 +300,4 @@ class PDBToolsWindow(Gtk.Window):
             return
         self._show("\n".join([f"Wrote {out}"] + ([f"Wrote {fasta_path}"] if fasta_path else []) + [""]
                              + notes))
-        if hasattr(self.main, "append_log"):
-            self.main.append_log(f"PDB clean-up: wrote {out}")
+        self.host.append_log(f"PDB clean-up: wrote {out}")

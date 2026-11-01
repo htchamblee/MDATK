@@ -554,9 +554,12 @@ def test_example_generator(tmp_path, monkeypatch):
                       if not f.endswith(".lock"))
 
     assert listing(shipped) == listing(str(out)), "regenerate: python3 tests/mdff_system.py --example examples/namd_mdff"
+    def undated(text):  # script headers say when they were written ("... written by MDATK x on 2026-10-30")
+        return re.sub(r"(written by \S+ \S+) on \d{4}-\d{2}-\d{2}", r"\1", text)
+
     for rel in listing(str(out)):
         if rel.startswith("generated") or rel == "README.md" or "_chirality_" in rel or "_basepairs_" in rel:
-            assert open(os.path.join(shipped, rel)).read() == (out / rel).read_text(), \
+            assert undated(open(os.path.join(shipped, rel)).read()) == undated((out / rel).read_text()), \
                 f"examples/namd_mdff/{rel} is out of date: python3 tests/mdff_system.py --example examples/namd_mdff"
 
 

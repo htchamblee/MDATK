@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdatk"
-version = "0.0.10"
+version = "0.0.11"
 description = "Molecular Dynamic Analysis Tool Kit (MDATK): offline analysis and multi-panel video rendering of MD trajectories of RNA systems"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -38,12 +38,17 @@ test = ["pytest>=7"]
 
 [project.scripts]
 mdatk = "mdatk.cli:main"
+rnado = "mdatk.cli:rnado_main"
 
 [project.gui-scripts]
 mdatk-gui = "mdatk.gui.app:main"
+rnado-gui = "mdatk.gui.rnado:main"
 
 [tool.setuptools.packages.find]
 include = ["mdatk*"]
+
+[tool.setuptools.package-data]
+mdatk = ["assets/*"]  # RNAdo logo and icons (packaging/make_rnado_art.py), read by the GUI
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

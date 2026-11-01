@@ -10,7 +10,8 @@
 #
 # Result (default OUT: dist/):
 #   MDATK-<version>-windows-x64.zip   the folder MDATK-<version>/ with mdatk-gui.exe (interface),
-#                                     mdatk.exe (command line), tools/ffmpeg.exe and the licences
+#                                     rnado-gui.exe (RNAdo), mdatk.exe (command line),
+#                                     tools/ffmpeg.exe and the licences
 #   MDATK-<version>-windows-x64-setup.exe   Inno Setup installer, when ISCC.exe is found
 #                                     (ISCC environment variable, PATH or the default folder)
 #
@@ -81,8 +82,8 @@ NAME="MDATK-$VERSION-windows-x64"
 echo "== MDATK $VERSION, work folder $WORK"
 mkdir -p "$WORK" "$OUT"
 
-echo "== icon"
-"$PYTHON" "$PKG/make_icon.py" "$WORK/icons"
+echo "== icons"
+"$PYTHON" "$PKG/make_icon.py" "$WORK/icons"  # mdatk.ico and rnado.ico (mdatk.spec, Inno Setup)
 
 echo "== PyInstaller"
 rm -rf "$WORK/dist" "$WORK/pyinstaller"

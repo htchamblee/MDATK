@@ -1,10 +1,10 @@
-"""GTK tests of custom script steps in the Project Planner and the wizard (run under xvfb-run -a)."""
+"""GTK tests of custom script steps in RNAdo's planner and the wizard (run under xvfb-run -a)."""
 
 import os
 
 import test_workflow_gui as gui  # skips this module too when there is no display
 
-main = gui.main  # the main-window fixture of the other GUI tests
+main = gui.main  # RNAdo's window, the fixture of the other planner tests
 pump = gui.pump
 
 
@@ -18,7 +18,6 @@ def test_custom_script_in_palette_planner_and_wizard(main, tmp_path):
     from mdatk.workflows import tools_by_category
     assert ("Custom", ["user-script"]) in [(c, [t.name for t in ts]) for c, ts in tools_by_category()]
     assert "Custom" in CATEGORY_COLORS
-    main.open_planner()
     pl = main.planner
     pump()
     node = pl.add_step("user-script", 40, 40)

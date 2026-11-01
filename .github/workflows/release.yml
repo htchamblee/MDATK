@@ -79,7 +79,7 @@ jobs:
       - name: Smoke test (headless; GUI under Xvfb)
         run: |
           xvfb-run -a python packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work /tmp/smoke \
-            --render --bundled-ffmpeg --barnaba --gui 20
+            --render --bundled-ffmpeg --barnaba --gui 20 --rnado 20
 
       - name: Upload the AppImage
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -110,7 +110,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           xvfb-run -a python3 packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work /tmp/smoke \
-            --render --bundled-ffmpeg --barnaba --gui 20
+            --render --bundled-ffmpeg --barnaba --gui 20 --rnado 20
 
   ubuntu2204:
     name: AppImage test on Ubuntu 22.04
@@ -134,7 +134,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           xvfb-run -a python3 packaging/smoke_test.py dist/MDATK-*-x86_64.AppImage --work smoke \
-            --render --bundled-ffmpeg --barnaba --gui 20
+            --render --bundled-ffmpeg --barnaba --gui 20 --rnado 20
 
   windows:
     name: Windows x64 (MSYS2 UCRT64, beta)
