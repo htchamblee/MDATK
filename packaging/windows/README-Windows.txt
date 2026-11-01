@@ -6,8 +6,8 @@ dynamics trajectories of RNA systems.
 
 Start
   mdatk-gui.exe        the graphical interface (double-click; a project file can be dropped on it)
-  rnado-gui.exe        RNAdo, the project planner for RNA MD set-ups, as a program of its own
-                       (project planner, script wizard, PDB hygiene and structure builder; a
+  rnado-gui.exe        RNAdo, the workflow planner for RNA MD set-ups, as a program of its own
+                       (workflow planner, script wizard, PDB hygiene and structure builder; a
                        project file can be dropped on it too)
   mdatk.exe            the command line, e.g. in PowerShell or cmd:
                          .\mdatk.exe --help

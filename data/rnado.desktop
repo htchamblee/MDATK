@@ -2,7 +2,7 @@
 Type=Application
 Name=RNAdo
 GenericName=RNA MD set-up planner
-Comment=Plan RNA molecular dynamics set-ups: project planner, script wizard, PDB hygiene and structure builder
+Comment=Plan RNA molecular dynamics set-ups: workflow planner, script wizard, PDB hygiene and structure builder
 Exec=rnado-gui %f
 Icon=rnado
 Terminal=false

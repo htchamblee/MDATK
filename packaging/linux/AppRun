@@ -3,7 +3,7 @@
 #
 #   ./MDATK-x86_64.AppImage                    the GTK interface
 #   ./MDATK-x86_64.AppImage project.mdatk.toml the GTK interface with that project
-#   ./MDATK-x86_64.AppImage rnado [PROJECT]    RNAdo, the project planner ("mdatk rnado": further
+#   ./MDATK-x86_64.AppImage rnado [PROJECT]    RNAdo, the workflow planner ("mdatk rnado": further
 #                                              arguments are passed on, and "rnado ACTION ..." is
 #                                              "mdatk workflow ACTION ...")
 #   ./MDATK-x86_64.AppImage COMMAND ...        the command line (mdatk --help lists the commands)

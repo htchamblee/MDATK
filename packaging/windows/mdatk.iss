@@ -5,7 +5,7 @@
 ;
 ; packaging/windows/build_windows.sh calls it with these values. Installs per user by default
 ; (no administrator rights needed); "Install for all users" is offered in the setup dialog.
-; Start-menu shortcuts: MDATK (mdatk-gui.exe) and RNAdo, the project planner (rnado-gui.exe, with its
+; Start-menu shortcuts: MDATK (mdatk-gui.exe) and RNAdo, the workflow planner (rnado-gui.exe, with its
 ; own icon built into the program), each with an optional desktop shortcut.
 
 #ifndef AppVersion
@@ -53,7 +53,7 @@ ChangesEnvironment=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "rnadodesktopicon"; Description: "Create a desktop shortcut for RNAdo (project planner)"; \
+Name: "rnadodesktopicon"; Description: "Create a desktop shortcut for RNAdo (workflow planner)"; \
     GroupDescription: "{cm:AdditionalIcons}"
 Name: "addtopath"; Description: "Add the mdatk command line program to PATH"; GroupDescription: "Command line:"; Flags: unchecked
 
@@ -63,7 +63,7 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 [Icons]
 Name: "{group}\MDATK"; Filename: "{app}\mdatk-gui.exe"
 Name: "{group}\RNAdo"; Filename: "{app}\rnado-gui.exe"; IconFilename: "{app}\rnado-gui.exe"; \
-    Comment: "RNAdo: plan RNA MD set-ups (project planner, script wizard, PDB hygiene, structure builder)"
+    Comment: "RNAdo: plan RNA MD set-ups (workflow planner, script wizard, PDB hygiene, structure builder)"
 Name: "{group}\MDATK command prompt"; Filename: "{cmd}"; Parameters: "/k ""{app}\mdatk.exe"" --help"; \
     WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Licences"; Filename: "{app}\licenses\THIRD_PARTY_NOTICES.txt"

@@ -11,6 +11,6 @@ MimeType=application/toml;
 Actions=rnado;
 
 [Desktop Action rnado]
-Name=RNAdo (project planner)
+Name=RNAdo (workflow planner)
 Exec=rnado-gui %f
 Icon=rnado

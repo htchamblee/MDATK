@@ -471,7 +471,7 @@ selection = ""
 # File name prefix
 prefix = "MDATK_frame"
 
-# Project Planner and script wizard
+# RNAdo's plan and script wizard
 [workflow]
 # Project name used in every generated file name
 project_name = "apt1"

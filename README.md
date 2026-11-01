@@ -133,7 +133,7 @@ With no argument (or a project file) the AppImage starts the analysis window; wi
 command line. For shorter names, link it: `ln -s ~/Apps/MDATK-<version>-x86_64.AppImage
 ~/.local/bin/mdatk`; a link named `mdatk-gui` always starts the analysis window, and one named `rnado`
 (or `rnado-gui`) is `rnado` with all its arguments. Once the AppImage is integrated into the desktop
-(AppImageLauncher, appimaged), the MDATK launcher has an *RNAdo (project planner)* action
+(AppImageLauncher, appimaged), the MDATK launcher has an *RNAdo (workflow planner)* action
 (right-click). If the AppImage does not start because FUSE is missing (some containers and minimal
 installs), run it with `--appimage-extract-and-run` or install `fuse`/`libfuse2`; *Open in RNAdo…* then
 starts RNAdo the same way.

@@ -7,7 +7,7 @@
 #   mdatk      the command line interface (console program)
 #   mdatk-gui  Windows only: the GTK 3 interface without a console window, same as "mdatk gui"
 #              (on Linux the AppImage's AppRun starts "mdatk gui")
-#   rnado-gui  RNAdo, the project planner, as a program of its own (no console window on Windows):
+#   rnado-gui  RNAdo, the workflow planner, as a program of its own (no console window on Windows):
 #              "rnado-gui [PROJECT] [ARGS]" = "python -m mdatk.gui.rnado [PROJECT] [ARGS]"; the
 #              analysis window starts it from here (mdatk.gui.launch.rnado_command)
 # All three share one Analysis, so the bundle holds every library once. The RNAdo logo and icons
