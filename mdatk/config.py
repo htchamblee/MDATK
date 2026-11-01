@@ -432,7 +432,7 @@ class OutputParams:
 
 @dataclass
 class PlanNode:
-    """One box of the Project Planner (a step that writes files for one program).
+    """One box of RNAdo's plan (a step that writes files for one program).
 
     ``tool`` names a generator in :mod:`mdatk.workflows`; ``settings`` holds its
     options (see ``mdatk workflow tools``) and ``files`` hand-picked input files
@@ -466,7 +466,7 @@ class PlanEdge:
 
 @dataclass
 class WorkflowParams:
-    """Project Planner and script-wizard settings (saved with the preset).
+    """RNAdo's plan and script-wizard settings (saved with the preset).
 
     Generated files are named ``<project>_<step>_<tool>_<stamp>.<ext>``, e.g.
     ``apt1_03_tleap_20261015-1432.parm7``.  ``stamp`` is fixed the first time
@@ -507,7 +507,7 @@ class Project:
     density: DensityParams = field(default_factory=DensityParams)  # Density map shadow and fit
     layout: LayoutParams = field(default_factory=LayoutParams)  # Figure layout: grid and panels
     output: OutputParams = field(default_factory=OutputParams)  # Outputs: folders, video, charts, PDB frames
-    workflow: WorkflowParams = field(default_factory=WorkflowParams)  # Project Planner and script wizard
+    workflow: WorkflowParams = field(default_factory=WorkflowParams)  # RNAdo's plan and script wizard
 
     # ------------------------------------------------------------------ I/O
     def to_dict(self) -> Dict[str, Any]:
@@ -628,7 +628,7 @@ class Project:
 
     @property
     def workflow_dir(self) -> str:
-        """Folder that receives Project Planner / wizard files."""
+        """Folder that receives the files of RNAdo's plan and wizard."""
         if self.workflow.out_dir:
             return os.path.abspath(self.workflow.out_dir)
         from .workflows.naming import sanitize_project

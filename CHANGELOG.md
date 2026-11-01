@@ -75,7 +75,7 @@ the notes below.
   anything. The wordmark heads the README.
 - The stand-alone builds have RNAdo as a second program: `rnado-gui` (windowed; `rnado.ico` on Windows)
   from `packaging/entry_rnado.py`, with `mdatk/assets` bundled. AppImage: `AppImage rnado ARGS` and a
-  link named `rnado` start it; the MDATK desktop entry has an *RNAdo (project planner)* action, and
+  link named `rnado` start it; the MDATK desktop entry has an *RNAdo (workflow planner)* action, and
   `rnado.desktop` and the hicolor icons are in the AppDir. Windows installer: Start-menu entry *RNAdo*,
   an optional desktop shortcut and an optional launch. `data/rnado.desktop` for source installations;
   `assets/*` is package data. `packaging/smoke_test.py --rnado` starts RNAdo, and the release workflow
@@ -127,6 +127,9 @@ the notes below.
   the date in script headers, so it **no longer fails on every day after the example was generated**;
   the test of chain reads replaced while running waits for the read to start.
 - `examples/namd_mdff` regenerated (version in the headers).
+- Help texts, docstrings and project-file comments say RNAdo for the planner: `mdatk workflow` is "the
+  plan of RNAdo, MDATK's workflow planner, and its script generators", and the `workflow` key of a
+  project file is commented "RNAdo's plan and script wizard".
 
 ## 0.0.10 (2026-10-30)
 

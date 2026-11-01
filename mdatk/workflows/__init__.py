@@ -1,10 +1,10 @@
-"""Control-file / script generators and the Project Planner (MDATK 0.0.2b).
+"""Control-file / script generators and the plan of RNAdo, MDATK's workflow planner.
 
 The generators *write* input files and shell scripts for Rosetta FARFAR2,
 SimRNA, RNAMake, Amber, GROMACS and VMD; they never run those programs.  Each
 generator is a :class:`~mdatk.workflows.base.Tool` with a declarative option
 schema (used by the GTK wizard and the CLI), logic checks and planner ports.
-The Project Planner (:mod:`mdatk.workflows.plan`) chains steps so that input
+The plan (:mod:`mdatk.workflows.plan`) chains steps so that input
 and output names stay consistent: ``<project>_<step>_<tool>_<time>.<ext>``.
 """
 

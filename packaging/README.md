@@ -11,7 +11,7 @@ Both are [PyInstaller](https://pyinstaller.org) "one-folder" bundles of the MDAT
 with Python 3.12, GTK 3 + PyGObject, NumPy, SciPy, Matplotlib, MDAnalysis, Barnaba (+ mdtraj)
 and a static GPL build of FFmpeg. The GitHub Actions workflow `.github/workflows/release.yml`
 builds, tests and publishes them (see [CI](#ci-and-releases)). Each build holds two programs:
-MDATK (analysis and videos) and **RNAdo**, the project planner for RNA MD set-ups, as a program of
+MDATK (analysis and videos) and **RNAdo**, the workflow planner for RNA MD set-ups, as a program of
 its own (see [RNAdo](#rnado)).
 
 ## Files
@@ -114,7 +114,7 @@ to the `master` build when BtbN drops the branch) - its sha256 is printed in the
 
 ## RNAdo
 
-RNAdo is the project planner (with the script wizard, PDB hygiene and the structure builder) as a
+RNAdo is the workflow planner (with the script wizard, PDB hygiene and the structure builder) as a
 program of its own; the analysis window starts it with `mdatk.gui.launch.rnado_command`. The builds
 start it like this:
 
