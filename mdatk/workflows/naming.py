@@ -24,6 +24,9 @@ import re
 from typing import Dict, Optional
 
 STAMP_FORMAT = "%Y%m%d-%H%M"
+# sub-folder of a step folder that holds the completed runs moved aside before the step was written again
+# (mdatk.workflows.supersede); never searched for runs
+SUPERSEDED = "superseded"
 
 _PROJECT_BAD = re.compile(r"[^A-Za-z0-9._-]+")
 _TAG_BAD = re.compile(r"[^A-Za-z0-9-]+")

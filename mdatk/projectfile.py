@@ -63,7 +63,8 @@ _LOG_DOCS = {
     (): "One entry per step run in this project: analyses, renders, generated scripts that "
         f"{PROJECT_ABBREV} ran, PDB clean-ups, density fits.",
     ("time",): "When the step started.",
-    ("step",): "What ran: 'render', 'workflow write', 'pdb clean', or the planner step number of a "
+    ("step",): "What ran: 'render', 'workflow write', 'workflow supersede' (a step's completed run moved "
+               "aside before the step was written again), 'pdb clean', or the planner step number of a "
                f"generated script that {PROJECT_ABBREV} ran (e.g. '03').",
     ("title",): "Short human-readable description.",
     ("status",): "ok, failed, cancelled or waiting (for a script the step leaves to be run separately).",

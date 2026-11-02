@@ -62,6 +62,9 @@ class WriteReport:
     written: List[str] = field(default_factory=list)
     skipped: Dict[str, str] = field(default_factory=dict)  # node id -> reason
     kept: Dict[str, str] = field(default_factory=dict)  # node id -> stamp of the earlier run it uses
+    # node id -> the completed run moved aside before the step was written (mdatk.workflows.supersede);
+    # one that could not be moved has its error, and the step is in ``skipped``
+    superseded: Dict[str, Any] = field(default_factory=dict)
     master: str = ""
     summary: str = ""
 
@@ -399,8 +402,16 @@ class Plan:
             out[nid] = step.files
         return out
 
-    def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True) -> WriteReport:
-        """Write the files of every step without errors (all steps by default)."""
+    def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True,
+              project_path: Optional[str] = None, supersede: Optional[bool] = None) -> WriteReport:
+        """Write the files of every step without errors (all steps by default).
+
+        Before a step's files are written, its complete run of the plan's stamp moves into
+        ``<step folder>/superseded/`` (:mod:`mdatk.workflows.supersede`; ``supersede``, by default the
+        project option ``supersede_runs``); a step whose run cannot be moved is not written (``skipped``).
+        Moves are recorded in the step log of ``project_path``."""
+        from .supersede import move_aside
+
         if not self.root:
             raise ValueError("no plan folder set")
         report = WriteReport(self.root)
@@ -419,9 +430,18 @@ class Plan:
                 if rel in paths:
                     report.skipped[nid] = f"{rel} is also written by {self.steps[paths[rel]].label}"
                 paths.setdefault(rel, nid)
+        move = self.workflow.supersede_runs if supersede is None else supersede
+        when = _dt.datetime.now()  # one time for the runs moved by this write
         for nid, files in generated.items():
             if nid in report.skipped:
                 continue
+            moved = move_aside(self, nid, when, project_path) if move else None
+            if moved is not None:
+                report.superseded[nid] = moved
+                if moved.error:  # nothing of the run was moved (or what could not go back is kept)
+                    report.skipped[nid] = (f"its completed run could not be moved aside, so the step was not "
+                                           f"written: {moved.error}")
+                    continue
             ctx = self.steps[nid].ctx
             for f in files:
                 path = os.path.join(self.root, ctx.from_own(f.name))
@@ -563,7 +583,8 @@ def single_step_plan(workflow: WorkflowParams, node: PlanNode, root: str = "",
     """A one-step plan used by the stand-alone wizard (inputs are hand-picked files)."""
     solo = WorkflowParams(project_name=workflow.project_name, stamp=workflow.stamp,
                           use_stamp=workflow.use_stamp, out_dir=workflow.out_dir,
-                          step_folders=workflow.step_folders, nodes=[node], edges=[])
+                          step_folders=workflow.step_folders, supersede_runs=workflow.supersede_runs,
+                          nodes=[node], edges=[])
     plan = Plan(solo, root, groups)
     return plan
 

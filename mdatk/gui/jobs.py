@@ -1,5 +1,5 @@
-"""Background jobs with a progress bar and a Cancel button, and the questions around running generated
-scripts.  The analysis window (renders, cleaning) and RNAdo (generated scripts) share them."""
+"""Background jobs with a progress bar and a Cancel button, and the questions around writing and running
+generated scripts.  The analysis window (renders, cleaning) and RNAdo (generated scripts) share them."""
 
 from __future__ import annotations
 
@@ -138,6 +138,35 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
     chosen = list(with_separate) if ok and include is not None and include.get_active() else list(jobs)
     dlg.destroy()
     return chosen if ok else None
+
+
+SUPERSEDE_LIMIT = 12  # steps listed in the question (each with a few of its files)
+
+
+def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> bool:
+    """Ask before writing steps whose folders hold a completed run of the plan's stamp: that run moves
+    into the step's superseded/ folder first (mdatk.workflows.supersede; ``items`` are its
+    :class:`~mdatk.workflows.supersede.Supersede` records).  True to go on."""
+    lines: List[str] = []
+    for item in list(items)[:SUPERSEDE_LIMIT]:
+        lines += item.lines(limit=4)
+    if len(items) > SUPERSEDE_LIMIT:
+        lines.append(f"… and {len(items) - SUPERSEDE_LIMIT} more step(s)")
+    detail = ("\n".join(lines) + "\n\nWriting a step again moves its completed run - the outputs, the "
+              "scripts and inputs that made them, and its logs - into the step's superseded/ folder "
+              "(<time> is the time of writing), with a manifest, so the run stays repeatable. Steps that "
+              "read these outputs need the steps to run again. Partial runs stay where they are. To keep a "
+              "run in place, cancel and let the step use it (Check previous runs, then Use this run).")
+    verb = "write and run" if run else "write"
+    dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.WARNING,
+                            buttons=Gtk.ButtonsType.NONE,
+                            text=f"Move the completed run(s) of {len(items)} step(s) aside and {verb} them?")
+    dlg.format_secondary_text(detail)
+    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Move aside and " + verb, Gtk.ResponseType.OK)
+    dlg.set_default_response(Gtk.ResponseType.CANCEL)
+    ok = dlg.run() == Gtk.ResponseType.OK
+    dlg.destroy()
+    return ok
 
 
 def waiting_text(results: Sequence) -> str:

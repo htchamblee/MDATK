@@ -22,7 +22,7 @@ from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanNode  # noqa: E402
 from ..projectfile import logged  # noqa: E402
-from ..workflows import TOOLS, tools_by_category  # noqa: E402
+from ..workflows import TOOLS, supersede, tools_by_category  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import Plan, generate_step, scratch_node, single_step_plan  # noqa: E402
 from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
@@ -31,6 +31,7 @@ from ..workflows.schema import (FILE_KINDS, Issue, Option, Section, kind_label, 
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
+from .jobs import confirm_supersede  # noqa: E402
 
 LEVEL_COLORS = {"error": "#c01c28", "warning": "#b56a00", "info": "#1a5fb4"}
 TYPE_KEYS = ("kind", "integrator")  # record options that switch whole groups of fields
@@ -869,10 +870,19 @@ class WizardWindow(Gtk.Window):
         if step is None or not step.ok:
             self.refresh_now()
             return
+        # a completed run of the plan's stamp moves aside before the step is written again: ask first
+        moving = supersede.pending(plan, [self.node.id])
+        if moving and getattr(getattr(self.host, "jobs", None), "running", False):
+            self._error("Scripts are running", "Writing would move the step's completed run aside while "
+                        "scripts run that may read it. Wait for them to finish, or cancel them, then write "
+                        "again.")
+            return
+        if moving and not confirm_supersede(self, list(moving.values()), run):
+            return
         try:
             with logged(self.host.project_path, "workflow write",
                         f"Script wizard: {step.tool.label}") as entry:
-                report = plan.write([self.node.id], master=False)
+                report = plan.write([self.node.id], master=False, project_path=self.host.project_path)
                 entry.files = list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written"
         except OSError as exc:
@@ -880,6 +890,11 @@ class WizardWindow(Gtk.Window):
             return
         if self.workflow.use_stamp and not self.workflow.stamp:
             self.workflow.stamp = plan.stamp
+        for item in report.superseded.values():
+            lines = item.lines()
+            self.host.append_log("Script wizard: " + lines[0])
+            for line in lines[1:]:
+                self.host.append_log(line)
         if report.skipped:
             self._error("Some files were not written", "\n".join(report.skipped.values()))
         written = [p for p in report.written]

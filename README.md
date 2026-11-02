@@ -367,11 +367,13 @@ seconds is reported in the analysis window.
   the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
   previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Parallel*, *Open folder*), the
-  naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, the plan folder and *Change…*),
+  naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, *Move completed runs aside*, the
+  plan folder and *Change…*),
   the canvas and the details pane of the selected box (see [The plan](#the-plan)).
 - **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
-  unfolds it. It shows the planner's messages (files written, previous runs checked, runs used or
-  dropped), MDATK's warnings, and every line the scripts print, marked with their step (`[03] …`).
+  unfolds it. It shows the planner's messages (files written, completed runs moved aside with their files,
+  previous runs checked, runs used or dropped), MDATK's warnings, and every line the scripts print, marked
+  with their step (`[03] …`).
   Standard error is red, lines starting with ERROR (and failed steps) bold red, lines starting with
   WAITING (and waiting steps) amber. Each step gets a start line, a finished / failed / cancelled line,
   and a waiting or not-started line when it does not run to the end. *Step* shows the lines of one step
@@ -828,6 +830,8 @@ up to *Parallel* scripts at a time (planner toolbar, saved with the project; def
   *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
 - **Windows:** the generated scripts are bash scripts for Linux; RNAdo on Windows writes them but does
   not run them (*Run* says so), see [Installation](#installation).
+- **Writing again:** *Run all…*, *Run selected steps* and *Run step…* write the steps first, so a step
+  that has a completed run is moved aside before it runs again (see [Previous runs](#previous-runs)).
 
 Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
 script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
@@ -888,6 +892,52 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 ```
 
 `workflow run` skips steps that use an earlier run and says so.
+
+**Completed runs move aside before a step is written again.** Writing a step again under the same stamp
+would replace the scripts and inputs its last run was made with, and running it again that run's outputs.
+So when a step is about to be written (*Write all files*, *Write step*, the wizard's *Write files*, and
+every *Run* action, which writes first) and its folder holds a **complete** run of the plan's current
+stamp (*done*, as above), that run first moves into `<step folder>/superseded/<stamp>_<YYYYMMDD-HHMMSS>/`,
+even if the step is never run again. The scripts go with it, as the step may be written with changed
+settings, so the outputs keep the scripts that made them and the run stays repeatable. What moves, only
+from the step's own folder and only of that stamp:
+
+- the step's outputs, and every file the step writes for the stamp (scripts, inputs, helpers);
+- its logs: the files a step type checks for closing lines and every other file named
+  `<project>_<NN>_*_<stamp>.*` in the folder;
+- outputs whose names carry no stamp (a custom script's fixed file names, plans without time stamps,
+  which use `superseded/no-stamp_<time>/`) with the completion marker that ties them to the run;
+- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of the FARFAR2 models step
+  (with *Extract every model* or validity filters), moved whole so `models/r01/S_000001.pdb` keeps its
+  place.
+
+A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
+run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
+them), steps that use an earlier run are never written, files of other stamps and your own files stay, and
+nothing in `superseded/` is ever replaced (a second move in the same second gets `…-2`). In a plan without
+step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder, the `<project>_<NN>_*` rule
+applies only when no other step has the number, and `runs/` / `models/` are left alone (steps share them).
+A step's move is all or nothing: if a file cannot be moved, the files moved so far go back, the step is not
+written and the write reports it. *Check previous runs* never looks inside `superseded/`. Steps that skip
+finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip finished runs*) reuse
+them from a run left in place, i.e. a partial run, or any run with the option below off; a complete run
+moves aside, so the step runs again from the start.
+
+RNAdo asks first: *Write all files*, *Write step*, the *Run* actions and the wizard list the steps whose
+completed runs would move and where (*Cancel*, or *Move aside and write*); the output log then lists what
+moved, and a saved project records each move in its step log (`workflow supersede`). While a step that
+reads those outputs runs or waits to run (or the wizard's run, which RNAdo does not follow), RNAdo refuses
+such a write: write again once the scripts have finished. To keep a run in place, let the step use it
+instead (*Use this run*). The naming bar's *Move completed runs aside* (project
+option `workflow.supersede_runs`, on by default) turns moving off: writing then replaces the scripts, and
+the next run the outputs, as before 0.0.12. On the command line `workflow write` (also with `--run`) and
+`workflow generate` print the runs they moved on standard error and under `superseded` in their JSON;
+`workflow run` only runs scripts already written, so it moves nothing:
+
+```bash
+mdatk workflow write -p plan.mdatk.toml --dry-run   # what would be written, and which runs would move
+mdatk workflow write -p plan.mdatk.toml             # moved    03 · Amber · MD stages: moved its …
+```
 
 ### Step types
 
@@ -1464,6 +1514,7 @@ mdatk workflow generate user-script -o out --step 2 -i model=model.pdb \
 mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a project's plan
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
+mdatk workflow write -p plan.mdatk.toml --dry-run    # ... list them, and the completed runs that would move
 mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
 mdatk workflow run -p plan.mdatk.toml --include-separate  # ... and the scripts marked 'run separately'
 mdatk workflow status -p plan.mdatk.toml [--adopt|--forget]  # earlier runs of the steps (see above)
@@ -2257,7 +2308,8 @@ mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo instead of the a
 mdatk workflow tools [TOOL]        step types, or the options of one
 mdatk workflow template [NAME] [-p PROJECT]   list templates, or add one to a project's plan
 mdatk workflow check  -p PROJECT   resolve the plan and list its problems
-mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--run [--parallel N] [--include-separate]]
+mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--dry-run]
+                     [--run [--parallel N] [--include-separate]]
 mdatk workflow run    -p PROJECT [--step N] [--parallel N] [--include-separate]
 mdatk workflow status -p PROJECT [--step N] [--adopt | --forget] [--json]
 mdatk workflow generate TOOL [-o DIR] [--step N] [-i PORT=PATH ...] [-s KEY=VALUE ...] [--dry-run] [--run]
@@ -2327,7 +2379,7 @@ density    map_path, show, resolution, level, color, opacity, front, fit_frame, 
            auto_fit, transform, anchor, fit_cc, fit_info (the stored placement, its correlation)
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log, timestamp_files
-workflow   project_name, stamp, use_stamp, out_dir, step_folders, parallel,
+workflow   project_name, stamp, use_stamp, out_dir, step_folders, supersede_runs, parallel,
            nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```

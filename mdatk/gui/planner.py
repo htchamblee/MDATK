@@ -28,7 +28,7 @@ from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanEdge, PlanNode  # noqa: E402
 from ..projectfile import logged  # noqa: E402
-from ..workflows import TOOLS, runstate, tools_by_category  # noqa: E402
+from ..workflows import TOOLS, runstate, supersede, tools_by_category  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
                               connect, next_step, remove_node, step_title)
@@ -37,6 +37,7 @@ from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
+from .jobs import confirm_supersede  # noqa: E402
 from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
 
 NODE_W = 236
@@ -744,6 +745,7 @@ class PlannerPanel(Gtk.Box):
             self.project_entry.set_text(wf.project_name)
             self.stamp_check.set_active(wf.use_stamp)
             self.folders_check.set_active(wf.step_folders)
+            self.supersede_check.set_active(wf.supersede_runs)
             self.parallel_spin.set_value(max(1, wf.parallel))
             wf.parallel = int(self.parallel_spin.get_value())  # what the run will use (1-64)
         finally:
@@ -884,6 +886,14 @@ class PlannerPanel(Gtk.Box):
                                                     "03_amber-build/")
         self.folders_check.connect("toggled", self._on_naming)
         bar.pack_start(self.folders_check, False, False, 0)
+        self.supersede_check = W.check(
+            "Move completed runs aside", "Before a step's files are written again, move its completed run "
+            "of the plan's time stamp (outputs, the scripts and inputs that made them, logs) into "
+            "<step folder>/superseded/<stamp>_<time>/, with a manifest, so the run stays repeatable; you are "
+            "asked first. Off: writing replaces the scripts and the next run the outputs. Saved with the "
+            "project.")
+        self.supersede_check.connect("toggled", self._on_naming)
+        bar.pack_start(self.supersede_check, False, False, 0)
         bar.pack_start(W.label("Folder"), False, False, 0)
         self.folder_label = W.label("")
         self.folder_label.set_ellipsize(Pango.EllipsizeMode.START)
@@ -1161,6 +1171,7 @@ class PlannerPanel(Gtk.Box):
         wf.project_name = self.project_entry.get_text().strip() or "project"
         wf.use_stamp = self.stamp_check.get_active()
         wf.step_folders = self.folders_check.get_active()
+        wf.supersede_runs = self.supersede_check.get_active()
         self.schedule_resolve()
 
     def new_stamp(self) -> None:
@@ -1213,22 +1224,41 @@ class PlannerPanel(Gtk.Box):
             if not self._ask("Some steps have errors", text + "\n\nWrite the other steps anyway? Steps "
                              "with errors are skipped."):
                 return
+        # completed runs of the plan's stamp move aside before their steps are written again: ask first
+        moving = supersede.pending(plan, node_ids)
+        readers = self.running_readers(moving) if moving else []
+        if readers:  # those runs' outputs are being read (or will be, by a queued step)
+            self._message("Scripts are running", "Writing would move the completed runs of "
+                          + ", ".join(i.label for i in moving.values()) + " aside while "
+                          + ", ".join(readers) + " may read them. Wait for the scripts to finish, or cancel "
+                          "them, then write again.", Gtk.MessageType.ERROR)
+            return
+        if moving and not confirm_supersede(self.toplevel(), list(moving.values()), run):
+            return
         try:
             with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
-                report = plan.write(node_ids)
+                report = plan.write(node_ids, project_path=self.host.project_path)
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
+                if report.superseded:
+                    entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
         except OSError as exc:
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
+        for nid in report.superseded:
+            self.prev_runs.pop(nid, None)  # that run is in superseded/ now
         self.changed()
         msg = f"Wrote {len(report.written)} files to {report.root}"
         if report.skipped:
             msg += f" ({len(report.skipped)} steps skipped)"
         if report.kept:
             msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
+        moved = [i for i in report.superseded.values() if not i.error]
+        if moved:
+            msg += f" ({len(moved)} completed runs moved aside)"
         self.set_status(msg)
         self.host.append_log("Planner: " + msg)
+        self.log_superseded(report)
         if report.master:
             self.host.append_log(f"Master script: {report.master}")
         if run:
@@ -1250,6 +1280,33 @@ class PlannerPanel(Gtk.Box):
             # confirmed) the running run's marks must still reach their end (None: a host without the answer)
             if started is not False:
                 self._run_token = token
+
+    def running_readers(self, moving) -> List[str]:
+        """The running or queued steps that are among the steps of ``moving`` (node ids) or read their
+        outputs; a run the planner does not follow (one the wizard started) counts as reading them all."""
+        active = [n for n, st in self.run_state.items() if st in ("queued", "running")]
+        if not active:
+            jobs = getattr(self.host, "jobs", None)
+            return ["the scripts that are running"] if getattr(jobs, "running", False) else []
+        reads = {e.target for e in self.workflow.edges if e.source in moving}
+        return [step_title(n) for n in self.workflow.nodes
+                if n.id in active and (n.id in moving or n.id in reads)]
+
+    def log_superseded(self, report) -> None:
+        """List the completed runs a write moved aside in the output log (and the moves that failed in a
+        message: those steps were not written)."""
+        failed = []
+        for item in report.superseded.values():
+            lines = item.lines()
+            self.host.append_log("Planner: " + lines[0])
+            for line in lines[1:]:
+                self.host.append_log(line)
+            if item.error:
+                failed.append(item.summary())
+        if failed:
+            self._message(f"{len(failed)} step(s) not written", "\n".join(failed) + "\n\nNothing of these "
+                          "runs was lost: what was moved went back (or stays in superseded/, as said).",
+                          Gtk.MessageType.ERROR)
 
     # ------------------------------------------------------- previous runs
     def _previous_run_text(self, n: PlanNode) -> str:

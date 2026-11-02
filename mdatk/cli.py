@@ -730,9 +730,29 @@ def cmd_workflow_check(args) -> int:
     return 1 if n_err else 0
 
 
+def _print_superseded(items, quiet: bool = False, dry_run: bool = False) -> int:
+    """Say on standard error which completed runs moved aside (would move, with ``dry_run``: always said)
+    before their steps were written; returns how many could not be moved (always said: those steps were not
+    written)."""
+    failed = 0
+    for item in items:
+        failed += bool(item.error)
+        if quiet and not item.error and not dry_run:
+            continue
+        head = "ERROR" if item.error else ("would move" if dry_run else "moved")
+        lines = item.lines(limit=10 if dry_run else 20)
+        print(f"{head:8s} {lines[0]}", file=sys.stderr)
+        for line in lines[1:]:
+            print(f"         {line}", file=sys.stderr)
+    return failed
+
+
 def cmd_workflow_write(args) -> int:
+    from .workflows import supersede
     from .workflows.plan import Plan
     project = _workflow_project(args)
+    if args.dry_run and args.run:
+        raise ValueError("--dry-run writes nothing, so there is nothing to --run")
     parallel = _parallel(args, project) if args.run else 1  # a bad --parallel fails before writing
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
     ids = None
@@ -744,13 +764,26 @@ def cmd_workflow_write(args) -> int:
     if n_err and not args.force:
         print("error: the plan has errors (fix them or use --force to write the other steps)", file=sys.stderr)
         return 1
+    if args.dry_run:  # what would be written, and which completed runs would move aside first
+        moving = supersede.pending(plan, ids)
+        _print_superseded(moving.values(), args.quiet, dry_run=True)
+        targets = [n for n in (ids if ids is not None else plan.order) if not plan.steps[n].adopted]
+        files = [os.path.join(plan.root, plan.steps[n].ctx.from_own(f.name))
+                 for n, fs in plan.generate(targets).items() for f in fs]
+        out = {"folder": plan.root, "dry_run": True, "write": files,
+               "superseded": [i.plain() for i in moving.values()]}
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
     stamp_was = project.workflow.stamp
     from .projectfile import logged
     with logged(_project_file(args), "workflow write", "Generated the plan's files") as entry:
-        report = plan.write(ids)
+        report = plan.write(ids, project_path=_project_file(args))
         entry.folder = report.root
         entry.files = list(report.written)
         entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
+        if report.superseded:
+            entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+    failed = _print_superseded(report.superseded.values(), args.quiet)
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
         _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
@@ -758,11 +791,14 @@ def cmd_workflow_write(args) -> int:
            "master": report.master, "summary": report.summary}
     if report.kept:  # steps that use the outputs of an earlier run: not written
         out["kept"] = report.kept
-    print(json.dumps(out, indent=2))
+    if report.superseded:  # completed runs moved aside before their steps were written
+        out["superseded"] = [i.plain() for i in report.superseded.values()]
+    print(json.dumps(out, indent=2, ensure_ascii=False))
     if args.run:
         ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
-        return _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate)
-    return 0
+        code = _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate)
+        return code or (1 if failed else 0)
+    return 1 if failed else 0
 
 
 def cmd_workflow_run(args) -> int:
@@ -908,13 +944,21 @@ def cmd_workflow_generate(args) -> int:
     n_err = _print_issues(plan, quiet=args.quiet)
     if n_err:
         return 1
+    from .workflows import supersede
     if args.dry_run:
+        _print_superseded(supersede.pending(plan, [node.id]).values(), args.quiet, dry_run=True)
         for f in plan.generate([node.id]).get(node.id, []):
             print(f"===== {f.name}\n{f.content}")
         return 0
-    report = plan.write([node.id], master=False)
-    print(json.dumps({"folder": os.path.join(report.root, plan.steps[node.id].ctx.folder),
-                      "written": report.written, "stamp": plan.stamp}, indent=2))
+    report = plan.write([node.id], master=False, project_path=_project_file(args))
+    failed = _print_superseded(report.superseded.values(), args.quiet)
+    out = {"folder": os.path.join(report.root, plan.steps[node.id].ctx.folder),
+           "written": report.written, "stamp": plan.stamp}
+    if report.superseded:
+        out["superseded"] = [i.plain() for i in report.superseded.values()]
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    if failed:
+        return 1
     if args.run:
         return _run_plan_scripts(plan, [node.id], _project_file(args))
     return 0
@@ -1235,6 +1279,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--force", action="store_true", help="write the steps without errors even if others "
                                                        "have errors")
     w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the project")
+    w.add_argument("--dry-run", action="store_true",
+                   help="write and move nothing: list the files that would be written and the completed runs "
+                        "that would move into their step's superseded/ folder first")
     w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "

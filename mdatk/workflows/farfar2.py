@@ -256,6 +256,9 @@ class FarfarTool(Tool):
     def resources(self, s):
         return ["rosetta", "farfar2"]
 
+    def run_folders(self, s, ctx):
+        return [ctx.from_own(RUN_DIR)]  # rna_denovo's working folders runs/rNN
+
     def describe(self, s):
         model, _ = self.model(s)
         size = f"{model.length} nt, " if model and model.chains else ""
@@ -515,6 +518,10 @@ class FarfarModelsTool(Tool):
 
     def resources(self, s):
         return ["rosetta", "farfar2"] + (["dssr"] if s["dssr"] else [])
+
+    def run_folders(self, s, ctx):
+        # every model of every run, models/<run>/<tag>.pdb, with the extraction logs
+        return [ctx.from_own(MODELS_DIR)] if s["extract_all"] or self.validity_on(s) else []
 
     def describe(self, s):
         return (f"rna_cluster {s['radius']:g} Å, " if s["cluster"] else "by score, ") + f"top {s['n_models']}"
