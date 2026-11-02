@@ -10,16 +10,20 @@ run.  Defaults follow a working cryo-EM-guided protocol (50 000 cycles,
 from __future__ import annotations
 
 import posixpath
+import re
 from typing import List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__
 from . import rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_flags, fortran_float,
-                   require_file, script_header)
+                   require_file, script_header, shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
+from .scripts import embed
+from .scripts import silent_scores as _silent_scores
 
 RUN_DIR = "runs"
+MODELS_DIR = "models"  # farfar2-models: every model of every run, models/<run>/<tag>.pdb
 
 
 def _flag_bool(value: bool) -> str:
@@ -223,8 +227,10 @@ class FarfarTool(Tool):
         fasta, ss = self._inputs(s, ctx)
         model, _ = self.model(s)
         data = {"rna_model": model} if model is not None else {}
+        # the weight of the fit to the map while sampling (models drawn towards one placement in the map)
+        dens = {"density_weight": float(s["w_density"]) if ctx.has("map") else 0.0}
         out = {"silent": PortValue([ctx.own(f"{self.tag}-r{k:02d}", "out") for k in range(1, s["runs"] + 1)],
-                                   "silent", dict(data))}
+                                   "silent", dict(data, **dens))}
         if fasta:
             out["fasta"] = PortValue([ctx.from_own(fasta) if s["make_inputs"] else fasta], "fasta", dict(data))
         if ss:
@@ -369,7 +375,11 @@ class FarfarModelsTool(Tool):
     inputs = [Port("silent", "Silent files", ("silent",), multiple=True,
                    tooltip="The silent files of an rna_denovo step (one per run).")]
     outputs = [Port("best", "Best model (PDB)", ("pdb",)),
-               Port("models", "Ranked models (PDB)", ("pdb",), multiple=True)]
+               Port("models", "Ranked models (PDB)", ("pdb",), multiple=True),
+               Port("scores", "Decoy table (scores)", ("table",),
+                    tooltip="One row per model of every run: run, tag, the extracted PDB (plan-relative) and "
+                            "every SCORE term by name. Written with 'Write the decoy table', a filter or "
+                            "'Extract every model'.")]
     sections = [
         Section("cluster", "Clustering", [
             Option("cluster", "Cluster with rna_cluster", "bool", True,
@@ -386,12 +396,42 @@ class FarfarModelsTool(Tool):
                    requires={"cluster": True}),
             Option("cluster_extra", "Extra rna_cluster flags", "multiline", "", "", requires={"cluster": True}),
         ]),
+        Section("filter", "Filter", [
+            Option("filter", "Filter models by a score term", "bool", False,
+                   "Keep only the models whose SCORE term (looked up by its column name, never by position) "
+                   "is at most the maximum below. A model without a value is dropped."),
+            Option("filter_term", "Score term", "text", "linear_chainbreak",
+                   "Column name in the silent files' SCORE header, e.g. linear_chainbreak (open chain "
+                   "breaks), elec_dens_fast, atom_pair_constraint or score.", requires={"filter": True}),
+            Option("filter_max", "Maximum", "float", 5.0, "Models with a larger value are dropped.",
+                   minimum=-1e9, maximum=1e9, step=0.5, digits=2, requires={"filter": True}),
+            Option("filter_when", "Apply", "radio", "before",
+                   "Before clustering: only the models that pass are clustered (or ranked), from "
+                   "<project>_<step>_filtered-rNN_<time>.out. After clustering: the ranked cluster centres "
+                   "that fail are skipped.",
+                   choices=[("before", "before clustering"), ("after", "after clustering")],
+                   requires={"filter": True}),
+        ], tooltip="A score cut on the models, e.g. closed chain breaks."),
         Section("extract", "Extraction", [
             Option("n_models", "Models to extract", "int", 10, "Cluster centres (or best models) written as "
                    "PDB files <project>_<step>_model-01_<time>.pdb ...", minimum=1, maximum=10000),
             Option("extract_exe", "extract_pdbs executable", "text", "extract_pdbs", ""),
             Option("database", "Rosetta database", "text", "", "-database path (empty: found by the "
                    "executables)."),
+            Option("extract_all", "Extract every model of every run", "bool", False,
+                   "Also write every model as models/<run>/<tag>.pdb (run r01, r02 ... from the silent file "
+                   "names). extract_pdbs works in a scratch folder per run, since every run reuses the same "
+                   "tags; the earlier models of a run are removed first. The step checks that each run has "
+                   "one PDB per SCORE line and fills the pdb column of the decoy table."),
+            Option("extract_parallel", "Parallel extractions", "int", 1, "Runs extracted at the same time.",
+                   minimum=1, maximum=256, requires={"extract_all": True}),
+        ]),
+        Section("scores", "Decoy table", [
+            Option("write_scores", "Write the decoy table", "bool", False,
+                   "<project>_<step>_scores_<time>.tsv: one row per model of every run with run, tag, the "
+                   "extracted PDB (relative to the plan folder; empty when not extracted) and every SCORE "
+                   "term by name, and a column audit in the log. Always written with a filter or 'Extract "
+                   "every model'. Steps that take a decoy table read it from the output 'scores'."),
         ]),
         Section("dssr", "DSSR", [
             Option("dssr", "Annotate with x3dna-dssr", "bool", True,
@@ -409,13 +449,25 @@ class FarfarModelsTool(Tool):
     def describe(self, s):
         return (f"rna_cluster {s['radius']:g} Å, " if s["cluster"] else "by score, ") + f"top {s['n_models']}"
 
+    @staticmethod
+    def writes_table(s) -> bool:
+        """The decoy table is written on request, and always with a filter or the extraction of every model
+        (it is their record)."""
+        return bool(s["write_scores"] or s["filter"] or s["extract_all"])
+
     def output_values(self, s, ctx):
         models = [ctx.own(f"model-{k:02d}", "pdb") for k in range(1, s["n_models"] + 1)]
         data = dict(ctx.data("silent"))
-        return {"best": PortValue(models[:1], "pdb", data), "models": PortValue(models, "pdb", data)}
+        out = {"best": PortValue(models[:1], "pdb", data), "models": PortValue(models, "pdb", data)}
+        if self.writes_table(s):
+            out["scores"] = PortValue([ctx.own("scores", "tsv")], "table", dict(data))
+        return out
 
     def check(self, s, ctx):
         out: List[Issue] = []
+        if s["filter"] and not re.fullmatch(r"\S+", s["filter_term"].strip()):
+            out.append(Issue("error", "the filter needs one score term (a SCORE column name)",
+                             ("filter_term",)))
         n_files = len(ctx.inps("silent"))
         if s["cluster"] and s["n_models"] > s["max_clusters"]:
             out.append(Issue("warning", "more models requested than clusters written", ("n_models",)))
@@ -427,14 +479,81 @@ class FarfarModelsTool(Tool):
                              ("dssr",)))
         return out
 
+    def _runs(self, s, ctx) -> List[List[str]]:
+        """[label, silent file, filtered file or ''] per input run (paths relative to the step folder)."""
+        silents = ctx.inps("silent")
+        labels = _silent_scores.unique_labels(silents)
+        before = s["filter"] and s["filter_when"] == "before"
+        return [[lab, path, ctx.name(f"filtered-{lab}", "out") if before else ""]
+                for lab, path in zip(labels, silents)]
+
+    def _scores_helper(self, ctx, runs) -> GeneratedFile:
+        doc = (f"Rosetta silent-file scores for project {ctx.project}, step {ctx.step:02d} - written by "
+               f"{PROJECT_ABBREV} {__version__}.\n\nScore terms are looked up by column name. Usage:\n"
+               "    python3 THIS_SCRIPT table OUT.tsv [--extracted models] [--models MODELS.txt]\n"
+               "    python3 THIS_SCRIPT filter SILENT FILTERED [SILENT FILTERED ...] --term T --max X\n"
+               "    python3 THIS_SCRIPT filter-ranking RANKING.txt --term T --max X\n"
+               "    python3 THIS_SCRIPT check-extracted models\n"
+               "Needs only Python 3.")
+        pattern = ctx.name("model-MODELNUM", "pdb").replace("MODELNUM", "{N}")
+        constants = {"RUNS": [tuple(r) for r in runs], "PREFIX": ctx.folder, "MODEL_PATTERN": pattern}
+        return GeneratedFile(ctx.name("scores", "py"), embed(
+            _silent_scores, constants, "main(sys.argv[1:], RUNS, PREFIX, MODEL_PATTERN)", doc), "helper",
+            "silent-file scores by column name, the decoy table and the extraction check")
+
+    def _extract_all(self, s, runs, db: str, helper: str) -> List[str]:
+        exe = s["extract_exe"].strip() or "extract_pdbs"
+        m = MODELS_DIR
+        lines = [f"# Extract every model of every run into {m}/<run>/<tag>.pdb. extract_pdbs writes",
+                 "# <tag>.pdb into the folder it runs in, and every run reuses the same tags, so each run is",
+                 "# extracted in a scratch folder of its own; the run's earlier models are removed first.",
+                 "extract_run() {",
+                 "  local run=$1 silent=$2 tmp f",
+                 f'  rm -rf "{m}/$run" "{m}/.extract-$run".*',
+                 f"  mkdir -p {m}",
+                 f'  tmp=$(mktemp -d "{m}/.extract-$run.XXXXXX")',
+                 f'  ( cd "$tmp" && {exe}{db} -in:file:silent "$silent" ) > "{m}/extract-$run.log" 2>&1 \\',
+                 f'    || echo "extract_pdbs reported an error for run $run (see {m}/extract-$run.log)" >&2',
+                 f'  mkdir -p "{m}/$run"',
+                 f'  for f in "$tmp"/*.pdb; do if [ -e "$f" ]; then mv -- "$f" "{m}/$run/"; fi; done',
+                 '  rm -rf "$tmp"',
+                 "}"]
+        par = s["extract_parallel"]
+        for label, path, _filtered in runs:
+            src = path if posixpath.isabs(path) else posixpath.join("../..", path)  # from models/.extract-*
+            if par > 1:
+                lines += [f"extract_run {shell_quote(label)} {shell_quote(src)} &",
+                          f'[ "$(jobs -rp | wc -l)" -lt {par} ] || wait -n || true']
+            else:
+                lines.append(f"extract_run {shell_quote(label)} {shell_quote(src)}")
+        if par > 1:
+            lines.append("wait")
+        lines += ["# every run has one PDB per decoy (SCORE line) and no other PDB",
+                  f"python3 {helper} check-extracted {m}", ""]
+        return lines
+
     def generate(self, s, ctx):
         n = ctx.name
         script = n(self.tag, "sh")
         silents = ctx.inps("silent")
         db = f" -database {s['database'].strip()}" if s["database"].strip() else ""
+        table = self.writes_table(s)
+        runs = self._runs(s, ctx) if table else []
+        helper = n("scores", "py")
         sh = script_header("FARFAR2 models: cluster, extract, annotate", ctx, s, script)
         sh += ["# rank_models FILE: prints 'score tag file' for every model in a silent file",
                "rank_models() {", f"  {RANK_AWK}", "}", ""]
+        term = s["filter_term"].strip()
+        cut = f"--term {shell_quote(term)} --max {s['filter_max']:g}"
+        if s["filter"] and s["filter_when"] == "before":
+            sh += [f"# Keep the models with {term} <= {s['filter_max']:g} (looked up by column name) before "
+                   "clustering",
+                   f"python3 {helper} filter " + " ".join(f"{shell_quote(p)} {f}" for _l, p, f in runs)
+                   + f" {cut}",
+                   ""]
+            silents = [f for _l, _p, f in runs]
+        if s["extract_all"]:
+            sh += self._extract_all(s, runs, db, helper)
         ranking = n("ranking", "txt")
         if s["cluster"]:
             clustered = n("cluster", "out")
@@ -451,9 +570,14 @@ class FarfarModelsTool(Tool):
         else:
             sh += ["# Rank every model of every run by total score",
                    f"for f in {' '.join(silents)}; do rank_models \"$f\"; done | sort -g -k1,1 > {ranking}", ""]
+        if s["filter"] and s["filter_when"] == "after":
+            sh += [f"# Skip the ranked models with {term} > {s['filter_max']:g} (looked up by column name)",
+                   f"python3 {helper} filter-ranking {ranking} {cut}", ""]
         model = n("model-MODELNUM", "pdb").replace("MODELNUM", "${N}")
-        sh += [f"# Extract the best {s['n_models']} models as numbered PDB files",
-               "K=0",
+        sh += [f"# Extract the best {s['n_models']} models as numbered PDB files"]
+        if table:  # the decoy table reads this list: no lines of an earlier run
+            sh += [f"rm -f {n('models', 'txt')}"]
+        sh += ["K=0",
                "while read -r SCORE TAG FILE; do",
                "  K=$((K + 1))",
                f"  [ $K -gt {s['n_models']} ] && break",
@@ -475,6 +599,16 @@ class FarfarModelsTool(Tool):
                    (f'\n  {exe} -i="$f" --json -o="${{f%.pdb}}.json"' if s["dssr_json"] else ""),
                    "done",
                    f"{exe} --cleanup > /dev/null 2>&1 || true", ""]
+        files = []
+        if table:
+            terms = ["score"] + ([term] if s["filter"] else [])
+            sh += ["# The decoy table: run, tag, pdb and every SCORE term of every model, by column name",
+                   f"python3 {helper} table {n('scores', 'tsv')}"
+                   + (f" --extracted {MODELS_DIR}" if s["extract_all"] else "")
+                   + f" --models {n('models', 'txt')}"
+                   + "".join(f" --term {shell_quote(t)}" for t in dict.fromkeys(terms)),
+                   require_file(n("scores", "tsv"), "the decoy table"), ""]
+            files.append(self._scores_helper(ctx, runs))
         sh += [require_file(n("model-01", "pdb"), "the extraction"),
                f'echo "Best model: {n("model-01", "pdb")} (ranking in {n("models", "txt")})"', ""]
-        return [GeneratedFile(script, "\n".join(sh), "run", "clusters and extracts the models")]
+        return [GeneratedFile(script, "\n".join(sh), "run", "clusters and extracts the models")] + files

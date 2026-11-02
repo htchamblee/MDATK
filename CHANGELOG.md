@@ -12,6 +12,44 @@ the notes below.
   [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) · [0.0.2b](#002b-2026-10-15) ·
   [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## 0.0.12 (unreleased)
+
+- **FARFAR2 decoy table and score filter** (step *Rosetta · FARFAR2 models*, `mdatk rosetta scores`): SCORE
+  terms are looked up by column name in the header that applies (`mdatk/workflows/scripts/silent_scores.py`,
+  standard library, embedded in the step's folder). New output *scores* (file kind *table*):
+  `<project>_<step>_scores_<time>.tsv` with `run` (`rNN` from the silent file's name, `NN-rNN` when two
+  FARFAR2 steps feed the step), `tag`, `pdb` (plan-relative, empty when not extracted) and every SCORE term,
+  one row per decoy, written with *Write the decoy table*, a filter or *Extract every model*;
+  `mdatk.rosetta.read_decoy_table` reads it (TSV or CSV, extra columns kept). *Filter* section: a term
+  (`linear_chainbreak`) and a maximum (5), applied before clustering (filtered silent files per run) or
+  after it (ranked centres skipped). *Extract every model of every run*: `models/<run>/<tag>.pdb`, each run
+  in a `mktemp` folder of its own, earlier models of the run removed first, and a check that every run has
+  one PDB per SCORE line. All new options are off by default; the step's files are unchanged without them.
+- **Run audit** (`mdatk rosetta audit`, step *Rosetta · run audit*): what each rna_denovo run was given,
+  from the command lines in its logs, with `@flags` files expanded recursively, `::` read as `:`, short and
+  long flag spellings folded, every command line of a log read (restarts), input files fingerprinted by
+  their whole content (same content under MDATK's step-numbered names is no difference), conditions
+  compared and checked in pairs (`--pair`, `--pair-suffix`, `--allow`, `--ignore`), and, with
+  `--controlled RANGES`, how each condition gives the pairing of those residues (secondary structure,
+  obligate pairs, `-s` / `-input_res`, chain by chain). Report (text) and a flags-by-condition table.
+- **Frames of multi-body models** (`mdatk/frames.py`, `mdatk frame check|reframe`, step *MDATK · frame
+  check*): fit on one body, measure one or more others (P, C1′, C4′ by default; chain-qualified ranges or
+  residue groups; atoms keyed by chain, residue number and insertion code); one frame when the 95th
+  percentile of every body stays below 1 Å, models without the fit body listed but not counted; a re-fitted
+  reference applied to the models when one rigid transform suffices (carried RMSD ≤ 1 Å), otherwise the
+  step fails; moved decoys written as `<run>/<tag>.pdb` with ANISOU rotated, a manifest and a decoy table
+  of the moved files; a warning for models sampled with the map in the score. Models come from PDB files
+  or a decoy table's `pdb` column.
+- Bugs of the user scripts these replace, fixed: runs of MDATK-named silent files collided on the stamp;
+  a missing score term crashed the audit; duplicate tags overwrote each other silently; problems went to
+  standard error only; extracted decoys of earlier runs stayed beside new ones and failed extractions went
+  unnoticed; `::` flags and `@flags` files hid confounds; `-r` could not be switched off; relative paths
+  were resolved for the first run only; flag aliases and restarts were missed; directory keys depended on
+  the working folder; inputs were sampled, not hashed; atoms and output files were keyed without the chain
+  or the run (same-named decoys of different runs overwrote each other or shared a label); a set-wide
+  median let models without the fit body into the statistics; unusable models vanished from the table;
+  ANISOU records were not rotated.
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own

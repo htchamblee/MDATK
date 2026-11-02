@@ -578,6 +578,16 @@ def cmd_dict(args) -> int:
         return 1
 
 
+def cmd_rosetta(args) -> int:
+    from . import rosetta
+    return rosetta.run(args)
+
+
+def cmd_frame(args) -> int:
+    from . import frames
+    return frames.run(args)
+
+
 def cmd_workflow_tools(args) -> int:
     from .workflows import TOOLS, tools_by_category
     from .workflows.schema import kind_label
@@ -1037,6 +1047,22 @@ def build_parser() -> argparse.ArgumentParser:
             c.add_argument("--project", "-p", "--params", dest="params",
                            help="project file whose step log records the step")
         c.set_defaults(func=cmd_dict)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .rosetta import add_commands as rosetta_commands
+    p = sub.add_parser("rosetta", help="Rosetta FARFAR2 bookkeeping: SCORE terms by column name and the "
+                                       "decoy table, and an audit of what each rna_denovo run was given")
+    rsub = p.add_subparsers(dest="rosetta_command", metavar="action")
+    for c in rosetta_commands(rsub):
+        c.set_defaults(func=cmd_rosetta)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .frames import add_commands as frame_commands
+    p = sub.add_parser("frame", help="rigid frames of multi-body models: fit on one body, measure the "
+                                     "others; move models into a re-fitted reference's frame")
+    fsub = p.add_subparsers(dest="frame_command", metavar="action")
+    for c in frame_commands(fsub):
+        c.set_defaults(func=cmd_frame)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
