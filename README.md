@@ -54,6 +54,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [File names](#file-names)
   - [Previous runs](#previous-runs)
   - [Step types](#step-types)
+  - [FARFAR2 decoys: scores, run audit and frames](#farfar2-decoys-scores-run-audit-and-frames)
   - [Custom scripts](#custom-scripts)
   - [Command line](#command-line)
   - [What was tested](#what-was-tested)
@@ -836,8 +837,10 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | Step | Writes | Notes |
 |---|---|---|
 | **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise) |
-| **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
+| **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr`; optionally a score filter, every model of every run (`models/rNN/<tag>.pdb`) and the decoy table | ranked models `…_model-01_….pdb` (best first) feed the Amber build; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
 | **Model check (clashes · backbone · chirality)** | a script running MDATK's PDB tools and model checks (copied into the step folder, standard library only) on every connected model: a report table `…_report_….tsv`, the passed models and the best one | report, filter or stop; see [Model checks](#model-checks) |
+| **Rosetta · run audit** | script calling `python3 -m mdatk rosetta audit` | what each rna_denovo run was given (logged command lines, flags files, input fingerprints), conditions compared in pairs; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
+| **MDATK · frame check** | script calling `python3 -m mdatk frame check` (and `reframe`) | fit one body, measure the others: one frame or sampled placements; models moved into a re-fitted reference's frame when one rigid transform suffices |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
 | **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming and name check, CP library, TIP4P/2005 files) and the build script | see below |
@@ -1074,6 +1077,91 @@ converted. Checks cover grompp warnings that stop a run with
 `-maxwarn 0` (Berendsen coupling, Parrinello-Rahman with new velocities), `-update gpu` restrictions
 (no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
 (GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
+
+### FARFAR2 decoys: scores, run audit and frames
+
+**Scores by column name.** Every silent file has header lines `SCORE: score … linear_chainbreak …
+description`; MDATK looks each term up by its name in the header that applies, never by a fixed column,
+which points at another term as soon as the score function emits one term more or less.
+
+**Decoy table.** The FARFAR2 models step writes `<project>_<step>_scores_<time>.tsv` (output *scores*,
+file kind *table*) with *Write the decoy table*, and always with a filter or *Extract every model*. Its
+columns are `run`, `tag`, `pdb` and then every SCORE term by name; one row per decoy of every run:
+
+```text
+run  tag       pdb                                         score    …  linear_chainbreak  …
+r01  S_000001  02_farfar2-models/models/r01/S_000001.pdb  -412.31     0.074
+r02  S_000001  02_farfar2-models/models/r02/S_000001.pdb  -398.85     6.210
+```
+
+- `run` is `rNN` from the silent file's name (`…_farfar2-rNN_<time>.out`; with two FARFAR2 steps feeding
+  one models step `01-r01`, `05-r01` …), so the tags that every run reuses never collide.
+- `pdb` is relative to the plan folder, empty when the decoy was not extracted; ranked models of an
+  unclustered ranking fill it too.
+- Steps that take a decoy table (input *scores*) and `--scores TSV` on the command line read terms by name
+  and accept extra columns (`mdatk.rosetta.read_decoy_table`).
+
+**Filter.** *Filter models by a score term* (term `linear_chainbreak` by default, maximum 5) keeps the models
+whose term is at most the maximum; a model without a value is dropped. *Before clustering* writes the
+passing decoys of each run into `…_filtered-rNN_….out` (every line of a structure ends with its tag, so the
+file keeps whole structures) and clusters or ranks those; *after clustering* skips the ranked cluster
+centres that fail. A term missing from a SCORE header stops the step with the header's columns.
+
+**Extract every model.** *Extract every model of every run* writes `models/<run>/<tag>.pdb`.
+`extract_pdbs` writes `<tag>.pdb` into the folder it runs in, so each run is extracted in a `mktemp`
+folder of its own (*Parallel extractions* at a time), the run's earlier models are removed first, and
+afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the step and is
+named. A new run of the step replaces `models/`.
+
+**Run audit** (step *Rosetta · run audit*, `mdatk rosetta audit`). The authoritative record of what a run
+was given is the command line Rosetta logs (`core.init: command: …`). MDATK reads every such line of every
+rna_denovo log, expands `@flags` files recursively (MDATK's FARFAR2 step passes every flag that way;
+`#` starts a comment), reads `::` as `:`, and treats short and long spellings as one flag (`-s` =
+`-in:file:s`, `-obligate_pair_explicit` = `-rna:denovo:obligate_pair_explicit`; a repeated flag counts with
+its last value). The input files the flags name (`-fasta`, `-secstruct_file`, `-s`, `-native`,
+`-edensity:mapfile`) are fingerprinted by their whole content, since two runs can name the same path and
+still have read different files. A condition is a folder of runs (a FARFAR2 step folder, or an
+experiment folder of a campaign run outside RNAdo); its runs must agree, and the report lists what differs
+between conditions. *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`) should differ only in the
+pairing: `-secstruct_file`, `-obligate_pair(_explicit)`, `-filter_lores_base_pairs`, the secondary
+structure itself and what *Controlled residues* derive (`--allow` adds flags); seeds, output names,
+`-nstruct` and `-database` are ignored. Any other difference makes the pair *confounded*. With
+*Controlled residues* (`--controlled A:22-24,A:35-37`, numbered as in the FASTA) the report says how each
+condition gives their pairing: paired in the secondary structure, as obligate pairs, or fixed in the `-s`
+structure or `-input_res` (chain by chain) - a pairing imposed through `-obligate_pair_explicit` while the
+secondary structure leaves the residues unpaired is noted. The output is a text report and a table with
+one row per flag and one column per condition.
+
+**Frame check** (step *MDATK · frame check*, `mdatk frame check`). Models built around pre-placed parts
+(helices given with `-s`, a fit into a map) inherit their relative placement. Each model is superposed on
+the reference with the atoms of one body (*Fit on*, default P, C1′, C4′ of `group:Aptamer`), and the RMSD of
+each other body (*Measure*, one or more) under that superposition says how far it moved relative to the fit
+body. A model whose fit body is more than 1 Å from the reference's does not contain it: it is listed, not
+counted. With the 95th percentile of every measured body below 1 Å the models share one frame; otherwise
+the placement was sampled. Atoms are matched by chain, residue number and insertion code; *Model numbering*
+pairs differently numbered residues (`C:1-29=B:45-73`). The report table has a row per model (run and tag
+from a decoy table), also for models that could not be measured.
+
+**Re-fitted reference** (`mdatk frame reframe`). The old reference is superposed onto the re-fitted one on
+the fit body; if every measured body is carried to its new place within 1 Å, one rigid transform
+describes the re-fit and the models are moved with it (ANISOU tensors rotated, decoys of a table written
+as `<run>/<tag>.pdb`, a manifest and a decoy table pointing at the moved files). Otherwise the bodies moved
+relative to each other and the step fails: the models must be built again on the new reference. Models
+sampled with the map in the score (`elec_dens_fast`) were drawn towards the old placement; moving them keeps
+their geometry, which is not what sampling in the new frame would build, and the step warns.
+
+For a construct with an aptamer of chains A and B (1-16, 17-44) and a target in chain C (45-73):
+
+```bash
+mdatk rosetta scores 01_farfar2/ --max linear_chainbreak=5 --tsv scores.tsv
+mdatk rosetta audit runs/ --pair-suffix _nointernalpairs --controlled B:22-24,B:35-37 -o audit.txt
+mdatk frame check helices.pdb --scores 02_farfar2-models/apt1_02_scores_20261015-1432.tsv \
+    --fit A:1-16,B:17-44 --measure Target=C:45-73 --tsv frame.tsv
+mdatk frame reframe helices.pdb helices_sharpened.pdb models/ --fit A:1-16,B:17-44 \
+    --measure C:45-73 -O reframed --manifest reframed.tsv
+```
+
+Flags given to `--allow` / `--ignore` start with a dash: write them with `=` (`--allow=-cycles`).
 
 ### Custom scripts
 
@@ -1749,6 +1837,13 @@ mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] 
 mdatk pdb check|clean|to-lrna|annotate|qc   (see PDB clean-up and Model checks)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
+mdatk rosetta scores SILENT|DIR ... [--term T] [--max T=X] [--tsv OUT] [--extracted DIR] [--legacy-index N]
+mdatk rosetta audit ROOT ... [--pair C=T] [--pair-suffix S] [--controlled RANGES] [--allow=-FLAG]
+    [--ignore=-FLAG] [--fast-hash] [--shallow] [-o REPORT] [--tsv TABLE] [--strict]
+mdatk frame check REF [MODELS|DIR ...] [--scores TSV [--root DIR] [--max T=X]] --fit RANGES
+    --measure [NAME=]RANGES ... [--atoms P,C1',C4'] [--model-map REF=MODEL] [--tsv OUT] [--strict]
+mdatk frame reframe OLD NEW [MODELS|DIR ...] [--scores TSV] --fit RANGES --measure RANGES ... [--tol 1]
+    [-O DIR] [--manifest TSV] [--scores-out TSV]      (see FARFAR2 decoys)
 ```
 
 `run` and `write --run` exit with status 75 when a step waits for a separately run script (see [Running
