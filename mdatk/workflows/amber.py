@@ -275,6 +275,25 @@ class AmberBuildTool(Tool):
             Option("strip_water", "Remove waters from the input", "bool", True,
                    "Crystal waters are dropped; the solvent box is built by tleap.",
                    requires={"prep": True}),
+            Option("drop_virtual", "Remove Rosetta virtual residues (VRT/XXX)", "bool", True,
+                   "Drop the virtual residues Rosetta writes into density-scored models (VRT: the root of "
+                   "the fold tree, atoms ORIG / X / Y; XXX). They are no atoms of the molecule, and tleap "
+                   "has no unit for them: it cannot type their atoms and fails to save the topology.",
+                   requires={"prep": True}),
+            Option("link_check", "Check O3′–P links before tleap", "radio", "off",
+                   "Measure O3′(i)–P(i+1) of consecutive nucleotides in every TER segment of the PDB tleap "
+                   "reads (after the preparation and the L-RNA naming). tleap bonds them whatever the "
+                   "distance, so a chain break left in a model (Rosetta numbers across its cutpoints) "
+                   "becomes a strained bond. Warn: list the links outside the limits and build anyway. Stop: "
+                   "end the script before tleap.",
+                   choices=[("off", "off"), ("warn", "warn"), ("stop", "stop")]),
+            Option("link_min", "Shortest O3′–P link", "float", 1.4,
+                   "Shorter links are overlaps (ideal 1.60 Å).", minimum=0.5, maximum=3.0, step=0.05,
+                   digits=2, unit="Å", requires={"link_check": ("warn", "stop")}),
+            Option("link_max", "Longest O3′–P link", "float", 2.0, "Longer links are breaks: past 2.0 Å "
+                   "minimisation has to repair them, past about 3 Å tleap builds a badly strained bond.",
+                   minimum=1.0, maximum=10.0, step=0.1, digits=2, unit="Å",
+                   requires={"link_check": ("warn", "stop")}),
         ], tooltip="How the starting PDB is cleaned before tleap reads it."),
         Section("forcefield", "Force field", [
             Option("rna_ff", "RNA force field", "choice", "ol3cp",
@@ -830,6 +849,7 @@ class AmberBuildTool(Tool):
                                      "same topology; the two-pass build is kept for set-ups that need the "
                                      "dry intermediate files", ("two_pass",)))
         out += self._check_lrna(s, ctx)
+        out += self._check_input_backbone(s, ctx)
         if not s["prep"] and ctx.value("structure") and ctx.value("structure").source:
             src = ctx.value("structure").source_label
             out.append(Issue("info", f"the PDB from {src} is used as is; models from Rosetta usually "
@@ -844,6 +864,54 @@ class AmberBuildTool(Tool):
                                         "also apply to every water hydrogen (and carbonyl O) for the whole run; "
                                         "tick 'Separate HO and O2 Lennard-Jones types first' unless you reproduce "
                                         "a protocol that did not separate them", ("split_types",)))
+        return out
+
+    @staticmethod
+    def _check_input_backbone(s, ctx) -> List[Issue]:
+        """An existing input PDB: Rosetta virtual residues, and (with the link check) its O3'-P links as tleap
+        will see them, i.e. after the preparation the script applies."""
+        from .. import modelcheck
+
+        path = ctx.existing("structure")
+        if not path:
+            return []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return []
+        out: List[Issue] = []
+        virtual = {(ln[21:22], ln[22:27]) for ln in lines if ln.startswith(("ATOM", "HETATM"))
+                   and ln[17:20].strip().upper() in _prep_pdb.VIRTUAL}
+        dropped = s["prep"] and s["drop_virtual"]
+        name = os.path.basename(path)
+        if virtual and dropped:
+            out.append(Issue("info", f"{name}: {len(virtual)} Rosetta virtual residue(s) (VRT / XXX) are "
+                                     "removed before tleap", ("drop_virtual",)))
+        elif virtual:
+            out.append(Issue("warning", f"{name} has {len(virtual)} Rosetta virtual residue(s) (VRT / XXX): "
+                                        "tleap cannot type their atoms; tick 'Remove Rosetta virtual "
+                                        "residues'", ("drop_virtual", "prep")))
+        if s["link_check"] == "off":
+            return out
+        if s["prep"]:
+            lines = _prep_pdb.prepare(lines, True, s["strip_5p"], s["gap_ter"], s["strip_water"], True,
+                                      s["drop_virtual"])[0]
+        try:
+            links = modelcheck.check_backbone(pdbtools.read_pdb("\n".join(lines) + "\n"), s["link_min"],
+                                              s["link_max"])
+        except pdbtools.PDBError as exc:
+            return out + [Issue("warning", f"cannot check the O3′–P links: {exc}", ("link_check",))]
+        bad = links.problems
+        if bad:
+            shown = ", ".join(f"{k.first}-{k.second} " + (f"{k.distance:.2f} Å" if k.distance is not None
+                                                          else k.status) for k in bad[:6])
+            more = f" and {len(bad) - 6} more" if len(bad) > 6 else ""
+            then = ("the build script stops before tleap" if s["link_check"] == "stop" else
+                    "tleap bonds them anyway")
+            out.append(Issue("warning", f"{name}: {len(bad)} O3′–P link(s) outside {s['link_min']:g}–"
+                                        f"{s['link_max']:g} Å or unmeasurable ({shown}{more}); {then}",
+                             ("link_check", "link_max")))
         return out
 
     def _check_mg_pairs(self, s, ctx=None) -> List[Issue]:
@@ -1070,6 +1138,31 @@ class AmberBuildTool(Tool):
                 f"python3 {names_py} {named} {leap_in} || {{ echo \"ERROR: the L residue names do not match "
                 "the residue libraries (see above); tleap was not run\" >&2; exit 1; }", ""]
 
+    @staticmethod
+    def _link_check(s, ctx, files: List[GeneratedFile], pdb: str) -> List[str]:
+        """The helper (MDATK's PDB tools and model checks) that measures the O3'-P links of the PDB tleap
+        reads, and the script lines that run it (warn: report; stop: end before tleap)."""
+        from .modelcheck import helper_source  # (a step module of its own: imported when needed)
+
+        links_py = ctx.name("links", "py")
+        files.append(GeneratedFile(links_py, helper_source(
+            f"O3'-P links of the PDB tleap reads - written by {PROJECT_ABBREV} {__version__} (mdatk.pdbtools "
+            "and mdatk.modelcheck).\n\nUsage: python3 THIS_SCRIPT MODEL.pdb --checks links --link-min 1.4 "
+            "--link-max 2.0 [--on-fail stop]"), "helper", "checks the O3'-P links before tleap"))
+        limits = f"--link-min {s['link_min']:g} --link-max {s['link_max']:g}"
+        lines = ["# O3'-P links of consecutive nucleotides in every TER segment of the PDB tleap reads:",
+                 "# tleap bonds them whatever the distance, so a chain break left in the model would become",
+                 "# a strained bond"]
+        run = f"python3 {links_py} {pdb} --checks links {limits}"
+        if s["link_check"] == "stop":
+            lines.append(f"{run} --on-fail stop || {{ echo \"ERROR: O3'-P links outside {s['link_min']:g}-"
+                         f"{s['link_max']:g} A or unmeasurable (see above); tleap was not run\" >&2; "
+                         "exit 1; }")
+        else:
+            lines.append(f"{run} --on-fail report || echo \"WARNING: the O3'-P link check could not read the "
+                         "PDB\" >&2")
+        return lines + [""]
+
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []
         n = ctx.name
@@ -1120,7 +1213,8 @@ class AmberBuildTool(Tool):
             prep_py, prep_pdb = n("prep", "py"), n("prep", "pdb")
             files.append(GeneratedFile(prep_py, embed(
                 _prep_pdb, {}, "main(sys.argv[1:], strip_h=True, strip_5p=%r, gap_ter=%r, "
-                "strip_water=%r)" % (s["strip_5p"], s["gap_ter"], s["strip_water"]),
+                "strip_water=%r, drop_virtual=%r)" % (s["strip_5p"], s["gap_ter"], s["strip_water"],
+                                                      s["drop_virtual"]),
                 f"Prepare an RNA PDB for tleap - written by {PROJECT_ABBREV} {__version__}.\n\n"
                 "Usage: python3 THIS_SCRIPT INPUT.pdb OUTPUT.pdb"), "helper",
                 "cleans the starting PDB for tleap"))
@@ -1142,6 +1236,8 @@ class AmberBuildTool(Tool):
             # before the first tleap, so a mismatch costs seconds
             if not gen and self._own_libs(s) and self._lrna_setup(s, ctx):
                 sh += self._lrna_names_check(s, ctx, files, named)
+        if s["link_check"] != "off":
+            sh += self._link_check(s, ctx, files, pdb_in)
         lj = self._lj_mods(s)
         mods = " + ".join(m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]),
                                           ("extra commands", bool(extra_lines(s["parmed_extra"]))))
