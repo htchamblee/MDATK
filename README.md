@@ -849,7 +849,7 @@ uses are free; otherwise steps go in plan order.
   | Amber MD stages | pmemd.cuda: 1 core and 1 GPU (its *GPU* option names it); pmemd.MPI: its *MPI processes*; pmemd: 1 core |
   | NAMD MDFF | its *CPU cores* (`+p`) and 1 GPU (`+devices` names it) |
   | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded |
-  | FARFAR2, SimRNA | their parallel runs (at most the number of runs) |
+  | FARFAR2, SimRNA | their parallel runs (at most the number of runs); FARFAR2 with *Extract every decoy* its parallel extractions when there are more |
   | FARFAR2 models | its parallel extractions when every model is extracted, else 1 core |
   | Phenix RSR | its processors (`nproc`) |
   | Register census, frame check | their worker processes |
@@ -961,16 +961,17 @@ from the step's own folder and only of that stamp:
   `<project>_<NN>_*_<stamp>.*` in the folder;
 - outputs whose names carry no stamp (a custom script's fixed file names, plans without time stamps,
   which use `superseded/no-stamp_<time>/`) with the completion marker that ties them to the run;
-- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of the FARFAR2 models step
-  (with *Extract every model* or validity filters), moved whole so `models/r01/S_000001.pdb` keeps its
-  place.
+- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of FARFAR2 (with *Extract
+  every decoy after the runs*) and of the FARFAR2 models step (with *Extract every model* or validity
+  filters), moved whole so `models/r01/S_000001.pdb` keeps its place.
 
 A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
 run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
 them), steps that use an earlier run are never written, files of other stamps and your own files stay, and
 nothing in `superseded/` is ever replaced (a second move in the same second gets `…-2`). In a plan without
 step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder, the `<project>_<NN>_*` rule
-applies only when no other step has the number, and `runs/` / `models/` are left alone (steps share them).
+applies only when no other step has the number, and `runs/` (steps share it) and the extracted models
+(`<project>_<NN>_models/`) are left alone.
 A step's move is all or nothing: if a file cannot be moved, the files moved so far go back, the step is not
 written and the write reports it. *Check previous runs* never looks inside `superseded/`. Steps that skip
 finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip finished runs*) reuse
@@ -1291,8 +1292,9 @@ decoys can be the clashing ones), so the step separates the two:
      `group:NAME`); a residue of the other hand, an epimerised or flat sugar and, with counts, any other
      count or an unmeasurable sugar make a decoy invalid.
   2. *Base identity against the sequence*: every nucleotide's base (from its atoms) at its chain and number
-     must be the sequence's (the connected FARFAR2 step's, or a typed one: FASTA with `A:1-16` tags or
-     `A: GGGC…`); a missing or extra residue is invalid too.
+     must be the sequence's (the connected FARFAR2 step's, numbered by the `A:1-16` tags of its *Existing
+     FASTA* when it uses one, or a typed one: FASTA with `A:1-16` tags or `A: GGGC…`); a missing or extra
+     residue is invalid too.
   3. *Chain closure*: a score term by name (`linear_chainbreak <= 5` by default), every O3′–P link of
      consecutive nucleotides at most 2.0 Å (`mdatk.modelcheck.check_backbone`), or both.
   4. *Required pairs*: the defining pairs of a register (`pres=B:22-B:37, B:23-B:36, B:24-B:35`, as
@@ -1328,16 +1330,18 @@ decoys can be the clashing ones), so the step separates the two:
 No filter is on by default, and the step's files are then those of 0.0.11.
 
 **Extract every model.** *Extract every model of every run* (implied by the validity filters) writes
-`models/<run>/<tag>.pdb`. `extract_pdbs` writes `<tag>.pdb` into the folder it runs in, so each run is
-extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), the run's earlier models are
-removed first, and afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the
-step and is named. A new run of the step replaces `models/`.
+`models/<run>/<tag>.pdb` (in a plan without step folders `<project>_<NN>_models/<run>/<tag>.pdb`, a folder
+per step, so two steps never extract into one). `extract_pdbs` writes `<tag>.pdb` into the folder it runs
+in, so each run is extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), the run's
+earlier models are removed first, and afterwards every run must have exactly one PDB per SCORE line: a
+missing decoy stops the step and is named. A new run of the step replaces `models/`.
 
 **Every decoy from the FARFAR2 step.** The FARFAR2 box has two more outputs: *Every decoy (PDB)*, the large
 dot on its right (a set, see [The plan](#the-plan)), and *Decoy table*. Connecting either switches on
 *Extract every decoy after the runs* (section *Decoys*; it can be ticked without a connection too). After
 the rna_denovo runs, the step's script runs `<project>_<step>_decoys_<time>.sh`, which extracts every
-model of every run into `models/<run>/<tag>.pdb` of the FARFAR2 folder as *Extract every model* does
+model of every run into `models/<run>/<tag>.pdb` of the FARFAR2 folder (`<project>_<NN>_models/` without
+step folders) as *Extract every model* does
 (*Parallel extractions*, `extract_pdbs` from the box's *extract_pdbs executable* with its Rosetta database,
 one PDB per SCORE line checked) and writes the decoy table `<project>_<step>_scores_<time>.tsv` (columns as
 above) and the list of the decoys `<project>_<step>_decoys_<time>.txt` (one PDB per line, relative to the

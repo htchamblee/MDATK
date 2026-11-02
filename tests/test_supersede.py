@@ -268,6 +268,33 @@ def test_farfar2_sub_folders_keep_their_layout(tmp_path):
     assert man["folders"] == ["models"]
 
 
+def test_farfar2_extracted_decoys_move_with_their_run(tmp_path):
+    # with 'Extract every decoy' only runs/ moved: the decoy list and table went to superseded/ while the
+    # decoys they name stayed in models/, where the next extraction deletes and replaces them
+    wf = WorkflowParams(project_name="apt1", stamp=OLD)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "runs": 2, "extract_decoys": True})
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, f.id, OLD)
+    fd = os.path.join(root, "01_farfar2")
+    for run in ("r01", "r02"):
+        touch(os.path.join(fd, "runs", run, "default.out"))
+        touch(os.path.join(fd, "models", run, "S_000001.pdb"), f"{run}\n")
+        touch(os.path.join(fd, "models", f"extract-{run}.log"))
+    (item,) = supersede.pending(plan).values()
+    assert item.folders == ["01_farfar2/runs", "01_farfar2/models"]
+    report = plan.write()
+    item = report.superseded[f.id]
+    moved = tree(os.path.join(root, item.target))
+    assert {"models/r01/S_000001.pdb", "models/r02/S_000001.pdb", "models/extract-r01.log",
+            f"apt1_01_decoys_{OLD}.txt", f"apt1_01_scores_{OLD}.tsv", f"apt1_01_decoys_{OLD}.sh"} <= moved
+    assert open(os.path.join(root, item.target, "models", "r02", "S_000001.pdb")).read() == "r02\n"
+    assert not os.path.exists(os.path.join(fd, "models"))
+    assert load_toml(os.path.join(root, item.target, "manifest.toml"))["folders"] == ["runs", "models"]
+
+
 def test_repeated_writes_get_folders_of_their_own(tmp_path):
     wf, build, restraints, md = amber_plan(tmp_path)
     root = str(tmp_path / "plan")

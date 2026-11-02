@@ -304,6 +304,30 @@ def test_bases_against_the_sequence():
         s, {"reference": list(zip(plain.chains, plain.numbers, plain.bases))})[0]
 
 
+def test_base_identity_takes_the_numbering_of_the_farfar2_steps_own_fasta(tmp_path):
+    # with 'Existing FASTA' the reference came from the planner's RNA model, which numbers the chains on from
+    # 1 and drops the headers' chain:range tags (B:20-26 became B:8-14); Rosetta numbers the decoys by the
+    # tags, so every decoy failed the bases criterion and nothing was left to cluster
+    fasta = write(tmp_path / "apt.fasta", ">apt1 A:1-7\nGGGAAAA\n>apt1 B:20-26\nUUUUCCC\n")
+    fold = {"make_inputs": False, "fasta_file": fasta, "fixed_stems": False}
+    plan, mid = _plan(tmp_path, fold=fold, valid_bases=True)
+    st = plan.steps[mid]
+    assert not [i.message for i in st.issues if i.level == "error"]
+    ref = TOOLS["farfar2-models"].validity_settings(st.settings, st.ctx)[0]["bases"]
+    assert ref["reference"][:2] == [("A", 1, "G"), ("A", 2, "G")]
+    assert ref["reference"][7:] == [("B", 20 + k, "UUUUCCC"[k]) for k in range(7)]
+    decoy = pdbtools.read_pdb(builder.build_helix("GGGAAAA", chains=("A", "B"), start=(1, 20)))
+    assert decoy_validity.judge_bases(decoy, ref) == (True, {"base_errors": 0}, "")
+    # one record tagged A:1-7 B:8-14 (Rosetta's single-record form) is not one chain A of 14
+    write(tmp_path / "apt.fasta", ">apt1 A:1-7 B:8-14\nGGGAAAAUUUUCCC\n")
+    plan, mid = _plan(tmp_path, fold=fold, valid_bases=True)
+    ref = TOOLS["farfar2-models"].validity_settings(plan.steps[mid].settings, plan.steps[mid].ctx)[0]["bases"]
+    assert decoy_validity.judge_bases(pdbtools.read_pdb(DUPLEX), ref)[0]
+    # the FASTA a FARFAR2 step writes itself numbers the chains on from 1, as before
+    plan, mid = _plan(tmp_path, valid_bases=True)
+    assert "fasta_text" not in plan.steps[mid].ctx.data("silent")
+
+
 def test_closure_by_term_and_geometry():
     broken = pdbtools.read_pdb(DECOYS["S_000004"][0])
     spec = {"term": "linear_chainbreak", "max": 5.0}
