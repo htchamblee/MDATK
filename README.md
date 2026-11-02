@@ -108,9 +108,11 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 - **The commands a step runs:** the script wizard has a *Commands* tab with the commands the step's
   script will run.
 - **Fixes:** the NAMD MDFF result PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with
-  blank chains is read. Each program now quits when its main window closes, and the programs it starts
-  get `close_fds`; the cause of the reported MDATK process left running after the AppImage's windows are
-  closed is still being investigated (these changes are not known to remove it).
+  blank chains is read; a closed RNAdo no longer stays behind as a defunct process (`mdatk` from the
+  AppImage) while the analysis window that started it is open. Each program now quits when its main
+  window closes, and the programs it starts get `close_fds`; the cause of the reported MDATK process left
+  running after both of the AppImage's windows are closed is still being investigated (these changes are
+  not known to remove it).
 - **Generated workflow files** of the earlier step types are unchanged unless a new option is turned on,
   apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds (see
   [CHANGELOG.md](CHANGELOG.md)).
