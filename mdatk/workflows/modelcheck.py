@@ -1,11 +1,14 @@
 """Planner step 'model-check': plausibility of candidate models before they are simulated or refined.
 
-Clashes (Bondi overlap, hydrogen bonds excused by chemistry, exclusions along bonds), O3'-P links of every
-TER segment and P-P spacing, compaction of loop segments, and sugar hands against expected ones, for every
-connected model (:mod:`mdatk.modelcheck`).  The step writes a report table and passes the models on: all
-of them (report), only those that pass the gates (filter), or none when one fails (stop).  The script runs
-a copy of MDATK's PDB tools and model checks that the step writes into its folder (standard library only),
-so the machine that runs it needs ``python3`` and nothing else.
+Clashes (Bondi overlap of heavy atoms, hydrogen bonds excused by chemistry, exclusions along bonds), O3'-P
+links of every TER segment (strained links reported with their strain) and P-P spacing, compaction of loop
+segments, sugar hands against expected ones and sharp kinks, for every connected model, and on request the
+hydrogen contacts on MolProbity's conventions, reported only (:mod:`mdatk.modelcheck`).  The step writes a
+report table and passes the models on: all of them (report), up to N of those that pass the gates in N
+slots, the unfilled ones written as empty-slot files, failing only when fewer than the minimum pass (filter),
+or none when one fails (stop).  The script runs a copy of MDATK's PDB tools and model checks that the step
+writes into its folder (standard library only), so the machine that runs it needs ``python3`` and nothing
+else.
 """
 
 from __future__ import annotations
@@ -83,8 +86,8 @@ class ModelCheckTool(Tool):
     category = "Structure prediction"
     tag = "model-check"
     description = ("Plausibility of candidate models before MD or refinement: steric clashes (hydrogen bonds "
-                   "excused by chemistry), O3′–P links and P–P spacing, loop compaction and sugar hands; a "
-                   "report table, and the models passed on, filtered or stopped.")
+                   "excused by chemistry), O3′–P links and P–P spacing, loop compaction, sugar hands and "
+                   "kinks; a report table, and the models passed on, filtered or stopped.")
     inputs = [Port("models", "Models (PDB)", ("pdb",), multiple=True,
                    tooltip="The models to check, e.g. the ranked FARFAR2 models or a refined model."),
               Port("secstruct", "Secondary structures", ("secstruct",), optional=True, multiple=True,
@@ -94,8 +97,11 @@ class ModelCheckTool(Tool):
                    tooltip="Rosetta score terms per decoy (run, tag, pdb, terms ...), e.g. from the FARFAR2 "
                            "models step: shown in the report, limits and ranking by score.")]
     outputs = [Port("report", "Report (TSV)", ("table",),
-                    tooltip="One row per model: status, clashes, links, compaction, hands, score terms."),
-               Port("passed", "Passed models (PDB)", ("pdb",), multiple=True),
+                    tooltip="One row per model: status, clashes, links and strain, compaction, hands, kinks, "
+                            "score terms."),
+               Port("passed", "Passed models (PDB)", ("pdb",), multiple=True,
+                    tooltip="Filter: up to N slots; the slots no passing model fills are empty-slot files "
+                            "(REMARK 951, no atoms), which MDATK's steps skip."),
                Port("best", "Best model (PDB)", ("pdb",))]
     sections = [
         Section("clashes", "Clashes", [
@@ -111,9 +117,6 @@ class ModelCheckTool(Tool):
             Option("hbond_max", "Longest hydrogen bond", "float", modelcheck.HBOND_WINDOW[1],
                    "Upper end of the hydrogen-bond window.", minimum=2.0, maximum=4.0, step=0.05, digits=2,
                    unit="Å"),
-            Option("hydrogens", "Include hydrogens", "bool", False,
-                   "Check hydrogens too (Bondi H 1.2 Å; the hydrogen of an H-bonded donor is excused). Off: "
-                   "heavy atoms only, as hydrogens placed by different programs differ."),
             Option("waters", "Include waters", "bool", False, "Check water oxygens (donors and acceptors)."),
             Option("ions", "Ions", "radio", "skip",
                    "Skip ions, or check them against their first-shell distances (Mg²⁺–O 2.1 Å, Na⁺–O 2.4 Å, "
@@ -123,15 +126,24 @@ class ModelCheckTool(Tool):
                    "Residues whose A N1 or C N3 carries a proton (a donor then), e.g. 'B:30, C:52'. Ranges "
                    "as everywhere: 'A:7-12', 'C' (whole chain), 'group:NAME' (a residue group).",
                    placeholder="B:30"),
-        ], tooltip="Steric clashes; atoms up to three bonds apart are left out."),
+            Option("hydrogen_check", "Report hydrogen contacts", "bool", False,
+                   "A separate report of the models' explicit hydrogens on MolProbity's conventions (Probe's "
+                   "radii: 1.17 Å on carbon, 1.00 Å polar or aromatic at nuclear positions, 1.22 / 1.05 Å at "
+                   "electron-cloud positions; overlap ≥ 0.4 Å; clashscore). Never a gate or a filter; the "
+                   "clash check above never includes hydrogens (their positions differ between programs)."),
+        ], tooltip="Steric clashes of heavy atoms; atoms up to three bonds apart are left out."),
         Section("backbone", "Backbone", [
             Option("link_min", "Shortest O3′–P link", "float", modelcheck.LINK_RANGE[0],
                    "O3′(i)–P(i+1) of consecutive nucleotides in a TER segment (what tleap bonds) shorter "
                    "than this is an overlap.", minimum=0.5, maximum=3.0, step=0.05, digits=2, unit="Å"),
-            Option("link_max", "Longest O3′–P link", "float", modelcheck.LINK_RANGE[1],
-                   "Longer is a chain break (ideal 1.60 Å; past 2.0 Å minimisation has to repair it, past "
-                   "about 3 Å tleap builds a badly strained bond).", minimum=1.0, maximum=10.0, step=0.1,
-                   digits=2, unit="Å"),
+            Option("link_max", "Longest unstrained O3′–P link", "float", modelcheck.LINK_RANGE[1],
+                   "Longer links are reported as strained, with the strain tleap's bond puts into the first "
+                   "minimisation, E = k(r − r0)² with Amber's OS–P term (230 kcal/mol/Å², 1.61 Å): about 35 "
+                   "kcal/mol at 2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å (a warning, not a failure).", minimum=1.0,
+                   maximum=10.0, step=0.1, digits=2, unit="Å"),
+            Option("link_fail", "Longest O3′–P link before a break", "float", modelcheck.LINK_FAIL,
+                   "Longer is a chain break (usually two pieces), which fails the backbone gate.",
+                   minimum=1.0, maximum=20.0, step=0.1, digits=2, unit="Å"),
             Option("pp_min", "Shortest P–P spacing", "float", modelcheck.PP_RANGE[0],
                    "Consecutive phosphorus atoms closer than this are reported.", minimum=1.0, maximum=10.0,
                    step=0.1, digits=1, unit="Å"),
@@ -164,27 +176,53 @@ class ModelCheckTool(Tool):
             Option("expect_d", "Expected D", "text", "", "Residues whose sugars must be D, e.g. 'A, B'.",
                    placeholder="A, B", requires={"hands": "ranges"}),
         ], tooltip="Sugar chirality from the geometry, against the hands expected."),
+        Section("kinks", "Kinks", [
+            Option("kink_min", "Flag kinks below", "float", modelcheck.KINK_MIN,
+                   "The virtual angle C1′(i−1)–C1′(i)–C1′(i+1) of every residue between two consecutive "
+                   "nucleotides of a TER segment (A-form: 152°); below this a sharp kink is flagged.",
+                   minimum=0.0, maximum=180.0, step=5.0, digits=0, unit="°"),
+            Option("kink_allow", "Kinks allowed at", "text", "",
+                   "Residues where a sharp kink is allowed and not flagged, e.g. the flexible positions of "
+                   "in-line probing: 'B:22-25, B:31' or 'group:Flexible'.", placeholder="B:22-25"),
+            Option("kink_reactivity", "Reactivity file", "file", "",
+                   "A two-column file (position, reactivity), e.g. in-line probing: the positions whose "
+                   "reactivity reaches the threshold below are allowed a kink too."),
+            Option("kink_reactivity_min", "Allowed from reactivity", "float", 0.5,
+                   "The reactivity from which a position is flexible (in the file's own units).",
+                   minimum=-1e6, maximum=1e6, step=0.05, digits=3),
+            Option("kink_reactivity_chain", "Chain of the positions", "text", "",
+                   "The chain the file's positions number (empty: every chain).", placeholder="B"),
+        ], tooltip="Sharp kinks of the chain from the virtual C1′ angle."),
         Section("gates", "Pass / fail", [
             Option("on_fail", "Models that fail", "radio", "report",
                    "Report: every model is passed on and the report says which fail. Filter: only models "
-                   "that pass are passed on (the number below; the step fails when fewer pass). Stop: the "
-                   "step fails when any model fails.", choices=ON_FAIL_CHOICES),
+                   "that pass are passed on, up to the number below; slots no passing model fills are "
+                   "written as empty-slot files, and the step fails only when fewer than the minimum pass. "
+                   "Stop: the step fails when any model fails.", choices=ON_FAIL_CHOICES),
             Option("max_clashes", "Most clashes", "int", None,
                    "Models with more clashes fail (empty: any number).", minimum=0, maximum=100000,
                    optional=True),
             Option("gate_links", "Backbone links must hold", "bool", True,
-                   "A model with an O3′–P link outside the limits, or one that cannot be measured, fails."),
+                   "A model with an O3′–P link longer than the break length, shorter than the shortest link "
+                   "or unmeasurable fails (strained links are reported, not failed)."),
             Option("gate_hands", "Hands must be as expected", "bool", True,
                    "A model fails with a sugar of the other hand than expected (or not measurable where a "
                    "hand is expected), or a sugar with an epimerised, contradicting or flat centre."),
             Option("gate_pp", "P–P spacing must hold", "bool", False,
                    "A model with a P–P spacing outside the range fails."),
+            Option("gate_kinks", "No sharp kinks", "bool", False,
+                   "A model with a sharp kink where none is allowed fails (off: reported only)."),
             Option("score_limits", "Score limits", "text", "",
                    "Limits on terms of the decoy table, e.g. 'linear_chainbreak<=1, score<=-50' (needs the "
                    "decoy table).", placeholder="linear_chainbreak<=1"),
-            Option("n_pass", "Models passed on", "int", 5,
-                   "How many passing models the step passes on (at most the number connected); it fails "
-                   "when fewer pass.", minimum=1, maximum=100000, requires={"on_fail": "filter"}),
+            Option("n_pass", "Models passed on (up to)", "int", 5,
+                   "Slots for the passing models (at most the number connected): filled in order, those left "
+                   "over written as empty-slot files that the next steps skip. The report says how many "
+                   "passed of how many.", minimum=1, maximum=100000, requires={"on_fail": "filter"}),
+            Option("min_pass", "Fewest passing models", "int", 1,
+                   "The step fails when fewer models pass (1: only when none does; 0: never, the best model "
+                   "then being an empty slot when none passes).", minimum=0, maximum=100000,
+                   requires={"on_fail": "filter"}),
             Option("order", "Order", "radio", "input",
                    "Order of the passed models (the first is the best model): as connected (e.g. the "
                    "FARFAR2 ranking), fewest clashes first, or lowest decoy-table term first.",
@@ -213,13 +251,20 @@ class ModelCheckTool(Tool):
     def output_values(self, s, ctx):
         data = dict(ctx.data("models"))
         passed = [ctx.own(f"passed-{k:02d}", "pdb") for k in range(1, self._n_passed(s, ctx) + 1)]
+        filtering = s["on_fail"] == "filter"
+        # a filter fills its slots in order and writes the rest as empty slots: steps that read one model
+        # (an Amber build, say) then stop before doing anything with an empty one
+        slots = dict(data, empty_slots=True) if filtering else dict(data)
+        best = dict(data, empty_slots=True) if filtering and s["min_pass"] == 0 else dict(data)
         return {"report": PortValue([ctx.own("report", "tsv")], "table"),
-                "passed": PortValue(passed, "pdb", dict(data)),
-                "best": PortValue([ctx.own("best", "pdb")], "pdb", dict(data))}
+                "passed": PortValue(passed, "pdb", slots),
+                "best": PortValue([ctx.own("best", "pdb")], "pdb", best)}
 
     def describe(self, s):
-        policy = {"report": "report", "filter": f"filter, {s['n_pass']} passed", "stop": "stop on failure"}
-        links = f"{s['link_min']:g}–{s['link_max']:g} Å"
+        policy = {"report": "report",
+                  "filter": f"filter, up to {s['n_pass']} passed (at least {s['min_pass']})",
+                  "stop": "stop on failure"}
+        links = f"{s['link_min']:g}–{s['link_max']:g} Å (break > {s['link_fail']:g})"
         return f"clashes ≥{s['clash_tol']:g} Å, links {links}, {policy[s['on_fail']]}"
 
     # ------------------------------------------------------------ settings
@@ -260,7 +305,7 @@ class ModelCheckTool(Tool):
 
     def check(self, s, ctx):
         out: List[Issue] = []
-        for key in ("protonated", "segments", "expect_l", "expect_d"):
+        for key in ("protonated", "segments", "expect_l", "expect_d", "kink_allow"):
             try:
                 pdbtools.parse_ranges(expand_groups(s[key], ctx.groups) or None)
             except KeyError as exc:
@@ -271,6 +316,17 @@ class ModelCheckTool(Tool):
                              ("link_min", "link_max", "O3′–P limits"), ("pp_min", "pp_max", "P–P range")):
             if s[lo] >= s[hi]:
                 out.append(Issue("error", f"{what}: the minimum must be below the maximum", (lo, hi)))
+        if s["link_fail"] < s["link_max"]:
+            out.append(Issue("error", "the O3′–P break length must not be below the longest unstrained link",
+                             ("link_fail", "link_max")))
+        reactivity = s["kink_reactivity"].strip()
+        if reactivity and not os.path.isfile(ctx.abspath(reactivity)):
+            out.append(Issue("warning", f"the reactivity file {reactivity} does not exist yet (it is read "
+                                        "when the script runs)", ("kink_reactivity",)))
+        chain = s["kink_reactivity_chain"].strip()
+        if chain and not re.fullmatch(r"[A-Za-z0-9]", chain):
+            out.append(Issue("error", "the chain of the reactivity positions is one letter or digit",
+                             ("kink_reactivity_chain",)))
         try:
             limits = modelcheck.parse_score_limits(s["score_limits"])
         except ValueError as exc:
@@ -288,6 +344,9 @@ class ModelCheckTool(Tool):
         n = self._n_models(ctx)
         if s["on_fail"] == "filter" and n and s["n_pass"] > n:
             out.append(Issue("info", f"{n} model(s) connected: {n} passed on at most", ("n_pass",)))
+        if s["on_fail"] == "filter" and n and s["min_pass"] > n:
+            out.append(Issue("error", f"{n} model(s) connected: {s['min_pass']} can never pass",
+                             ("min_pass",)))
         if s["on_fail"] == "report" and (s["max_clashes"] is not None or limits):
             out.append(Issue("info", "the gates only mark models in the report ('Models that fail': report)",
                              ("on_fail",)))
@@ -326,17 +385,24 @@ class ModelCheckTool(Tool):
                           ("hbond_max", "--hbond-max")):
             opt(flag, f"{s[key]:g}")
         opt("--ions", s["ions"])
-        if s["hydrogens"]:
-            opt("--hydrogens")
         if s["waters"]:
             opt("--waters")
-        for key, flag in (("protonated", "--protonated"), ("segments", "--segments")):
+        if s["hydrogen_check"]:
+            opt("--hydrogen-check")
+        for key, flag in (("protonated", "--protonated"), ("segments", "--segments"),
+                          ("kink_allow", "--kink-allow")):
             text = self._ranges(s, key, ctx)
             if text:
                 opt(flag, q(text))
-        for key, flag in (("link_min", "--link-min"), ("link_max", "--link-max"), ("pp_min", "--pp-min"),
-                          ("pp_max", "--pp-max"), ("compaction_flag", "--compaction-flag")):
+        for key, flag in (("link_min", "--link-min"), ("link_max", "--link-max"),
+                          ("link_fail", "--link-fail"), ("pp_min", "--pp-min"), ("pp_max", "--pp-max"),
+                          ("compaction_flag", "--compaction-flag"), ("kink_min", "--kink-min")):
             opt(flag, f"{s[key]:g}")
+        if s["kink_reactivity"].strip():
+            opt("--kink-reactivity", q(ctx.rel(s["kink_reactivity"].strip())))
+            opt("--kink-reactivity-min", f"{s['kink_reactivity_min']:g}")
+            if s["kink_reactivity_chain"].strip():
+                opt("--kink-reactivity-chain", s["kink_reactivity_chain"].strip())
         if s["ss_segments"]:
             for path in ctx.inps("secstruct"):
                 opt("--secstruct", q(path))
@@ -354,7 +420,8 @@ class ModelCheckTool(Tool):
         if s["max_clashes"] is not None:
             opt("--max-clashes", str(s["max_clashes"]))
         for key, flag, on in (("gate_links", "--no-gate-links", False),
-                              ("gate_hands", "--no-gate-hands", False), ("gate_pp", "--gate-pp", True)):
+                              ("gate_hands", "--no-gate-hands", False), ("gate_pp", "--gate-pp", True),
+                              ("gate_kinks", "--gate-kinks", True)):
             if bool(s[key]) == on:
                 opt(flag)
         if s["score_limits"].strip():
@@ -362,6 +429,7 @@ class ModelCheckTool(Tool):
         opt("--on-fail", s["on_fail"])
         if s["on_fail"] == "filter":
             opt("--pass", str(self._n_passed(s, ctx)))
+            opt("--min-pass", str(s["min_pass"]))
         opt("--order", s["order"])
         if s["order"] == "score":
             opt("--rank-term", q(s["rank_term"].strip()))
@@ -380,7 +448,8 @@ class ModelCheckTool(Tool):
         sh += ["# Outputs of an earlier run go first: a failed check must leave nothing that looks finished",
                f"rm -f {report} {best} {stale}", ""]
         what = {"report": "every model is passed on; the report marks those that fail",
-                "filter": f"the first {len(passed)} models that pass are passed on",
+                "filter": f"up to {len(passed)} models that pass are passed on (the slots left over are "
+                          f"written as empty slots); the step fails when fewer than {s['min_pass']} pass",
                 "stop": "the step fails when any model fails"}[s["on_fail"]]
         lines, cur = [], ""
         for w in [shell_quote(s["python"].strip() or "python3"), helper] + self.arguments(s, ctx):

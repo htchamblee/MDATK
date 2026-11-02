@@ -775,6 +775,11 @@ def run_score(args) -> int:
     work = args.work or os.path.join(os.path.dirname(os.path.abspath(args.output or "x")), "qscore")
     res_rows, reg_rows, notes = [], [], []
     for model in args.models:
+        slot = pdbtools.empty_slot(model)
+        if slot:  # an unfilled slot of a model check's filter: no model to score
+            notes.append(f"skipped {os.path.basename(model)}: {slot} (an empty slot of a model check, "
+                         "no model)")
+            continue
         structure, scores, more = score_model(model, args.map, args.method, resolution=args.resolution,
                                               radius=args.radius, keep_h=args.keep_h, command=args.command,
                                               work_dir=work, timeout=args.timeout)

@@ -99,12 +99,17 @@ def main(argv, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rena
         return 2
     try:
         with open(argv[0], "r", encoding="utf-8", errors="replace") as fh:
-            lines, stats = prepare(fh, strip_h, strip_5p, gap_ter, strip_water, rename, drop_virtual)
+            raw = fh.readlines()
     except OSError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    lines, stats = prepare(raw, strip_h, strip_5p, gap_ter, strip_water, rename, drop_virtual)
     if not stats["atoms"]:
-        print(f"ERROR: no atoms found in {argv[0]}", file=sys.stderr)
+        # a model check that passes on up to N models writes the slots it cannot fill without atoms
+        slot = next((ln[11:].strip() for ln in raw if ln.startswith("REMARK 951") and "empty slot" in ln), "")
+        what = (f"{argv[0]} is an empty slot of a model check ({slot}): no model to build" if slot
+                else f"no atoms found in {argv[0]}")
+        print(f"ERROR: {what}", file=sys.stderr)
         return 1
     with open(argv[1], "w") as fh:
         fh.write("\n".join(lines) + "\n")

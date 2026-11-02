@@ -19,13 +19,47 @@ the notes below.
 - **`mdatk pdb qc MODEL.pdb …`** (`mdatk/modelcheck.py`, standard library only): clashes as overlap inside
   Bondi contact (0.4 Å), N/O pairs with a donor counted as hydrogen bonds from 2.2 to 3.2 Å (donors by
   base, terminal hydroxyls, protonated A⁺ / C⁺ on request; two acceptors never), carbon contacts beside
-  an H-bond excused only when no closer than the H-bond, exclusions along bonds (up to three, four for
-  hydrogens) instead of residue numbers, every chain and neighbouring residue checked, waters and ions
-  skipped or (ions) checked against first-shell distances, hydrogens optional; O3′–P links within every
-  TER segment (1.4–2.0 Å) and P–P spacing; loop compaction for typed ranges or the residues unpaired in
-  every given dot-bracket; sugar hands from the geometry against expected ranges, epimers named; a
-  decoy table (`--scores`: run, tag, pdb, score terms) for report columns, limits and ranking; gates with
-  `--on-fail report|filter|stop`, text, `--tsv` or `--json` reports, copies of the passed and best models.
+  an H-bond excused only when no closer than the H-bond, exclusions along bonds (up to three) instead of
+  residue numbers, every chain and neighbouring residue checked, waters and ions skipped or (ions)
+  checked against first-shell distances, heavy atoms only; O3′–P links within every TER segment
+  (1.4–2.0 Å a bond, 2.0–3.0 Å strained, beyond a break) and P–P spacing; loop compaction for typed
+  ranges or the residues unpaired in every given dot-bracket; sugar hands from the geometry against
+  expected ranges, epimers named; kinks; a decoy table (`--scores`: run, tag, pdb, score terms) for
+  report columns, limits and ranking; gates with `--on-fail report|filter|stop`, text, `--tsv` or
+  `--json` reports, copies of the passed and best models.
+- **Hydrogens stay out of the clash check** (no `--hydrogens`; the step's *Include hydrogens* is gone):
+  their positions differ between programs, and the builder's ideal A-form helix has H2′(i)…H6/H8(i+1) at
+  1.57–1.70 Å. Checked: the builder places H2′ (and H1′, H3′, H4′) from the sugar's own geometry, along
+  the negative sum of the three bond directions, 1.09 Å from C2′ and 4.6° from the exact tetrahedral
+  (equal-angle) direction, which would move the contact by under 0.03 Å; the short contact is the Arnott
+  fiber's C2′(i)…C8/C6(i+1) of 3.5 Å, so the builder is unchanged and no radius is tuned.
+- **Hydrogen contacts on MolProbity's conventions** (`--hydrogen-check`, step option *Report hydrogen
+  contacts*; off by default; never a gate or a filter): explicit hydrogens only, Probe's radii (1.17 Å on
+  carbon, 1.00 Å polar or aromatic at nuclear positions; 1.22 / 1.05 Å at electron-cloud positions,
+  chosen from the median C–H or `--hydrogen-radii`; C 1.70, N 1.55, O 1.40, P 1.80 Å), a clash at an
+  overlap of 0.4 Å or more, 0.6 Å allowed to a hydrogen bond, pairs up to four bonds apart left out,
+  clashscore per 1000 atoms; its own report section and columns (`h_atoms h_clashes h_worst_overlap
+  h_clashscore h_radii`).
+- **O3′–P links: warn with a number.** Up to `--link-max` (2.0 Å) a bond; up to `--link-fail` (3.0 Å) a
+  strained bond, reported with the strain tleap's bond puts into the first minimisation, E = k(r − r0)²
+  (Amber's k: 230 kcal/mol/Å², 1.61 Å, OS–P of parm10.dat: 35 kcal/mol at 2.0 Å, 182 at 2.5, 444 at 3.0)
+  in the text, the new columns `warnings`, `strained_links` and `link_strain` and the JSON; beyond, a
+  break that fails the links gate. k and r0 from the force field with `--link-params` (tleap input,
+  leaprc, parm*.dat, frcmod; `--link-types`, `--amberhome`) or `--link-k` / `--link-r0`
+  (`modelcheck.link_bond_from_files`). Step option *Longest O3′–P link before a break*.
+- **Kinks** (`--kink-min 60`, step section *Kinks*): the virtual C1′(i−1)–C1′(i)–C1′(i+1) angle per
+  residue within each TER segment, flagged below 60° except at allowed positions (`--kink-allow
+  RANGES`, or a two-column reactivity file of in-line probing with `--kink-reactivity FILE
+  --kink-reactivity-min X [--kink-reactivity-chain C]`); report columns `kinks`, `sharpest_kink`,
+  `sharpest_kink_at`; a gate only with `--gate-kinks` (off by default).
+- **Filter: up to N, fail only below a minimum.** `--pass N` means up to N slots, `--min-pass M`
+  (default 1) the fewest passing models (status 1 only below it; 0: never); slots no passing model fills
+  are written as empty-slot files (`REMARK 951 empty slot k of N: only M models passed`, `END`, no
+  atoms; `pdbtools.empty_slot_text`, `empty_slot`, `is_empty_slot`), and the report states `M of K models
+  passed the gates`. Step options *Models passed on (up to)* and *Fewest passing models*; the step's
+  passed models carry `empty_slots` in their port data. Empty slots are skipped with a note by the model
+  check, `mdatk decoys` / `pdb interface`, `mdatk ensemble census|compare`, `mdatk frame` and `mdatk map
+  score`; `read_pdb` refuses one by name; the PDB preparation of the Amber build says what it is.
 - **Planner step *Model check (clashes · backbone · chirality)*** (Structure prediction): models (several),
   optional secondary structures and decoy table in; a report table, the passed models and the best one
   out. Expected hands are measured on the first model when the plan is written (or typed, or none); range
@@ -43,8 +77,15 @@ the notes below.
 - **Amber build**: *Remove Rosetta virtual residues (VRT/XXX)* in the PDB preparation, on by default
   (tleap cannot type them, so only builds that failed change), and *Check O3′–P links before tleap*
   (off, warn or stop; off by default), also measured on an existing input PDB when the plan is written.
-  Generated files are unchanged apart from the two helpers that copy library code: the PDB tools and the
-  PDB preparation (listed as intended in `tests/test_golden.py`).
+  The check warns with the strain from 2.0 Å and stops (stop) only beyond *Longest O3′–P link before a
+  break* (3.0 Å), short or unmeasurable links; it reads k and r0 from the force field the first tleap
+  input loads (`--link-params` of that input, `$AMBERHOME`; O3′ typed OR for OL3 + CP, else OS), and,
+  when on, the PDB is prepared, named and checked first: before the CP, L-RNA library and TIP4P/2005
+  helpers and every tleap run, the dry one of a two-pass build included (tested for each). A structure
+  that is an empty slot of a model check (its port data say so, or the existing file is one) gets a guard
+  as the script's first lines that stops it before any helper or tleap; the PDB preparation names an
+  empty slot too. Generated files are unchanged apart from the two helpers that copy library code: the
+  PDB tools and the PDB preparation (listed as intended in `tests/test_golden.py`).
 - **FARFAR2 decoy table and score filter** (step *Rosetta · FARFAR2 models*, `mdatk rosetta scores`): SCORE
   terms are looked up by column name in the header that applies (`mdatk/workflows/scripts/silent_scores.py`,
   standard library, embedded in the step's folder). New output *scores* (file kind *table*):

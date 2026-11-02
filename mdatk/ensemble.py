@@ -1228,7 +1228,14 @@ def expand_models(items: Sequence[str], recursive: bool = False, exclude: Sequen
     if exclude:
         files = [f for f in files if not any(fnmatch.fnmatch(os.path.basename(f).lower(), e.lower())
                                              for e in exclude)]
-    return files
+    kept = []
+    for f in files:  # the unfilled slots of a model check's filter hold no decoy: not one of the ensemble
+        slot = pdbtools.empty_slot(f)
+        if slot:
+            print(f"skipped {f}: {slot} (an empty slot of a model check, no model)", file=sys.stderr)
+        else:
+            kept.append(f)
+    return kept
 
 
 # --- the register census ----------------------------------------------------------------------------------
