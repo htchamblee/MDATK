@@ -107,9 +107,10 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   box stops that one.
 - **The commands a step runs:** the script wizard has a *Commands* tab with the commands the step's
   script will run.
-- **Fixes:** MDATK no longer stays running after its windows are closed (each program quits with its main
-  window, and the programs it starts no longer inherit the AppImage's descriptors); the NAMD MDFF result
-  PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with blank chains is read.
+- **Fixes:** the NAMD MDFF result PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with
+  blank chains is read. Each program now quits when its main window closes, and the programs it starts
+  get `close_fds`; the cause of the reported MDATK process left running after the AppImage's windows are
+  closed is still being investigated (these changes are not known to remove it).
 - **Generated workflow files** of the earlier step types are unchanged unless a new option is turned on,
   apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds (see
   [CHANGELOG.md](CHANGELOG.md)).
@@ -244,8 +245,11 @@ and what the entries start, and afterwards what it wrote. The entries start what
 | a pip / venv installation | the `mdatk-gui` script that runs this Python (the venv's `bin`, the user's `~/.local/bin` or `PATH`), else `<python> -m mdatk gui %f` | `rnado-gui`, else `<python> -m mdatk.gui.rnado %f` |
 | a source checkout that is not installed | `env PYTHONPATH=<checkout> <python> -m mdatk gui %f` | the same with `-m mdatk.gui.rnado` |
 
-Paths are quoted as the Desktop Entry Specification asks (spaces, `$`, quotes, backslashes). The entries
-hold these paths: after moving the AppImage, the bundle folder or the venv, add them again.
+Paths are quoted as the Desktop Entry Specification asks (spaces, `$`, quotes, backslashes, `%` written
+as `%%`); a program whose path holds a `%` starts through `env` (`sh -c 'exec "$0" "$@"'` when the path
+also holds a `=`), since GNOME-family menus look the program up before they read `%%` as `%` and would
+drop the entry. The entries hold these paths: after moving the AppImage, the bundle folder or the venv,
+add them again.
 `mdatk desktop status` lists the files, which are there, which start something else (`outdated`) and what
 the entries start now.
 
@@ -796,9 +800,11 @@ on an MDATK analysis box, *Use for analysis…*. *Templates* insert pre-connecte
 helix → Amber build → restraints → MD; model + map → restraint dictionaries → Phenix RSR → Coot RSR;
 model + map → Amber build → NAMD MDFF; and *Decoy validation (FARFAR2)*, the order for a decoy campaign
 against a map: FARFAR2 → models (closure filter before clustering) → model check (clashes) → decoy
-interfaces (segment support) → map-model score (Q-score, interface vs scaffold dQ), with notes on the
-validity filters, the rule "filter on validity before clustering; filter on quality after, when choosing
-representatives" and the kink test still to come). *Write all files* writes every step, a master script
+interfaces (segment support) → map-model score (Q-score, interface vs scaffold dQ) → model check (kinks),
+with notes on the validity filters, the rule "filter on validity before clustering; filter on quality
+after, when choosing representatives" and the kink test (virtual C1′ angle; positions that in-line probing
+shows flexible are allowed); the models step's decoy table, which lists every decoy and not the cluster
+centres the later steps check, goes to none of them). *Write all files* writes every step, a master script
 that runs the steps in order, and a Markdown summary of the plan.
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click
@@ -848,7 +854,7 @@ uses are free; otherwise steps go in plan order.
   |---|---|
   | Amber MD stages | pmemd.cuda: 1 core and 1 GPU (its *GPU* option names it); pmemd.MPI: its *MPI processes*; pmemd: 1 core |
   | NAMD MDFF | its *CPU cores* (`+p`) and 1 GPU (`+devices` names it) |
-  | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded |
+  | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded (`-gpu_id` or `-gputasks` among the extra mdrun flags name it) |
   | FARFAR2, SimRNA | their parallel runs (at most the number of runs); FARFAR2 with *Extract every decoy* its parallel extractions when there are more |
   | FARFAR2 models | its parallel extractions when every model is extracted, else 1 core |
   | Phenix RSR | its processors (`nproc`) |
@@ -858,14 +864,16 @@ uses are free; otherwise steps go in plan order.
 
   A step that uses a GPU gets a free one in `CUDA_VISIBLE_DEVICES` (the start line in the log says
   which, and how many cores the step got; the step log records it in the command), unless the step
-  names its own: the Amber MD step's *GPU*, NAMD's `+devices` or `CUDA_VISIBLE_DEVICES` in the step's
-  *Environment* setup commands; it then runs when no other step uses that GPU. A later step that fits
-  may start while an earlier one waits for room, except behind a step that needs every core: that one
-  starts once nothing runs, before the steps after it. A step larger than the whole budget runs alone
-  the same way, with a warning; with no GPU found (and none set), the steps that use a GPU run one at a
-  time, with a warning. *At once* caps the number of scripts (default *no limit*: the budgets decide);
-  projects saved before 0.0.12 keep their earlier *Parallel* value there (1: one script at a time, as
-  before). On the command line: `mdatk workflow run --cores N --gpus N [--parallel N]`.
+  names its own: the Amber MD step's *GPU*, NAMD's `+devices`, GROMACS's `-gpu_id` / `-gputasks` among
+  the extra mdrun flags or `CUDA_VISIBLE_DEVICES` in the step's *Environment* setup commands (`+devices`
+  and `-gpu_id` count the GPUs the Environment leaves visible); it then runs when no other step uses
+  that GPU. A later step that fits may start while an earlier one waits for room, except behind a step
+  that needs every core: that one starts once nothing runs, before the steps after it. A step larger
+  than the whole budget runs alone the same way, with a warning; with no GPU found (and none set), the
+  steps that use a GPU run one at a time, with a warning. *At once* caps the number of scripts (default
+  *no limit*: the budgets decide); projects saved before 0.0.12 keep their earlier *Parallel* value
+  there (1: one script at a time, as before). On the command line:
+  `mdatk workflow run --cores N --gpus N [--parallel N]`.
 - **Output:** every line goes to the [output log panel](#rnados-window), marked with its step, and
   every run is recorded in the project file.
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
@@ -983,12 +991,14 @@ RNAdo asks first: *Write all files*, *Write step*, the *Run* actions and the wiz
 completed runs would move and where (*Cancel*, or *Move aside and write*); the output log then lists what
 moved, and a saved project records each move in its step log (`workflow supersede`). While a step that
 reads those outputs runs or waits to run (or the wizard's run, which RNAdo does not follow), RNAdo refuses
-such a write: write again once the scripts have finished. To keep a run in place, let the step use it
-instead (*Use this run*). The naming bar's *Move completed runs aside* (project
-option `workflow.supersede_runs`, on by default) turns moving off: writing then replaces the scripts, and
-the next run the outputs, as before 0.0.12. On the command line `workflow write` (also with `--run`) and
-`workflow generate` print the runs they moved on standard error and under `superseded` in their JSON;
-`workflow run` only runs scripts already written, so it moves nothing:
+such a write: write again once the scripts have finished. Only the runs listed move: a run that completes
+while the question is open (the runner works on) stays in place and its step is not written, with a
+message; write again. To keep a run in place, let the step use it instead (*Use this run*). The naming
+bar's *Move completed runs aside* (project option `workflow.supersede_runs`, on by default) turns moving
+off: writing then replaces the scripts, and the next run the outputs, as before 0.0.12. On the command
+line `workflow write` (also with `--run`) and `workflow generate` print the runs they moved on standard
+error and under `superseded` in their JSON; `workflow run` only runs scripts already written, so it moves
+nothing:
 
 ```bash
 mdatk workflow write -p plan.mdatk.toml --dry-run   # what would be written, and which runs would move
@@ -2570,11 +2580,13 @@ mdatk/
     launch.py        starting RNAdo from the analysis window (source, bundle, AppImage)
     projectui.py     project files in both programs: open menu, file choosers, co-editing
     about.py         About dialogs and BibTeX export; widgets.py, worker.py, desktop.py: helpers
-  assets/            RNAdo's logo, wordmark and icons (drawn by packaging/make_rnado_art.py)
+  assets/            RNAdo's logo, wordmark and icons (drawn by packaging/make_rnado_art.py), the
+                     MDATK icons (packaging/make_icon.py --assets) and the desktop-entry templates
+                     mdatk.desktop and rnado.desktop
   frozen.py          stand-alone builds: bundled FFmpeg, environments of the programs MDATK starts
   demo.py            synthetic RNA system generator
 packaging/           stand-alone builds (see packaging/README.md)
-tests/               the test suite (see Testing); examples/: example projects; data/: desktop entries
+tests/               the test suite (see Testing); examples/: example projects
 ```
 
 **Adding an analysis**: subclass `mdatk.analysis.base.Analysis`, implement `enabled`,

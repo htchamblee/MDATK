@@ -135,6 +135,26 @@ def test_a_partial_run_stays_and_the_option_turns_moving_off(tmp_path):
     assert plan.write(supersede=True).superseded  # explicitly on
 
 
+def test_only_the_runs_the_caller_asked_about_move(tmp_path):
+    # a run that completes after the caller listed what moves (confirmed) is neither moved nor written
+    wf, build, restraints, md = amber_plan(tmp_path)
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, build.id, OLD)
+    b = os.path.join(root, "01_amber-build")
+    before = tree(b)
+    report = Plan(wf, root).write([build.id], confirmed=set())
+    assert report.late == [build.id] and "completed after the question" in report.skipped[build.id]
+    assert report.superseded == {} and report.written == [] and tree(b) == before
+    report = Plan(wf, root).write([build.id], confirmed={build.id})  # asked about: it moves
+    assert list(report.superseded) == [build.id] and report.late == [] and len(superseded(b)) == 1
+    fake_run(plan, build.id, OLD)
+    wf.supersede_runs = False  # nothing moves, so nothing needs asking
+    report = Plan(wf, root).write([build.id], confirmed=set())
+    assert report.late == [] and report.written and len(superseded(b)) == 1
+
+
 def test_adopted_steps_are_never_written_or_moved(tmp_path):
     wf, build, restraints, md = amber_plan(tmp_path)
     root = str(tmp_path / "plan")
