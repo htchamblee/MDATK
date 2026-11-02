@@ -260,3 +260,21 @@ def test_hand_of_mixed_d_and_l_partners(tmp_path, monkeypatch):
                                            engine="dssr", dssr_exe=exe)
     assert {(r["name_b"][:1], r["hand_b"]) for r in rows if r["kind"] == "pair"} == {("0", "D")}
     assert np.all([r["hand_a"] == "D" for r in rows])
+
+
+def test_dssr_2_9_json_of_a_file_without_chain_ids():
+    """DSSR 2.9.4 writes chain-less ids ('G1', 'O6@G1') for residues with a blank chain column, next to
+    'metadata': {'version': ...} - the layout of the user's 2.9.4 files (synthetic content here)."""
+    nts = [{"index": k, "chain_name": " ", "nt_resnum": k, "nt_name": b, "nt_id": f"{b}{k}"}
+           for k, b in enumerate("GGCC", start=1)]
+    doc = {"metadata": {"version": "DSSR v2.9.4-2026sep18 by xiangjun@x3dna.org"}, "nts": nts,
+           "pairs": [{"nt1": "G1", "nt2": "C4", "LW": "cWW", "name": "WC"},
+                     {"nt1": "G2", "nt2": "C3", "LW": "cWW", "name": "WC"}],
+           "stacks": [{"nts_long": "G1,G2"}],
+           "hbonds": [{"atom1_id": "O6@G1", "atom2_id": "N4@C4", "distance": 2.914}]}
+    res = dssr.parse_json(doc)
+    assert res.version.startswith("DSSR v2.9.4")
+    assert [(i, j, lw) for i, j, lw, _n in res.pairs] == [(0, 3, "cWW"), (1, 2, "cWW")]
+    assert res.stacks == [(0, 1)]
+    assert (res.hbonds_seen, res.hbonds_read) == (1, 1) and res.hbonds[0][:4] == (0, "O6", 3, "N4")
+    assert res.notes == []

@@ -201,7 +201,8 @@ def parse_json(doc: Dict[str, Any], original: Optional[Dict[int, int]] = None) -
         if not isinstance(nt, dict):
             continue
         try:
-            slot = _slot(str(nt.get("chain_name", "")), int(nt.get("nt_resnum")))
+            # a blank chain gives chain-less ids ('G1', 'O6@G1'): read as the first synthetic chain
+            slot = _slot(str(nt.get("chain_name", "")).strip() or CHAIN_IDS[0], int(nt.get("nt_resnum")))
         except (TypeError, ValueError):
             slot = None
         if slot is not None and nt.get("nt_id"):
