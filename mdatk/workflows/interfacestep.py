@@ -338,9 +338,16 @@ class DecoyInterfaceTool(Tool):
             out.append(Issue("error", "flag runs of: a whole number of residues, or 'auto'", ("run",)))
         mode = s["rebuilt_from"]
         if mode == "upstream":
-            if self._upstream_fixed(ctx) is None:
+            fixed = self._upstream_fixed(ctx)
+            if fixed is None:
                 out.append(Issue("error", "the connected models do not say which residues FARFAR2 kept "
                                           "fixed; type the fixed or the rebuilt residues", ("rebuilt_from",)))
+            elif fixed.strip():
+                try:
+                    ifc.parse_side(fixed)  # as the script gets it (_rebuilt_options)
+                except ifc.InterfaceError as exc:
+                    out.append(Issue("error", f"FARFAR2's fixed residues (-input_res): {exc}",
+                                     ("rebuilt_from",)))
         else:
             key = "fixed" if mode == "fixed" else "rebuilt"
             if not s[key].strip():
