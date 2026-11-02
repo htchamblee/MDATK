@@ -1363,7 +1363,8 @@ short and long spellings as one flag (`-s` = `-in:file:s`, `-obligate_pair_expli
 name (`-fasta`, `-secstruct_file`, `-s`, `-native`, `-edensity:mapfile`) are fingerprinted by their whole
 content, since two runs can name the same path and still have read different files. A condition is a folder of
 runs (a FARFAR2 step folder, or an experiment folder of a campaign run outside RNAdo); its runs must agree,
-and the report lists what differs between conditions. *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`)
+and the report lists what differs between conditions. The completed runs moved aside into a step folder's
+`superseded/` are never read (give such a run's own folder to audit it). *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`)
 should differ only in the pairing: `-secstruct_file`, `-obligate_pair(_explicit)`, `-filter_lores_base_pairs`,
 the secondary structure itself and what *Controlled residues* derive (`--allow` adds flags); seeds, output
 names, `-nstruct` and `-database` are ignored in the comparison. Any other difference makes the pair
