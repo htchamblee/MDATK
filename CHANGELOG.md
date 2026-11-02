@@ -80,6 +80,49 @@ the notes below.
   or the run (same-named decoys of different runs overwrote each other or shared a label); a set-wide
   median let models without the fit body into the statistics; unusable models vanished from the table;
   ANISOU records were not rotated.
+### Decoy ensembles, map-model scores and statistics
+
+- **Four planner steps** with their commands, written from the user's analysis scripts (register census,
+  register comparison, threshold sweep, pilot comparison, Q-score preparation and regions, body hybrids)
+  and generalised: every residue range, chain, register, reference sequence and path is an option
+  (chain-qualified ranges or project residue groups `group:NAME`), with the scripts' thresholds as defaults.
+  - **Register census** (`register-census`, Analysis; `mdatk ensemble census`): which register (a named set
+    of defining base pairs, `pres=B:22-B:37, ...`) each decoy formed (Watson-Crick N1/N3 < 3.5 Å) or
+    approached (N1-N3 < 6 Å at C1'-C1' 8-13 Å), per folder and per build condition (FORCED / UNFORCED /
+    PARTIAL / UNKNOWN per register) read from the Rosetta logs' command lines (`@flags` expanded:
+    `-secstruct_file`, `-secstruct`, `-obligate_pair(_explicit)`), a `*.secstruct` beside the decoys or a
+    connected secondary structure; never pooled across conditions; matched groups by folder suffix; score
+    deciles within one weight set; Mann-Whitney between single-register decoys; L-ribose counts.
+  - **Ensemble comparison** (`ensemble-compare`, Analysis; `mdatk ensemble compare`, modes compare / sweep
+    / pilot): closure (a score term by name, default `linear_chainbreak < 5`, or every O3'-P < 2.0 Å),
+    defining pairs, interface atoms above a contour calibrated on fixed regions (per decoy, or common on
+    unmoved regions), Clopper-Pearson / Wilson intervals, Fisher tests, the closure-threshold sweep and the
+    rates the second arm would need to be told apart with a given power. Numbers only, no verdict.
+  - **Map-model score** (`map-model-score`, Refinement; `mdatk map score`): per-residue Q-score with Phenix
+    (`phenix.qscore`, a configurable command; name and output format not verified against an installation)
+    on a copy with standard residue names, or MDATK's own per-residue CC; models ranked by named regions
+    against a reference region with the regions removed, chain termini left out, NaN counted
+    (`mdatk ensemble regions` ranks per-residue tables from elsewhere).
+  - **Body hybrids** (`body-hybrids`, Refinement; `mdatk pdb hybrids`): all 2^k old/new combinations of up
+    to six bodies over the atoms both models have, coordinates verbatim; with a map, each body's main
+    effect.
+- **Numbering**: register pairs and ranges are in a reference construct's numbering; each chain of a decoy
+  is located in the reference sequence (typed, FASTA, or the plan's FARFAR2 sequence) and the bases of the
+  defining residues are checked. Bases from MDATK's residue-name parser, else from a diagnostic atom.
+- **Decoy table**: steps take the FARFAR2 models step's `scores` table (`run`, `tag`, `pdb`, SCORE terms
+  by name) as an optional input; the commands take `--scores TSV`.
+- `mdatk/ensemble_stats.py` (standard library only): two-sided Fisher exact test, Clopper-Pearson in log
+  space, Wilson, exact Fisher power and the detectable rates at a power, Mann-Whitney U (exact / normal);
+  each checked against SciPy in the tests.
+- Bugs of the scripts fixed in the rewrite (regression tests in `tests/test_ensemble.py`): residues keyed by
+  number alone (chains merged in compare.py, register_census.py, body_hybrids.py and q_regions.py);
+  a register counted only at exactly 3 pairs; a secondary structure called FORCED when its brackets stood at
+  the register's positions but paired other residues; `-secstruct_file=` and `@flags` not read; hydrogens
+  recognised by the atom name; the Clopper-Pearson fallback overflowing for large n; division by zero for
+  an empty arm; decoys without calibration or region atoms dropped silently; score columns read by position;
+  the pilot's "POWER" band (a Wilson interval, not a power); scaffold and interface overlapping in the
+  region means, NaN averaged and 'whole' keeping the termini; virtual residues written as atoms and L names
+  other than 0A/0C/0G/0U not renamed in the Q-score copy; overlapping bodies resolved silently.
 
 ## 0.0.11 (2026-10-31)
 

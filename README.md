@@ -66,6 +66,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [Restraint dictionaries for L-RNA (Coot / Phenix)](#restraint-dictionaries-for-l-rna-coot--phenix)
   - [Real-space refinement (Phenix / Coot)](#real-space-refinement-phenix--coot)
   - [MDFF with NAMD on the Amber topology (`namd-mdff`)](#mdff-with-namd-on-the-amber-topology-namd-mdff)
+- [Decoy ensembles, map-model scores and statistics](#decoy-ensembles-map-model-scores-and-statistics)
 - [Citations](#citations)
 - [Command line reference](#command-line-reference)
 - [Project files](#project-files)
@@ -853,6 +854,10 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see [Real-space refinement](#real-space-refinement-phenix--coot) |
 | **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see [Real-space refinement](#real-space-refinement-phenix--coot) |
 | **NAMD · MDFF (Amber topology)** | NAMD configurations per stage, the sander / NAMD energy comparison, a preparation helper and the run script | NAMD reads the Amber topology natively; see [MDFF with NAMD](#mdff-with-namd-on-the-amber-topology-namd-mdff) |
+| **Register census (MDATK)** | a script calling `python3 -m mdatk ensemble census` | which register (named set of defining base pairs) each decoy formed or approached, by folder and build condition; see [Decoy ensembles](#decoy-ensembles-map-model-scores-and-statistics) |
+| **Ensemble comparison (MDATK)** | a script calling `mdatk ensemble compare` | two ensembles: closure, defining pairs, map occupancy, exact statistics and the detectable difference (modes compare / sweep / pilot) |
+| **Map-model score (Q-score / CC)** | a script calling `mdatk map score` | per-residue Q-score (Phenix, on a standard-name copy) or MDATK's per-residue CC, and the models ranked by named regions |
+| **Body hybrids** | a script calling `mdatk pdb hybrids` | every old/new combination of up to six re-fitted bodies, optionally scored, with each body's main effect |
 | **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see [Custom scripts](#custom-scripts) |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
@@ -1774,6 +1779,138 @@ mdatk workflow generate namd-mdff -i topology=sys.parm7 -i coordinates=sys.rst7 
     -i model=fitted_model.pdb --set sequence="GGGCAC GUGCCC" --set dotbracket="(((((( ))))))" -o mdff
 ```
 
+## Decoy ensembles, map-model scores and statistics
+
+Four planner steps (and their commands) look at many models at once: which pairing each decoy formed and
+under which input, how two ensembles differ, how well each residue fits a map, and which re-fitted body
+earned its move. The library is `mdatk/ensemble.py` (NumPy), `mdatk/ensemble_stats.py` (standard library
+only) and `mdatk/mapscore.py`; the steps write a short script calling `python3 -m mdatk …`, like the
+structure builder, so MDATK must be installed where they run.
+
+**Residues and ranges.** Residues are keyed by chain, number and insertion code throughout (read with
+`mdatk.pdbtools`: first model, first alternate location), so two chains numbered from 1 never merge.
+Ranges are chain-qualified as elsewhere in MDATK (`A:1-16,B:17-44`, `C` for a whole chain); in the steps
+they may also name a project residue group (`group:Aptamer`; its unqualified numbers mean any chain).
+
+**Registers** are named sets of defining base pairs, `pres=B:22-B:37, B:23-B:36, B:24-B:35`. A pair is
+*formed* when its Watson-Crick N1/N3 distance (purine N1, pyrimidine N3) is below 3.5 Å, and *in register*
+(approached) when it is formed or its N1-N3 is below 6 Å with C1'-C1' between 8 and 13 Å: textbook pair
+geometry whose bases have not closed yet, which refinement or a short MD would close. Bases come from the
+residue name (any MDATK scheme: A, 0A, LA5 …), else from one diagnostic atom (O6 G, N6 A, N4 C, O4 U),
+which also reads names such as `0` or `LG0`.
+
+**Numbering.** The registers and ranges are written in the numbering of a reference construct. With a
+reference sequence (typed, a FASTA file, or the plan's FARFAR2 sequence), each chain of a decoy is located in
+it by its sequence (gaps in its numbering become wildcards), so per-chain, shifted or renumbered decoys
+still match; the bases of the defining residues are checked in every decoy, and a decoy that does not match
+is reported, not counted. Explicit per-chain offsets (`B:-367,C:44`) do the same by hand. A plain sequence
+leaves the chain ids open (the decoys keep theirs); FASTA records with Rosetta's tags (`>x A:1-16`) and
+`A:GGGC` prefixes give them.
+
+**Register census** (`register-census`, `mdatk ensemble census`). Counts, per group of decoys, how many
+formed and approached each register (and every combination), the pairs per decoy, score deciles, the
+scores of the decoys forming exactly one register (Mann-Whitney between registers) and, optionally, the
+L-handed riboses per decoy. A group is a folder (or the folder `--group-depth` levels up); in the planner
+each connection of decoys from another step is its own group. Its **build condition** is read, per
+register, from a Rosetta log beside the decoys or in the given log folders (`core.init: command:`, with
+`@flags` files expanded, relative paths tried from the log's folder and the run folders below it): the
+secondary structure it names (`-secstruct_file`, `-secstruct`; none given: all unpaired) and
+`-obligate_pair(_explicit)`; failing a log, from a `*.secstruct` beside the decoys, then from a connected
+secondary structure. FORCED: every defining pair is imposed; UNFORCED: none of the register's residues is
+paired by the input; PARTIAL otherwise; a group without a source, or whose logs disagree, is UNKNOWN.
+Defining residues held by the `-s` structure (`-input_res`) are noted. Groups are reported separately and
+pooled only with groups of the same condition, never across conditions; `--pair-suffix` (e.g.
+`_nointernalpairs`) sets each group X beside the group X<suffix> with Fisher tests. Scores come from the
+decoy table (below), else from the pose energies table in the PDB, else from a `denovo_<100000+10·score>_`
+file name; deciles are formed within one weight set only. Output: one row per decoy (`.tsv`) and a report.
+
+**Ensemble comparison** (`ensemble-compare`, `mdatk ensemble compare`). Two arms, each with its register,
+per decoy: closure, all defining pairs formed, both, and the share of interface atoms in the density.
+
+- *Closure*: a score term of the decoy table below a cut (default `linear_chainbreak < 5`), or every
+  O3'(i)-P(i+1) of consecutive nucleotides of one chain segment below 2.0 Å.
+- *Occupancy*: heavy atoms of the interface regions above a contour set at the 5th percentile of the density
+  at the atoms of regions held fixed; per decoy (its own fixed atoms), or one common level for both arms
+  (pilot mode: the regions that did not move). Map values are interpolated trilinearly (`mdatk.density`);
+  `nearest` takes the nearest voxel and reproduces the original scripts' numbers exactly. Atoms outside the
+  map count as not in density and are reported.
+- *Statistics* (`mdatk.ensemble_stats`, checked against SciPy in the tests): rates with exact
+  Clopper-Pearson intervals (summed in log space, so ensembles of any size work) or Wilson intervals,
+  two-sided Fisher exact tests, Mann-Whitney U (exact or normal approximation), and the **power
+  statement**: the rates of arm B that a two-sided Fisher test would tell from arm A's with the given power
+  (default 80%), computed exactly up to 4 000 decoys in both arms and from the normal approximation above.
+  Both arms' sampling enters, so the uncertainty of the baseline rate is part of it.
+- *Modes*: `compare` (the headline rates, best closed scores, median occupancy), `sweep` (also over a range
+  of closure cuts - a sensitivity display; its p-values are not corrected for the number of cuts) and
+  `pilot` (two runs of one register: common contour, Wilson intervals, optionally only the runs both arms
+  have, with their seeds compared when log folders are given).
+
+The report gives numbers only; deciding what they mean (e.g. whether to regenerate an ensemble) is left to
+you.
+
+**The decoy table.** The FARFAR2 models step's `scores` output (kind *table*) is a TSV with the columns
+`run`, `tag`, `pdb` (relative to the plan folder; empty for a decoy not extracted) and every Rosetta SCORE
+term by its name. The census and the comparison take it as input `scores` (`--scores TSV`, `--root PLAN`),
+find each decoy's row by its path (else by file name, else by tag against the file name) and look terms up
+by name; extra columns are ignored, comma-separated files are read too.
+
+**Map-model score** (`map-model-score`, `mdatk map score`). Per residue of every model:
+
+- `qscore` (default): Phenix's Q-score (Pintilie et al., Nat. Methods 17, 328 (2020)), run as
+  `phenix.qscore {model} {map}` in the step's `qscore/` folder on a copy with standard names: plain
+  A/C/G/U for D and L residues alike, every nucleotide an ATOM record, hydrogens and Rosetta's virtual
+  residues dropped. Q-score samples the radial density profile around each atom, which does not depend on
+  handedness; programs that look residues up in a library would otherwise skip or reject L names and
+  HETATM records. The copy stays inside the step's folder. The command is a template (`{model}`, `{map}`,
+  `{stem}`, `{resolution}`), and its output is read tolerantly: a table in the files it writes or on its
+  output with a Q column and chain / residue-number columns (per atom or per residue), else a PDB it
+  writes with Q in the B-factor column. **Not verified:** no Phenix installation was available, so the
+  command name (`phenix.qscore`, also `mmtbx.qscore`) and its output format follow Phenix's conventions as
+  far as known; adjust the template to the installed version.
+- `cc`: MDATK's per-residue correlation, no external program: the model's map is simulated at the given
+  resolution and, for each residue, correlated with the map over the grid points within 2.5 Å of its atoms.
+
+Named regions (`interface=B:25-34,C:58-63`) are then averaged per model, with their difference to a reference
+region (default the whole model) from which every named region is removed, so no residue counts on both
+sides. The first and last residue of every chain segment are left out of every mean unless kept (a terminal
+residue scores lower for lack of neighbours); residues without a score (outside the map) are counted, never
+averaged; models are ranked by a region's mean or its difference (`delta:interface`). Outputs: the
+per-residue table, the region table and a ranking report. `mdatk ensemble regions TABLE…` ranks per-residue
+tables written elsewhere (also headless `chain,resnum,base,Q` CSV files).
+
+**Body hybrids** (`body-hybrids`, `mdatk pdb hybrids`). Up to six bodies (name and ranges, a body may span
+chains) of an old and a re-fitted model; every one of the 2^k combinations is written, over the residues and
+atoms both files have, with coordinates copied verbatim from each body's source (residues in no body stay
+old). Residues are matched by chain and number, or by number alone for files whose chain ids differ (the
+numbers must then be unique). With a map, every hybrid is scored (CC or Q-score) and each body's main effect
+reported: the mean score of the hybrids with its new coordinates minus the mean of those with its old ones,
+over the whole model and over the body itself.
+
+Example, for a 73-nt construct numbered A 1-16, B 17-44, C 45-73 (a nicked aptamer and its target):
+
+```bash
+mdatk ensemble census runs/ -r \
+    --reference GGGCAAAGAAACAGCUAGCUAGGGCGCGAGCAAACCCGUUGCCCGCCAGAUUUGAGCCUGGGAGCUCUCUGGC \
+    --register 'pres=B:22-B:37,B:23-B:36,B:24-B:35' --register 'inv=B:35-C:60,B:36-C:61,B:37-C:62' \
+    --exclude 'helices*' --exclude '*_native.pdb' --pair-suffix _nointernalpairs --jobs 8 -o census.tsv
+mdatk ensemble compare --mode sweep --arm-a run/pres --arm-b run/inv --labels presentation,invasion \
+    --register-a 'pres=B:22-B:37,B:23-B:36,B:24-B:35' --register-b 'inv=B:35-C:60,B:36-C:61,B:37-C:62' \
+    --scores models_scores.tsv --map map.mrc --calibration A:1-6,A:13-16,B:17-20,B:39-44,C:45-57,C:64-73 \
+    --regions B:25-34,C:58-63 --report sweep.txt
+mdatk ensemble compare --mode pilot --register 'pres=B:22-B:37,B:23-B:36,B:24-B:35' --arm-a run/pres \
+    --arm-b pilot/pres --labels baseline,pilot --scores scores.tsv --map map.mrc \
+    --calibration A:13-16,B:17-20,C:45-57,C:64-73 --regions B:25-34,C:58-63 --matched-runs
+mdatk map score decoy_*.pdb --map map.mrc --method qscore --region pres-loops=B:25-34,C:58-63 \
+    --reference-region A:1-6,A:13-16,B:17-20,B:39-44,C:45-57,C:64-73 --sort delta:pres-loops
+mdatk pdb hybrids helices_old.pdb helices_new.pdb --body terminal=A:1-6,B:39-44 \
+    --body junction=A:13-16,B:17-20 --body L-TAR=C:45-57,C:64-73 --match number \
+    --map map.mrc --resolution 4.8 --effects-out effects.tsv -o hybrids
+```
+
+Tested on synthetic D- and L-RNA duplexes (`tests/test_ensemble.py`): the register counts and the
+nearest-voxel occupancy equal those of the scripts they replace; the Q-score runner was tested with a
+stand-in program, not with Phenix.
+
 ## Citations
 
 MDATK cites only what a project uses. Each planner step reports the programs, force fields,
@@ -1844,6 +1981,9 @@ mdatk frame check REF [MODELS|DIR ...] [--scores TSV [--root DIR] [--max T=X]] -
     --measure [NAME=]RANGES ... [--atoms P,C1',C4'] [--model-map REF=MODEL] [--tsv OUT] [--strict]
 mdatk frame reframe OLD NEW [MODELS|DIR ...] [--scores TSV] --fit RANGES --measure RANGES ... [--tol 1]
     [-O DIR] [--manifest TSV] [--scores-out TSV]      (see FARFAR2 decoys)
+mdatk ensemble census|compare|regions   (see Decoy ensembles, map-model scores and statistics)
+mdatk map score MODEL... --map MAP [--method cc|qscore]   per-residue map-model scores and regions
+mdatk pdb hybrids OLD NEW --body NAME=RANGES ... [--map MAP]   old/new body combinations
 ```
 
 `run` and `write --run` exit with status 75 when a step waits for a separately run script (see [Running

@@ -539,6 +539,49 @@ def _pdb_annotate(args, name: str) -> int:
     return 0
 
 
+def _outputs(args, *names: str) -> List[str]:
+    return [p for p in (getattr(args, n, None) for n in names) if p]
+
+
+def cmd_ensemble(args) -> int:
+    """'mdatk ensemble census | compare | regions' (mdatk.ensemble, mdatk.mapscore)."""
+    from . import ensemble
+    from .projectfile import logged
+    title = {"census": "Register census", "compare": f"Ensemble comparison ({getattr(args, 'mode', '')})",
+             "regions": "Regions ranked by per-residue scores"}[args.ensemble_command]
+    with logged(_project_file(args), f"ensemble {args.ensemble_command}", title) as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["ensemble"] else ""
+        code = ensemble.run(args)
+        entry.files = _outputs(args, "output", "report")
+    return code
+
+
+def cmd_map(args) -> int:
+    """'mdatk map score' (mdatk.mapscore)."""
+    from . import mapscore
+    from .projectfile import logged
+    with logged(_project_file(args), "map score", f"Map-model scores ({args.method})") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["map"] else ""
+        code = mapscore.run_score(args)
+        entry.files = _outputs(args, "output", "regions_out", "report")
+        if args.method == "qscore":
+            from .citations import keys_for
+            entry.citations = keys_for(["phenix"])
+    return code
+
+
+def cmd_pdb_hybrids(args) -> int:
+    """'mdatk pdb hybrids' (mdatk.mapscore)."""
+    from . import mapscore
+    from .projectfile import logged
+    with logged(_project_file(args), "pdb hybrids", f"Body hybrids of {os.path.basename(args.old)} and "
+                f"{os.path.basename(args.new)}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        code = mapscore.run_hybrids(args)
+        entry.files = _outputs(args, "scores_out", "effects_out", "report")
+    return code
+
+
 def cmd_build(args) -> int:
     from . import builder
     from .projectfile import logged
@@ -1037,6 +1080,8 @@ def build_parser() -> argparse.ArgumentParser:
                                    "hands (text, --json or --tsv; gates, filtering and ranking of models)")
     add_qc_arguments(c)
     c.set_defaults(func=cmd_pdb_qc)
+    from .mapscore import add_hybrid_command
+    add_hybrid_command(psub).set_defaults(func=cmd_pdb_hybrids)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands
@@ -1074,6 +1119,23 @@ def build_parser() -> argparse.ArgumentParser:
     fsub = p.add_subparsers(dest="frame_command", metavar="action")
     for c in frame_commands(fsub):
         c.set_defaults(func=cmd_frame)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .ensemble import add_commands as ensemble_commands
+    p = sub.add_parser("ensemble", help="decoy ensembles: register census by build condition, two-ensemble "
+                                        "comparison (closure, defining pairs, map occupancy, statistics), "
+                                        "regions ranked by per-residue scores")
+    esub = p.add_subparsers(dest="ensemble_command", metavar="action")
+    for c in ensemble_commands(esub):
+        c.set_defaults(func=cmd_ensemble)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .mapscore import add_commands as map_commands
+    p = sub.add_parser("map", help="map-model scores per residue (MDATK correlation or Phenix Q-score) and "
+                                   "the regions ranked by them")
+    msub = p.add_subparsers(dest="map_command", metavar="action")
+    for c in map_commands(msub):
+        c.set_defaults(func=cmd_map)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
