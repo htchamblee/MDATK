@@ -568,6 +568,10 @@ def gather_models(paths: Sequence[str], scores: str = "", root: str = "", maxima
             models += [ModelRef(f, f) for f in found if os.path.abspath(f) not in skip]
         elif os.path.abspath(p) not in skip:
             models.append(ModelRef(p, p))
+    slots = [(m, pdbtools.empty_slot(m.path)) for m in models]  # a model check's unfilled slots: no model
+    notes += [f"skipped {m.path}: {slot} (an empty slot of a model check, no model)"
+              for m, slot in slots if slot]
+    models = [m for m, slot in slots if not slot]
     table = None
     if scores:
         table = read_decoy_table(scores)

@@ -69,8 +69,8 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 import numpy as np
 
-from .pdbtools import (PDBError, Structure, infer_base, parse_ranges, parse_residue_name, read_pdb,
-                       sugar_chirality)
+from .pdbtools import (PDBError, Structure, empty_slot, infer_base, parse_ranges, parse_residue_name,
+                       read_pdb, sugar_chirality)
 
 Range = Tuple[Optional[str], Optional[int], Optional[int]]  # (chain, None: any chain; first, last; None: all)
 Key = Tuple[str, int, str]  # (chain, residue number, insertion code)
@@ -1283,14 +1283,19 @@ def _model_files(paths: Sequence[str]) -> List[str]:
 
 
 def _unique_files(paths: Sequence[str]) -> List[str]:
-    """``paths`` without repeats of the same file (given twice, or also listed in a table)."""
+    """``paths`` without repeats of the same file (given twice, or also listed in a table), and without the
+    empty slots of a model check's filter (named on standard error): they hold no model."""
     seen: Set[str] = set()
     out = []
     for p in paths:
         key = os.path.realpath(p)
         if key not in seen:
             seen.add(key)
-            out.append(p)
+            slot = empty_slot(p)
+            if slot:
+                print(f"skipped {p}: {slot} (an empty slot of a model check, no model)", file=sys.stderr)
+            else:
+                out.append(p)
     return out
 
 
@@ -1753,7 +1758,7 @@ def run_interface(args) -> Tuple[int, Dict[str, Any]]:
     groups = _groups(args)
     side_a, side_b = _sides(args, groups)
     rows, notes = [], []
-    for path in args.models:
+    for path in _unique_files(args.models):
         s = read_pdb(path)
         recs, n = interface_records(s, side_a, side_b, args.engine, model=os.path.basename(path),
                                     hbond=args.hbond, bph_ch=args.bph_ch, dssr_exe=args.dssr_exe,

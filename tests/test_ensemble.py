@@ -695,6 +695,19 @@ def test_map_score_cli_cc(tmp_path, capsys):
     assert len(open(res).read().splitlines()) == 29 and len(open(regs).read().splitlines()) == 7
 
 
+def test_map_score_skips_the_empty_slots_of_a_model_check(tmp_path, capsys):
+    from mdatk.cli import main
+    mapf = _map_of(DUPLEX, tmp_path)
+    m1 = write(tmp_path / "m1.pdb", DUPLEX)
+    slot = write(tmp_path / "passed-02.pdb", pdbtools.empty_slot_text(2, 2, 1))
+    res = str(tmp_path / "res.tsv")
+    assert main(["map", "score", m1, slot, "--map", mapf, "--method", "cc", "--resolution", "4",
+                 "--region", "loop=A:4-5", "-o", res]) == 0
+    text = capsys.readouterr().out
+    assert "skipped passed-02.pdb: empty slot 2 of 2: only 1 models passed" in text
+    assert len(open(res).read().splitlines()) == 15  # the one model (14 residues), nothing for the slot
+
+
 # --- hybrids -----------------------------------------------------------------------------------------------
 
 def test_hybrids_per_chain_numbering_and_common_atoms_regression():

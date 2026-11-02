@@ -884,10 +884,22 @@ the same input, the version is recorded in the scripts. The *Environment* sectio
 tleap*) drops the virtual residues of density-scored Rosetta models, which tleap cannot type. *Check
 O3′–P links before tleap* (off by default; warn or stop) measures O3′(i)–P(i+1) of consecutive
 nucleotides in every TER segment of the PDB tleap reads (after the preparation and the L-RNA naming)
-against 1.4–2.0 Å with MDATK's model checks, copied into the step folder: tleap bonds them whatever the
-distance, so a chain break left in a model (Rosetta numbers continuously across its cutpoints) would
-become a strained bond. *Stop* ends the script before tleap; with an existing input PDB the planner
-measures the links when the plan is written.
+with MDATK's model checks, copied into the step folder. tleap bonds them by name whatever the distance,
+so a chain break left in a model (Rosetta numbers continuously across its cutpoints) becomes a bond
+that the first minimisation has to relax, with a strain E = k(r − r0)² (Amber's k, no ½). Up to
+*Longest unstrained O3′–P link* (2.0 Å) a link is a bond; from there to *Longest O3′–P link before a
+break* (3.0 Å) it is listed with its strain, a warning; longer it is a break (as are links shorter than
+1.4 Å or unmeasurable), and *Stop* ends the script before tleap. k and r0 come from the force field the
+first tleap input loads: the check follows its `source` and `loadamberparams` lines into
+`$AMBERHOME/dat/leap` (leaprc → parm10.dat) and the frcmods, a later term replacing an earlier one, O3′
+typed OR for OL3 + CP, else OS; parm10.dat's OS–P is 230 kcal/mol/Å² and 1.61 Å (about 35 kcal/mol at
+2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å), unchanged by the frcmods of OL3, LJbb, ROC, YIL and DESRES and
+copied for OR by the CP helper, and MDATK's default when no file can be read (the report names the
+source). With the check on, the PDB is prepared, named and checked first, before the CP, L-RNA library
+and TIP4P/2005 helpers and before every tleap run (the dry one of a two-pass build included). With an
+existing input PDB the planner measures the links when the plan is written. A structure from a model
+check's *Passed models* may be an empty slot (see [Model checks](#model-checks)): the script then stops
+at its first line, before any helper or tleap, with the slot's message.
 
 **L-RNA.** *Name L-nucleotides for leap* (on by default) runs MDATK's PDB tools, copied into the step
 folder, on the starting structure before tleap: residues whose sugar chirality (C1′, C3′, C4′) is L
@@ -1452,47 +1464,94 @@ chain, number and insertion code, and every range is written as for the PDB tool
   5′/3′ hydroxyls, A N1 / C N3 of residues given with `--protonated`, waters, and the N/O atoms of
   other residues; two pure acceptors (a phosphate oxygen and O4′, say) never H-bond. A carbon one bond
   from an H-bonded atom, against its partner and no closer than the H-bond itself, is the same contact
-  and is not counted either. Atoms up to three bonds apart (four for a hydrogen) are left out, along
-  the bonds of the nucleotide templates and the O3′–P links of each TER segment, so neighbouring
-  residues (stacking, sugar–base) and all chains are checked. Waters and ions are skipped unless asked
-  for (`--waters`, `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is
-  coordination); hydrogens are optional (`--hydrogens`).
-- **Backbone**: O3′(i)–P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them:
-  longer than 2.0 Å a break, shorter than 1.4 Å an overlap, a missing atom an unmeasurable link
-  (`--link-min`, `--link-max`); consecutive P–P outside 5.0–7.5 Å are reported.
+  and is not counted either. Atoms up to three bonds apart are left out, along the bonds of the
+  nucleotide templates and the O3′–P links of each TER segment, so neighbouring residues (stacking,
+  sugar–base) and all chains are checked. Waters and ions are skipped unless asked for (`--waters`,
+  `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is coordination).
+  Hydrogens are never part of it: their positions differ between programs, and the builder's ideal
+  A-form helix (the Arnott fiber) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
+  from the sugar's own geometry (1.09 Å from C2′, within 5° of the exact tetrahedral direction from C1′,
+  C3′ and O2′; putting it exactly there moves the contact by under 0.03 Å): the short contact is the
+  fiber model's C2′(i)…C8/C6(i+1) of 3.5 Å, so smaller hydrogen radii would hide a geometry rather than
+  fix a threshold.
+- **Hydrogen contacts** (`--hydrogen-check`, off by default; reported in a section and columns of their
+  own, `h_atoms h_clashes h_worst_overlap h_clashscore h_radii`, and never a gate or a filter): the
+  model's explicit hydrogens on MolProbity's conventions, none added. Radii from Probe (`atomprops.h`):
+  for hydrogens at nuclear positions (C–H 1.09 Å, as Amber, Rosetta and the builder place them) 1.17 Å
+  on carbon and 1.00 Å for a polar or aromatic (base C–H) hydrogen, for electron-cloud positions (C–H
+  0.97 Å, Reduce's default for X-ray models) 1.22 and 1.05 Å, chosen from the model's median C–H
+  (`--hydrogen-radii auto|nuclear|ecloud`); heavy atoms C 1.70, N 1.55, O 1.40, P 1.80 Å. An overlap
+  of 0.4 Å or more is a clash; a polar hydrogen may overlap an acceptor by 0.6 Å (a hydrogen bond,
+  Probe's `-HBRegular`) before the excess counts; pairs up to four bonds apart are left out; the
+  clashscore is clashes per 1000 atoms. On the fiber helix this flags every H2′(i)…H6/H8(i+1).
+- **Backbone**: O3′(i)–P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them
+  (by name, whatever the distance): up to 2.0 Å a bond (`--link-max`); from 2.0 to 3.0 Å
+  (`--link-fail`) a strained bond, a warning that gives the strain the first minimisation has to relax,
+  E = k(r − r0)² with Amber's k (no ½): 230 kcal/mol/Å² and 1.61 Å (OS–P of parm99 / parm10.dat), about
+  35 kcal/mol at 2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å, or read from the force field with `--link-params`
+  (a tleap input or leaprc followed through its `source` / `loadamberparams` lines, parm*.dat, frcmod;
+  `--link-types OR,OS` for the CP force field, `--amberhome`) or given (`--link-k`, `--link-r0`);
+  longer than 3.0 Å a break (the chain is usually in two pieces), shorter than 1.4 Å an overlap, a
+  missing atom an unmeasurable link, which fail the links gate. Report columns `strained_links` and
+  `link_strain` (kcal/mol, every link outside the limits); consecutive P–P outside 5.0–7.5 Å are
+  reported.
 - **Loop compaction**: end-to-end distance over contour length along C1′ for `--segments` and for the
   runs of three or more residues unpaired in every `--secstruct` file given (two registers of one
   sequence, say: a segment that is a hairpin in one and a strand in the other is left out). Below 0.20
   (`--compaction-flag`) a loop is flagged for inspection; there is no verdict: a loop is meant to turn.
 - **Sugar hands** from the C4′, C3′ and C1′ geometry (never from the names, which a Rosetta silent file
   does not keep), against `--expect-l` / `--expect-d`; epimers and flat centres are named.
+- **Kinks**: the virtual angle C1′(i−1)–C1′(i)–C1′(i+1) of every residue between two consecutive
+  nucleotides of a TER segment (A-form 152°); below 60° (`--kink-min`) a sharp kink is flagged, except
+  where one is allowed: `--kink-allow RANGES` (the flexible positions of in-line probing, say) and the
+  positions of a two-column reactivity file (`--kink-reactivity FILE`: position, reactivity; tabs,
+  commas or spaces; NaN skipped) that reach `--kink-reactivity-min`, numbered in
+  `--kink-reactivity-chain` (default: every chain). Report columns `kinks`, `sharpest_kink`,
+  `sharpest_kink_at`; a gate only with `--gate-kinks`.
 - **Decoy table** (`--scores`): Rosetta score terms per decoy (columns `run`, `tag`, `pdb` relative to
   the plan root, then the terms by name), matched to the models by path, file name or tag:
   `--score-terms` copies terms into the report, `--score-limits 'linear_chainbreak<=1'` gates on them,
   `--order score` ranks by `--rank-term`.
-- **Gates** (`--max-clashes`, links and hands on by default, `--gate-pp`, score limits) and what happens
-  to failing models: `--on-fail report` (default; all models passed on), `filter` (only those that pass,
-  `--pass N` of them, else status 1) or `stop` (status 1 when any fails). `--passed-out
-  'passed-{n:02d}.pdb'` and `--best-out` copy the models passed on (in input order, `--order clashes` or
-  `--order score`). The report is text, `--tsv` (one row per model) or `--json`, with `-o FILE` for the
-  table while the text goes to the screen.
+- **Gates** (`--max-clashes`, links and hands on by default, `--gate-pp`, `--gate-kinks`, score limits;
+  strained links and ungated kinks are warnings, column `warnings`, and hydrogen contacts never gate)
+  and what happens to failing models: `--on-fail report` (default; all models passed on), `filter` or
+  `stop` (status 1 when any fails). `filter` passes on the models that pass, up to `--pass N` of them,
+  and fails only when fewer than `--min-pass M` pass (default 1: when none does; 0: never), since how
+  many pass can be the finding itself. With `--pass N` the models fill N slots in order and the slots
+  left over are written as empty-slot files (`REMARK 951 empty slot 4 of 5: only 3 models passed`,
+  `END`, no atoms), so a plan keeps its fixed number of files
+  without pretending that N models passed; the report states `M of K models passed the gates` (and how
+  many slots were written empty). `--passed-out 'passed-{n:02d}.pdb'` and `--best-out` copy the models
+  passed on (in input order, `--order clashes` or `--order score`; the best is an empty slot when none
+  passed and `--min-pass 0`). The report is text, `--tsv` (one row per model) or `--json`, with `-o FILE`
+  for the table while the text goes to the screen.
+- **Empty slots downstream**: `pdbtools.is_empty_slot(path)` (and `empty_slot`, its note) tells them
+  apart; the model check itself, the decoy interfaces (`mdatk decoys`, `mdatk pdb interface`), the
+  register census and ensemble comparison (`mdatk ensemble`), the frame check (`mdatk frame`) and the
+  map-model score (`mdatk map score`) skip them with a note, `read_pdb` refuses one by name, and an
+  Amber build whose structure is one stops before any helper or tleap runs.
 
 ```bash
 mdatk pdb qc model-*.pdb --segments 'A:7-12, B:25-34, C:58-63' --expect-d A,B --expect-l C
 mdatk pdb qc decoys/*.pdb --secstruct presentation.secstruct --secstruct invasion.secstruct \
     --scores decoys.tsv --score-terms score,linear_chainbreak --on-fail filter --pass 5 --order score \
     --passed-out 'passed-{n:02d}.pdb' --best-out best.pdb --tsv -o qc.tsv
+mdatk pdb qc decoys/*.pdb --kink-reactivity inline.tsv --kink-reactivity-min 0.5 \
+    --kink-reactivity-chain C --gate-kinks --hydrogen-check --link-params tleap.leap --tsv -o qc.tsv
 ```
 
 The planner step takes the models (several), optional secondary structures and an optional decoy
 table (the FARFAR2 models step's `scores`), and writes the report (table), the passed models and the
-best one (the first passed). *Expected hands* is automatic by default: the hands measured on the first
-connected model when the plan is written (when it exists then), or the hand of a builder helix;
-*Ranges* takes them typed. Its script copies MDATK's PDB tools and model checks into the step folder,
-so the machine that runs it needs `python3` only, and removes the outputs of an earlier run first, so
-a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`, `chirality.py`
-and `bbcheck.py`; `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual` replaces
-`to_amber.py`, and `--scheme standard` the renaming of `q_prep.py`.
+best one (the first passed). With *Models that fail: filter*, *Models passed on (up to)* is the number
+of slots and *Fewest passing models* the minimum (1); its *Passed models* then carry a mark that the
+slots may be empty, and an Amber build fed one writes the guard that stops it before tleap. *Kinks* and
+*Report hydrogen contacts* set the checks above. *Expected hands* is automatic by default: the hands
+measured on the first connected model when the plan is written (when it exists then), or the hand of a
+builder helix; *Ranges* takes them typed. Its script copies MDATK's PDB tools and model checks into the
+step folder, so the machine that runs it needs `python3` only, and removes the outputs of an earlier run
+first, so a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`,
+`chirality.py` and `bbcheck.py`; `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual`
+replaces `to_amber.py`, and `--scheme standard` the renaming of `q_prep.py`.
 `--engine dssr` runs x3dna-dssr (licensed separately, free for academic use; never bundled; `--dssr-exe`
 names the executable) on a copy in a temporary folder, so its auxiliary `dssr-*` files never land next to
 your files. The copy gives every nucleotide its canonical name (A C G U, DA …; L names and names DSSR does

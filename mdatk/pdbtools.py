@@ -33,6 +33,8 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
   from the atom names when a residue name is not recognised.
 * Per-residue sugar hands (:func:`residue_hands`): the three-centre call, the C4' hand alone, epimers and
   flat centres, and expected hands per residue range (``check --expect-l / --expect-d --strict --table``).
+* Empty slots (:func:`empty_slot_text`, :func:`empty_slot`, :func:`is_empty_slot`): the files a model check
+  writes for the slots no passing model fills (REMARK 951, END, no atoms); :func:`read_pdb` names one.
 
 Every operation works in place on a :class:`Structure` and returns human-readable notes; :func:`clean`
 chains them for the CLI / GUI / planner.
@@ -63,6 +65,11 @@ RECORD_POLICIES = ("keep", "rosetta", "pdb", "atom")
 # Rosetta's virtual residues: the root of a density-scored fold tree (VRT, atoms ORIG / X / Y) and XXX.  They
 # are no atoms of the molecule: tleap has no unit for them, and a map-model score would read them as atoms.
 VIRTUAL_RESIDUES = frozenset({"VRT", "XXX"})
+# An empty slot: a model check that passes on 'up to N' models writes the slots it cannot fill as a file with
+# this remark and END, no atoms, so a step with a fixed number of files downstream sees which are empty
+# (and skips them) instead of a count that pretends N models passed.
+EMPTY_SLOT_REMARK = "REMARK 951"
+_EMPTY_SLOT_RE = re.compile(r"^REMARK 951 +(empty slot .*)$", re.IGNORECASE)
 
 # Signs of the chiral volumes of an L-ribose: (centre, (atom 1, atom 2, atom 3), sign), from the
 # _chem_comp_chir tables of the 0A/0C/0G/0U restraint dictionaries; "N" is N9 (purines) or N1
@@ -292,6 +299,43 @@ def _read_text(source) -> str:
     return source
 
 
+def empty_slot_text(slot: int, slots: int, passed: int) -> str:
+    """The file of an unfilled slot: 'empty slot k of N: only M models passed' and END, no atoms."""
+    return f"{EMPTY_SLOT_REMARK} empty slot {slot} of {slots}: only {passed} models passed\nEND\n"
+
+
+def empty_slot(source) -> str:
+    """The note of an empty-slot file ('empty slot 4 of 5: only 3 models passed'), or '' for anything else
+    (a model with atoms, a missing or unreadable file).  Reads only up to the first atom record."""
+    note = ""
+    try:
+        if isinstance(source, str) and "\n" in source:
+            lines: Iterator[str] = iter(source.splitlines())
+            fh = None
+        else:
+            fh = open(source, encoding="utf-8", errors="replace")
+            lines = iter(fh)
+        try:
+            for line in lines:
+                if line.startswith(("ATOM", "HETATM")):
+                    return ""
+                m = _EMPTY_SLOT_RE.match(line.rstrip())
+                if m and not note:
+                    note = m.group(1).strip()
+        finally:
+            if fh is not None:
+                fh.close()
+    except (OSError, TypeError):
+        return ""
+    return note
+
+
+def is_empty_slot(source) -> bool:
+    """Whether ``source`` (a path or PDB text) is an empty slot written by a model check
+    (:func:`empty_slot`)."""
+    return bool(empty_slot(source))
+
+
 def _fused_field(line: str) -> Optional[Tuple[str, str, str, int]]:
     """ChimeraX 'resname+chain:' field -> (alt, resname, chain, colon index), or None for a normal line."""
     c = line.find(":", 18, 30)
@@ -430,6 +474,9 @@ def read_pdb(source) -> Structure:
             s.header.append(line)
     close_segment()
     if not s.segments:
+        slot = next((m.group(1).strip() for m in map(_EMPTY_SLOT_RE.match, s.header) if m), "")
+        if slot:  # the model check passed on fewer models than it has slots: say so, not 'not a PDB file'
+            raise PDBError(f"an empty slot of a model check ({slot}): no model, no atoms")
         raise PDBError("no ATOM/HETATM records found (not a PDB file, or the path does not exist)")
     if repaired:
         s.notes.append(f"Repaired {repaired} ChimeraX-damaged ATOM/HETATM lines (residue name fused with "
