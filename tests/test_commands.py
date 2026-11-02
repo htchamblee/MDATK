@@ -10,7 +10,7 @@ import pytest
 from mdatk.config import PlanNode, Project, WorkflowParams
 from mdatk.workflows import TOOLS
 from mdatk.workflows.commands import command_lines
-from mdatk.workflows.plan import Plan, generate_step
+from mdatk.workflows.plan import Plan, add_node, connect, generate_step
 
 STAMP = "20261015-1432"
 ENV = {"conda_env": "AmberTools25", "env_setup": "module load amber/24\nsource /opt/amber24/amber.sh"}
@@ -132,6 +132,38 @@ def test_a_long_list_of_models_stays_quick():
 def test_nothing_to_run():
     assert command_lines("") == []
     assert command_lines("#!/bin/bash\nset -e\n# nothing\necho done\n") == []
+
+
+def test_case_patterns_are_not_commands():
+    # a pattern's ')' ends no subshell: '/*) MODELS+=("$f")' is a pattern and an assignment, not a program
+    script = "\n".join([
+        'while IFS= read -r f || [ -n "$f" ]; do',
+        '  case "$f" in "") ;; /*) MODELS+=("$f") ;; *) MODELS+=("../$f") ;; esac',
+        "done < list.txt",
+        'case "$x" in', '  a|b) prog-a "$x" ;;', "  (c) prog-c ;;", "  d)", "    prog-d", "    ;;",
+        "  *) other; another", "esac",
+        "(", "  cd work", "  inner", ") > log 2>&1", "{ case $y in q) prog-q ;; esac; }", "last"])
+    assert command_lines(script) == ['prog-a "$x"', "prog-c", "prog-d", "other", "another", "inner",
+                                     "prog-q", "last"]
+
+
+def test_steps_that_take_a_set_show_only_their_program():
+    # the members of a set are read from its lists with a case statement (listed_files)
+    wf = WorkflowParams(project_name="golden", stamp=STAMP)
+    fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC", "runs": 2, "nstruct": 3})
+    check = add_node(wf, "model-check")
+    compare = add_node(wf, "ensemble-compare", settings={"register_a": "p=A:1-A:6", "register_b": "x=A:2-A:5",
+                                                         "closure": "geometry"})
+    for target, port in ((check, "models"), (compare, "arm_a"), (compare, "arm_b")):
+        connect(wf, fold.id, "decoys", target.id, port)
+    plan = Plan(wf, "/plan", Project().groups)
+    for node, program in ((check, "python3 golden_02_modelcheck_"),
+                          (compare, "python3 -m mdatk ensemble compare")):
+        [script] = [f.content for f in generate_step(plan.steps[node.id]) if f.role == "run"]
+        assert "case \"$f\" in" in script
+        cmds = command_lines(script)
+        assert_clean(cmds)
+        assert len(cmds) == 1 and cmds[0].startswith(program), cmds
 
 
 # ---------------------------------------------------------------------------

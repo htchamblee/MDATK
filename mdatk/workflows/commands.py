@@ -5,7 +5,7 @@ work: the program invocations and the helper calls.  It leaves out the set-up an
 them: comments, ``set``, ``cd``, the environment (the *Environment* block of :func:`.base.script_header`,
 conda, modules, ``source``, ``export``), variable assignments, function definitions and calls of the
 script's own functions (their bodies are read like the rest of the script), ``if`` / ``for`` / ``while``
-structure, checks (``[ … ]``, ``test``, ``command -v``, ``grep -q``, so the :func:`.base.require_file` lines
+/ ``case`` structure (a case's patterns too), checks (``[ … ]``, ``test``, ``command -v``, ``grep -q``, so the :func:`.base.require_file` lines
 too), file bookkeeping (``rm``, ``mkdir``, ``mv``, ``cp``, ``ln``), messages (``echo``, ``printf``),
 ``exit``, and the error handling after a command (``|| { echo "ERROR: …" >&2; exit 1; }``, ``|| true``).
 
@@ -55,6 +55,7 @@ def command_lines(script: str) -> List[str]:
     functions, values = _definitions(entries)
     out: List[str] = []
     in_environment = False
+    cases = _Cases()
     for line in entries:
         stripped = line.text.strip()
         if in_environment:  # the environment set-up runs up to the next blank line
@@ -63,7 +64,7 @@ def command_lines(script: str) -> List[str]:
         if stripped == ENVIRONMENT:
             in_environment = True
             continue
-        for start, end, shown in _statements(line, functions):
+        for start, end, shown in _statements(line, functions, cases):
             shown = _expand(shown, values)
             for at, body, delim, quoted in line.docs:
                 if start <= at < end:
@@ -293,17 +294,54 @@ def _parse(line: _Line) -> Tuple[Optional[str], List[Tuple[int, int, str]]]:
     return name, _segments(text, line.top, pos, line.comment if line.comment >= 0 else len(text))
 
 
-def _statements(line: _Line, functions: Set[str]) -> List[Tuple[int, int, str]]:
+class _Cases:
+    """The ``case`` statements open where the script has been read (one may span lines)."""
+
+    def __init__(self) -> None:
+        self.open = 0  # case statements not yet closed by esac
+        self.pattern = False  # a pattern comes next: after 'case WORD in' and after ';;'
+
+    def skip(self, words: List[str], op: str) -> bool:
+        """Whether a simple command (its words, the operator after it) is a case head or a pattern
+        ('case "$f" in', '/*' before ')', 'a' before '|', the '(' some write before a pattern): they run
+        nothing.  Counts the statements opened and closed."""
+        ws = list(words)
+        while ws and ws[0] in KEYWORDS and ws[0] != "esac":
+            ws.pop(0)
+        if ws[:1] == ["esac"]:
+            self.open = max(0, self.open - 1)
+            self.pattern = False
+            return False
+        if len(ws) >= 3 and ws[0] == "case" and ws[2] == "in":
+            self.open += 1
+            self.pattern = True
+            ws = ws[3:]  # the first pattern may follow on the same line
+            if not ws and op not in (")", "|", "("):
+                return True
+        if self.pattern and (op in (")", "|") or (op == "(" and not ws)):
+            self.pattern = op != ")"
+            return True
+        if op == ";;" and self.open:
+            self.pattern = True
+        return False
+
+
+def _statements(line: _Line, functions: Set[str],
+                cases: Optional[_Cases] = None) -> List[Tuple[int, int, str]]:
     """The commands of one logical line that do the step's work, as (start, end, what is shown): split
-    where ';' or '&' ends a command outside { } and ( ), stripped of control words and of the error
-    handling after the command."""
+    where ';' or '&' ends a command outside { } and ( ), stripped of control words, case patterns and the
+    error handling after the command (``cases``: the case statements open before the line)."""
     text, top = line.text, line.top
     _name, segments = _parse(line)
+    cases = _Cases() if cases is None else cases
     out = []
     group: List[Tuple[int, int, str, str]] = []  # (start, end, operator after, kind)
     depth = 0
     for start, end, op in segments:
         words = _words(text, start, end, top)
+        if depth <= 0 and cases.skip(words, op):  # the ')' after a pattern ends no subshell
+            group, depth = [], 0
+            continue
         depth += words.count("{") - words.count("}") + (op == "(") - (op == ")")
         group.append((start, end, op, _kind(words, functions)))
         if depth <= 0 and op in (";", ";;", "&", ""):
