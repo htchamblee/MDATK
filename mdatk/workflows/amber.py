@@ -19,6 +19,7 @@ from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
                    require_file, script_header, separate_check, shell_quote, skip_when_done)
+from .budget import Resources, gpu_ids, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import cp_retype as _cp_retype
@@ -2047,6 +2048,15 @@ class AmberMDTool(Tool):
 
     def resources(self, s):
         return ["ambertools", "pmemd"] + (["cpptraj"] if s.get("dry_pdb") or s.get("dry_traj") else [])
+
+    def run_resources(self, s):
+        # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
+        # processes; pmemd: one core
+        if s["engine"] == "pmemd.MPI":
+            return Resources(int(s["nproc"]))
+        if s["engine"] == "pmemd.cuda":
+            return gpu_step(1, 1, s, gpu_ids(s["gpu"]))
+        return Resources()
 
     def _production_done(self, s, ctx, runs) -> List[str]:
         """Shell tests that succeed once the separate production script has finished."""

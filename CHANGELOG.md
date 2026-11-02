@@ -281,6 +281,52 @@ the notes below.
     and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
     written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
 
+### Running steps: CPU and GPU budgets, stop buttons
+
+- **Two budgets instead of *Parallel*** (the user's decision): the scripts RNAdo and `mdatk workflow run`
+  run at the same time share *CPU cores* (default: half of this computer's cores) and *GPUs* (default: the
+  GPUs found, `nvidia-smi -L`, or the ids in MDATK's own `CUDA_VISIBLE_DEVICES`, which then limit what
+  the scripts may use). A ready step starts when the cores and GPUs it uses are free, in plan order (a
+  later, smaller step may start while an earlier one waits for room, but not behind a step that needs
+  every core: that one starts once nothing runs, before the steps after it); the scheduling is a pure
+  function of the plan order, the needs and the finished steps (`mdatk/workflows/budget.py`: `Slots`,
+  `schedule`). Project file: `workflow.cpu_cores` (0: auto), `workflow.gpus` (-1: auto, 0: none); command
+  line: `mdatk workflow run / write --run --cores N --gpus N`; RNAdo: *CPU cores* (shown as *auto (N)*),
+  *GPUs* (*auto (N)*, *none*, 1, 2, ...) and *At once* in the naming bar.
+- **What each step uses** (`Tool.run_resources(settings)` -> `Resources(cores, gpus, pinned)`, one core
+  by default): Amber MD with pmemd.cuda 1 core + 1 GPU, pmemd.MPI its MPI processes, pmemd 1 core; NAMD
+  MDFF its `+p` cores and one GPU; GROMACS its OpenMP threads (`-ntomp`, times `-ntmpi`, or `-nt`, from the
+  extra mdrun flags; without `-ntomp` every core, since mdrun takes them all) + a GPU when offloading;
+  FARFAR2 and SimRNA their parallel runs; FARFAR2 models its parallel extractions when it extracts every
+  model; Phenix RSR `nproc`; register census and frame check their worker processes; a custom script its
+  new section *Cores and GPUs* (*CPU cores*, 0: all; *GPUs*; its run script is unchanged). Planner boxes
+  show it as a badge (`8c+1g`), the details pane in words, the run confirmation per script.
+- **GPUs handed out:** a step that uses a GPU gets free ones in `CUDA_VISIBLE_DEVICES`, unless it names
+  its own (the Amber MD step's *GPU*, NAMD's `+devices`, which counts the GPUs its *Environment* leaves
+  visible, or `CUDA_VISIBLE_DEVICES` in the step's *Environment* setup commands): those ids are used as
+  named and kept from other steps. Each start line says what the step got (`==== step 04: … - bash
+  x.sh (1 core, GPU 1)`), and the step log's command shows the `CUDA_VISIBLE_DEVICES` given.
+- **No deadlock, clear warnings:** a step larger than the whole budget runs alone once nothing else runs
+  (and holds back the steps after it meanwhile); with no GPU found and none set, the steps that use a
+  GPU run one at a time; a named GPU outside the budget is reported. The warnings open the run's output
+  (`WARNING: …`, amber in RNAdo's log).
+- **`parallel` stays, as a cap** on the scripts at once (*At once*; new default 0: no limit, the budgets
+  decide; `--parallel 0` allowed). Project files keep their value, so a project saved with `parallel = 1`
+  still runs one script at a time until *At once* is changed; a project file without the key (before
+  0.0.7) gets 1, as it did. Without a budget (`run_jobs(budget=None)`, e.g. the wizard's *Write and
+  run…*) only the cap counts and the environment is left as it is.
+- **Stop scripts** in the planner toolbar (red, sensitive while scripts run) stops every running script,
+  as *Cancel* in the status bar does.
+- **Stopping one step:** a square stop button in the title bar of every running box, and *Stop this step*
+  in a running or queued box's right-click menu, stop that step's script only (`runner.StepStops`; the
+  script's process group is terminated, its children too). The step ends as *stopped* (a square marker,
+  an amber `==== step 03: … - stopped` line, status `stopped` in the step log), the steps that depend on
+  it are not started (`not started (step 03 was stopped)`), the other scripts go on, and the run is not
+  reported as failed. The stopped run leaves `<project>_<step>_stopped_<time>.txt` beside the step's
+  files, so *Check previous runs* / `mdatk workflow status` call it partial (`partial (stopped)`) until
+  the step runs again (the next run removes the note) or a file of the run is written after it.
+- Generated files are unchanged (`tests/test_golden.py` passes without new intended changes).
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own

@@ -180,3 +180,152 @@ def test_a_broken_stderr_callback_stops_the_script(tmp_path):
         run_jobs([ScriptJob(1, "s", str(script), node_id="n")], None, on_line=lambda _l: None,
                  on_stderr=broken)
     assert time.monotonic() - t0 < 4
+
+
+# ---------------------------------------------------------------------------
+# CPU / GPU budgets and stopping one step (0.0.12)
+# ---------------------------------------------------------------------------
+
+
+def test_gpus_are_handed_out_in_cuda_visible_devices(tmp_path, monkeypatch):
+    from mdatk.workflows.budget import Budget, Resources
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    body = 'echo "gpu ${CUDA_VISIBLE_DEVICES-unset}"; sleep 0.6'
+    gpu = Resources(1, 1)
+    jobs = [job(tmp_path, k + 1, n, body=body) for k, n in enumerate("abcde")]
+    for j in jobs[:3]:
+        j.resources = gpu
+    jobs[3].resources = Resources(1, 1, ("7",))  # names its own GPU: the environment is left alone
+    jobs[4].resources = Resources(2)  # a CPU step
+    out = []
+    results = run_jobs(jobs, None, on_line=out.append, parallel=0, budget=Budget(8, ("0", "1")))
+    assert all(r.status == "ok" for r in results)
+    seen = {}
+    for line in out:
+        mark, _, text = line.partition("] ")
+        if text.startswith("gpu "):
+            seen[int(mark.strip("["))] = text.split()[1]
+    assert seen[1] == "0" and seen[2] == "1"  # plan order, the first free GPU
+    assert seen[3] in ("0", "1")  # waited for one of them
+    assert seen[4] == "unset" and seen[5] == "unset"
+    assert any(line.startswith("==== step 01: a - bash a.sh (1 core, GPU 0)") for line in out)
+    assert any("step 04: d - bash d.sh (1 core, GPU 7 (named by the step))" in line for line in out)
+    assert any(line.endswith("e.sh (2 cores)") for line in out)
+    assert any(line.startswith("WARNING: step 04 (d) names GPU 7") for line in out)
+    t = times([line.split("] ", 1)[-1] for line in out])
+    assert t[("begin", "c")] >= min(t[("end", "a")], t[("end", "b")])  # two GPUs: c waited for one
+
+
+def test_a_budget_of_one_core_runs_the_steps_in_plan_order(tmp_path):
+    from mdatk.workflows.budget import Budget
+    jobs = [job(tmp_path, k + 1, n, body="sleep 0.2") for k, n in enumerate("abc")]
+    states = []
+    run_jobs(jobs, None, on_line=lambda _l: None, parallel=0, budget=Budget(1),
+             on_state=lambda j, s: states.append((j.node_id, s)))
+    assert [n for n, s in states if s == "running"] == ["a", "b", "c"]
+
+
+def ended(pid, timeout=5.0):
+    """The process is gone, or a zombie its new parent has not reaped yet (an orphaned child)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                if fh.read().rsplit(")", 1)[-1].split()[0] == "Z":
+                    return True
+        except OSError:  # gone meanwhile (or no /proc: ask again)
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def test_a_stopped_step_skips_its_dependents_and_the_others_finish(tmp_path):
+    from mdatk.workflows.budget import Budget
+    from mdatk.workflows.runner import StepStops
+    # a starts a child process too: stopping the step ends its whole process group
+    a = job(tmp_path, 1, "a", body='echo $$ > a.pid\nsleep 30 &\necho $! > a.child\nwait')
+    a.stop_mark = str(tmp_path / "01_a" / "apt1_01_stopped.txt")
+    b = job(tmp_path, 2, "b", after=["a"])
+    c = job(tmp_path, 3, "c", body="sleep 1.5; touch c.done")
+    stops = StepStops()
+
+    def stop_when_running():
+        end = time.monotonic() + 10
+        while time.monotonic() < end and not (tmp_path / "a.child").exists():
+            time.sleep(0.05)
+        stops.stop("a")
+
+    threading.Thread(target=stop_when_running, daemon=True).start()
+    t0 = time.monotonic()
+    results, lines, states = run([a, b, c], parallel=0, budget=Budget(4), stops=stops)
+    assert time.monotonic() - t0 < 12
+    status = {r.job.node_id: r.status for r in results}
+    assert status == {"a": "stopped", "b": "skipped", "c": "ok"}
+    assert (tmp_path / "c.done").exists() and ("a", "stopped") in states
+    assert "==== step 02: b - not started (step 01 was stopped)" in lines
+    for pid_file in ("a.pid", "a.child"):
+        assert ended(int((tmp_path / pid_file).read_text())), pid_file
+    note = (tmp_path / "01_a" / "apt1_01_stopped.txt").read_text()
+    assert "step 01 (a) was stopped by the user" in note
+    # the next run of the step removes the note
+    a2 = job(tmp_path, 1, "a", body="true", name="a2")
+    a2.stop_mark = a.stop_mark
+    run_jobs([a2], None, on_line=lambda _l: None)
+    assert not os.path.exists(a.stop_mark)
+
+
+def test_a_step_stopped_before_it_starts(tmp_path):
+    from mdatk.workflows.budget import Budget
+    from mdatk.workflows.runner import StepStops
+    a = job(tmp_path, 1, "a", body="sleep 0.8")
+    b = job(tmp_path, 2, "b", after=["a"], body="touch b.ran")
+    c = job(tmp_path, 3, "c", after=["b"])
+    stops = StepStops()
+    stops.stop("b")
+    results, lines, _states = run([a, b, c], parallel=0, budget=Budget(4), stops=stops)
+    assert {r.job.node_id: r.status for r in results} == {"a": "ok", "b": "stopped", "c": "skipped"}
+    assert not (tmp_path / "b.ran").exists()
+    assert "==== step 03: c - not started (step 02 was stopped)" in lines
+
+
+def test_a_stopped_run_counts_as_partial(tmp_path):
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows import runstate
+    from mdatk.workflows.plan import Plan, add_node
+    from mdatk.workflows.runner import StepStops, plan_jobs
+    wf = WorkflowParams(project_name="apt1", stamp="20261015-1432")
+    node = add_node(wf, "user-script", settings={
+        "script": 'echo partial > "$MDATK_OUT_RESULT"\nsleep 30\n',
+        "outputs": [{"name": "result", "kind": "text", "file": "result.txt"}]})
+    plan = Plan(wf, str(tmp_path / "plan"))
+    plan.write()
+    jobs = plan_jobs(plan)
+    assert jobs[0].stop_mark.endswith("01_custom/apt1_01_stopped_20261015-1432.txt")
+    stops = StepStops()
+    folder = os.path.join(plan.root, "01_custom")
+
+    def stop_when_written():
+        end = time.monotonic() + 10
+        while time.monotonic() < end and not os.path.exists(os.path.join(folder, "result.txt")):
+            time.sleep(0.05)
+        time.sleep(0.2)
+        stops.stop(node.id)
+
+    threading.Thread(target=stop_when_written, daemon=True).start()
+    results = run_jobs(jobs, None, on_line=lambda _l: None, parallel=0, stops=stops)
+    assert [r.status for r in results] == ["stopped"]
+    found = runstate.check_runs(Plan(wf, plan.root))[node.id]
+    assert found.state == "partial" and found.stopped and "stopped before it finished" in found.summary()
+    # files written after the stop (the step ran again by hand) count as they are
+    with open(os.path.join(folder, "apt1_01_custom_20261015-1432.done"), "w") as fh:
+        fh.write("MDATK: custom script finished\n")
+    later = time.time() + 5
+    for name in os.listdir(folder):
+        os.utime(os.path.join(folder, name), (later, later))
+    os.utime(jobs[0].stop_mark, (later - 60, later - 60))
+    found = runstate.check_runs(Plan(wf, plan.root))[node.id]
+    assert found.state == "done" and not found.stopped

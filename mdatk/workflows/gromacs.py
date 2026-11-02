@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from .. import PROJECT_ABBREV, __version__
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
                    script_header, separate_check, skip_when_done)
+from .budget import ALL_CORES, Resources, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -176,6 +177,20 @@ class GromacsTool(Tool):
 
     def resources(self, s):
         return ["gromacs"] + {"parmed": ["parmed"], "acpype": ["acpype"]}.get(s["convert"], [])
+
+    def run_resources(self, s):
+        # mdrun's OpenMP threads times its thread-MPI ranks (-ntmpi among the extra flags; -nt is the
+        # total); without -ntomp mdrun takes every core it finds.  One GPU when the work is offloaded.
+        words = s["extra_mdrun"].split()
+
+        def flag(name: str) -> int:
+            for k, word in enumerate(words[:-1]):
+                if word == name and words[k + 1].isdigit():
+                    return int(words[k + 1])
+            return 0
+
+        cores = flag("-nt") or (s["ntomp"] * (flag("-ntmpi") or 1) if s["ntomp"] else ALL_CORES)
+        return gpu_step(cores, 1, s) if s["gpu"] else Resources(cores)
 
     def describe(self, s):
         return f"GROMACS {s['gmx_version']}: " + " → ".join(self._tags(s))

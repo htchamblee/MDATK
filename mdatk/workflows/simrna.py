@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 from . import rna
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
                    script_header)
+from .budget import Resources
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 
@@ -137,6 +138,9 @@ class SimRNATool(Tool):
 
     def resources(self, s):
         return ["simrna"]
+
+    def run_resources(self, s):
+        return Resources(max(1, min(s["parallel"], s["runs"])))  # xargs -P: one SimRNA run per core
 
     def describe(self, s):
         return f"{s['runs']} runs × {s['replicas']} replicas"

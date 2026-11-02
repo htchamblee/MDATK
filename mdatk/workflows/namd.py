@@ -20,6 +20,7 @@ from .. import PROJECT_ABBREV, __version__
 from . import rna
 from .amber import WATERS, secondary_structure
 from .base import PortValue, Tool, env_section, fortran_float, require_file, script_header, shell_quote
+from .budget import env_gpus, gpu_ids, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -348,6 +349,14 @@ class NamdMDFFTool(Tool):
     def resources(self, s):
         # cpptraj: the script converts NetCDF restarts (pmemd's default) with it
         return ["namd", "mdff", "cpptraj"] + (["ambertools"] if s["energy_check"] else [])
+
+    def run_resources(self, s):
+        # +p cores and one GPU (+devices names it; it counts the GPUs the Environment leaves visible)
+        devices = gpu_ids(s["gpu"])
+        visible = env_gpus(s)
+        if devices and visible and all(d.isdigit() and int(d) < len(visible) for d in devices):
+            devices = tuple(visible[int(d)] for d in devices)
+        return gpu_step(int(s["cores"]), 1, s, devices)
 
     def describe(self, s):
         gs = [g for st in s["stages"] for g in self.stage_scales(st)]

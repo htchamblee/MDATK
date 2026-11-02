@@ -12,6 +12,7 @@ from typing import List
 
 from .. import frames, rosetta
 from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .budget import Resources
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -244,6 +245,9 @@ class FrameCheckTool(Tool):
 
     def describe(self, s):
         return f"fit {s['fit'].strip() or '?'}" + (", reframe" if s["reframe"] else "")
+
+    def run_resources(self, s):
+        return Resources(int(s["jobs"]))  # models read at the same time
 
     def _pattern(self, ctx) -> str:
         return ctx.name("reframed-MODELNUM", "pdb").replace("MODELNUM", "{n}")

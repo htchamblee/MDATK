@@ -318,23 +318,25 @@ seconds is reported in the analysis window.
   (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…* and *About RNAdo* (with the
   citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
-  previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Parallel*, *Open folder*), the
-  naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, the plan folder and *Change…*),
-  the canvas and the details pane of the selected box (see [The plan](#the-plan)).
+  previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Stop scripts*, *Open folder*),
+  the naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, the plan folder and
+  *Change…*, then *CPU cores*, *GPUs* and *At once* for running steps), the canvas and the details pane
+  of the selected box (see [The plan](#the-plan) and [Running steps](#running-steps)).
 - **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
   unfolds it. It shows the planner's messages (files written, previous runs checked, runs used or
   dropped), MDATK's warnings, and every line the scripts print, marked with their step (`[03] …`).
   Standard error is red, lines starting with ERROR (and failed steps) bold red, lines starting with
-  WAITING (and waiting steps) amber. Each step gets a start line, a finished / failed / cancelled line,
-  and a waiting or not-started line when it does not run to the end. *Step* shows the lines of one step
+  WAITING or WARNING (and waiting or stopped steps) amber. Each step gets a start line (with the cores
+  and GPU it got), a finished / failed / cancelled / stopped line, and a waiting or not-started line
+  when it does not run to the end. *Step* shows the lines of one step
   only; *Last run* shows the stored log of the selected box's last run, from the project's step log. The
   other buttons follow new lines (auto-scroll), copy or save the lines shown as text, or clear them.
   Lines are inserted in batches and the panel keeps the last 5 000–6 000 lines; a script that prints
   faster than the panel can show them gets lines skipped, with a note per step of how many, so the
   window stays responsive and *Cancel* reachable. Every run is also recorded in the project file.
 - **Status bar:** the planner's status line (steps, connections, errors, warnings, plan folder), the
-  progress bar and *Cancel*, which stops every running script. Closing RNAdo during a run asks first
-  and stops the scripts.
+  progress bar and *Cancel*, which stops every running script (as *Stop scripts* does). Closing RNAdo
+  during a run asks first and stops the scripts.
 
 ### One project in both programs
 
@@ -762,19 +764,52 @@ shows every file that will be written. On the command line, `mdatk workflow gene
 The plan writes files and scripts; nothing is executed unless you ask for it with *Run all…* /
 *Run selected steps* (planner toolbar), *Run step…* (a box's details) or *Write and run…* (wizard).
 RNAdo then asks for confirmation and runs each step's main script with `bash`. Each step starts once the
-steps it reads from (through the planner's connections) have finished. Otherwise steps go in plan order,
-up to *Parallel* scripts at a time (planner toolbar, saved with the project; default 1).
+steps it reads from (through the planner's connections) have finished and the CPU cores and GPUs it
+uses are free; otherwise steps go in plan order.
 
+- **CPU cores and GPUs** (naming bar, saved with the project): the scripts that run at the same time
+  share two budgets, *CPU cores* (default *auto*: half of this computer's cores) and *GPUs* (default
+  *auto*: the GPUs `nvidia-smi -L` lists, or those in RNAdo's own `CUDA_VISIBLE_DEVICES`). Each box
+  shows what one run of its step uses, e.g. `8c+1g`, and its details say it in words:
+
+  | Step | Uses |
+  |---|---|
+  | Amber MD stages | pmemd.cuda: 1 core and 1 GPU (its *GPU* option names it); pmemd.MPI: its *MPI processes*; pmemd: 1 core |
+  | NAMD MDFF | its *CPU cores* (`+p`) and 1 GPU (`+devices` names it) |
+  | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded |
+  | FARFAR2, SimRNA | their parallel runs (at most the number of runs) |
+  | FARFAR2 models | its parallel extractions when every model is extracted, else 1 core |
+  | Phenix RSR | its processors (`nproc`) |
+  | Register census, frame check | their worker processes |
+  | Custom script | its *Cores and GPUs* section (*CPU cores*, 0: all of them; *GPUs*) |
+  | every other step (Amber build, model check, map-model score with ChimeraX, ...) | 1 core |
+
+  A step that uses a GPU gets a free one in `CUDA_VISIBLE_DEVICES` (the start line in the log says
+  which, and how many cores the step got; the step log records it in the command), unless the step
+  names its own: the Amber MD step's *GPU*, NAMD's `+devices` or `CUDA_VISIBLE_DEVICES` in the step's
+  *Environment* setup commands; it then runs when no other step uses that GPU. A later step that fits
+  may start while an earlier one waits for room, except behind a step that needs every core: that one
+  starts once nothing runs, before the steps after it. A step larger than the whole budget runs alone
+  the same way, with a warning; with no GPU found (and none set), the steps that use a GPU run one at a
+  time, with a warning. *At once* caps the number of scripts (default *no limit*: the budgets decide);
+  projects saved before 0.0.12 keep their earlier *Parallel* value there (1: one script at a time, as
+  before). On the command line: `mdatk workflow run --cores N --gpus N [--parallel N]`.
 - **Output:** every line goes to the [output log panel](#rnados-window), marked with its step, and
   every run is recorded in the project file.
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.
-- **Cancel** (status bar) stops every running script.
+- **Stop scripts** (planner toolbar, red while scripts run; also *Cancel* in the status bar) stops
+  every running script.
+- **Stopping one step:** the small square stop button in the title bar of a running box (or *Stop this
+  step* in its right-click menu, also for a step that has not started) stops only that step's script
+  and the programs it started (its process group). The log says so, the box shows a square, the steps
+  that read from it are not started (`not started (step 03 was stopped)`) and the other scripts carry
+  on. The step log records the run as *stopped*, and the run leaves a note beside the step's files
+  (`<project>_<step>_stopped_<time>.txt`), so *Check previous runs* calls it **partial** until the step
+  runs again (or a file of the run is written after the note).
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
-  bars (waiting for a separately run script, see below) or a dash (cancelled / not started) until the
-  next run.
-- **GPU and cores:** GPU steps that run at the same time share the GPU unless each step's
-  *Environment* section sets `CUDA_VISIBLE_DEVICES`; CPU steps share the cores.
+  bars (waiting for a separately run script, see below), a square (stopped) or a dash (cancelled / not
+  started) until the next run.
 - **Windows:** the generated scripts are bash scripts for Linux; RNAdo on Windows writes them but does
   not run them (*Run* says so), see [Installation](#installation).
 
@@ -1268,6 +1303,10 @@ file for another program.
   type each, *Optional* and *Several connections* for inputs, and a file name for outputs (empty:
   `<project>_<step>_<name>_<time>.<ext>`). Each one becomes a port of the box. An input of type *any
   file* accepts every output; a typed input only outputs of its type, as for other steps.
+- **Cores and GPUs.** What the script uses when RNAdo runs it beside other steps (default 1 core, no
+  GPU; see [Running steps](#running-steps)); a script that asks for GPUs gets free ones in
+  `CUDA_VISIBLE_DEVICES`, unless its *Environment* sets `CUDA_VISIBLE_DEVICES`. The run script does not
+  change.
 - **Environment.** A conda environment and setup lines (`module load …`), as for the other steps.
 
 The step's run script (`<project>_<step>_custom_<time>.sh`, the one *Run* starts) changes into the
@@ -1414,6 +1453,7 @@ mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
 mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
+mdatk workflow run -p plan.mdatk.toml --cores 16 --gpus 2   # within 16 CPU cores and 2 GPUs
 mdatk workflow run -p plan.mdatk.toml --include-separate  # ... and the scripts marked 'run separately'
 mdatk workflow status -p plan.mdatk.toml [--adopt|--forget]  # earlier runs of the steps (see above)
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
@@ -2203,8 +2243,11 @@ mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo instead of the a
 mdatk workflow tools [TOOL]        step types, or the options of one
 mdatk workflow template [NAME] [-p PROJECT]   list templates, or add one to a project's plan
 mdatk workflow check  -p PROJECT   resolve the plan and list its problems
-mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--run [--parallel N] [--include-separate]]
-mdatk workflow run    -p PROJECT [--step N] [--parallel N] [--include-separate]
+mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--run [--parallel N] [--cores N]
+                      [--gpus N] [--include-separate]]
+mdatk workflow run    -p PROJECT [--step N] [--parallel N] [--cores N] [--gpus N] [--include-separate]
+                                   CPU cores (0: half of them) and GPUs (-1: those found) the scripts
+                                   share; --parallel caps the scripts at once (0: no limit)
 mdatk workflow status -p PROJECT [--step N] [--adopt | --forget] [--json]
 mdatk workflow generate TOOL [-o DIR] [--step N] [-i PORT=PATH ...] [-s KEY=VALUE ...] [--dry-run] [--run]
 mdatk workflow generate user-script -i NAME=PATH --set source=file --set script_file=SCRIPT \
@@ -2273,7 +2316,7 @@ density    map_path, show, resolution, level, color, opacity, front, fit_frame, 
            auto_fit, transform, anchor, fit_cc, fit_info (the stored placement, its correlation)
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log, timestamp_files
-workflow   project_name, stamp, use_stamp, out_dir, step_folders, parallel,
+workflow   project_name, stamp, use_stamp, out_dir, step_folders, parallel, cpu_cores, gpus,
            nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
            edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
 ```
@@ -2321,8 +2364,8 @@ mdatk/
                      amber.py (+ mg_params.py), gromacs.py, vmd.py, namd.py (MDFF), buildstep.py,
                      dictstep.py, refine.py (Phenix, Coot), userscript.py (custom scripts), misc.py
                      (notes, existing files, MDATK analysis); plan.py resolves the plan graph and
-                     names files; runner.py runs generated scripts on request; runstate.py finds
-                     earlier runs
+                     names files; runner.py runs generated scripts on request, within the CPU and
+                     GPU budgets of budget.py; runstate.py finds earlier runs
     scripts/         self-contained helper programs embedded in generated workflows: prep_pdb.py,
                      cp_retype.py, tip4p2005.py, lrna_lib.py (generated L-RNA library),
                      lrna_names.py (L names before tleap), topcheck.py (topology check),

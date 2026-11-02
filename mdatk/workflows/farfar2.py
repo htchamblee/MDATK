@@ -18,6 +18,7 @@ from .. import PROJECT_ABBREV, __version__, ensemble, modelcheck, pdbtools
 from . import rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_flags, fortran_float,
                    require_file, script_header, shell_quote)
+from .budget import Resources
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import decoy_validity as _validity
@@ -255,6 +256,9 @@ class FarfarTool(Tool):
 
     def resources(self, s):
         return ["rosetta", "farfar2"]
+
+    def run_resources(self, s):
+        return Resources(max(1, min(s["parallel"], s["runs"])))  # xargs -P: one rna_denovo per core
 
     def describe(self, s):
         model, _ = self.model(s)
@@ -515,6 +519,10 @@ class FarfarModelsTool(Tool):
 
     def resources(self, s):
         return ["rosetta", "farfar2"] + (["dssr"] if s["dssr"] else [])
+
+    def run_resources(self, s):
+        # extract_pdbs runs side by side only when every model is extracted
+        return Resources(s["extract_parallel"] if s["extract_all"] or self.validity_on(s) else 1)
 
     def describe(self, s):
         return (f"rna_cluster {s['radius']:g} Å, " if s["cluster"] else "by score, ") + f"top {s['n_models']}"

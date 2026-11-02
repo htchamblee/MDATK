@@ -126,7 +126,9 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         outer.pack_start(self.paned, True, True, 0)
         outer.pack_start(self._status_bar(), False, False, 0)
         self.jobs = JobControl(self.progress, self.cancel_button, self.append_log,
-                               lambda text, detail: self.error(text, detail))
+                               lambda text, detail: self.error(text, detail),
+                               stop_widgets=[self.planner.stop_button])
+        self._stops = None  # the running run's StepStops (the stop buttons on the planner's boxes)
         self.watch = FileWatch(self, self.check_disk)
         self._install_actions()
         self.connect("delete-event", self._on_delete)
@@ -632,12 +634,13 @@ class RNAdoWindow(Gtk.ApplicationWindow):
 
     # ================================================================ running scripts
     def run_scripts(self, jobs, separate=(), parent: Optional[Gtk.Window] = None, parallel: int = 1,
-                    on_state=None, on_finished=None, with_separate=None) -> bool:
+                    on_state=None, on_finished=None, with_separate=None, budget=None) -> bool:
         """Run generated scripts in the background after a confirmation; their output goes to the log
         panel, each line marked with its step.  ``on_state(job, state)`` and ``on_finished()`` are called on
         the GTK main loop; ``with_separate`` (the jobs including the scripts marked 'run separately') adds
-        the choice to run those too.  False when no run started."""
-        from ..workflows.runner import ScriptFailed, run_jobs, runner_problem
+        the choice to run those too.  At most ``parallel`` scripts at once (0: no limit) within ``budget``
+        (CPU cores and GPUs; None: not counted).  False when no run started."""
+        from ..workflows.runner import ScriptFailed, StepStops, run_jobs, runner_problem
 
         if not jobs:
             self.error("No scripts to run", "None of the selected steps has a script to run here.")
@@ -650,20 +653,22 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         if self.jobs.running:
             self.error("Scripts are still running", "Wait for them to finish, or cancel them first.")
             return False
-        chosen = confirm_run(parent or self, jobs, separate, self.project_path, parallel, with_separate)
+        chosen = confirm_run(parent or self, jobs, separate, self.project_path, parallel, with_separate,
+                             budget)
         if chosen is None:
             return False
         jobs = chosen
         self.show_log()
         panel, project_path, total = self.log, self.project_path, len(jobs)
         done_count = [0]
-        ends = {"ok": "finished", "failed": "failed", "cancelled": "cancelled"}
+        ends = {"ok": "finished", "failed": "failed", "cancelled": "cancelled", "stopped": "stopped"}
+        stops = self._stops = StepStops()
 
         def state_cb(job, state: str) -> None:  # the runner's threads: queued in order with the output
             if state in ends:
                 panel.feed_script(f"==== step {job.step:02d}: {job.title} - {ends[state]} "
                                   f"({os.path.basename(job.path)})")
-            if state in ("ok", "failed", "cancelled", "skipped", "waiting"):
+            if state in ("ok", "failed", "cancelled", "skipped", "waiting", "stopped"):
                 with self._progress_lock:
                     done_count[0] += 1
                     n = done_count[0]
@@ -676,32 +681,53 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                 return run_jobs(jobs, project_path, on_line=panel.feed_script,
                                 on_stderr=lambda line: panel.feed_script(line, stderr=True),
                                 cancel=rep.cancel_event, parallel=parallel, on_state=state_cb,
-                                step_marks=True)
+                                step_marks=True, budget=budget, stops=stops)
             finally:
                 if on_finished is not None:
                     call_soon(on_finished)
 
         def done(results) -> None:
-            counts = {s: sum(1 for r in results if r.status == s) for s in ("ok", "waiting", "skipped")}
+            counts = {s: sum(1 for r in results if r.status == s)
+                      for s in ("ok", "waiting", "skipped", "stopped")}
             self.append_log(f"Run finished: {counts['ok']} script(s) ok, {counts['waiting']} waiting, "
-                            f"{counts['skipped']} not started")
+                            f"{counts['skipped']} not started"
+                            + (f", {counts['stopped']} stopped" if counts["stopped"] else ""))
             waiting = waiting_text(results)
             if waiting:  # not a failure: the user runs those scripts, then the step again
                 self.info("Waiting for separately run scripts", waiting)
                 return
-            self.info("Scripts finished", f"{len(results)} script(s) finished")
+            stopped = (f"; {counts['stopped']} stopped, {counts['skipped']} not started" if counts["stopped"]
+                       else "")
+            self.info("Scripts finished", f"{len(results)} script(s) finished{stopped}")
 
         def failed(exc: BaseException) -> None:
             self.append_log(f"Run stopped: {exc}")
 
         at_once = f", up to {parallel} at a time" if parallel > 1 else ""
+        within = f" with {budget.text()}" if budget is not None and total > 1 else ""
         logged_in = f"; each run is logged in {os.path.basename(project_path)}" if project_path else ""
-        self.append_log(f"Running {total} script(s){at_once}{logged_in}")
+        self.append_log(f"Running {total} script(s){within}{at_once}{logged_in}")
         return self.jobs.start("Running generated scripts", job, done, on_failure=failed,
                                expected=(ScriptFailed,))
 
     def cancel(self) -> None:
         self.jobs.cancel()
+
+    def stop_scripts(self) -> None:
+        """*Stop scripts*: stop every running script, the same as Cancel."""
+        if self.jobs.running:
+            self.append_log("Stopping every running script …")
+            self.jobs.cancel()
+
+    def stop_step(self, node_id: str) -> bool:
+        """The stop button on a running box: stop that step's script only (the others go on)."""
+        if self._stops is None or not self.jobs.running:
+            return False
+        node = next((n for n in self.project.workflow.nodes if n.id == node_id), None)
+        self._stops.stop(node_id)
+        name = f"step {node.step:02d} ({step_title(node)})" if node is not None else "the step"
+        self.append_log(f"Stopping {name}: the steps that depend on it will not start, the others go on")
+        return True
 
     # ================================================================ about
     def show_about(self) -> None:
