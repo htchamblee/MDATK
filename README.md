@@ -796,9 +796,11 @@ on an MDATK analysis box, *Use for analysis…*. *Templates* insert pre-connecte
 helix → Amber build → restraints → MD; model + map → restraint dictionaries → Phenix RSR → Coot RSR;
 model + map → Amber build → NAMD MDFF; and *Decoy validation (FARFAR2)*, the order for a decoy campaign
 against a map: FARFAR2 → models (closure filter before clustering) → model check (clashes) → decoy
-interfaces (segment support) → map-model score (Q-score, interface vs scaffold dQ), with notes on the
-validity filters, the rule "filter on validity before clustering; filter on quality after, when choosing
-representatives" and the kink test still to come). *Write all files* writes every step, a master script
+interfaces (segment support) → map-model score (Q-score, interface vs scaffold dQ) → model check (kinks),
+with notes on the validity filters, the rule "filter on validity before clustering; filter on quality
+after, when choosing representatives" and the kink test (virtual C1′ angle; positions that in-line probing
+shows flexible are allowed); the models step's decoy table, which lists every decoy and not the cluster
+centres the later steps check, goes to none of them). *Write all files* writes every step, a master script
 that runs the steps in order, and a Markdown summary of the plan.
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click

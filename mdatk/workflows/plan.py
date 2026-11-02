@@ -757,12 +757,13 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
             "in-line probing shows flexible (Kinks allowed at, or a reactivity file) so a real kink there is "
             "not rejected.")}),
     ], [
+        # no decoy table for the quality steps: the models step's table lists each decoy by its extracted
+        # file (models/rNN/<tag>.pdb), never the cluster centres model-NN these steps check, so its score
+        # columns would stay empty and score limits would fail every model
         ("fold", "silent", "models", "silent"),
         ("fold", "secstruct", "check", "secstruct"),
         ("models", "models", "check", "models"),
-        ("models", "scores", "check", "scores"),
         ("check", "passed", "interface", "models"),
-        ("models", "scores", "interface", "scores"),
         ("check", "passed", "score", "model"),
         ("map", "file", "score", "map"),
         ("check", "passed", "kinks", "models"),
