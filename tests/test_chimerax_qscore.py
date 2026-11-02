@@ -385,6 +385,110 @@ def test_a_time_limit_fails_the_model(tmp_path, chimerax):
     assert "time limit" in failed[m]
 
 
+def _wrapped_slow_chimerax(tmp_path):
+    """A launcher script (as 'xvfb-run -a chimerax' is) whose 'ChimeraX' writes its pid and sleeps."""
+    slow = write(tmp_path / "bin" / "slow.py", "import os, sys, time\n"
+                 "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+                 "print('INFO:', flush=True)\ntime.sleep(30)\n")
+    pidfile = str(tmp_path / "chimerax.pid")
+    wrapper = write(tmp_path / "bin" / "launcher.sh", f"#!/bin/sh\n'{sys.executable}' '{slow}' '{pidfile}' "
+                                                      "\"$@\"\necho launcher done\n")
+    os.chmod(wrapper, 0o755)
+    return wrapper, pidfile
+
+
+def _ended(pid, wait=5.0):
+    """Whether process ``pid`` has ended (gone, or a zombie waiting to be reaped) within ``wait`` s."""
+    import time
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                if fh.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    return True
+        except FileNotFoundError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads the process table in /proc")
+def test_a_time_limit_ends_chimerax_behind_a_launcher_regression(tmp_path):
+    """regression: the time limit killed only the program MDATK started, so a ChimeraX started by a launcher
+    ('xvfb-run -a chimerax', a script) kept running after its model was marked 'time limit'."""
+    import time
+    wrapper, pidfile = _wrapped_slow_chimerax(tmp_path)
+    m = model_with_q(tmp_path / "in" / "d1.pdb", lambda c, r: 0.4)
+    start = time.monotonic()
+    (_, failed, _w) = mapscore.score_models([m], a_map(tmp_path), "qscore", chimerax=wrapper,
+                                            work_dir=str(tmp_path / "w"), timeout=1)
+    assert "time limit" in failed[m] and time.monotonic() - start < 10
+    assert _ended(int(open(pidfile).read()))
+    assert "stopped after 1 s (time limit)" in open(tmp_path / "w" / "d1_chimerax.log").read()
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="reads the process table in /proc")
+def test_stopping_the_script_ends_chimerax_too(tmp_path):
+    """ChimeraX runs in a process group of its own (for the time limit), so RNAdo's Stop, which terminates
+    the script's group, reaches it through MDATK: MDATK ends ChimeraX's group, then itself by the signal."""
+    import signal
+    import time
+    wrapper, pidfile = _wrapped_slow_chimerax(tmp_path)
+    m = model_with_q(tmp_path / "in" / "d1.pdb", lambda c, r: 0.4)
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); from mdatk import mapscore; "
+            "mapscore.run_chimerax_qscore([sys.argv[2]], sys.argv[3], sys.argv[4], chimerax=sys.argv[5])")
+    proc = subprocess.Popen([sys.executable, "-c", code, ROOT, m, a_map(tmp_path), str(tmp_path / "w"),
+                             wrapper], start_new_session=True)  # as RNAdo's runner starts a script
+    end = time.monotonic() + 20
+    while not (os.path.exists(pidfile) and open(pidfile).read()) and time.monotonic() < end:
+        time.sleep(0.05)
+    child = int(open(pidfile).read())
+    assert os.getpgid(child) != proc.pid  # ChimeraX is not in the script's group ...
+    os.killpg(proc.pid, signal.SIGTERM)  # ... which RNAdo's Stop terminates
+    assert proc.wait(10) == -signal.SIGTERM
+    assert _ended(child)
+
+
+def test_ensemble_regions_leaves_out_tables_chimerax_stopped_inside_regression(tmp_path, capsys):
+    """regression: 'mdatk ensemble regions' ranked the truncated table of a model ChimeraX failed on (the
+    rows before an atom outside the map box), so the failed model could rank first; 'map score' keeps the
+    logs of failed models in its qscore/ folder."""
+    from mdatk.cli import main
+    header, rule = "Chain\tNumber\tName\tQavg\tQworst\tQbb\tQsc", "-" * 55
+
+    def rows(last, inter, scaffold):
+        return "".join(f"A\t{r}\tG\t{inter if r in (3, 4) else scaffold:.3f}\t0\t0\t0\n\n"
+                       for r in range(1, last + 1))
+
+    good = write(tmp_path / "q" / "m1_chimerax.log", f"$ chimerax --nogui --cmd x\n{header}\n{rule}\n"
+                 + rows(10, 0.6, 0.8) + "Overall mean Q-Score: 0.75\n")
+    stopped = (f"{header}\n{rule}\n" + rows(4, 0.6, 0.3) + 'A\t5\tG\t"N/A"\t"N/A"\t"N/A"\t"N/A"\n'
+               "Traceback (most recent call last):\n  ...\nTypeError: cannot unpack non-iterable NoneType\n")
+    bad = write(tmp_path / "q" / "m2_chimerax.log", "WARNING: the following residues in #1 have atoms "
+                "outside the bounds of volume #2 and will be excluded from the Q-score calculation:\n#1/A:5\n"
+                + stopped)
+    rep = str(tmp_path / "rep.txt")
+    assert main(["ensemble", "regions", good, bad, "--region", "loop=A:3-4", "--report", rep]) == 1
+    text = open(rep).read()
+    ranked = [ln.split()[1] for ln in text.splitlines() if ln[:4].strip().isdigit()]
+    assert ranked == ["m1_chimerax.log"]
+    assert "1 table(s) not ranked" in text
+    assert ("m2_chimerax.log: ChimeraX stopped inside its per-residue table (no 'Overall mean Q-Score' line "
+            "after 5 residues)") in text
+    assert "1 table(s) not ranked" in capsys.readouterr().err
+    # a batch log: the table of model 2 stopped, model 1's is ranked under its number
+    batch = write(tmp_path / "q" / "run-001_chimerax.log", "$ chimerax --nogui --cmd x\nMDATK-QSCORE 1\n"
+                  f"{header}\n{rule}\n" + rows(10, 0.5, 0.5) + "Overall mean Q-Score: 0.5\nMDATK-QSCORE 2\n"
+                  + stopped)
+    skipped = []
+    got = mapscore.read_residue_scores(batch, skipped=skipped)
+    assert list(got) == [f"{batch}#1"] and skipped[0].startswith(f"{batch}#2: ChimeraX stopped")
+    with pytest.raises(ensemble.EnsembleError, match="ChimeraX stopped inside"):
+        mapscore.read_residue_scores(bad)
+    assert main(["ensemble", "regions", bad, "--region", "loop=A:3-4"]) == 1
+    assert "no per-residue scores read: " in capsys.readouterr().err
+
+
 # --- the command and the ranking on dQ ---------------------------------------------------------------------
 
 INTERFACE = "interface=A:3-4,B:13-14"  # of the duplexes of _decoys: A 1-8, B 9-16
