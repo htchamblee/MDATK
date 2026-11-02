@@ -19,8 +19,9 @@ Numbering
     reference's numbers; explicit per-chain offsets do the same by hand.  The base each register residue
     has in the reference is checked in every decoy, so a numbering slip cannot pass silently.
 Build condition
-    A register can be an input or an outcome.  The condition of every group of decoys is read from a
-    Rosetta log's command line (``core.init: command:``, ``@flags`` files expanded): the secondary
+    A register can be an input or an outcome.  The condition of every group of decoys is read from the
+    command line of an rna_denovo log (``core.init: command:``, ``@flags`` files expanded; the logs of
+    other programs, such as the extract_pdbs logs beside extracted decoys, are skipped): the secondary
     structure it names (``-secstruct_file`` or ``-secstruct``) and ``-obligate_pair(_explicit)``; failing
     a log, from a ``*.secstruct`` beside the decoys, then from a given secondary structure.  Per register:
     FORCED (every defining pair imposed), UNFORCED (none of its residues paired by the input), PARTIAL;
@@ -852,21 +853,62 @@ def parse_flags(tokens: Sequence[str]) -> Dict[str, List[str]]:
 
 _ROSETTA_COMMAND = re.compile(r"core\.init\S*:\s*command:"
                               r"|command:\s*\S*(?:denovo|rosetta|\.linux|\.mac|\.default)")
+BUILD_PROGRAM = "rna_denovo"  # the program whose logged command line is a build condition
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # Rosetta colours some tracer output
 
 
-def command_line(log_path: str, max_lines: int = 400) -> Optional[str]:
-    """The command line a Rosetta log records ('core.init: command: ...'), from its first lines; other logs
-    that merely contain 'command:' are not taken for a Rosetta run."""
+def _first_start(log_path: str, max_lines: int = 400) -> Optional[Tuple[str, str]]:
+    """(command line, seed line) of the first rna_denovo run a Rosetta log records ('core.init: command:
+    ...'), from its first lines; the seed line is the 'seed mode' line Rosetta logs after it ('' when absent).
+    The command lines of other Rosetta programs are not a build's (MDATK's FARFAR2 step logs its extract_pdbs
+    runs as models/extract-rNN.log beside the decoys), and other logs that merely contain 'command:' are not
+    taken for a Rosetta run."""
+    from .rosetta import _SEED_LINE
+    cmd: Optional[str] = None
     try:
         with open(log_path, encoding="utf-8", errors="replace") as fh:
-            for k, line in enumerate(fh):
+            for k, raw in enumerate(fh):
+                line = _ANSI.sub("", raw)
+                if cmd is not None:  # the seed line follows the command line within a few lines
+                    if _SEED_LINE.search(line):
+                        return cmd, line.strip()
+                    if "command:" in line or k >= max_lines + 100:
+                        break
+                    continue
                 if k >= max_lines:
                     break
                 if _ROSETTA_COMMAND.search(line):
-                    return line[line.find("command:") + len("command:"):].strip()
+                    text = line[line.find("command:") + len("command:"):].strip()
+                    head = text.split()
+                    if head and BUILD_PROGRAM in os.path.basename(head[0]):
+                        cmd = text
     except OSError:
         return None
-    return None
+    return (cmd, "") if cmd is not None else None
+
+
+_STARTS: Dict[Tuple[str, int, int], Optional[Tuple[str, str]]] = {}  # (path, size, mtime) -> first start
+
+
+def _start_of(log_path: str) -> Optional[Tuple[str, str]]:
+    """:func:`_first_start`, read once per version of the file (each group of a census searches the same
+    folders)."""
+    try:
+        st = os.stat(log_path)
+    except OSError:
+        return None
+    key = (os.path.abspath(log_path), st.st_size, st.st_mtime_ns)
+    if key not in _STARTS:
+        if len(_STARTS) > 100_000:
+            _STARTS.clear()
+        _STARTS[key] = _first_start(log_path)
+    return _STARTS[key]
+
+
+def command_line(log_path: str, max_lines: int = 400) -> Optional[str]:
+    """The command line of the first rna_denovo run a Rosetta log records (see :func:`_first_start`)."""
+    start = _first_start(log_path, max_lines)
+    return start[0] if start else None
 
 
 def _numbering(fasta: Optional[str], reference: Optional[Reference]) -> Optional[Reference]:
@@ -1034,14 +1076,31 @@ def _input_residues(values: Sequence[str], numbering: Optional[Reference], lengt
     return out
 
 
-def _logs(dirs: Sequence[str], limit: int = 60) -> List[str]:
+def _logs(dirs: Sequence[str]) -> List[str]:
+    """Every file in ``dirs`` that may be a Rosetta log (log_*.txt, *.log), in order."""
     out: List[str] = []
+    seen: set = set()
     for d in dirs:
         for pat in ("log_*.txt", "*.log"):
             for f in sorted(glob.glob(os.path.join(glob.escape(d), pat))):
-                if f not in out:
+                if f not in seen:
+                    seen.add(f)
                     out.append(f)
-    return out[:limit]
+    return out
+
+
+def _build_logs(dirs: Sequence[str], limit: int = 60) -> List[Tuple[str, str, str]]:
+    """(log, command line, seed line) of the first ``limit`` logs of rna_denovo runs in ``dirs``.  The limit
+    counts these only, so the logs of other programs (an extract log per run beside the decoys) can neither
+    stand in for a build nor crowd the builds' logs out."""
+    out: List[Tuple[str, str, str]] = []
+    for log in _logs(dirs):
+        start = _start_of(log)
+        if start is not None:
+            out.append((log, start[0], start[1]))
+            if len(out) >= limit:
+                break
+    return out
 
 
 def _run_dirs(d: str, limit: int = 40) -> List[str]:
@@ -1059,10 +1118,7 @@ def detect_condition(group_dir: str, decoy_dirs: Sequence[str], registers: Seque
     search = list(dict.fromkeys(near + list(log_dirs)))
     found: Dict[Tuple, Tuple[Dict[str, str], str]] = {}
     unplaced = []
-    for log in _logs(search):
-        cmd = command_line(log)
-        if not cmd:
-            continue
+    for log, cmd, _seed in _build_logs(search):
         ld = os.path.dirname(log)
         bases = [ld, *_run_dirs(ld), *near, os.getcwd()]
         verdicts, detail = condition_from_command(cmd, bases, registers, reference)
@@ -1207,6 +1263,19 @@ def scan_all(paths: Sequence[str], jobs: int = 1, **kwargs) -> List[Decoy]:
         with ProcessPoolExecutor(jobs, mp_context=ctx) as ex:
             return list(ex.map(_scan_job, ((p, kwargs) for p in paths), chunksize=16))
     return [scan_decoy(p, **kwargs) for p in paths]
+
+
+def _unique_files(paths: Sequence[str]) -> List[str]:
+    """``paths`` without repeats of one file under another spelling (a decoy given as a relative path and
+    listed by the decoy table as an absolute one), each kept as first given."""
+    seen: set = set()
+    out = []
+    for p in paths:
+        key = os.path.realpath(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
 
 
 def expand_models(items: Sequence[str], recursive: bool = False, exclude: Sequence[str] = ()) -> List[str]:
@@ -1787,31 +1856,51 @@ def matched_runs(a: Arm, b: Arm) -> str:
             f"{' ...' if len(keep) > 12 else ''}); {lost} decoys of other runs or without a run left out")
 
 
-def run_seeds(log_dirs: Sequence[str]) -> Dict[str, str]:
-    """Run id -> random seed (-run:jran / -jran) from the command lines of the Rosetta logs in folders."""
-    out: Dict[str, str] = {}
-    for log in _logs(log_dirs, limit=10000):
+def run_seeds(log_dirs: Sequence[str]) -> Dict[str, Any]:
+    """Run id -> the random seed of its rna_denovo run (:class:`mdatk.rosetta.Seed`, as the run audit reads
+    it) from the logs in folders: the seed line Rosetta logs after the command line (its real_seed includes
+    -seed_offset), else -constant_seed, -jran and -seed_offset of the command line and its @flags files.
+    Without -constant_seed Rosetta ignores -jran and seeds from the RNG device (or the time)."""
+    from . import rosetta
+    out: Dict[str, Any] = {}
+    for log, cmd, seed_line in _build_logs(log_dirs, limit=10000):
         rid = run_id(os.path.basename(log))
-        cmd = command_line(log)
-        if not cmd or not rid:
+        if not rid:
             continue
-        m = re.search(r"(?:^|\s)-(?:[\w:]*:)?jran[\s=]+(-?\d+)", cmd)
-        if m:
-            out[rid] = m.group(1)
+        ld = os.path.dirname(log)
+        parsed = rosetta.parse_command(cmd, [ld, *_run_dirs(ld), os.getcwd()])
+        seed = rosetta.seed_of(parsed, seed_line)
+        if not seed_line and "[unread flags file]" in parsed.values:  # -constant_seed may be in it
+            seed = rosetta.Seed(None, None, seed.jran, "flags")
+        out[rid] = seed
     return out
 
 
 def seed_note(a_dirs: Sequence[str], b_dirs: Sequence[str], runs: Iterable[str]) -> str:
+    """Which matched runs used the same random seed in both arms: only runs seeded with -constant_seed in
+    both, to the same seed, share it."""
     sa, sb = run_seeds(a_dirs), run_seeds(b_dirs)
     runs = sorted(set(runs))
-    same = [r for r in runs if r in sa and r in sb and sa[r] == sb[r]]
-    differ = [r for r in runs if r in sa and r in sb and sa[r] != sb[r]]
-    unknown = [r for r in runs if r not in sa or r not in sb]
+    found = [r for r in runs if r in sa and r in sb]
+    random = [r for r in found if sa[r].constant is False or sb[r].constant is False]
+    unread = [r for r in found if r not in random and (sa[r].value is None or sb[r].value is None)]
+    same = [r for r in found if r not in random and r not in unread and sa[r].value == sb[r].value]
+    differ = [r for r in found if r not in random and r not in unread and r not in same]
+    missing = [r for r in runs if r not in found]
+
+    def which(rs: Sequence[str]) -> str:
+        return ", ".join(rs[:6]) + (" ..." if len(rs) > 6 else "")
+
     out = f"seeds: {len(same)} runs share their seed"
     if differ:
-        out += f", {len(differ)} do NOT ({', '.join(differ[:6])})"
-    if unknown:
-        out += f", {len(unknown)} not found in the logs"
+        out += f", {len(differ)} do NOT ({which(differ)})"
+    if random:
+        out += (f", {len(random)} have a random seed (no -constant_seed, so -jran is ignored): not matched "
+                f"({which(random)})")
+    if unread:
+        out += f", {len(unread)} with a seed that could not be read ({which(unread)})"
+    if missing:
+        out += f", {len(missing)} not found in the logs"
     return out
 
 
@@ -1969,7 +2058,7 @@ def run(args) -> int:
         regs = [parse_register(t, f"register{k + 1}") for k, t in enumerate(args.register)]
         models = expand_models(args.models, args.recursive, args.exclude)
         if args.models_from_scores and scores:
-            models = list(dict.fromkeys(models + [p for p in scores.models() if os.path.isfile(p)]))
+            models = _unique_files(models + [p for p in scores.models() if os.path.isfile(p)])
         if not models:
             raise EnsembleError("no decoy PDB files found" + ("" if args.recursive else " (try -r)"))
         res = census(models, regs, scores=scores, reference=reference, offsets=offsets,
@@ -2017,7 +2106,12 @@ def run(args) -> int:
                                 cut=args.pair_cut))
     note = None
     if args.matched_runs:
+        if not any(d.run for arm in arms for d in arm.decoys):
+            raise EnsembleError("--matched-runs needs the run of every decoy: give the decoy table "
+                                "(--scores) whose 'run' column names it")
         note = matched_runs(arms[0], arms[1])
+        if not arms[0].decoys or not arms[1].decoys:
+            raise EnsembleError(f"--matched-runs: no run is in both arms ({note})")
         if args.log_dir_a and args.log_dir_b:
             note += "; " + seed_note(args.log_dir_a, args.log_dir_b, {d.run for d in arms[0].decoys})
         else:

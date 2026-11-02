@@ -32,6 +32,7 @@ from .schema import GeneratedFile, Issue, Option, Port, Section
 _PYTHON = Option("python", "Python", "text", "python3", "Interpreter that can import MDATK (with NumPy and "
                  "SciPy). From the standalone AppImage the script calls that program itself instead.")
 _IMPORTABLE = "MDATK must be importable by the Python below (installed, or its folder on PYTHONPATH)."
+QSCORE_WORK = "qscore"  # ChimeraX's logs of a Q-score run, in the step folder
 
 
 def _env(placeholder: str = "conda activate mdatk") -> Section:
@@ -121,8 +122,15 @@ def _plan_reference(ctx: StepContext, *ports: str) -> Optional[ensemble.Referenc
 
 
 def _reference_file(s: Dict[str, Any], ctx: StepContext, files: List[GeneratedFile], *ports: str) -> str:
-    """Without a typed or connected reference, the plan's sequence written as FASTA beside the script."""
-    if s["reference"].strip() or ctx.has("fasta"):
+    """The reference written as FASTA beside the script: a typed FASTA as it was typed (its lines are its
+    records, which one shell word would run together), or without a typed or connected reference the plan's
+    sequence."""
+    typed = s["reference"].strip()
+    if typed.startswith(">"):
+        name = ctx.name("reference", "fasta")
+        files.append(GeneratedFile(name, typed + "\n", "input", "reference sequence (typed as FASTA)"))
+        return name
+    if typed or ctx.has("fasta"):
         return ""
     ref = _plan_reference(ctx, *ports)
     if ref is None:
@@ -136,12 +144,12 @@ def _reference_file(s: Dict[str, Any], ctx: StepContext, files: List[GeneratedFi
 def _numbering_words(s: Dict[str, Any], ctx: StepContext, ref_file: str) -> List[str]:
     q = shell_quote
     words: List[str] = []
-    if s["reference"].strip():
+    if ref_file:  # a typed FASTA, or the plan's sequence
+        words += ["--fasta", q(ref_file)]
+    elif s["reference"].strip():
         words += ["--reference", q(" ".join(s["reference"].split()))]
     elif ctx.has("fasta"):
         words += ["--fasta", q(ctx.inp("fasta"))]
-    elif ref_file:
-        words += ["--fasta", q(ref_file)]
     if s["offsets"].strip():
         words += [f"--offset={q(s['offsets'].replace(' ', ''))}"]
     return words
@@ -324,8 +332,8 @@ class RegisterCensusTool(Tool):
         for d in _paths(s["log_dirs"]):
             words += ["--log-dir", q(_rel_dir(d, ctx))]
         words += ["--group-depth", str(s["group_depth"])]
-        if s["pair_suffix"].strip():
-            words += ["--pair-suffix", q(s["pair_suffix"].strip())]
+        if s["pair_suffix"].strip():  # '=': a suffix may start with '-'
+            words.append(f"--pair-suffix={q(s['pair_suffix'].strip())}")
         words += ["--cut", f"{s['cut']:g}", "--near", f"{s['near']:g}",
                   "--near-c1", f"{s['near_c1_min']:g}-{s['near_c1_max']:g}"]
         if s["chirality"]:
@@ -483,6 +491,9 @@ class EnsembleCompareTool(Tool):
                                       "closure by O3'-P", ("closure", "input:scores")))
         if s["closure"] == "term" and not s["term"].strip():
             out.append(Issue("error", "name the score term", ("term",)))
+        if s["mode"] == "pilot" and s["matched_runs"] and not ctx.has("scores"):
+            out.append(Issue("error", "matched runs need the decoy table (its 'run' column names each "
+                                      "decoy's run): connect it", ("matched_runs", "input:scores")))
         for key in ("calibration", "regions_a", "regions_b"):
             _check_ranges(s[key], key, ctx, out)
         if ctx.has("map"):
@@ -624,7 +635,7 @@ def _score_words(s: Dict[str, Any]) -> List[str]:
             words += ["--qscore-options", q(" ".join(s["qscore_options"].split()))]
         if s["batch"] > 1:
             words += ["--batch", str(s["batch"])]
-        words += ["--work", "qscore"]
+        words += ["--work", QSCORE_WORK]
         if s["timeout"] is not None:
             words += ["--timeout", f"{s['timeout']:g}"]
     else:
@@ -653,6 +664,12 @@ def _score_notes(s: Dict[str, Any]) -> List[str]:
         notes.append("Q-score: ChimeraX's qscore command (QScore bundle of the ChimeraX Toolshed); "
                      "Pintilie et al., Nat. Methods 17, 328-334 (2020), doi:10.1038/s41592-020-0731-1")
     return notes
+
+
+def _score_folders(s: Dict[str, Any], ctx: StepContext) -> List[str]:
+    """The work folder of a Q-score run (``--work qscore``: ChimeraX's log of every model), which moves with
+    the run when it is superseded, so its report's log references stay true."""
+    return [ctx.from_own(QSCORE_WORK)] if s.get("method") == "qscore" else []
 
 
 def _score_resources(s: Dict[str, Any]) -> List[str]:
@@ -695,6 +712,9 @@ class MapModelScoreTool(Tool):
         ]),
         _env(),
     ]
+
+    def run_folders(self, s, ctx):
+        return _score_folders(s, ctx)
 
     def describe(self, s):
         return ("Q-score (ChimeraX)" if s["method"] == "qscore" else "per-residue CC") + (
@@ -801,6 +821,9 @@ class BodyHybridsTool(Tool):
             ports += [Port("scores", "Hybrid scores", ("table",)),
                       Port("effects", "Body main effects", ("table",))]
         return ports
+
+    def run_folders(self, s, ctx):
+        return _score_folders(s, ctx)
 
     def describe(self, s):
         n = len(s["bodies"])

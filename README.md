@@ -2215,8 +2215,10 @@ formed and approached each register (and every combination), the pairs per decoy
 scores of the decoys forming exactly one register (Mann-Whitney between registers) and, optionally, the
 L-handed riboses per decoy. A group is a folder (or the folder `--group-depth` levels up); in the planner
 each connection of decoys from another step is its own group. Its **build condition** is read, per
-register, from a Rosetta log beside the decoys or in the given log folders (`core.init: command:`, with
-`@flags` files expanded, relative paths tried from the log's folder and the run folders below it): the
+register, from the log of an rna_denovo run beside the decoys or in the given log folders (`core.init:
+command:`; the logs of other programs, such as the `extract_pdbs` logs beside extracted decoys, are not a
+build's), with `@flags` files expanded, relative paths tried from the log's folder and the run folders below
+it: the
 secondary structure it names (`-secstruct_file`, `-secstruct`; none given: all unpaired) and
 `-obligate_pair(_explicit)`; failing a log, from a `*.secstruct` beside the decoys, then from a connected
 secondary structure. FORCED: every defining pair is imposed; UNFORCED: none of the register's residues is
@@ -2246,7 +2248,10 @@ per decoy: closure, all defining pairs formed, both, and the share of interface 
 - *Modes*: `compare` (the headline rates, best closed scores, median occupancy), `sweep` (also over a range
   of closure cuts - a sensitivity display; its p-values are not corrected for the number of cuts) and
   `pilot` (two runs of one register: common contour, Wilson intervals, optionally only the runs both arms
-  have, with their seeds compared when log folders are given).
+  have, by the decoy table's `run` column, with their seeds compared when log folders are given). Seeds are
+  read as the run audit reads them (the seed Rosetta logs, `-seed_offset` included, else `-constant_seed`
+  with `-jran`): a run shares its seed only when both arms ran it with `-constant_seed` and the same seed;
+  without `-constant_seed` Rosetta ignores `-jran`, and the run is reported as random, not matched.
 
 The report gives numbers only; deciding what they mean (e.g. whether to regenerate an ensemble) is left to
 you.
@@ -2280,7 +2285,10 @@ by name; extra columns are ignored, comma-separated files are read too.
   `Overall mean Q-Score` line closes the table and is reported per model (a mean over atoms, termini
   included). The per-residue output has all four Q columns plus `score`, the one the regions use: Qavg by
   default, or Qbb (backbone) / Qsc (side chain, i.e. the base) as ChimeraX classifies the atoms. ChimeraX's
-  log of every run stays in the step's `qscore/` folder. A model ChimeraX cannot score is listed in the
+  log of every run stays in the step's `qscore/` folder, which moves with a completed run when the step is
+  written again (see [Previous runs](#previous-runs)). ChimeraX runs in a process group of its own: the time
+  limit per model (`--timeout`) ends it whole, a launcher such as `xvfb-run -a chimerax` with the ChimeraX it
+  started, and so does stopping MDATK (RNAdo's *Stop*). A model ChimeraX cannot score is listed in the
   report (with the reason and its log) and not ranked; the others are written and the command ends with
   status 1. Known limit of ChimeraX-QScore 1.2: a residue with an atom outside the map box makes its
   per-residue table stop there, so such a model fails with "atoms outside the map box".
@@ -2299,7 +2307,9 @@ sharpening, where a whole-model mean mostly measures the shared scaffold. The re
 mean of each region, its `dQ:NAME`, the reference and the whole model, then the spread of each over the
 models. Outputs: the per-residue table, the region table (`delta` per region) and the ranking report.
 `mdatk ensemble regions TABLE…` ranks per-residue tables written elsewhere (also ChimeraX logs with qscore
-tables, one model per table, qscore's CSV and headless `chain,resnum,base,Q` CSV files).
+tables, one model per table, qscore's CSV and headless `chain,resnum,base,Q` CSV files). A table of a
+ChimeraX log without its `Overall mean Q-Score` line is one ChimeraX stopped inside (a model that failed):
+it is listed as not ranked, and the command then ends with status 1.
 
 **Body hybrids** (`body-hybrids`, `mdatk pdb hybrids`). Up to six bodies (name and ranges, a body may span
 chains) of an old and a re-fitted model; every one of the 2^k combinations is written, over the residues and

@@ -42,8 +42,10 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -366,10 +368,71 @@ def _failure(text: str, code: Optional[int]) -> str:
     return f"ChimeraX ended with status {code}" + (f": {tail}" if tail else "")
 
 
-def _decoded(data: Any) -> str:
-    if data is None:
-        return ""
-    return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+def _end_group(proc: "subprocess.Popen", grace: float = 5.0) -> None:
+    """Terminate the process group that ``proc`` leads (a wrapper such as 'xvfb-run -a chimerax' with the
+    ChimeraX it started): SIGTERM, then, once ``proc`` has ended or after ``grace`` seconds, SIGKILL to what
+    is left of the group."""
+    if os.name != "posix":
+        if proc.poll() is None:
+            proc.kill()
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except OSError:  # the group is gone
+            return
+        if sig == signal.SIGTERM:
+            try:
+                proc.wait(grace)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+class _Stopped(BaseException):
+    """MDATK was told to stop (SIGTERM, SIGHUP) while ChimeraX ran."""
+
+
+def _run_chimerax(argv: List[str], cwd: str, limit: Optional[float]) -> Tuple[str, str, Optional[int]]:
+    """Run ChimeraX: (standard output, standard error, exit status; None when stopped at the time limit).
+
+    ChimeraX runs in a process group of its own, which the time limit ends whole: killing only the program
+    MDATK started would leave ChimeraX running behind a wrapper ('xvfb-run -a chimerax', a launcher script).
+    The script's group, which RNAdo's Stop terminates, no longer holds ChimeraX, so while it runs a SIGTERM
+    or SIGHUP to MDATK (and Ctrl-C) ends ChimeraX's group too before MDATK ends."""
+    posix = os.name == "posix"
+    proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, text=True, errors="replace", start_new_session=posix)
+    caught: List[int] = []
+
+    def stop(signum, _frame):
+        if not caught:  # a second signal must not cut the clean-up short
+            caught.append(signum)
+            raise _Stopped(signum)
+
+    handlers = {}
+    if posix and threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) == signal.SIG_DFL:  # one that would end MDATK (not an ignored SIGHUP)
+                handlers[sig] = signal.signal(sig, stop)
+    try:
+        try:
+            out, err = proc.communicate(timeout=limit)
+            return out or "", err or "", proc.returncode
+        except subprocess.TimeoutExpired:
+            _end_group(proc)
+            try:
+                out, err = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:  # a program that left the group still holds the output
+                out, err = "", "(the output was not read: a program ChimeraX started still holds it)"
+            return out or "", err or "", None
+    finally:
+        if proc.returncode is None:  # stopped while ChimeraX ran (a signal, Ctrl-C)
+            _end_group(proc)
+            proc.wait()
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        if caught:  # end as the signal would have ended MDATK, now that ChimeraX has gone
+            os.kill(os.getpid(), caught[0])
 
 
 def run_chimerax_qscore(models: Sequence[str], map_path: str, work_dir: str, chimerax: str = CHIMERAX,
@@ -416,15 +479,12 @@ def run_chimerax_qscore(models: Sequence[str], map_path: str, work_dir: str, chi
         argv = argv0 + ["--nogui", "--cmd", cmd]
         limit = None if timeout is None else timeout * len(chunk)
         try:
-            proc = subprocess.run(argv, cwd=work_dir, capture_output=True, text=True, timeout=limit,
-                                  stdin=subprocess.DEVNULL)
-            out, err, code = proc.stdout or "", proc.stderr or "", proc.returncode
+            out, err, code = _run_chimerax(argv, work_dir, limit)
         except FileNotFoundError:
             raise EnsembleError(f"ChimeraX not found: {argv0[0]} (give the chimerax program, e.g. "
                                 "/usr/bin/chimerax or /opt/UCSF/ChimeraX/bin/ChimeraX)") from None
-        except subprocess.TimeoutExpired as exc:
-            out = _decoded(exc.stdout)
-            err, code = _decoded(exc.stderr) + f"\nstopped after {limit:g} s (time limit)", None
+        if code is None:
+            err += f"\nstopped after {limit:g} s (time limit)"
         with open(log_path, "w", encoding="utf-8") as fh:
             fh.write(f"$ {shlex.join(argv)}\n{out}\n{err}")
         both = out + "\n" + err
@@ -746,19 +806,49 @@ def regions_report(rows: List[Dict[str, Any]], order: Sequence[str], regions: Se
     return "\n".join(out) + "\n"
 
 
-def read_residue_scores(path: str, column: str = "") -> Dict[str, ResidueScores]:
+_CHIMERAX_OUTPUT = re.compile(r"UCSF ChimeraX|Traceback \(most recent call last\)|outside the bounds of "
+                              r"volume|^(?:INFO|WARNING|ERROR):", re.M)
+
+
+def _is_chimerax_log(text: str, tables: Sequence[QTable]) -> bool:
+    """Whether qscore tables come from a ChimeraX log, where a table without its 'Overall mean Q-Score' line
+    is one ChimeraX stopped inside (not qscore's CSV outputFile, which has no such line)."""
+    return (any(t.complete for t in tables) or text.startswith("$ ") or QSCORE_MARKER in text
+            or bool(_CHIMERAX_OUTPUT.search(text)))
+
+
+def read_residue_scores(path: str, column: str = "", skipped: Optional[List[str]] = None
+                        ) -> Dict[str, ResidueScores]:
     """Per-residue tables: MDATK's (model, chain, resseq, ...), a ChimeraX log with qscore tables (one model
     per table: ``path#1``, ``path#2`` ... when it has several) or qscore's CSV, or headed / headless CSV with
     the columns chain, residue number, base, Q (as written per decoy by Q-score scripts).  Keys are
-    chain-qualified."""
+    chain-qualified.
+
+    A table of a ChimeraX log without its 'Overall mean Q-Score' line is one ChimeraX stopped inside (the
+    log of a model that failed, which ``mdatk map score`` keeps too): it holds the residues printed before
+    the failure only, so it is not read: why goes into ``skipped`` (without that list: EnsembleError)."""
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     q_tables = [t for t in parse_chimerax_qscore(text) if t.rows]
     if q_tables:
         q_column = (column or "qavg").lower()
         named = len(q_tables) > 1
-        return {(f"{path}#{k}" if named else path): qscore_residues(t, None, q_column)[0]
-                for k, t in enumerate(q_tables, 1)}
+        tables: Dict[str, ResidueScores] = {}
+        stopped = []
+        log = _is_chimerax_log(text, q_tables)
+        for k, t in enumerate(q_tables, 1):
+            name = f"{path}#{k}" if named else path
+            if log and not t.complete:
+                stopped.append(f"{name}: ChimeraX stopped inside its per-residue table (no 'Overall mean "
+                               f"Q-Score' line after {len(t.rows)} residues), e.g. at atoms outside the map "
+                               "box: not ranked")
+            else:
+                tables[name] = qscore_residues(t, None, q_column)[0]
+        if stopped and skipped is None:
+            raise EnsembleError("; ".join(stopped))
+        if skipped is not None:
+            skipped += stopped
+        return tables
     got = parse_score_table(text, column)
     if got:
         return {(m or path): s for m, s in got.items()}
@@ -1089,6 +1179,10 @@ def run_score(args) -> int:
     beside = args.output or args.regions_out or args.report or "x"  # x: the current folder
     work = args.work or os.path.join(os.path.dirname(os.path.abspath(beside)), "qscore")
     scored, failed, notes = _scored(args, args.models, work)
+    if not scored and not failed:  # nothing was tried: each input is an empty slot of a model check
+        raise EnsembleError("no model to score" + (": every input is an empty slot of a model check ("
+                                                   + "; ".join(notes[:5]) + (" ..." if len(notes) > 5 else "")
+                                                   + ")" if notes else ""))
     if not scored:
         raise EnsembleError("no model was scored: " + "; ".join(f"{os.path.basename(m)}: {why}"
                                                                for m, why in list(failed.items())[:5]))
@@ -1128,19 +1222,25 @@ def run_regions(args) -> int:
     """'mdatk ensemble regions': rank models from per-residue tables written elsewhere."""
     groups = _groups(args)
     regions, reference, sort = _region_setup(args, groups)
-    reg_rows = []
+    reg_rows: List[Dict[str, Any]] = []
+    skipped: List[str] = []  # tables ChimeraX stopped inside: their models failed
     for path in args.tables:
-        for model, scores in read_residue_scores(path, args.column).items():
+        for model, scores in read_residue_scores(path, args.column, skipped).items():
             reg_rows += region_rows(model, scores, regions, reference, key_termini(list(scores)),
                                     args.keep_termini)
     if not reg_rows:
-        raise EnsembleError("no per-residue scores read")
+        raise EnsembleError("no per-residue scores read" + (": " + "; ".join(skipped[:5]) if skipped else ""))
     order = rank_models(reg_rows, sort)
     if args.output:
         write_table(args.output, REGION_COLUMNS, [[_cell(r[c]) for c in REGION_COLUMNS] for r in reg_rows])
     what = "per-residue tables; termini from each chain's lowest and highest number"
-    _emit(regions_report(reg_rows, order, regions, reference, args.keep_termini, sort, what), args.report)
-    return 0
+    text = regions_report(reg_rows, order, regions, reference, args.keep_termini, sort, what)
+    if skipped:
+        text += f"\n{len(skipped)} table(s) not ranked:\n" + "".join(f"  {why}\n" for why in skipped)
+    _emit(text, args.report)
+    if skipped and args.report:
+        sys.stderr.write(f"mdatk ensemble regions: {len(skipped)} table(s) not ranked; see {args.report}\n")
+    return 1 if skipped else 0
 
 
 def run_hybrids(args) -> int:
