@@ -2579,9 +2579,18 @@ class MDATKApplication(Gtk.Application):
                 except (OSError, ValueError) as exc:
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = MainWindow(self, project, path)
-            logging.getLogger("mdatk").addHandler(GuiLogHandler(self.window))
+            handler = GuiLogHandler(self.window)
+            logging.getLogger("mdatk").addHandler(handler)
+            self.window.connect("destroy", self._on_window_destroy, handler)
         self.window.show_all()
         self.window.present()
+
+    def _on_window_destroy(self, _window: MainWindow, handler: logging.Handler) -> None:
+        logging.getLogger("mdatk").removeHandler(handler)
+        # The program ends with its window: another window attached to the application (a dialog or file
+        # chooser left hidden, a forgotten tool window) would otherwise keep run() and the process going
+        # with nothing on screen
+        self.quit()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

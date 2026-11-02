@@ -177,10 +177,14 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[threading.Event] = N
     bash = shutil.which("bash")
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
-    # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build)
+    # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
+    # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive
+    # pipe or its fd 1023 on the mount, which would keep the AppImage mounted for as long as the script (or
+    # a program it leaves running) lives; see mdatk.gui.launch.launch_rnado
     proc = subprocess.Popen([bash, path], cwd=os.path.dirname(path) or ".", stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE if on_stderr is not None else subprocess.STDOUT,
-                            text=True, errors="replace", bufsize=1, start_new_session=True, env=child_env())
+                            text=True, errors="replace", bufsize=1, start_new_session=True, env=child_env(),
+                            close_fds=True)
     captured: List[str] = []
     lock = threading.Lock()  # the two streams' readers both capture
     broken: List[BaseException] = []  # an error in on_stderr: re-raised like one of on_line

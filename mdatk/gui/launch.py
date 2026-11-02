@@ -114,8 +114,14 @@ def launch_rnado(project_path: Optional[str], tool: Optional[str] = None) -> sub
         env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
         env["NO_CLEANUP"] = "1"
     kwargs = {"start_new_session": True} if os.name != "nt" else {}
+    # close_fds (the default on POSIX, stated because it matters): RNAdo must inherit no descriptor beyond
+    # 0-2.  The AppImage runtime keeps its FUSE mount, and its own process, alive while any process holds the
+    # read end of its keepalive pipe, which it leaves open to this program without close-on-exec, and it
+    # also leaves an fd 1023 open on the mount: a child holding either would keep this program's mount (and
+    # an "MDATK" process) alive after this program ends.  The other programs MDATK starts close them too
+    # (mdatk.gui.desktop, mdatk.workflows.runner).
     return subprocess.Popen(rnado_command(project_path, tool, mode), env=env, stdin=subprocess.DEVNULL,
-                            **kwargs)
+                            close_fds=True, **kwargs)
 
 
 def _status(code: int) -> str:
