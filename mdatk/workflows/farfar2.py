@@ -9,16 +9,18 @@ run.  Defaults follow a working cryo-EM-guided protocol (50 000 cycles,
 
 from __future__ import annotations
 
+import inspect
 import posixpath
 import re
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from .. import PROJECT_ABBREV, __version__
+from .. import PROJECT_ABBREV, __version__, ensemble, modelcheck, pdbtools
 from . import rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_flags, fortran_float,
                    require_file, script_header, shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
+from .scripts import decoy_validity as _validity
 from .scripts import embed
 from .scripts import silent_scores as _silent_scores
 
@@ -28,6 +30,19 @@ MODELS_DIR = "models"  # farfar2-models: every model of every run, models/<run>/
 
 def _flag_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _module_body(module) -> str:
+    """Source of a module without its docstring and __future__ import, as :func:`embed` copies it."""
+    lines = inspect.getsource(module).splitlines()
+    k = 0
+    if lines and lines[0].startswith('"""'):
+        k = 1
+        if not (lines[0].count('"""') >= 2 and len(lines[0]) > 3):
+            while k < len(lines) and '"""' not in lines[k]:
+                k += 1
+            k += 1
+    return "\n".join(ln for ln in lines[k:] if not ln.startswith("from __future__")).strip("\n")
 
 
 @register
@@ -378,8 +393,11 @@ class FarfarModelsTool(Tool):
                Port("models", "Ranked models (PDB)", ("pdb",), multiple=True),
                Port("scores", "Decoy table (scores)", ("table",),
                     tooltip="One row per model of every run: run, tag, the extracted PDB (plan-relative) and "
-                            "every SCORE term by name. Written with 'Write the decoy table', a filter or "
-                            "'Extract every model'.")]
+                            "every SCORE term by name; with validity filters also their columns and 'valid'. "
+                            "Written with 'Write the decoy table', a filter or 'Extract every model'."),
+               Port("validity", "Validity report", ("text",),
+                    tooltip="With validity filters: the decoys left after each criterion in order, each "
+                            "criterion on every decoy, and the valid decoys of each run.")]
     sections = [
         Section("cluster", "Clustering", [
             Option("cluster", "Cluster with rna_cluster", "bool", True,
@@ -396,22 +414,72 @@ class FarfarModelsTool(Tool):
                    requires={"cluster": True}),
             Option("cluster_extra", "Extra rna_cluster flags", "multiline", "", "", requires={"cluster": True}),
         ]),
-        Section("filter", "Filter", [
-            Option("filter", "Filter models by a score term", "bool", False,
-                   "Keep only the models whose SCORE term (looked up by its column name, never by position) "
-                   "is at most the maximum below. A model without a value is dropped."),
-            Option("filter_term", "Score term", "text", "linear_chainbreak",
-                   "Column name in the silent files' SCORE header, e.g. linear_chainbreak (open chain "
-                   "breaks), elec_dens_fast, atom_pair_constraint or score.", requires={"filter": True}),
-            Option("filter_max", "Maximum", "float", 5.0, "Models with a larger value are dropped.",
-                   minimum=-1e9, maximum=1e9, step=0.5, digits=2, requires={"filter": True}),
-            Option("filter_when", "Apply", "radio", "before",
-                   "Before clustering: only the models that pass are clustered (or ranked), from "
-                   "<project>_<step>_filtered-rNN_<time>.out. After clustering: the ranked cluster centres "
-                   "that fail are skipped.",
-                   choices=[("before", "before clustering"), ("after", "after clustering")],
+        Section("validity", "Validity filters (before clustering)", [
+            Option("valid_hands", "Hands (sugar chirality)", "bool", False,
+                   "Every nucleotide's sugar hand from its geometry (C4', C3', C1') against the counts and / "
+                   "or ranges below; an epimerised or flat sugar fails too."),
+            Option("hands_counts", "Expected counts", "text", "",
+                   "How many D and L sugars every decoy has (empty: not counted).", placeholder="44 D / 29 L",
+                   requires={"valid_hands": True}),
+            Option("hands_l", "Residues expected L", "text", "",
+                   "Chain-qualified ranges ('C' or 'C:*' for the whole chain, '*:45-73' for every chain) or "
+                   "group:NAME.", placeholder="C:*", requires={"valid_hands": True}),
+            Option("hands_d", "Residues expected D", "text", "", "As above.", placeholder="A:*, B:*",
+                   requires={"valid_hands": True}),
+            Option("valid_bases", "Base identity against the sequence", "bool", False,
+                   "Every nucleotide's base (from its atoms) at its chain and number must be the sequence's; "
+                   "missing and extra residues fail."),
+            Option("valid_sequence", "Sequence", "multiline", "",
+                   "Empty: the sequence of the connected FARFAR2 step. Otherwise FASTA with chain:range tags "
+                   "('>apt A:1-16') or 'A: GGGC... B: ...'.", placeholder="A: GGGCACGG\nB: CCGUGCCC",
+                   requires={"valid_bases": True}),
+            Option("valid_closure", "Chain closure", "bool", False,
+                   "A score term by name and / or the O3'-P distance of every link (consecutive nucleotides "
+                   "of a chain)."),
+            Option("closure_mode", "Closure from", "radio", "term", "",
+                   choices=[("term", "a score term"), ("geometry", "O3'-P distances"), ("both", "both")],
+                   requires={"valid_closure": True}),
+            Option("closure_term", "Score term", "text", "linear_chainbreak",
+                   "Column name in the silent files' SCORE header (looked up by name, never by position).",
+                   requires={"valid_closure": True, "closure_mode": ("term", "both")}),
+            Option("closure_max", "Maximum", "float", 5.0,
+                   "A decoy with a larger value (or none) is invalid.", minimum=-1e9, maximum=1e9, step=0.5,
+                   digits=2,
+                   requires={"valid_closure": True, "closure_mode": ("term", "both")}),
+            Option("closure_o3p", "Longest O3'-P", "float", 2.0, "Every O3'(i)-P(i+1) at most this (the bond "
+                   "is 1.6 Å); an unmeasurable link is invalid.", minimum=1.0, maximum=20.0, step=0.1,
+                   digits=2, unit="Å",
+                   requires={"valid_closure": True, "closure_mode": ("geometry", "both")}),
+            Option("valid_pairs", "Required pairs", "bool", False,
+                   "The defining pairs of a register must be formed (Watson-Crick N1/N3 < 3.5 Å) or "
+                   "approached (N1-N3 < 6 Å, C1'-C1' 8-13 Å), as the register census counts them."),
+            Option("register", "Register", "text", "",
+                   "NAME=pairs (the name is optional), numbered as the decoys.",
+                   placeholder="pres=B:22-B:37, B:23-B:36, B:24-B:35", requires={"valid_pairs": True}),
+            Option("pairs_mode", "Each pair", "radio", "formed", "",
+                   choices=[("formed", "formed"), ("approached", "formed or approached")],
+                   requires={"valid_pairs": True}),
+        ], tooltip="What makes a decoy not a model of the construct: judged on every decoy (so every model "
+                   "is extracted), in this order, before clustering. Only the valid decoys are clustered, "
+                   "from <project>_<step>_filtered-rNN_<time>.out, so the cluster populations are those of "
+                   "the valid set."),
+        Section("filter", "Quality filters (after clustering, choosing representatives)", [
+            Option("filter", "Filter the ranked models by score", "bool", False,
+                   "Skip the ranked cluster centres (or ranked models) outside the score limits when the "
+                   "representatives are extracted. Terms are looked up by column name; a model without a "
+                   "value is skipped."),
+            Option("filter_limits", "Score limits", "text", "",
+                   "TERM<=VALUE (also <, >=, >), separated by commas, e.g. elec_dens_fast (map fit), "
+                   "atom_pair_constraint or score.", placeholder="score <= -300, elec_dens_fast <= -40",
                    requires={"filter": True}),
-        ], tooltip="A score cut on the models, e.g. closed chain breaks."),
+            Option("filter_when", "Apply", "radio", "after",
+                   "After clustering: the ranked cluster centres outside the limits are skipped. Before "
+                   "clustering removes decoys by score before the populations are counted, which changes "
+                   "them: use validity filters for that.",
+                   choices=[("after", "after clustering (to the ranked cluster centres)"),
+                            ("before", "before clustering (changes cluster populations)")],
+                   requires={"filter": True}),
+        ], tooltip="Score limits for choosing representatives. None by default."),
         Section("extract", "Extraction", [
             Option("n_models", "Models to extract", "int", 10, "Cluster centres (or best models) written as "
                    "PDB files <project>_<step>_model-01_<time>.pdb ...", minimum=1, maximum=10000),
@@ -422,16 +490,18 @@ class FarfarModelsTool(Tool):
                    "Also write every model as models/<run>/<tag>.pdb (run r01, r02 ... from the silent file "
                    "names). extract_pdbs works in a scratch folder per run, since every run reuses the same "
                    "tags; the earlier models of a run are removed first. The step checks that each run has "
-                   "one PDB per SCORE line and fills the pdb column of the decoy table."),
-            Option("extract_parallel", "Parallel extractions", "int", 1, "Runs extracted at the same time.",
-                   minimum=1, maximum=256, requires={"extract_all": True}),
+                   "one PDB per SCORE line and fills the pdb column of the decoy table. Validity filters "
+                   "extract every model in any case."),
+            Option("extract_parallel", "Parallel extractions", "int", 1, "Runs extracted at the same time "
+                   "when every model is extracted (also for the validity filters).", minimum=1, maximum=256),
         ]),
         Section("scores", "Decoy table", [
             Option("write_scores", "Write the decoy table", "bool", False,
                    "<project>_<step>_scores_<time>.tsv: one row per model of every run with run, tag, the "
                    "extracted PDB (relative to the plan folder; empty when not extracted) and every SCORE "
                    "term by name, and a column audit in the log. Always written with a filter or 'Extract "
-                   "every model'. Steps that take a decoy table read it from the output 'scores'."),
+                   "every model'; with validity filters it also holds their columns and 'valid' (1 / 0). "
+                   "Steps that take a decoy table read it from the output 'scores'."),
         ]),
         Section("dssr", "DSSR", [
             Option("dssr", "Annotate with x3dna-dssr", "bool", True,
@@ -449,11 +519,29 @@ class FarfarModelsTool(Tool):
     def describe(self, s):
         return (f"rna_cluster {s['radius']:g} Å, " if s["cluster"] else "by score, ") + f"top {s['n_models']}"
 
+    def normalise(self, settings, issues=None):
+        # the single score filter of 0.0.12 development builds (filter_term <= filter_max) is a limit now
+        settings = dict(settings or {})
+        term, maximum = settings.pop("filter_term", None), settings.pop("filter_max", None)
+        if "filter_limits" not in settings and (term is not None or maximum is not None):
+            try:
+                settings["filter_limits"] = (f"{str(term or 'linear_chainbreak').strip()} <= "
+                                             f"{float(5.0 if maximum is None else maximum):g}")
+            except (TypeError, ValueError):
+                pass
+        return super().normalise(settings, issues)
+
     @staticmethod
-    def writes_table(s) -> bool:
+    def validity_on(s) -> List[str]:
+        """The validity criteria switched on, in the order they are applied."""
+        return [c for c, key in (("hands", "valid_hands"), ("bases", "valid_bases"),
+                                 ("closure", "valid_closure"), ("pairs", "valid_pairs")) if s[key]]
+
+    @classmethod
+    def writes_table(cls, s) -> bool:
         """The decoy table is written on request, and always with a filter or the extraction of every model
         (it is their record)."""
-        return bool(s["write_scores"] or s["filter"] or s["extract_all"])
+        return bool(s["write_scores"] or s["filter"] or s["extract_all"] or cls.validity_on(s))
 
     def output_values(self, s, ctx):
         models = [ctx.own(f"model-{k:02d}", "pdb") for k in range(1, s["n_models"] + 1)]
@@ -461,13 +549,110 @@ class FarfarModelsTool(Tool):
         out = {"best": PortValue(models[:1], "pdb", data), "models": PortValue(models, "pdb", data)}
         if self.writes_table(s):
             out["scores"] = PortValue([ctx.own("scores", "tsv")], "table", dict(data))
+        if self.validity_on(s):
+            out["validity"] = PortValue([ctx.own("validity", "txt")], "text", dict(data))
         return out
+
+    def validity_settings(self, s, ctx) -> Tuple[Dict[str, Any], List[Issue]]:
+        """The settings of the validity helper (one entry per criterion switched on) and the issues of the
+        options.  Ranges are read with MDATK's PDB tools, the register with mdatk.ensemble.parse_register,
+        the sequence with mdatk.ensemble.parse_reference (or taken from the FARFAR2 step)."""
+        from .modelcheck import expand_groups  # the step module registers a step type: not at import time
+        out: Dict[str, Any] = {}
+        issues: List[Issue] = []
+        if s["valid_hands"]:
+            spec: Dict[str, Any] = {}
+            try:
+                counts = _validity.parse_hand_counts(s["hands_counts"])
+            except ValueError as exc:
+                issues.append(Issue("error", str(exc), ("hands_counts",)))
+                counts = {}
+            if counts:
+                spec["counts"] = counts
+            for key, name in (("hands_l", "expect_l"), ("hands_d", "expect_d")):
+                if not s[key].strip():
+                    continue
+                try:
+                    text = _validity.whole_chains(expand_groups(s[key], ctx.groups))
+                    pdbtools.parse_ranges(text)
+                    spec[name] = text
+                except KeyError as exc:
+                    issues.append(Issue("error", f"no residue group {exc.args[0]!r}", (key,)))
+                except (ValueError, pdbtools.PDBError) as exc:
+                    issues.append(Issue("error", str(exc), (key,)))
+            if not s["hands_counts"].strip() and not s["hands_l"].strip() and not s["hands_d"].strip():
+                issues.append(Issue("error", "the hands filter needs the expected counts (e.g. 44 D / 29 L) "
+                                             "or the residues expected L or D",
+                                    ("hands_counts", "hands_l", "hands_d")))
+            out["hands"] = spec
+        if s["valid_bases"]:
+            ref = None
+            try:
+                if s["valid_sequence"].strip():
+                    ref = ensemble.parse_reference(s["valid_sequence"])
+                else:
+                    ref = ensemble.reference_from_model(ctx.data("silent").get("rna_model"))
+            except ensemble.EnsembleError as exc:
+                issues.append(Issue("error", str(exc), ("valid_sequence",)))
+            if ref is not None:
+                out["bases"] = {"reference": list(zip(ref.chains, ref.numbers, ref.bases))}
+            elif not s["valid_sequence"].strip():
+                issues.append(Issue("error", "base identity needs the sequence: give it, or connect a "
+                                             "FARFAR2 step whose sequence is known",
+                                    ("valid_sequence", "input:silent")))
+        if s["valid_closure"]:
+            spec = {}
+            if s["closure_mode"] in ("term", "both"):
+                term = s["closure_term"].strip()
+                if not re.fullmatch(r"\S+", term):
+                    issues.append(Issue("error", "closure by a score term needs one term (a SCORE column "
+                                                 "name)", ("closure_term",)))
+                spec.update(term=term, max=float(s["closure_max"]))
+            if s["closure_mode"] in ("geometry", "both"):
+                spec["o3p"] = float(s["closure_o3p"])
+            out["closure"] = spec
+        if s["valid_pairs"]:
+            if not s["register"].strip():
+                issues.append(Issue("error", "required pairs need the register's defining pairs, e.g. "
+                                             "pres=B:22-B:37, B:23-B:36, B:24-B:35", ("register",)))
+            else:
+                try:
+                    reg = ensemble.parse_register(s["register"])
+                    ensemble.check_registers([reg])
+                    out["pairs"] = {"name": reg.name, "pairs": [tuple(p) for p in reg.pairs],
+                                    "mode": s["pairs_mode"], "cut": ensemble.PAIR_CUT,
+                                    "near_n": ensemble.NEAR_N, "near_c1": tuple(ensemble.NEAR_C1),
+                                    "wc_atom": dict(ensemble.WC_ATOM)}
+                except ensemble.EnsembleError as exc:
+                    issues.append(Issue("error", str(exc), ("register",)))
+        return out, issues
+
+    @staticmethod
+    def quality_limits(s) -> Tuple[List[Tuple[str, str, float]], List[Issue]]:
+        """The score limits of the quality filter (mdatk.modelcheck.parse_score_limits) and their issues."""
+        if not s["filter"]:
+            return [], []
+        try:
+            limits = modelcheck.parse_score_limits(s["filter_limits"])
+        except ValueError as exc:
+            return [], [Issue("error", str(exc), ("filter_limits",))]
+        if not limits:
+            return [], [Issue("error", "the quality filter needs score limits, e.g. score <= -300",
+                              ("filter_limits",))]
+        return limits, []
 
     def check(self, s, ctx):
         out: List[Issue] = []
-        if s["filter"] and not re.fullmatch(r"\S+", s["filter_term"].strip()):
-            out.append(Issue("error", "the filter needs one score term (a SCORE column name)",
-                             ("filter_term",)))
+        out += self.quality_limits(s)[1]
+        if s["filter"] and s["filter_when"] == "before":
+            out.append(Issue("warning", "a score filter before clustering changes the cluster populations by "
+                                        "a score that need not track quality: filter on validity before "
+                                        "clustering and on quality after it", ("filter_when",)))
+        if self.validity_on(s):
+            out += self.validity_settings(s, ctx)[1]
+            if not s["extract_all"]:
+                out.append(Issue("info", "the validity filters judge every decoy as a PDB: every model of "
+                                         "every run is extracted", ("extract_all",)))
         n_files = len(ctx.inps("silent"))
         if s["cluster"] and s["n_models"] > s["max_clusters"]:
             out.append(Issue("warning", "more models requested than clusters written", ("n_models",)))
@@ -479,20 +664,28 @@ class FarfarModelsTool(Tool):
                              ("dssr",)))
         return out
 
+    @classmethod
+    def filters_before(cls, s) -> bool:
+        """Whether decoys are left out before clustering (validity, or a score filter chosen 'before')."""
+        return bool(cls.validity_on(s) or (s["filter"] and s["filter_when"] == "before"))
+
     def _runs(self, s, ctx) -> List[List[str]]:
         """[label, silent file, filtered file or ''] per input run (paths relative to the step folder)."""
         silents = ctx.inps("silent")
         labels = _silent_scores.unique_labels(silents)
-        before = s["filter"] and s["filter_when"] == "before"
+        before = self.filters_before(s)
         return [[lab, path, ctx.name(f"filtered-{lab}", "out") if before else ""]
                 for lab, path in zip(labels, silents)]
 
     def _scores_helper(self, ctx, runs) -> GeneratedFile:
         doc = (f"Rosetta silent-file scores for project {ctx.project}, step {ctx.step:02d} - written by "
                f"{PROJECT_ABBREV} {__version__}.\n\nScore terms are looked up by column name. Usage:\n"
-               "    python3 THIS_SCRIPT table OUT.tsv [--extracted models] [--models MODELS.txt]\n"
+               "    python3 THIS_SCRIPT table OUT.tsv [--extracted models] [--models MODELS.txt] "
+               "[--validity VALIDITY.tsv]\n"
                "    python3 THIS_SCRIPT filter SILENT FILTERED [SILENT FILTERED ...] --term T --max X\n"
-               "    python3 THIS_SCRIPT filter-ranking RANKING.txt --term T --max X\n"
+               "    python3 THIS_SCRIPT keep [--valid VALIDITY.tsv] [--limit TERM OP VALUE ...]\n"
+               "    python3 THIS_SCRIPT filter-ranking RANKING.txt [--term T --max X] "
+               "[--limit TERM OP VALUE ...]\n"
                "    python3 THIS_SCRIPT check-extracted models\n"
                "Needs only Python 3.")
         pattern = ctx.name("model-MODELNUM", "pdb").replace("MODELNUM", "{N}")
@@ -500,6 +693,26 @@ class FarfarModelsTool(Tool):
         return GeneratedFile(ctx.name("scores", "py"), embed(
             _silent_scores, constants, "main(sys.argv[1:], RUNS, PREFIX, MODEL_PATTERN)", doc), "helper",
             "silent-file scores by column name, the decoy table and the extraction check")
+
+    def _validity_helper(self, ctx, runs, settings) -> GeneratedFile:
+        """MDATK's PDB tools, model checks and silent-file scores, then the validity criteria: one standalone
+        script (standard library only) whose modules find each other in the script itself."""
+        doc = (f"Validity of the FARFAR2 decoys of project {ctx.project}, step {ctx.step:02d}, before they "
+               f"are clustered - written by {PROJECT_ABBREV} {__version__}.\n\n"
+               "    python3 THIS_SCRIPT judge VALIDITY.tsv [--report REPORT.txt] [--extracted models]\n\n"
+               "judges every decoy of every run (models/<run>/<tag>.pdb) on hands, base identity, closure "
+               "and required pairs, in this order. Needs only Python 3.")
+        bodies: List[str] = []
+        for title, module in (("MDATK's PDB tools (mdatk.pdbtools)", pdbtools),
+                              ("MDATK's model checks (mdatk.modelcheck)", modelcheck),
+                              ("MDATK's silent-file scores (silent_scores)", _silent_scores)):
+            bodies += [f"# --- {title} ---", _module_body(module), "", ""]
+        bodies.append("# --- validity of the decoys (decoy_validity) ---")
+        constants = {"RUNS": [tuple(r[:2]) for r in runs], "SETTINGS": settings, "EXTRACTED": MODELS_DIR}
+        return GeneratedFile(ctx.name("validity", "py"), embed(
+            _validity, constants, "validity_main(sys.argv[1:], RUNS, SETTINGS, EXTRACTED)", doc,
+            imports=bodies), "helper", "validity of every decoy before clustering: hands, bases, closure, "
+            "required pairs")
 
     def _extract_all(self, s, runs, db: str, helper: str) -> List[str]:
         exe = s["extract_exe"].strip() or "extract_pdbs"
@@ -543,17 +756,27 @@ class FarfarModelsTool(Tool):
         sh = script_header("FARFAR2 models: cluster, extract, annotate", ctx, s, script)
         sh += ["# rank_models FILE: prints 'score tag file' for every model in a silent file",
                "rank_models() {", f"  {RANK_AWK}", "}", ""]
-        term = s["filter_term"].strip()
-        cut = f"--term {shell_quote(term)} --max {s['filter_max']:g}"
-        if s["filter"] and s["filter_when"] == "before":
-            sh += [f"# Keep the models with {term} <= {s['filter_max']:g} (looked up by column name) before "
-                   "clustering",
-                   f"python3 {helper} filter " + " ".join(f"{shell_quote(p)} {f}" for _l, p, f in runs)
-                   + f" {cut}",
-                   ""]
-            silents = [f for _l, _p, f in runs]
-        if s["extract_all"]:
+        limits = self.quality_limits(s)[0]
+        cut = "".join(f" --limit {shell_quote(t)} {shell_quote(op)} {x!r}" for t, op, x in limits)
+        cut_text = _silent_scores.limits_text(limits)
+        valid = self.validity_on(s)
+        settings = self.validity_settings(s, ctx)[0] if valid else {}
+        validity_tsv = n("validity", "tsv")
+        if s["extract_all"] or valid:  # the validity filters judge every decoy as a PDB
             sh += self._extract_all(s, runs, db, helper)
+        if valid:
+            sh += [f"# Validity filters (before clustering), in this order: {', '.join(valid)}. Every decoy",
+                   "# is judged; only the valid ones are clustered (the populations of the valid set)",
+                   f"python3 {n('validity', 'py')} judge {validity_tsv} --report {n('validity', 'txt')}", ""]
+        if self.filters_before(s):
+            score_before = s["filter"] and s["filter_when"] == "before"
+            what = (["the valid decoys"] if valid else []) + (
+                [f"the decoys within {cut_text} (a score cut before clustering changes the cluster "
+                 "populations)"] if score_before else [])
+            sh += [f"# Cluster (or rank) only {' and '.join(what)}: one filtered silent file per run",
+                   f"python3 {helper} keep" + (f" --valid {validity_tsv}" if valid else "")
+                   + (cut if score_before else ""), ""]
+            silents = [f for _l, _p, f in runs]
         ranking = n("ranking", "txt")
         if s["cluster"]:
             clustered = n("cluster", "out")
@@ -571,8 +794,8 @@ class FarfarModelsTool(Tool):
             sh += ["# Rank every model of every run by total score",
                    f"for f in {' '.join(silents)}; do rank_models \"$f\"; done | sort -g -k1,1 > {ranking}", ""]
         if s["filter"] and s["filter_when"] == "after":
-            sh += [f"# Skip the ranked models with {term} > {s['filter_max']:g} (looked up by column name)",
-                   f"python3 {helper} filter-ranking {ranking} {cut}", ""]
+            sh += [f"# Quality filter (after clustering): skip the ranked models outside {cut_text} (terms "
+                   "by column name)", f"python3 {helper} filter-ranking {ranking}{cut}", ""]
         model = n("model-MODELNUM", "pdb").replace("MODELNUM", "${N}")
         sh += [f"# Extract the best {s['n_models']} models as numbered PDB files"]
         if table:  # the decoy table reads this list: no lines of an earlier run
@@ -601,14 +824,18 @@ class FarfarModelsTool(Tool):
                    f"{exe} --cleanup > /dev/null 2>&1 || true", ""]
         files = []
         if table:
-            terms = ["score"] + ([term] if s["filter"] else [])
-            sh += ["# The decoy table: run, tag, pdb and every SCORE term of every model, by column name",
+            terms = ["score"] + [t for t, _op, _x in limits] + [settings.get("closure", {}).get("term") or ""]
+            sh += ["# The decoy table: run, tag, pdb and every SCORE term of every model, by column name"
+                   + (", and the validity columns" if valid else ""),
                    f"python3 {helper} table {n('scores', 'tsv')}"
-                   + (f" --extracted {MODELS_DIR}" if s["extract_all"] else "")
+                   + (f" --extracted {MODELS_DIR}" if s["extract_all"] or valid else "")
                    + f" --models {n('models', 'txt')}"
-                   + "".join(f" --term {shell_quote(t)}" for t in dict.fromkeys(terms)),
+                   + (f" --validity {validity_tsv}" if valid else "")
+                   + "".join(f" --term {shell_quote(t)}" for t in dict.fromkeys(terms) if t),
                    require_file(n("scores", "tsv"), "the decoy table"), ""]
             files.append(self._scores_helper(ctx, runs))
+            if valid:
+                files.append(self._validity_helper(ctx, runs, settings))
         sh += [require_file(n("model-01", "pdb"), "the extraction"),
                f'echo "Best model: {n("model-01", "pdb")} (ranking in {n("models", "txt")})"', ""]
         return [GeneratedFile(script, "\n".join(sh), "run", "clusters and extracts the models")] + files

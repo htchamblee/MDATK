@@ -18,7 +18,18 @@ Run audit (``mdatk rosetta audit``)
     two runs can name the same path and still have read different files (each folder its own copy of a
     map).  Runs are grouped into conditions (folders); conditions can be compared in pairs, where only the
     pairing flags and the secondary structure may differ (``--controlled`` names the residues whose
-    pairing is the variable under test).
+    pairing is the variable under test).  Fully expanded command lines are the normal case; ``@flags``
+    files are read as well.
+
+    Which Rosetta built a run is not answerable from its flags: the provenance comes from the lines Rosetta
+    writes before the command line (``core.init: Rosetta version: <package> r<revision> <version> <commit>
+    <url> <date>``, ``core.init: Rosetta extras: [...]``, the ``-version`` block, commit and checkout lines),
+    kept raw and parsed tolerantly.  Runs compared with each other that were built with different versions
+    are flagged.  The random seed is a run's identity: ``-constant_seed`` with ``-jran`` (and
+    ``-seed_offset``), or the ``seed mode, seed=... real_seed=...`` line Rosetta logs after the command line,
+    is reported for every run and never normalised away, and two runs (or two starts of one run) with the
+    same seed under ``-constant_seed`` and the same inputs are reported as duplicates (an error: they write
+    the same decoys).
 """
 
 from __future__ import annotations
@@ -214,11 +225,16 @@ DISPLAY = {"bps_moves": "-rna:denovo:bps_moves", "dump": "-rna:denovo:out:dump",
            "minimizer_use_coordinate_constraints":
                "-rna:denovo:minimize:minimizer_use_coordinate_constraints",
            "cryoem_scatterers": "-edensity:cryoem_scatterers", "mapfile": "-edensity:mapfile",
-           "mapreso": "-edensity:mapreso", "jran": "-run:jran", "constant_seed": "-run:constant_seed"}
+           "mapreso": "-edensity:mapreso", "jran": "-run:jran", "constant_seed": "-run:constant_seed",
+           "seed_offset": "-run:seed_offset"}
 
-# flags that differ between the runs of one condition by design (seeds, output names)
+# flags that differ between the runs of one condition by design (seeds, output names); left out of the
+# comparisons only: the seeds are reported per run and checked for duplicates
 IGNORED = ("-run:jran", "-out:file:silent", "-out:prefix", "-out:path", "-database", "-nstruct",
-           "-out:file:silent_struct_type", "-run:constant_seed")
+           "-out:file:silent_struct_type", "-run:constant_seed", "-run:seed_offset")
+DEFAULT_JRAN = 1111111  # Rosetta's -run:jran when -constant_seed is given without one
+# derived entries of the build (from the log lines before the command line), compared like flags
+BUILD_ENTRIES = ("[rosetta version]", "[rosetta extras]", "[rosetta provenance]")
 # input files worth fingerprinting: the path may be the same while the file is not
 FILE_FLAGS = ("-secstruct_file", "-edensity:mapfile", "-fasta", "-s", "-native")
 # flags that may differ in a pair whose variable is the pairing
@@ -486,19 +502,256 @@ def _ranges_text(res: Sequence[Res]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# the log around a command line: the Rosetta build before it, the random seed after it
+# ---------------------------------------------------------------------------
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # Rosetta colours some tracer output
+_TRACER = re.compile(r"^\s*[A-Za-z_][\w.]*(?:\s*\{\d+\})?\s*:\s*")  # 'core.init: ', 'core.init {0}: '
+_VERSION = re.compile(r"\b(?:Mini-)?Rosetta\s+version\b(?!\s+information)\s*:?\s*(?P<text>.*)$", re.I)
+_EXTRAS = re.compile(r"\bRosetta\s+extras\s*:?\s*(?P<text>.*)$", re.I)
+# the block that -version writes instead of the one-line version
+_VERSION_FIELDS = {"package": "package", "testing server revision": "revision", "pep-440 version": "version",
+                   "git commit": "commit", "url": "repo", "date": "date"}
+_FIELD_LINE = re.compile(r"^(?P<key>Package|Testing Server Revision|PEP-440 Version|Git Commit|URL|Date)"
+                         r"\s*:\s*(?P<value>.*)$", re.I)
+_TIME_TOKEN = re.compile(r"\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?|[+-]\d{4}|[A-Z]{3,4}")  # after a date
+# other provenance a custom build or a run script may log on core.init before the command line
+_INIT_DETAIL = re.compile(r"^\s*core\.init\S*\s*:.*\b(?:commit|checkout|branch|revision)\b", re.I)
+_INIT = re.compile(r"^\s*core\.init\b")
+_PROVENANCE = re.compile(r"\b(?:Mini-)?Rosetta\s+(?:version|extras)\b", re.I)  # also the -version heading
+_SEED_LINE = re.compile(r"(?P<mode>constant|'?rng device'?|'?time'?)\s+seed\s+mode\b.*?\bseed\s*=\s*"
+                        r"(?P<seed>-?\d+)(?:.*?\bseed_offset\s*=\s*(?P<offset>-?\d+))?"
+                        r"(?:.*?\breal_seed\s*=\s*(?P<real>-?\d+))?", re.I)
+_FIELD_ORDER = ("package", "revision", "version", "commit", "repo", "date", "other")
+
+
+def parse_version(text: str) -> Dict[str, str]:
+    """Fields of a version line's text (after 'Rosetta version:'), read tolerantly: ``package``
+    (rosetta.binary.linux.release-371), ``revision`` (r371), ``version`` (2024.39+release.59628fb),
+    ``commit`` (a hex SHA-1), ``repo`` (a URL, git@..., ...git, or the word after 'from'), ``date`` (ISO, with
+    a following time and zone) and ``other`` (the rest, e.g. 'exported')."""
+    out: Dict[str, str] = {}
+    rest: List[str] = []
+    tokens = text.split()
+    i = 0
+    while i < len(tokens):
+        tok, low = tokens[i], tokens[i].lower()
+        if low == "from" and i + 1 < len(tokens):
+            out.setdefault("repo", tokens[i + 1])
+            i += 2
+            continue
+        if re.fullmatch(r"r\d+", tok):
+            out.setdefault("revision", tok[1:])
+        elif re.fullmatch(r"[0-9a-f]{7,40}", low) and not tok.isdigit():
+            out.setdefault("commit", tok)
+        elif re.match(r"^(?:[a-z][\w+.-]*://|git@|ssh:)", low) or low.endswith(".git"):
+            out.setdefault("repo", tok)
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T_][\d:.]+)?(?:Z|[+-]\d{2}:?\d{2})?", tok):
+            date = tok
+            while i + 1 < len(tokens) and _TIME_TOKEN.fullmatch(tokens[i + 1]):
+                i += 1
+                date += " " + tokens[i]
+            out.setdefault("date", date)
+        elif re.fullmatch(r"\d{4}\.\d{1,2}(?:[.+]\S*)?|\d+\.\d+(?:\.\d+)*\S*", tok):
+            out.setdefault("version", tok)
+        elif "release" in low or low.startswith(("rosetta.", "pyrosetta")):
+            out.setdefault("package", tok)
+        else:
+            rest.append(tok)
+        i += 1
+    if rest:
+        out["other"] = " ".join(rest)
+    return out
+
+
+@dataclass
+class Build:
+    """The Rosetta build a run names in its log before its command line."""
+    lines: List[str] = field(default_factory=list)  # the raw provenance lines, in log order
+    version_line: str = ""  # the text after 'Rosetta version', whitespace collapsed
+    extras: str = ""
+    fields: Dict[str, str] = field(default_factory=dict)  # see parse_version
+    details: List[str] = field(default_factory=list)  # other provenance lines (commit, checkout ...)
+
+    @property
+    def known(self) -> bool:
+        return bool(self.version_line or self.fields or self.details)
+
+    @property
+    def version(self) -> str:
+        """The version in a canonical form: the parsed fields in a fixed order (so the one-line version and
+        the -version block of one build agree), else the raw text."""
+        if not self.fields:
+            return self.version_line
+        f = self.fields
+        return " ".join(("r" + f[k] if k == "revision" else f[k]) for k in _FIELD_ORDER if f.get(k))
+
+    @property
+    def identity(self) -> str:
+        """What tells two builds apart: the version, the extras and the other provenance lines."""
+        return " | ".join(x for x in [self.version, f"extras {self.extras}" if self.extras else ""]
+                          + self.details if x)
+
+    def describe(self) -> str:
+        if not self.known:
+            return "no Rosetta version line in the log"
+        f = self.fields
+        head = f.get("version") or f.get("package") or f.get("other") or self.version_line
+        bits = [head] + ([f"r{f['revision']}"] if f.get("revision") else [])
+        bits += [f"commit {f['commit']}"] if f.get("commit") else []
+        bits += [f"from {f['repo']}"] if f.get("repo") else []
+        bits += [f"({f['date']})"] if f.get("date") else []
+        bits += [f"extras {self.extras}"] if self.extras else []
+        bits += self.details
+        return " ".join(b for b in bits if b)
+
+    def entries(self) -> Dict[str, str]:
+        """The derived entries compared like flags (absent when the log has no such line)."""
+        values = (self.version, self.extras, " | ".join(self.details))
+        return {key: v for key, v in zip(BUILD_ENTRIES, values) if v}
+
+
+def _tracer_text(line: str) -> str:
+    return _TRACER.sub("", line, count=1).strip()
+
+
+def parse_build(lines: Sequence[str]) -> Build:
+    """The build from the provenance lines before a command line (raw lines kept)."""
+    b = Build(lines=[ln.strip() for ln in lines])
+    for ln in lines:
+        text = _tracer_text(ln)
+        m = _FIELD_LINE.match(text)
+        if m:
+            b.fields.setdefault(_VERSION_FIELDS[m.group("key").lower()], " ".join(m.group("value").split()))
+            continue
+        m = _EXTRAS.search(text)
+        if m:
+            b.extras = " ".join(m.group("text").split())
+            continue
+        m = _VERSION.search(text)
+        if m:
+            if not b.version_line:
+                b.version_line = " ".join(m.group("text").split())
+                for k, v in parse_version(b.version_line).items():
+                    b.fields.setdefault(k, v)
+            continue
+        if re.search(r"\bRosetta\s+version\s+information\b", text, re.I):
+            continue  # the heading of the -version block
+        b.details.append(" ".join(text.split()))
+    # the one-line version leaves out a 'devel' package and a 'None' revision: so does the canonical form
+    if b.fields.get("package", "").lower() == "devel":
+        del b.fields["package"]
+    if b.fields.get("revision", "").lower() in ("none", ""):
+        b.fields.pop("revision", None)
+    return b
+
+
+@dataclass
+class Seed:
+    """The random seed of one start of a run."""
+    constant: Optional[bool]  # -constant_seed in effect (None: not known)
+    value: Optional[int]  # the seed the run used: Rosetta's logged real_seed, else -jran (+ -seed_offset)
+    jran: str = ""  # -jran as given ('' when absent)
+    source: str = ""  # "log" (the seed line after the command line) or "flags"
+    mode: str = ""  # constant / rng device / time (from the log)
+    line: str = ""  # the raw seed line
+
+    def describe(self) -> str:
+        if self.constant and self.value is not None:
+            how = "logged" if self.source == "log" else (
+                "Rosetta's default -jran" if not self.jran else "from -jran")
+            return f"{self.value} (-constant_seed, {how})"
+        if self.constant is False:
+            got = f", real_seed {self.value}" if self.value is not None else ""
+            ignored = f"; -jran {self.jran} is ignored without -constant_seed" if self.jran else ""
+            return f"random ({self.mode or 'no -constant_seed'}{got}{ignored})"
+        return "unknown"
+
+
+def seed_of(cmd: Command, seed_line: str = "") -> Seed:
+    """The seed of a start: the 'seed mode' line Rosetta logs after the command line when there is one (its
+    real_seed includes -seed_offset), else -constant_seed / -jran / -seed_offset from the command line."""
+    jran = " ".join(cmd.values.get("-run:jran", []))
+    m = _SEED_LINE.search(seed_line or "")
+    if m:
+        mode = m.group("mode").strip("'").lower()
+        value = int(m.group("real") if m.group("real") is not None else m.group("seed"))
+        return Seed(mode == "constant", value, jran, "log", mode, seed_line.strip())
+    constant = cmd.flags.get("-run:constant_seed") == "true"
+    value: Optional[int] = None
+    if constant:
+        try:
+            value = int(float(jran)) if jran else DEFAULT_JRAN
+            value += int(float(" ".join(cmd.values.get("-run:seed_offset", [])) or 0))
+        except ValueError:
+            value = None
+    return Seed(constant, value, jran, "flags")
+
+
+@dataclass
+class Start:
+    """One start of a run in its log: the command line, the build named before it, the seed line after it."""
+    command: str
+    build: Build
+    seed_line: str = ""
+
+
+def read_log(log: str, exe_pattern: str = "rna_denovo") -> List[Start]:
+    """Every start of an rna_denovo run in ``log``: its logged command line, the provenance lines since the
+    previous command line and the first seed line after it.  A command line of another program
+    (extract_pdbs, rna_cluster ...) ends a start; its header is not a run's."""
+    starts: List[Start] = []
+    pending: List[str] = []
+    current: Optional[Start] = None
+    try:
+        with open(log, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                ln = _ANSI.sub("", raw).rstrip("\r\n")
+                if "command:" in ln:
+                    head = ln.split("command:", 1)[1].split()
+                    if head and exe_pattern in os.path.basename(head[0]):
+                        current = Start(ln.split("command:", 1)[1].strip(), parse_build(pending))
+                        starts.append(current)
+                    else:
+                        current = None
+                    pending = []
+                    continue
+                if current is not None and not current.seed_line and _SEED_LINE.search(ln):
+                    current.seed_line = ln.strip()
+                    continue
+                if _PROVENANCE.search(ln) or _INIT_DETAIL.search(ln) or (
+                        pending and _INIT.match(ln) and _FIELD_LINE.match(_tracer_text(ln))):
+                    pending.append(ln.strip())
+    except OSError:
+        pass
+    return starts
+
+
+# ---------------------------------------------------------------------------
 # collecting runs and conditions
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class Thread:
-    """One rna_denovo run: its log, working folder and command line (with the derived entries)."""
+    """One rna_denovo run: its log, working folder and command line (with the derived entries), and per
+    start (a restart appends one) the Rosetta build and the random seed."""
     log: str
     cwd: str
     command: Command
     flags: Dict[str, str]
     starts: int = 1  # command lines in the log (a restart appends one)
     notes: List[str] = field(default_factory=list)
+    builds: List[Build] = field(default_factory=list)
+    seeds: List[Seed] = field(default_factory=list)
+
+    @property
+    def build(self) -> Build:
+        return self.builds[0] if self.builds else Build()
+
+    @property
+    def seed(self) -> Seed:
+        return self.seeds[0] if self.seeds else Seed(None, None)
 
 
 @dataclass
@@ -528,18 +781,7 @@ def find_logs(folder: str, recursive: bool = True) -> List[str]:
 def command_lines(log: str, exe_pattern: str = "rna_denovo") -> List[str]:
     """Every logged command line of an rna_denovo run in ``log`` (a log of extract_pdbs, rna_cluster ... has
     none: its flags are not those of the runs)."""
-    out = []
-    try:
-        with open(log, encoding="utf-8", errors="replace") as fh:
-            for ln in fh:
-                if "command:" not in ln:
-                    continue
-                head = ln.split("command:", 1)[1].split()
-                if head and exe_pattern in os.path.basename(head[0]):
-                    out.append(ln.split("command:", 1)[1].strip())
-    except OSError:
-        pass
-    return out
+    return [s.command for s in read_log(log, exe_pattern)]
 
 
 def run_folders(log: str, condition: str, silent: str = "") -> List[str]:
@@ -686,7 +928,8 @@ def collect(folder: str, label: str = "", controlled=None, full_hash: bool = Tru
     """The runs of one condition folder."""
     cond = Condition(label or os.path.basename(os.path.normpath(folder)), folder)
     for log in find_logs(folder, recursive):
-        lines = command_lines(log, exe_pattern)
+        starts = read_log(log, exe_pattern)
+        lines = [s.command for s in starts]
         if not lines:
             continue
         # the silent file named on the command line itself tells which folder the run worked in
@@ -696,10 +939,16 @@ def collect(folder: str, label: str = "", controlled=None, full_hash: bool = Tru
         flags, notes = derive(cmd, bases, controlled, full_hash)
         if cmd.exe:
             flags["[executable]"] = cmd.exe
-        t = Thread(log, bases[0] if bases else folder, cmd, flags, len(lines), notes)
+        flags.update(starts[0].build.entries())
+        t = Thread(log, bases[0] if bases else folder, cmd, flags, len(lines), notes,
+                   [s.build for s in starts])
+        t.seeds = [seed_of(cmd if k == 0 else parse_command(s.command, bases), s.seed_line)
+                   for k, s in enumerate(starts)]
         if len(lines) > 1:
             later = parse_command(lines[-1], bases).flags
+            later.update(starts[-1].build.entries())
             first = cmd.flags
+            first.update(starts[0].build.entries())
             diff = sorted(k for k in set(first) | set(later)
                           if k not in ignored and first.get(k) != later.get(k))
             t.notes.append(f"{len(lines)} command lines (restarts)" +
@@ -833,12 +1082,150 @@ def _diff_lines(k: str, a: Optional[str], b: Optional[str]) -> List[str]:
     return [f"      {k}", f"        {pre}{a[i:i + 90]}", f"        {pre}{b[i:i + 90]}"]
 
 
+# ---------------------------------------------------------------------------
+# builds and seeds across the runs
+# ---------------------------------------------------------------------------
+
+
+def _seed_ranges(values: Sequence[int]) -> str:
+    vals = sorted(set(values))
+    out, k = [], 0
+    while k < len(vals):
+        j = k
+        while j + 1 < len(vals) and vals[j + 1] == vals[j] + 1:
+            j += 1
+        out.append(f"{vals[k]}-{vals[j]}" if j > k else f"{vals[k]}")
+        k = j + 1
+    return ", ".join(out)
+
+
+def seeds_text(threads: Sequence[Thread]) -> str:
+    """The seeds of runs (first starts): '3001-3060 (-constant_seed)', 'random (no -constant_seed)' ..."""
+    seeds = [t.seed for t in threads]
+    fixed = [s.value for s in seeds if s.constant and s.value is not None]
+    parts = []
+    if fixed:
+        repeated = len(fixed) - len(set(fixed))
+        parts.append(f"{_seed_ranges(fixed)} (-constant_seed" + (f", {repeated} repeated" if repeated else "")
+                     + ")")
+    random = sum(1 for s in seeds if s.constant is False)
+    unknown = len(seeds) - len(fixed) - random
+    if random:
+        parts.append(f"{random} random (no -constant_seed)")
+    if unknown:
+        parts.append(f"{unknown} unknown")
+    return "; ".join(parts)
+
+
+def build_labels(conds: Sequence[Condition]) -> Dict[str, Tuple[str, Build]]:
+    """Build identity -> (B1, B2 ..., the build) for every distinct build of every start, in order."""
+    out: Dict[str, Tuple[str, Build]] = {}
+    for c in conds:
+        for t in c.threads:
+            for b in t.builds:
+                if b.known:
+                    out.setdefault(b.identity, (f"B{len(out) + 1}", b))
+    return out
+
+
+def _run_name(c: Condition, t: Thread) -> str:
+    return f"{c.label}/{os.path.relpath(t.log, c.path)}"
+
+
+def provenance_lines(conds: Sequence[Condition]) -> List[str]:
+    """Which Rosetta built the runs: every distinct build with its runs per condition and its raw lines, and a
+    warning when the runs were built with more than one."""
+    builds = build_labels(conds)
+    lines = ["", "Rosetta builds (from the lines each log writes before its command line):"]
+    unknown = [_run_name(c, t) for c in conds for t in c.threads if not t.build.known]
+    if not builds:
+        return lines + ["  no log names its Rosetta version: which build made the runs is not recorded"]
+    for ident, (label, b) in builds.items():
+        who: Dict[str, int] = {}
+        for c in conds:
+            for t in c.threads:
+                if any(x.identity == ident for x in t.builds):
+                    who[c.label] = who.get(c.label, 0) + 1
+        lines.append(f"  {label}: {b.describe()}")
+        lines.append(f"      {sum(who.values())} run(s): " + ", ".join(f"{k} {n}" for k, n in who.items()))
+        lines += [f"      | {raw}" for raw in b.lines[:6]]
+    if unknown:
+        lines.append(f"  {len(unknown)} run(s) without a version line: {', '.join(unknown[:4])}"
+                     + (" ..." if len(unknown) > 4 else ""))
+    if len(builds) > 1:
+        names = ", ".join(lab for lab, _b in builds.values())
+        lines.append(f"  WARNING: these runs were built with {len(builds)} different Rosetta builds "
+                     f"({names}): runs of different builds are not one experiment, and a comparison between "
+                     "them is confounded by the build")
+    return lines
+
+
+def _inputs_key(t: Thread, ignored: Sequence[str]) -> Tuple:
+    """What a run's decoys depend on besides the seed: its flags and derived entries without the ignored flags
+    (seeds, output names, -nstruct), the executable's path and the input paths (their content counts)."""
+    skip = set(ignored) | {"[executable]"} | set(FILE_FLAGS)
+    return tuple(sorted((k, v) for k, v in t.flags.items() if k not in skip))
+
+
+def seed_report(conds: Sequence[Condition], ignored: Sequence[str] = IGNORED
+                ) -> Tuple[List[str], List[str], List[str]]:
+    """(report lines, duplicates, notes): the seed and build of every run, then the seeds used twice under
+    -constant_seed.  Two runs, or two starts of one run, with the same seed and the same inputs write the
+    same decoys: a duplicate (an error).  The same seed with other inputs is a note (a matched-seed
+    design)."""
+    labels = {ident: lab for ident, (lab, _b) in build_labels(conds).items()}
+    lines = ["", "seed and build of every run (the seed is a run's identity; it is never left out):"]
+    width = max((len(_run_name(c, t)) for c in conds for t in c.threads), default=10)
+    entries = []
+    for c in conds:
+        for t in c.threads:
+            for k, sd in enumerate(t.seeds or [t.seed]):
+                b = t.builds[k] if k < len(t.builds) else Build()
+                start = f" (start {k + 1})" if k else ""
+                lines.append(f"  {(_run_name(c, t) + start).ljust(width)}  seed {sd.describe()}  "
+                             f"build {labels.get(b.identity, '?') if b.known else '?'}")
+                if sd.constant and sd.value is not None:
+                    entries.append((c, t, k, sd))
+    by_value: Dict[int, list] = {}
+    for e in entries:
+        by_value.setdefault(e[3].value, []).append(e)
+    duplicates, notes = [], []
+    for value, items in sorted(by_value.items()):
+        if len(items) < 2:
+            continue
+        groups: Dict[Tuple, list] = {}
+        for e in items:
+            groups.setdefault(_inputs_key(e[1], ignored), []).append(e)
+        for es in groups.values():
+            if len(es) < 2:
+                continue
+            names = [_run_name(c, t) + (f" (start {k + 1})" if k or len(t.seeds) > 1 else "")
+                     for c, t, k, _sd in es]
+            restart = len({id(e[1]) for e in es}) < len(es)
+            more = " ..." if len(names) > 6 else ""
+            duplicates.append(f"seed {value} under -constant_seed with the same inputs in {len(es)} runs: "
+                              f"{', '.join(names[:6])}{more} - they write the same decoys (duplicates)"
+                              + ("; a restart under -constant_seed starts the random stream again"
+                                 if restart else ""))
+        if len(groups) > 1:
+            names = sorted({_run_name(c, t) for c, t, _k, _sd in items})
+            more = " ..." if len(names) > 4 else ""
+            notes.append(f"seed {value} is shared by runs whose inputs or build differ "
+                         f"({', '.join(names[:4])}{more}): not duplicates (a matched-seed design)")
+    if duplicates:
+        lines += ["", f"DUPLICATE SEEDS (error, {len(duplicates)}):"] + [f"  {d}" for d in duplicates]
+    if notes:
+        lines += ["", "seeds shared by runs whose inputs or build differ:"] + [f"  {n}" for n in notes]
+    return lines, duplicates, notes
+
+
 @dataclass
 class AuditResult:
     conditions: List[Condition]
     pairs: List[PairResult]
     problems: List[str]
     lines: List[str]
+    duplicates: List[str] = field(default_factory=list)  # runs with the same seed and inputs (errors)
 
 
 def audit(roots: Sequence[str], pairs: Sequence[str] = (), pair_suffix: str = "", controlled: str = "",
@@ -859,8 +1246,12 @@ def audit(roots: Sequence[str], pairs: Sequence[str] = (), pair_suffix: str = ""
                            os.path.normpath(c.path) in given]
     for c in used:
         files = sorted({os.path.relpath(f, c.path) for t in c.threads for f in t.command.flag_files})
-        lines.append(f"  {c.label}: {len(c.threads)} run(s)"
+        lines.append(f"  {c.label}: {len(c.threads)} run(s), seeds {seeds_text(c.threads)}"
                      + (f", flags files {', '.join(files)}" if files else ""))
+    lines += provenance_lines(used)
+    seed_lines, duplicates, _notes = seed_report(used, ign)
+    lines += seed_lines
+    problems += [f"duplicate {d}" for d in duplicates]
     labels = [c.label for c in used]
     pair_list, bad = pairs_from(pairs, pair_suffix, labels)
     problems += bad
@@ -930,7 +1321,7 @@ def audit(roots: Sequence[str], pairs: Sequence[str] = (), pair_suffix: str = ""
             lines.append("    Treat the two as separate conditions, not as a controlled comparison.")
     if problems:
         lines += ["", "problems:"] + [f"  {p}" for p in problems]
-    return AuditResult(conds, results, problems, lines)
+    return AuditResult(conds, results, problems, lines, duplicates)
 
 
 def write_matrix(path: str, conds: Sequence[Condition]) -> None:
@@ -940,9 +1331,35 @@ def write_matrix(path: str, conds: Sequence[Condition]) -> None:
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\t".join(["flag"] + [c.label for c in used]) + "\n")
         fh.write("\t".join(["[runs]"] + [str(len(c.threads)) for c in used]) + "\n")
+        fh.write("\t".join(["[seeds]"] + [silent_scores.tsv_field(seeds_text(c.threads)) for c in used])
+                 + "\n")
         for k in keys:
             fields = [k] + [c.flags.get(k, "") for c in used]
             fh.write("\t".join(silent_scores.tsv_field(x) for x in fields) + "\n")
+
+
+RUN_COLUMNS = ("condition", "log", "start", "seed", "constant_seed", "jran", "seed_source", "build",
+               "rosetta_version", "commit", "repo", "date", "extras", "provenance_lines", "executable")
+
+
+def write_runs(path: str, conds: Sequence[Condition]) -> None:
+    """One row per start of every run: its seed (the value Rosetta used, -constant_seed, -jran as given, where
+    the seed was read) and its build (label, parsed fields, the raw provenance lines)."""
+    used = [c for c in conds if c.threads]
+    labels = {ident: lab for ident, (lab, _b) in build_labels(used).items()}
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\t".join(RUN_COLUMNS) + "\n")
+        for c in used:
+            for t in c.threads:
+                for k, sd in enumerate(t.seeds or [t.seed]):
+                    b = t.builds[k] if k < len(t.builds) else Build()
+                    const = "" if sd.constant is None else ("yes" if sd.constant else "no")
+                    fields = [c.label, os.path.relpath(t.log, c.path), k + 1,
+                              "" if sd.value is None else sd.value, const, sd.jran, sd.source,
+                              labels.get(b.identity, "") if b.known else "", b.version,
+                              b.fields.get("commit", ""), b.fields.get("repo", ""), b.fields.get("date", ""),
+                              b.extras, " | ".join(b.lines), t.command.exe]
+                    fh.write("\t".join(silent_scores.tsv_field(x) for x in fields) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -989,8 +1406,10 @@ def add_commands(sub) -> list:
                    help="list each condition's inputs and derived entries")
     a.add_argument("--output", "-o", help="also write the report to this file")
     a.add_argument("--tsv", help="write the flags of every condition as a table")
+    a.add_argument("--runs-tsv", help="write the seed and Rosetta build of every run (one row per start)")
     a.add_argument("--strict", action="store_true", help="exit with status 1 when a pair is confounded or "
-                   "cannot be resolved, or a condition given has no command line")
+                   "cannot be resolved, a condition given has no command line, or two runs are duplicates "
+                   "(the same seed under -constant_seed with the same inputs)")
     return [s, a]
 
 
@@ -1039,6 +1458,10 @@ def run(args, stdout=None, stderr=None) -> int:
                 fh.write(text)
         if args.tsv:
             write_matrix(args.tsv, res.conditions)
+        if args.runs_tsv:
+            write_runs(args.runs_tsv, res.conditions)
+        for d in res.duplicates:  # an error in the report, and said where a script's log shows it
+            print(f"ERROR: duplicate {d}", file=err)
         if not any(c.threads for c in res.conditions):
             print("ERROR: no condition folder has a logged rna_denovo command line", file=err)
             return 1

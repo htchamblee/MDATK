@@ -839,9 +839,9 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | Step | Writes | Notes |
 |---|---|---|
 | **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise) |
-| **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr`; optionally a score filter, every model of every run (`models/rNN/<tag>.pdb`) and the decoy table | ranked models `…_model-01_….pdb` (best first) feed the Amber build; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
+| **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr`; optionally validity filters before clustering (hands, base identity, closure, required pairs), a quality filter after it (score limits on the ranked centres), every model of every run (`models/rNN/<tag>.pdb`) and the decoy table | ranked models `…_model-01_….pdb` (best first) feed the Amber build; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
 | **Model check (clashes · backbone · chirality)** | a script running MDATK's PDB tools and model checks (copied into the step folder, standard library only) on every connected model: a report table `…_report_….tsv`, the passed models and the best one | report, filter or stop; see [Model checks](#model-checks) |
-| **Rosetta · run audit** | script calling `python3 -m mdatk rosetta audit` | what each rna_denovo run was given (logged command lines, flags files, input fingerprints), conditions compared in pairs; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
+| **Rosetta · run audit** | script calling `python3 -m mdatk rosetta audit` | what each rna_denovo run was given (logged command lines, flags files, input fingerprints), the Rosetta build and the seed of every run (duplicate seeds are an error), conditions compared in pairs; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
 | **MDATK · frame check** | script calling `python3 -m mdatk frame check` (and `reframe`) | fit one body, measure the others: one frame or sampled placements; models moved into a re-fitted reference's frame when one rigid transform suffices |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
@@ -1093,7 +1093,8 @@ which points at another term as soon as the score function emits one term more o
 
 **Decoy table.** The FARFAR2 models step writes `<project>_<step>_scores_<time>.tsv` (output *scores*,
 file kind *table*) with *Write the decoy table*, and always with a filter or *Extract every model*. Its
-columns are `run`, `tag`, `pdb` and then every SCORE term by name; one row per decoy of every run:
+columns are `run`, `tag`, `pdb` and then every SCORE term by name (with validity filters also their columns,
+below); one row per decoy of every run:
 
 ```text
 run  tag       pdb                                         score    …  linear_chainbreak  …
@@ -1108,36 +1109,98 @@ r02  S_000001  02_farfar2-models/models/r02/S_000001.pdb  -398.85     6.210
 - Steps that take a decoy table (input *scores*) and `--scores TSV` on the command line read terms by name
   and accept extra columns (`mdatk.rosetta.read_decoy_table`).
 
-**Filter.** *Filter models by a score term* (term `linear_chainbreak` by default, maximum 5) keeps the models
-whose term is at most the maximum; a model without a value is dropped. *Before clustering* writes the
-passing decoys of each run into `…_filtered-rNN_….out` (every line of a structure ends with its tag, so the
-file keeps whole structures) and clusters or ranks those; *after clustering* skips the ranked cluster
-centres that fail. A term missing from a SCORE header stops the step with the header's columns.
+**Filtering order: validity before clustering, quality after it.** A register census is a statement about
+cluster populations, so the populations must be those of every decoy that is a model of the construct at
+all. A score cut before clustering reshapes them by a quantity that need not track quality (the best-scoring
+decoys can be the clashing ones), so the step separates the two:
 
-**Extract every model.** *Extract every model of every run* writes `models/<run>/<tag>.pdb`.
-`extract_pdbs` writes `<tag>.pdb` into the folder it runs in, so each run is extracted in a `mktemp`
-folder of its own (*Parallel extractions* at a time), the run's earlier models are removed first, and
-afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the step and is
-named. A new run of the step replaces `models/`.
+- *Validity filters (before clustering)*, judged on every decoy and counted in this order:
+  1. *Hands*: every sugar's hand from its geometry (C4′, C3′, C1′; `mdatk.pdbtools.residue_hands`) against
+     expected counts (`44 D / 29 L`) and / or ranges (*Residues expected L* `C:*`, *… D* `A:*, B:*`,
+     `group:NAME`); a residue of the other hand, an epimerised or flat sugar and, with counts, any other
+     count or an unmeasurable sugar make a decoy invalid.
+  2. *Base identity against the sequence*: every nucleotide's base (from its atoms) at its chain and number
+     must be the sequence's (the connected FARFAR2 step's, or a typed one: FASTA with `A:1-16` tags or
+     `A: GGGC…`); a missing or extra residue is invalid too.
+  3. *Chain closure*: a score term by name (`linear_chainbreak <= 5` by default), every O3′–P link of
+     consecutive nucleotides at most 2.0 Å (`mdatk.modelcheck.check_backbone`), or both.
+  4. *Required pairs*: the defining pairs of a register (`pres=B:22-B:37, B:23-B:36, B:24-B:35`, as
+     `mdatk ensemble census` reads it), each formed (Watson-Crick N1/N3 < 3.5 Å) or, if chosen, approached
+     (N1–N3 < 6 Å with C1′–C1′ 8–13 Å) - the distances of `mdatk.ensemble`.
 
-**Run audit** (step *Rosetta · run audit*, `mdatk rosetta audit`). The authoritative record of what a run
-was given is the command line Rosetta logs (`core.init: command: …`). MDATK reads every such line of every
-rna_denovo log, expands `@flags` files recursively (MDATK's FARFAR2 step passes every flag that way;
-`#` starts a comment), reads `::` as `:`, and treats short and long spellings as one flag (`-s` =
-`-in:file:s`, `-obligate_pair_explicit` = `-rna:denovo:obligate_pair_explicit`; a repeated flag counts with
-its last value). The input files the flags name (`-fasta`, `-secstruct_file`, `-s`, `-native`,
-`-edensity:mapfile`) are fingerprinted by their whole content, since two runs can name the same path and
-still have read different files. A condition is a folder of runs (a FARFAR2 step folder, or an
-experiment folder of a campaign run outside RNAdo); its runs must agree, and the report lists what differs
-between conditions. *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`) should differ only in the
-pairing: `-secstruct_file`, `-obligate_pair(_explicit)`, `-filter_lores_base_pairs`, the secondary
-structure itself and what *Controlled residues* derive (`--allow` adds flags); seeds, output names,
-`-nstruct` and `-database` are ignored. Any other difference makes the pair *confounded*. With
-*Controlled residues* (`--controlled A:22-24,A:35-37`, numbered as in the FASTA) the report says how each
-condition gives their pairing: paired in the secondary structure, as obligate pairs, or fixed in the `-s`
-structure or `-input_res` (chain by chain) - a pairing imposed through `-obligate_pair_explicit` while the
-secondary structure leaves the residues unpaired is noted. The output is a text report and a table with
-one row per flag and one column per condition.
+  They need every decoy as a PDB, so they extract every model of every run (below). A helper written into the
+  step folder (`…_validity_….py`: MDATK's PDB tools, model checks and silent-file scores, standard library
+  only) judges each decoy and writes `…_validity_….tsv` (a row per decoy: `valid` 1 / 0, `invalid_by` - the
+  first criterion it fails - `invalid_reason`, and per criterion its columns: `hands_D`, `hands_L`,
+  `hands_undetermined`, `hands_ok`, `base_errors`, `bases_ok`, `o3p_max`, `closure_ok`, `pairs_formed`,
+  `pairs_approached`, `pairs_ok`) and the report `…_validity_….txt` (output *validity*):
+
+  ```text
+    decoys                12
+    after hands           10   (2 fail)
+    after bases            8   (2 fail)
+    after closure          6   (2 fail)
+    after pairs            4   (2 fail)
+  ```
+
+  with every criterion also counted on its own, an example reason each and the valid decoys of each run.
+  The valid decoys of each run are written into `…_filtered-rNN_….out` (every line of a structure ends with
+  its tag, so the file keeps whole structures), and only those are clustered (or ranked). The decoy table
+  gets the validity columns, so every decoy keeps its row and its reason.
+- *Quality filters (after clustering, choosing representatives)*: *Score limits* such as
+  `score <= -300, elec_dens_fast <= -40` (`<=`, `<`, `>=`, `>`; terms by column name) skip the ranked
+  cluster centres outside them when the representatives are extracted. None by default. *Before clustering
+  (changes cluster populations)* is still offered, with a planner warning; the step then clusters only the
+  (valid) decoys within the limits. A term missing from a SCORE header stops the step with the header's
+  columns. (Plans of earlier 0.0.12 builds: their score filter becomes a limit `TERM <= MAX`.)
+
+No filter is on by default, and the step's files are then those of 0.0.11.
+
+**Extract every model.** *Extract every model of every run* (implied by the validity filters) writes
+`models/<run>/<tag>.pdb`. `extract_pdbs` writes `<tag>.pdb` into the folder it runs in, so each run is
+extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), the run's earlier models are
+removed first, and afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the
+step and is named. A new run of the step replaces `models/`.
+
+**Run audit** (step *Rosetta · run audit*, `mdatk rosetta audit`). The authoritative record of what a run was
+given is the command line Rosetta logs (`core.init: command: …`). MDATK reads every such line of every
+rna_denovo log. A fully expanded command line is the normal case; `@flags` files are expanded recursively too
+(MDATK's FARFAR2 step passes its flags that way; `#` starts a comment). MDATK reads `::` as `:`, and treats
+short and long spellings as one flag (`-s` = `-in:file:s`, `-obligate_pair_explicit` =
+`-rna:denovo:obligate_pair_explicit`; a repeated flag counts with its last value). The input files the flags
+name (`-fasta`, `-secstruct_file`, `-s`, `-native`, `-edensity:mapfile`) are fingerprinted by their whole
+content, since two runs can name the same path and still have read different files. A condition is a folder of
+runs (a FARFAR2 step folder, or an experiment folder of a campaign run outside RNAdo); its runs must agree,
+and the report lists what differs between conditions. *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`)
+should differ only in the pairing: `-secstruct_file`, `-obligate_pair(_explicit)`, `-filter_lores_base_pairs`,
+the secondary structure itself and what *Controlled residues* derive (`--allow` adds flags); seeds, output
+names, `-nstruct` and `-database` are ignored in the comparison. Any other difference makes the pair
+*confounded*. With *Controlled residues* (`--controlled A:22-24,A:35-37`, numbered as in the FASTA) the report
+says how each condition gives their pairing: paired in the secondary structure, as obligate pairs, or fixed in
+the `-s` structure or `-input_res` (chain by chain) - a pairing imposed through `-obligate_pair_explicit`
+while the secondary structure leaves the residues unpaired is noted. The output is a text report and a table
+with one row per flag and one column per condition.
+
+*Which Rosetta.* The flags cannot say which build made a run (a custom L-RNA build with its own step library
+has the flags of any other). The provenance is the block Rosetta writes before the command line:
+`core.init: Rosetta version: <package> r<revision> <version> <commit> <repository> <date>`,
+`core.init: Rosetta extras: [...]`, the block that `-version` writes instead, and other `core.init` lines
+naming a commit, checkout or branch. They are kept raw and parsed tolerantly (older `… from <repository>`
+lines too) into the derived entries `[rosetta version]`, `[rosetta extras]` and `[rosetta provenance]`,
+compared like flags: runs of a condition must agree, and a pair built with different versions is
+confounded. The report lists every build (B1, B2 … with commit, repository, date, extras, the raw lines and
+its runs per condition) and warns when the runs were built with more than one.
+
+*Seeds.* The seed is a run's identity and is never normalised away: the value Rosetta logs after the
+command line (`Constant seed mode, seed=… real_seed=…`, `-seed_offset` included), else `-constant_seed`
+with `-jran` (Rosetta's default 1111111 without one). The report gives the seed and build of every run (and
+of every restart), the conditions their seed ranges, the flags table a `[seeds]` row, and `--runs-tsv`
+(output *runs* of the step) a row per start of every run: seed, `-constant_seed`, `-jran` as given, where
+the seed was read, the build's fields and its raw lines. Two runs, or two starts of one run, with the same
+seed under `-constant_seed` and the same inputs (flags and input contents; output names, `-nstruct`, the
+executable's path aside) write the same decoys: they are listed under *DUPLICATE SEEDS* as an error (and on
+standard error; `--strict` fails). The same seed with other inputs or another build is a matched-seed design
+and is only noted; without `-constant_seed` Rosetta ignores `-jran`.
 
 **Frame check** (step *MDATK · frame check*, `mdatk frame check`). Models built around pre-placed parts
 (helices given with `-s`, a fit into a map) inherit their relative placement. Each model is superposed on
@@ -1161,7 +1224,8 @@ For a construct with an aptamer of chains A and B (1-16, 17-44) and a target in 
 
 ```bash
 mdatk rosetta scores 01_farfar2/ --max linear_chainbreak=5 --tsv scores.tsv
-mdatk rosetta audit runs/ --pair-suffix _nointernalpairs --controlled B:22-24,B:35-37 -o audit.txt
+mdatk rosetta audit runs/ --pair-suffix _nointernalpairs --controlled B:22-24,B:35-37 -o audit.txt \
+    --runs-tsv runs.tsv
 mdatk frame check helices.pdb --scores 02_farfar2-models/apt1_02_scores_20261015-1432.tsv \
     --fit A:1-16,B:17-44 --measure Target=C:45-73 --tsv frame.tsv
 mdatk frame reframe helices.pdb helices_sharpened.pdb models/ --fit A:1-16,B:17-44 \
@@ -2068,7 +2132,7 @@ mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 mdatk rosetta scores SILENT|DIR ... [--term T] [--max T=X] [--tsv OUT] [--extracted DIR] [--legacy-index N]
 mdatk rosetta audit ROOT ... [--pair C=T] [--pair-suffix S] [--controlled RANGES] [--allow=-FLAG]
-    [--ignore=-FLAG] [--fast-hash] [--shallow] [-o REPORT] [--tsv TABLE] [--strict]
+    [--ignore=-FLAG] [--fast-hash] [--shallow] [-o REPORT] [--tsv TABLE] [--runs-tsv RUNS] [--strict]
 mdatk frame check REF [MODELS|DIR ...] [--scores TSV [--root DIR] [--max T=X]] --fit RANGES
     --measure [NAME=]RANGES ... [--atoms P,C1',C4'] [--model-map REF=MODEL] [--tsv OUT] [--strict]
 mdatk frame reframe OLD NEW [MODELS|DIR ...] [--scores TSV] --fit RANGES --measure RANGES ... [--tol 1]
