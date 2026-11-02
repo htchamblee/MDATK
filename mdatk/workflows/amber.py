@@ -862,6 +862,9 @@ class AmberBuildTool(Tool):
         if s["link_check"] != "off" and s["link_fail"] < s["link_max"]:
             out.append(Issue("error", "the O3′–P break length must not be below the longest unstrained link",
                              ("link_fail", "link_max")))
+        if s["link_check"] != "off" and s["link_min"] >= s["link_max"]:  # the helper refuses it at run time
+            out.append(Issue("error", "the shortest O3′–P link must be below the longest unstrained link",
+                             ("link_min", "link_max")))
         out += self._check_input_backbone(s, ctx)
         slot = pdbtools.empty_slot(ctx.existing("structure")) if ctx.existing("structure") else ""
         if slot:
@@ -1187,7 +1190,7 @@ class AmberBuildTool(Tool):
                  "# before anything else is done with it: tleap bonds them by name whatever the distance, so",
                  "# a chain break left in the model becomes a strained bond (E = k (r - r0)^2, k and r0 of",
                  "# the P-O3' bond read from the force field the tleap input loads)"]
-        run = (f"python3 {links_py} {pdb} --checks links {limits} --link-params {leap_in} "
+        run = (f"python3 {links_py} {shell_quote(pdb)} --checks links {limits} --link-params {leap_in} "
                f'--link-types {types} --amberhome "$AMBERHOME"')
         if s["link_check"] == "stop":
             lines.append(f"{run} --on-fail stop || {{ echo \"ERROR: O3'-P links longer than "

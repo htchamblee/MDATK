@@ -1087,3 +1087,46 @@ def test_model_readers_skip_empty_slots(tmp_path, capsys):
     assert "empty slot 2 of 5: only 1 models passed" in capsys.readouterr().err
     models, notes, _t = frames.gather_models([str(tmp_path)])
     assert [m.path for m in models] == [str(good)] and any("empty slot 2 of 5" in n for n in notes)
+
+
+# --- review fixes of 0.0.12 ---------------------------------------------------------------------------------
+
+def test_amber_link_check_reads_a_structure_path_with_spaces(tmp_path):
+    """Without preparation and L names the check reads the structure as chosen: its path is quoted (a clean
+    model in 'my models/model 1.pdb' stopped the build as a break, or skipped the check in warn mode)."""
+    pdb = tmp_path / "my models" / "model 1.pdb"
+    pdb.parent.mkdir()
+    pdb.write_text(builder.build_helix(SEQ))
+    home = _fake_amber(tmp_path / "amber")
+    for mode in ("stop", "warn"):
+        _p, st, files = _amber(tmp_path, {"link_check": mode, "prep": False, "lrna": False}, str(pdb))
+        assert not _issues(st, "error"), st.issues
+        line = next(ln for ln in files[f"apt1_03_amber-build_{STAMP}.sh"].content.splitlines()
+                    if ln.startswith(f"python3 apt1_03_links_{STAMP}.py"))
+        assert f"python3 apt1_03_links_{STAMP}.py '{pdb}' --checks links" in line
+        work = tmp_path / f"run-{mode}"
+        work.mkdir()
+        (work / f"apt1_03_links_{STAMP}.py").write_text(files[f"apt1_03_links_{STAMP}.py"].content)
+        (work / f"apt1_03_tleap_{STAMP}.leap").write_text("source leaprc.RNA.OL3\n")
+        proc = subprocess.run(["bash", "-c", line], capture_output=True, text=True, cwd=work,
+                              env=dict(os.environ, AMBERHOME=str(home)))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "cannot be read" not in proc.stderr and "could not read" not in proc.stderr
+        assert "status: PASS" in proc.stdout
+
+
+def test_amber_link_check_needs_the_shortest_link_below_the_longest(tmp_path):
+    """The helper refuses link_min >= link_max at run time; the planner says so (the script used to stop
+    with a false 'links longer than 3 A (a break)', or skip the check in warn mode)."""
+    def issues(settings):
+        node = PlanNode(id="x", tool="amber-build", step=3, settings=TOOLS["amber-build"].normalise(settings),
+                        files={"structure": "/golden/inputs/structure.pdb"})
+        plan = single_step_plan(WorkflowParams(project_name="apt1", stamp=STAMP), node, str(tmp_path / "e"))
+        return [i for i in plan.steps["x"].issues if i.level == "error"]
+
+    for mode in ("stop", "warn"):
+        errors = issues({"link_check": mode, "link_min": 2.2})
+        assert any("shortest O3′–P link must be below the longest unstrained link" in i.message
+                   and set(i.keys) == {"link_min", "link_max"} for i in errors), errors
+        assert issues({"link_check": mode, "link_min": 1.9}) == []
+    assert issues({"link_check": "off", "link_min": 2.2}) == []  # the limits are not used
