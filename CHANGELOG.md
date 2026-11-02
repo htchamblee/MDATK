@@ -409,6 +409,38 @@ the notes below.
   *Map-model score* and *MDATK · frame check* and both arms of *Ensemble comparison*; their files are
   unchanged without a set. Counts planned from the inputs (passed models, moved models) take at most runs ×
   models per run; the model check's automatic hands are measured on the first listed decoy once it exists.
+### Script wizard: the commands a step runs
+
+- **Commands tab** (the script wizard's second tab, stand-alone and in a box's *Edit in wizard…*): what the
+  step's run scripts will run, generated from the settings as they are (as the preview is: nothing written,
+  no network) and updated with the checks after each change. By default the commands alone, under each
+  script's name: the program and helper calls, continued lines joined, here-documents with their command,
+  a variable the script sets once to fixed text shown with its value (`$PMEMD` as `pmemd.cuda`). Left out:
+  the header and comments, `set`, `cd`, the environment set-up (conda, modules, `source`, `export`),
+  assignments, `if` / `for` / `while` structure, checks (`[ … ]`, `command -v`, `grep -q`, the "did not
+  write" lines), `rm` / `mkdir` / `mv` / `cp`, `echo` and the error handling after a command
+  (`|| { echo "ERROR: …" >&2; exit 1; }`). A script run separately (production) is headed as such.
+  *Whole scripts* shows the scripts as written, *Copy* copies what is shown; a step with errors lists its
+  errors instead of a preview.
+- **`mdatk.workflows.commands.command_lines(script)`**: the commands of a bash script as the tab shows
+  them, tested on the generated scripts of the Amber build, Amber MD, FARFAR2, NAMD MDFF and custom script
+  steps. Generated files are unchanged.
+
+### Both programs end with their windows
+
+- **The analysis window and RNAdo quit when their main window closes**, so a window attached to the
+  application but hidden (a dialog, a file chooser, a tool window) can never keep the process running with
+  nothing on screen. Reported for the AppImage started from the applications menu: after *Open in RNAdo…*,
+  closing the analysis window and then RNAdo left an MDATK process running. The cause is not confirmed (it
+  did not happen from source), so both programs are guarded. RNAdo's tool windows are not attached to the
+  application and still close with its window.
+- **The programs MDATK starts inherit no AppImage descriptors.** The AppImage runtime keeps its FUSE mount,
+  and its own process, alive while any process holds the read end of its keepalive pipe, which it leaves to
+  the program without close-on-exec, and it also leaves an fd 1023 open on the mount. RNAdo (*Open in
+  RNAdo…*), the scripts RNAdo runs and `xdg-open` are started with `close_fds` (Python's default on POSIX,
+  now stated), and desktop applications opened through Gio are spawned by GLib, which closes every other
+  descriptor in the child too (checked with GLib 2.80). Tests start each of them while holding stand-ins
+  of both descriptors.
 
 ## 0.0.11 (2026-10-31)
 

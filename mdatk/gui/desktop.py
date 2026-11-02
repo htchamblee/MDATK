@@ -1,5 +1,13 @@
 """Open folders and files with the user's desktop applications, and put MDATK and RNAdo into the
-applications menu (:func:`add_launchers`, the same menu item in both windows)."""
+applications menu (:func:`add_launchers`, the same menu item in both windows).
+
+None of the programs started here inherits a descriptor beyond 0-2 (an AppImage's keepalive pipe or its
+fd 1023 on the mount would keep the AppImage mounted while the program runs; see
+:func:`mdatk.gui.launch.launch_rnado`): ``xdg-open`` is started with ``close_fds``, and applications that
+Gio launches (``Gio.AppInfo.launch_uris`` / ``launch_default_for_uri``) are spawned by GLib, which closes
+every other descriptor in the child unless asked not to (``G_SPAWN_LEAVE_DESCRIPTORS_OPEN``, which Gio does
+not use); the file manager over D-Bus is started by the session bus, not by this program.
+"""
 
 from __future__ import annotations
 
@@ -73,7 +81,8 @@ def open_folder(path: str) -> str:
             pass
     opener = shutil.which("xdg-open")
     if opener:
-        subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=child_env())
+        subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env=child_env(), close_fds=True)  # the default, stated: see the module docstring
         return "xdg-open"
     raise RuntimeError("no file manager could be started")
 

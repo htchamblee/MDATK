@@ -800,6 +800,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
 
     def _on_destroy(self, *_) -> None:
         self.jobs.stop()
+        # The tool windows are transient for this window but not attached to the application, so they never
+        # keep RNAdo running; they close with it (the planner closes its step wizards the same way)
         for win in (self.wizard, self.pdb_tools, self.builder):
             if win is not None:
                 win.destroy()
@@ -828,12 +830,19 @@ class RNAdoApplication(Gtk.Application):
             self.window = RNAdoWindow(self, project, path)
             handler = LogHandler(self.window.log)
             logging.getLogger("mdatk").addHandler(handler)
-            self.window.connect("destroy", lambda *_: logging.getLogger("mdatk").removeHandler(handler))
+            self.window.connect("destroy", self._on_window_destroy, handler)
         self.window.show_all()
         self.window.present()
         if self.tool:
             tool, self.tool = self.tool, None
             self.window.open_tool(tool)
+
+    def _on_window_destroy(self, _window: RNAdoWindow, handler: logging.Handler) -> None:
+        logging.getLogger("mdatk").removeHandler(handler)
+        # RNAdo ends with its window (which has closed its tool windows): another window attached to the
+        # application (a dialog or file chooser left hidden) would otherwise keep run() and the process going
+        # with nothing on screen
+        self.quit()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

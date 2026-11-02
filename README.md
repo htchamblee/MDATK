@@ -817,7 +817,13 @@ files*, or *Write and run…*. The options are the RNA-relevant ones for each pr
 for anything else. Logic checks run on every change: **errors** (conflicting or impossible settings)
 block writing, **warnings** flag likely mistakes and **infos** point out redundant or noteworthy
 choices; the offending fields are highlighted and clicking a message jumps to the field. A live preview
-shows every file that will be written. On the command line, `mdatk workflow generate` is the wizard.
+shows every file that will be written. The **Commands** tab (next to *Files*) shows what the step will
+run, from the settings as they are and updated with the checks: the program and helper calls of each run
+script under the script's name, without the set-up (conda, modules, `cd`), checks, messages and error
+handling, with continued lines joined, here-documents kept and a variable the script sets once shown with
+its value (`pmemd.cuda -O -i …` rather than `$PMEMD -O -i …`); a script run separately (production) is
+marked as such. *Whole scripts* shows the scripts as written, *Copy* copies what is shown, and a step with
+errors lists its errors there instead. On the command line, `mdatk workflow generate` is the wizard.
 
 ### Running steps
 
@@ -2501,7 +2507,8 @@ mdatk/
                      dictstep.py, refine.py (Phenix, Coot), userscript.py (custom scripts), misc.py
                      (notes, existing files, MDATK analysis); plan.py resolves the plan graph and
                      names files; runner.py runs generated scripts on request, within the CPU and
-                     GPU budgets of budget.py; runstate.py finds earlier runs
+                     GPU budgets of budget.py; runstate.py finds earlier runs; commands.py reads the
+                     commands out of a script (the wizard's Commands tab)
     scripts/         self-contained helper programs embedded in generated workflows: prep_pdb.py,
                      cp_retype.py, tip4p2005.py, lrna_lib.py (generated L-RNA library),
                      lrna_names.py (L names before tleap), topcheck.py (topology check),
@@ -2584,7 +2591,8 @@ pinholes, depth order beyond the panel's range, registration and handedness in t
 fog, glow and translucency, thread safety and a render without a display. For RNAdo it covers the
 script generators and their checks with stand-in executables, the plan, previous runs, custom scripts,
 the run machinery (parallel runs, waiting steps, Cancel), the output log panel under a flood of lines,
-how RNAdo is started, both programs saving one project, and the stand-alone packaging (spec, AppRun,
+how RNAdo is started, both programs saving one project, both programs ending with their windows and the
+programs they start inheriting no AppImage descriptors, and the stand-alone packaging (spec, AppRun,
 desktop entries, assets). The menu entries (`tests/test_launchers.py`) are checked for every way MDATK
 runs, through GLib's own parser and a real launch of a program whose path has a space and a `$`, and
 installed, updated and removed in a temporary data folder next to files MDATK did not write.
