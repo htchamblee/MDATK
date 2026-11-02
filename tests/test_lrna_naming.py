@@ -289,9 +289,11 @@ def _ligand_builds(tmp_path):
     return out
 
 
-# _ligand_builds() at a3b572c; the helpers that every case writes the same
+# _ligand_builds() at a3b572c; the helpers that every case writes the same.  0.0.12: the two helpers that
+# copy library code (mdatk.pdbtools, scripts/prep_pdb.py) grew, as tests/test_golden.py lists; the build
+# scripts, leap / ParmEd inputs and messages are those of a3b572c
 _LIGAND_SAME = {"check.py": "9b3c751ac12a", "cp-lib.py": "c34fff6d74b5", "parmed.in": "19a1cbd00ec2",
-                "pdbtools.py": "1e39dceaa974", "prep.py": "2bbce99d08db"}
+                "pdbtools.py": "b7e824c0862b", "prep.py": "3f83ff5da296"}
 LIGAND_BUILDS_A3B572C = {
     "helix": dict(_LIGAND_SAME, **{":issues": "6a48b36ce705", "amber-build.sh": "6afa8ca98cf5",
                                    "tleap.leap": "74b75b71fbec"}),

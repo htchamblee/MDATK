@@ -22,9 +22,17 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
                restraint dictionaries); a single-residue L segment keeps the plain name.
   ``rosetta``  D: A C G U; L: 0A 0C 0G 0U; no terminal variants.
   ``pdb``      deposition naming, as ``rosetta``.
+  ``standard`` plain A C G U for both hands, no terminal variants, every record ATOM: a copy for programs
+               that read standard RNA only and ignore chirality (map-model scores, DSSR).  The names no
+               longer record the hand, so such a copy is never meant for tleap, refinement or analyses
+               that read names.
 
 * Chains: restore ids of cpptraj output (from a reference PDB, a list per TER segment or A, B, C ...),
   split, combine and order; residue renumbering; SEQRES records and FASTA text.
+* Hydrogens and Rosetta's virtual residues (VRT, XXX) can be removed; :func:`infer_base` tells the base
+  from the atom names when a residue name is not recognised.
+* Per-residue sugar hands (:func:`residue_hands`): the three-centre call, the C4' hand alone, epimers and
+  flat centres, and expected hands per residue range (``check --expect-l / --expect-d --strict --table``).
 
 Every operation works in place on a :class:`Structure` and returns human-readable notes; :func:`clean`
 chains them for the CLI / GUI / planner.
@@ -50,8 +58,11 @@ class PDBError(ValueError):
 
 
 CHAIN_IDS = string.ascii_uppercase + string.ascii_lowercase + string.digits
-SCHEMES = ("amber", "ccd", "rosetta", "pdb")
-RECORD_POLICIES = ("keep", "rosetta", "pdb")
+SCHEMES = ("amber", "ccd", "rosetta", "pdb", "standard")
+RECORD_POLICIES = ("keep", "rosetta", "pdb", "atom")
+# Rosetta's virtual residues: the root of a density-scored fold tree (VRT, atoms ORIG / X / Y) and XXX.  They
+# are no atoms of the molecule: tleap has no unit for them, and a map-model score would read them as atoms.
+VIRTUAL_RESIDUES = frozenset({"VRT", "XXX"})
 
 # Signs of the chiral volumes of an L-ribose: (centre, (atom 1, atom 2, atom 3), sign), from the
 # _chem_comp_chir tables of the 0A/0C/0G/0U restraint dictionaries; "N" is N9 (purines) or N1
@@ -183,6 +194,8 @@ def scheme_name(base: str, chirality: str, terminal: str, scheme: str) -> str:
         return "0" + base + {"5": "5", "3": "3"}.get(terminal, "") if chirality == "L" else base
     if scheme in ("rosetta", "pdb"):
         return "0" + base if chirality == "L" else base
+    if scheme == "standard":  # copies for chirality-blind programs: the hand is not in the name
+        return base
     raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
 
 
@@ -214,6 +227,57 @@ def _code(res: Residue) -> str:
 def _chirality(res: Residue) -> Optional[str]:
     nt = _nucleotide(res)
     return res.chirality or (nt.chirality if nt else None)
+
+
+def infer_base(atom_names) -> Optional[str]:
+    """Base letter (A, C, G, U or T) from a residue's atom names; None when they do not decide it.
+
+    For residue names :func:`parse_residue_name` does not know (DSSR ids, Rosetta's numbered or blank names,
+    a mutated residue that kept its old name): purines have N9 (or N7 and C8), A carries N6, G O6 or N2;
+    pyrimidines have N1 and C2 but no purine atoms, C carries N4, U O4, T O4 and its methyl carbon (C7 or
+    C5M).  Contradicting substituents (N6 with O6 / N2, N4 with O4) give None.
+    """
+    names = {str(n).strip().replace("*", "'").upper() for n in atom_names}
+    if "N9" in names or {"N7", "C8"} <= names:
+        a, g = "N6" in names, bool({"O6", "N2"} & names)
+        return ("A" if a else "G") if a != g else None
+    if {"N1", "C2"} <= names:
+        c, u = "N4" in names, "O4" in names
+        if c != u:
+            return "C" if c else ("T" if {"C7", "C5M"} & names else "U")
+    return None
+
+
+def nucleotide(res: Residue, infer: bool = False) -> Optional[ResidueName]:
+    """The residue as a nucleotide (base, sugar, chirality the name implies, terminal state), or None.
+
+    By name, in any scheme or alias, guarded by backbone atoms (a lanthanum ion 'LA' is no RNA).  With
+    ``infer``, a residue whose name is not recognised but that has a sugar (C1', C4', O4') and decisive base
+    atoms (:func:`infer_base`) is recognised from its atoms: RNA when it has O2', chirality 'D' (the name says
+    nothing; measure the hand with :func:`sugar_chirality`), no terminal state."""
+    info = _nucleotide(res)
+    if info is not None or not infer:
+        return info
+    names = {a.name.replace("*", "'") for a in res.atoms}
+    base = infer_base(names) if {"C1'", "C4'", "O4'"} <= names else None
+    if base is None:
+        return None
+    return ResidueName(base, "rna" if "O2'" in names else "dna", "D", "")
+
+
+def element_of(atom: Atom, resname: str = "") -> str:
+    """Element symbol in upper case: the element column, else from the atom name (an ion residue named after
+    its element, e.g. MG or NA, gets the two-letter symbol; otherwise the first letter after any leading
+    digits, so 1H5' is a hydrogen)."""
+    return _element(atom, resname).upper()
+
+
+def is_hydrogen(atom: Atom, resname: str = "") -> bool:
+    """Hydrogen or deuterium: the element column decides when it is filled, else the name (H after any
+    leading digits: H5'', 1H5', HO2')."""
+    if atom.element.strip():
+        return atom.element.strip().upper() in ("H", "D")
+    return element_of(atom, resname) == "H"
 
 
 # --- parsing ------------------------------------------------------------------------------------------
@@ -628,6 +692,140 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
     return notes
 
 
+def in_ranges(res: Residue, ranges: Sequence[Range]) -> bool:
+    """Whether a residue lies in parsed ranges; the chain '*' stands for every chain ('*:45-73')."""
+    for chain, start, end in ranges:
+        if (chain == "*" or res.chain == chain) and (start is None or start <= res.resseq <= end):
+            return True
+    return False
+
+
+def ranges_text(residues: Sequence[Residue]) -> str:
+    """Residues as ranges in :func:`parse_ranges` syntax ('A:1-16, B:17-44'; ':5-9' for a blank chain),
+    consecutive numbers of a chain merged in the order given."""
+    parts: List[List] = []
+    for r in residues:
+        if parts and parts[-1][0] == r.chain and r.resseq in (parts[-1][2], parts[-1][2] + 1):
+            parts[-1][2] = r.resseq
+        else:
+            parts.append([r.chain, r.resseq, r.resseq])
+    return ", ".join(f"{c}:{a}" + (f"-{b}" if b != a else "") for c, a, b in parts)
+
+
+class ResidueHand(NamedTuple):
+    """The sugar hand of one nucleotide (:func:`residue_hands`)."""
+    residue: Residue
+    base: str
+    name_hand: Optional[str]  # the hand the residue name implies (0A, LA: L); None for an unrecognised name
+    call: Optional[str]  # D / L from every usable centre (sugar_chirality); None: missing, flat, disagreeing
+    c4: Optional[str]  # the hand of the C4' centre alone (O4'.(C3' x C5') < 0: D), None when flat or missing
+    volumes: Dict[str, float]  # signed volume by centre (C4', C3', C1')
+    note: str  # epimer, centres that disagree, flat centre, missing atoms ("" for a clean call)
+    expected: Optional[str]  # from the expected ranges, else None
+
+    @property
+    def ok(self) -> Optional[bool]:
+        """Measured as expected (None without an expectation; an undetermined hand is not as expected)."""
+        return None if self.expected is None else self.call == self.expected
+
+    @property
+    def defect(self) -> bool:
+        """An epimerised, contradicting or flat centre: the sugar is not a valid D or L ribose."""
+        return any(k in self.note for k in ("epimer", "disagree", "flat"))
+
+
+_L_SIGN = {centre: sign for centre, _partners, sign in L_CHIRAL_SIGNS}
+
+
+def _hand_note(volumes: Dict[str, float]) -> str:
+    """What prevents or qualifies a call: flat centres, a single centre against the others (an epimer;
+    C1' is the anomeric carbon), centres that disagree without a majority, or nothing measurable."""
+    if not volumes:
+        return "no sugar centre measurable (missing atoms)"
+    hands = {c: (None if abs(v) < MIN_CHIRAL_VOLUME else ("L" if v * _L_SIGN[c] > 0 else "D"))
+             for c, v in volumes.items()}
+    notes = []
+    flat = [c for c, h in hands.items() if h is None]
+    if flat:
+        notes.append("flat centre at " + ", ".join(flat))
+    measured = [c for c, h in hands.items() if h]
+    votes = Counter(hands[c] for c in measured)
+    if len(votes) > 1:
+        major, n = votes.most_common(1)[0]
+        if n > len(measured) - n:
+            odd = [c for c in measured if hands[c] != major]
+            what = "anomer, " if odd == ["C1'"] else ""
+            notes.append(f"epimer at {', '.join(odd)} ({what}the other centres {major})")
+        else:
+            notes.append("centres disagree (" + ", ".join(f"{c} {hands[c]}" for c in measured) + ")")
+    return "; ".join(notes)
+
+
+def residue_hands(structure: Structure, expect_l=None, expect_d=None, infer: bool = True
+                  ) -> List[ResidueHand]:
+    """The measured sugar hand of every nucleotide, with the hand expected from ``expect_l`` / ``expect_d``
+    (ranges, '*' for every chain).  The call needs every usable centre of C4', C3' and C1' to agree (as for
+    the naming); a residue whose centres disagree is named as an epimer at the odd centre.  ``c4`` is the
+    C4' centre alone: it misses C3' / C1' epimers (xylo sugars, alpha anomers) that real-space refinement
+    can make.  ``infer`` also recognises nucleotides with unknown names from their atoms."""
+    l_ranges, d_ranges = parse_ranges(expect_l), parse_ranges(expect_d)
+    rows: List[ResidueHand] = []
+    for res in structure.residues():
+        nt = nucleotide(res, infer)
+        if nt is None:
+            continue
+        call, vols = sugar_chirality(res.coords(), nt.base)
+        v4 = vols.get("C4'")
+        c4 = None if v4 is None or abs(v4) < MIN_CHIRAL_VOLUME else ("L" if v4 * _L_SIGN["C4'"] > 0 else "D")
+        named = parse_residue_name(res.name)
+        expected = "L" if in_ranges(res, l_ranges) else ("D" if in_ranges(res, d_ranges) else None)
+        rows.append(ResidueHand(res, nt.base, named.chirality if named else None, call, c4, vols,
+                                _hand_note(vols), expected))
+    return rows
+
+
+def hand_summary(rows: Sequence[ResidueHand], expected_given: bool = True) -> Tuple[List[str], List[str]]:
+    """(notes, problems) of :func:`residue_hands` rows.  Problems are what a strict check fails on: residues
+    measured against their expected hand, expected residues whose hand cannot be measured, and sugars with
+    an epimerised, contradicting or flat centre.  Residues are listed as contiguous runs."""
+    calls = Counter(r.call or "?" for r in rows)
+    notes = [f"Sugar hands (C4'/C3'/C1' geometry): {calls['D']} D, {calls['L']} L"
+             + (f", {calls['?']} undetermined" if calls["?"] else "")]
+    problems: List[str] = []
+    for want in ("L", "D"):
+        wrong = [r.residue for r in rows if r.expected == want and r.call and r.call != want]
+        if wrong:
+            other = "D" if want == "L" else "L"
+            problems.append(f"{len(wrong)} residue(s) expected {want} measured {other}: "
+                            + ranges_text(wrong))
+    unmeasured = [r.residue for r in rows if r.expected and not r.call and not r.defect]
+    if unmeasured:
+        problems.append(f"{len(unmeasured)} residue(s) with an expected hand cannot be measured (missing "
+                        f"sugar atoms): {ranges_text(unmeasured)}")
+    for r in rows:
+        if r.defect:
+            problems.append(f"{r.residue.label}: {r.note} ({_volumes_text(r.volumes)})")
+    named = [r.residue for r in rows if r.name_hand and r.call and r.name_hand != r.call]
+    if named:
+        notes.append(f"{len(named)} residue name(s) imply the other hand than the geometry: "
+                     + ranges_text(named))
+    if expected_given and not any(r.expected for r in rows):
+        notes.append("WARNING: the expected-hand ranges match no nucleotide")
+    return notes, problems
+
+
+def hands_table(rows: Sequence[ResidueHand]) -> str:
+    """Tab-separated per-residue table of :func:`residue_hands` rows (volumes in Å^3)."""
+    out = ["chain\tresidue\tname\tname_hand\tcall\tc4_hand\tvol_C4'\tvol_C3'\tvol_C1'\texpected\tok\tnote"]
+    for r in rows:
+        res = r.residue
+        vols = [f"{r.volumes[c]:+.2f}" if c in r.volumes else "" for c in ("C4'", "C3'", "C1'")]
+        ok = "" if r.ok is None else ("yes" if r.ok else "NO")
+        out.append("\t".join([res.chain, f"{res.resseq}{res.icode}", res.name, r.name_hand or "",
+                              r.call or "?", r.c4 or "?", *vols, r.expected or "", ok, r.note]))
+    return "\n".join(out) + "\n"
+
+
 # --- residue names ------------------------------------------------------------------------------------
 
 def _terminals(seg: Sequence[Residue]) -> Dict[int, str]:
@@ -650,7 +848,7 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
         raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     ranges = parse_ranges(only)
     changes = Counter()
-    term_mismatch, phosphate, single_l, kept_phosphate = [], [], [], []
+    term_mismatch, phosphate, single_l, kept_phosphate, plain_l = [], [], [], [], []
     for seg in structure.segments:
         terms = _terminals(seg)
         for res in seg:
@@ -674,6 +872,8 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                 phosphate.append(res.label)
             if scheme == "amber" and term == "N" and chir == "L":
                 single_l.append(res.label)
+            if scheme == "standard" and chir == "L":
+                plain_l.append(res)
     notes = []
     if changes:
         summary = ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(changes.items(), key=lambda kv: -kv[1]))
@@ -692,6 +892,11 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     if single_l:
         notes.append("nucleic12_LRNA.lib has no unit for a single-residue L segment; wrote the 5' unit "
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
+    if plain_l:
+        notes.append(f"WARNING: the standard scheme gives {len(plain_l)} L residue(s) plain D names "
+                     f"({ranges_text(plain_l)}): the names no longer record the hand. Use this copy only for "
+                     "programs that ignore chirality (map-model scores such as Q-score, DSSR), never for "
+                     "tleap, refinement or analyses that read residue names")
     return notes
 
 
@@ -707,14 +912,17 @@ def to_lrna(source, ranges, scheme: str = "amber", strip_conect: bool = True,
 
 
 def set_records(structure: Structure, policy: str) -> List[str]:
-    """Apply a record policy: 'keep', 'rosetta' (polymer residues as ATOM) or 'pdb' (non-standard HETATM)."""
+    """Apply a record policy: 'keep', 'rosetta' (polymer residues as ATOM), 'pdb' (non-standard HETATM) or
+    'atom' (every record ATOM, for programs that skip HETATM residues as ligands)."""
     if policy not in RECORD_POLICIES:
         raise PDBError(f"unknown record policy {policy!r} (choose from {', '.join(RECORD_POLICIES)})")
     if policy == "keep":
         return []
     changed = Counter()
     for res in structure.residues():
-        if policy == "rosetta":
+        if policy == "atom":
+            record = "ATOM"
+        elif policy == "rosetta":
             record = "ATOM" if _is_polymer(res) else None
         else:
             record = "ATOM" if res.name in _STANDARD_NAMES else "HETATM"
@@ -894,6 +1102,38 @@ def order_chains(structure: Structure, order: Optional[Sequence[str]] = None) ->
 PHOSPHATE_5P = ("P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P")
 
 
+def _drop_empty(structure: Structure) -> None:
+    """Remove residues without atoms and segments without residues."""
+    structure.segments = [seg for seg in ([r for r in seg if r.atoms] for seg in structure.segments) if seg]
+
+
+def strip_hydrogens(structure: Structure) -> List[str]:
+    """Remove hydrogens (element H / D, else by name: :func:`is_hydrogen`); tleap and most fitting programs
+    rebuild or ignore them."""
+    n = 0
+    for res in structure.residues():
+        keep = [a for a in res.atoms if not is_hydrogen(a, res.name)]
+        n += len(res.atoms) - len(keep)
+        res.atoms = keep
+    _drop_empty(structure)
+    return [f"Removed {n} hydrogen atoms"] if n else []
+
+
+def drop_virtual_residues(structure: Structure) -> List[str]:
+    """Remove Rosetta's virtual residues (``VIRTUAL_RESIDUES``: VRT, XXX)."""
+    dropped = []
+    for seg in structure.segments:
+        for res in seg:
+            if res.name.strip().upper() in VIRTUAL_RESIDUES:
+                dropped.append(res.label)
+                res.atoms = []
+    _drop_empty(structure)
+    if not dropped:
+        return []
+    return [f"Removed {len(dropped)} Rosetta virtual residue(s), no atoms of the molecule: "
+            + _listing(dropped)]
+
+
 def strip_5prime_phosphates(structure: Structure) -> List[str]:
     """Remove P/OP1/OP2/OP3 from the first nucleotide of every TER segment (Amber's 5'-terminal units
     have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5')."""
@@ -1042,15 +1282,22 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
           combine_into: Optional[str] = None, sort_chains: Union[bool, Sequence[str]] = False,
           renumber: bool = False, start: int = 1, per_chain: bool = False, keep_gaps: bool = False,
           seqres: bool = False, make_fasta: bool = False, title: Optional[str] = None,
-          terminal_names: bool = True, strip_5p: bool = False) -> CleanResult:
+          terminal_names: bool = True, strip_5p: bool = False, strip_h: bool = False,
+          drop_virtual: bool = False) -> CleanResult:
     """Read, fix and write a PDB file in one call; returns the text plus change notes.
 
-    Order: parse (ChimeraX repair, first model) -> chain restore (``chain_reference`` / ``chain_ids`` /
+    Order: parse (ChimeraX repair, first model) -> Rosetta virtual residues (``drop_virtual``) and hydrogens
+    (``strip_h``) removed -> chain restore (``chain_reference`` / ``chain_ids`` /
     ``assign_chains``) -> chirality (detection unless ``detect_l`` is False; ``l_ranges`` force L and use
     the input residue numbers with the restored chain ids) -> split / combine / ``sort_chains`` (True =
     alphabetical, or an explicit order) -> 5'-phosphate removal (``strip_5p``) -> residue names (``scheme``) ->
     renumbering -> record policy
-    (``records``; None follows the scheme: 'rosetta' for rosetta, 'pdb' for pdb, else 'keep') -> writing.
+    (``records``; None follows the scheme: 'rosetta' for rosetta, 'pdb' for pdb, 'atom' for standard, else
+    'keep') -> writing.
+
+    ``scheme='amber', strip_5p=True, strip_h=True, drop_virtual=True`` turns a Rosetta decoy into a PDB for
+    tleap (L names from the geometry); ``scheme='standard'`` (with ``strip_h`` / ``drop_virtual``) writes the
+    copy for chirality-blind programs.
     """
     s = read_pdb(source)
     notes = list(s.notes)
@@ -1059,6 +1306,15 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         s.header = [line for line in s.header if not line.startswith("REMARK 950")]
         notes.append(f"Dropped {len(stale)} REMARK 950 base-pair annotation lines (they name the input "
                      "residues); annotate the cleaned file again if needed")
+    if drop_virtual:
+        notes += drop_virtual_residues(s)
+    elif scheme == "standard" and any(r.name.strip().upper() in VIRTUAL_RESIDUES for r in s.residues()):
+        notes.append("WARNING: the copy keeps Rosetta virtual residues (VRT / XXX), which a map-model score "
+                     "reads as atoms; --drop-virtual removes them")
+    if strip_h:  # before the 5'-phosphate removal, which puts an HO5' on residues that have hydrogens
+        notes += strip_hydrogens(s)
+    if not s.segments:
+        raise PDBError("no atoms left after removing hydrogens / virtual residues")
     if chain_reference is not None or chain_ids is not None or assign_chains:
         notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
     if detect_l or l_ranges:
@@ -1077,7 +1333,7 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         notes += convert_names(s, scheme, terminals=terminal_names)
     if renumber:
         notes += renumber_residues(s, start, per_chain, keep_gaps)
-    policy = records or {"rosetta": "rosetta", "pdb": "pdb"}.get(scheme or "", "keep")
+    policy = records or {"rosetta": "rosetta", "pdb": "pdb", "standard": "atom"}.get(scheme or "", "keep")
     notes += set_records(s, policy)
     if s.conect:
         notes.append(f"Stripped {len(s.conect)} CONECT records" if strip_conect else
@@ -1118,9 +1374,12 @@ def _clean_arguments(p) -> None:
     p.add_argument("input", help="PDB file")
     p.add_argument("--output", "-o", help="output PDB (default: print to stdout)")
     p.add_argument("--scheme", choices=SCHEMES, help="residue names: amber (LA/LA5... for the L-RNA force "
-                   "field), ccd (0A... for Coot/Phenix), rosetta (0A..., all ATOM), pdb")
+                   "field), ccd (0A... for Coot/Phenix), rosetta (0A..., all ATOM), pdb, standard (plain "
+                   "A/C/G/U for both hands and all ATOM, only for programs that ignore chirality)")
     p.add_argument("--records", choices=RECORD_POLICIES, help="ATOM/HETATM policy (default: follows the "
                    "scheme)")
+    p.add_argument("--strip-h", action="store_true", help="remove hydrogens (tleap rebuilds them)")
+    p.add_argument("--drop-virtual", action="store_true", help="remove Rosetta's virtual residues (VRT, XXX)")
     p.add_argument("--no-terminal-names", action="store_true", help="chain ends keep the internal names "
                    "(LA, not LA5/LA3), for libraries that map terminals with addPdbResMap")
     p.add_argument("--keep-conect", action="store_true", help="keep CONECT records (stripped by default "
@@ -1163,7 +1422,8 @@ def clean_options(args) -> Dict[str, object]:
                 combine=ids(args.combine), combine_into=args.combine_into, sort_chains=args.sort_chains,
                 renumber=args.renumber, start=args.start, per_chain=args.per_chain, keep_gaps=args.keep_gaps,
                 seqres=args.seqres, make_fasta=bool(args.fasta), terminal_names=not args.no_terminal_names,
-                strip_5p=args.strip_5p)
+                strip_5p=args.strip_5p, strip_h=getattr(args, "strip_h", False),
+                drop_virtual=getattr(args, "drop_virtual", False))
 
 
 def add_commands(sub) -> list:
@@ -1173,6 +1433,13 @@ def add_commands(sub) -> list:
     k = sub.add_parser("check", help="report chains, sequences, residue names and sugar chirality")
     k.add_argument("input", help="PDB file")
     k.add_argument("--l-ranges", help="residues to treat as L, e.g. 'C:45-73'")
+    k.add_argument("--expect-l", help="residues whose sugars must be L, e.g. 'C:45-73', 'C' or '*:45-73' "
+                   "(every chain)")
+    k.add_argument("--expect-d", help="residues whose sugars must be D, e.g. 'A,B'")
+    k.add_argument("--strict", action="store_true", help="exit with status 1 when a residue has the other "
+                   "hand than expected or cannot be measured, or a sugar has an epimerised or flat centre")
+    k.add_argument("--table", action="store_true", help="print the per-residue table (chain, residue, name, "
+                   "measured hands, C4'/C3'/C1' volumes, expectation, note) instead of the JSON summary")
     t = sub.add_parser("to-lrna", help="rename residues in ranges to L-RNA names (replaces to_lrna.sh)")
     t.add_argument("input", help="PDB file")
     t.add_argument("ranges", help="e.g. 'C:45-73' or 'A:1-5,A:9-12'")
@@ -1192,10 +1459,19 @@ def run(args, stdout=None, stderr=None) -> Tuple[int, Dict[str, object]]:
     if args.pdb_command == "check":
         s = read_pdb(args.input)
         notes = assign_chirality(s, detect=True, l_ranges=args.l_ranges or None)
+        expect_l, expect_d = getattr(args, "expect_l", None) or None, getattr(args, "expect_d", None) or None
+        rows = residue_hands(s, expect_l, expect_d)
+        hand_notes, problems = hand_summary(rows, bool(expect_l or expect_d))
         info = summary(s)
-        info["notes"] = list(info["notes"]) + notes
-        stdout.write(json.dumps(info, indent=2) + "\n")
-        return 0, info
+        info["notes"] = list(info["notes"]) + notes + hand_notes
+        info["problems"] = problems
+        if getattr(args, "table", False):
+            stdout.write(hands_table(rows))
+            for note in info["notes"] + problems:
+                stderr.write(f"pdbtools: {note}\n")
+        else:
+            stdout.write(json.dumps(info, indent=2) + "\n")
+        return (1 if getattr(args, "strict", False) and problems else 0), info
     if args.pdb_command == "to-lrna":
         res = to_lrna(args.input, args.ranges, scheme=args.scheme, terminals=not args.no_terminal_names)
     else:

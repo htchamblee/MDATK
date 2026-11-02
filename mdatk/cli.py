@@ -514,6 +514,12 @@ def cmd_pdb(args) -> int:
     return code
 
 
+def cmd_pdb_qc(args) -> int:
+    """'mdatk pdb qc': only reads (--passed-out / --best-out copy models), so the step log is left alone."""
+    from . import modelcheck
+    return modelcheck.run_qc(args)[0]
+
+
 def _pdb_annotate(args, name: str) -> int:
     from .annotate import annotate
     from .projectfile import logged
@@ -1016,6 +1022,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--project", "-p", "--params", dest="params",
                    help="project file whose step log records the annotation")
     c.set_defaults(func=cmd_pdb)
+    from .modelcheck import add_qc_arguments
+    c = psub.add_parser("qc", help="plausibility of models: clashes, O3'-P links, loop compaction, sugar "
+                                   "hands (text, --json or --tsv; gates, filtering and ranking of models)")
+    add_qc_arguments(c)
+    c.set_defaults(func=cmd_pdb_qc)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands

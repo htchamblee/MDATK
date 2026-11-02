@@ -59,6 +59,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [What was tested](#what-was-tested)
 - [PDB clean-up](#pdb-clean-up)
   - [Base-pair annotation](#base-pair-annotation)
+  - [Model checks](#model-checks)
 - [Structure builder](#structure-builder)
 - [Restraint dictionaries, real-space refinement and MDFF](#restraint-dictionaries-real-space-refinement-and-mdff)
   - [Restraint dictionaries for L-RNA (Coot / Phenix)](#restraint-dictionaries-for-l-rna-coot--phenix)
@@ -836,6 +837,7 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 |---|---|---|
 | **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise) |
 | **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr` | ranked models `…_model-01_….pdb` (best first) feed the Amber build |
+| **Model check (clashes · backbone · chirality)** | a script running MDATK's PDB tools and model checks (copied into the step folder, standard library only) on every connected model: a report table `…_report_….tsv`, the passed models and the best one | report, filter or stop; see [Model checks](#model-checks) |
 | **SimRNA** | `config.dat`, sequence, secondary-structure (pseudoknots on extra lines) and restraint files, parallel replica-exchange runs, clustering + all-atom rebuild (`clustering`, `SimRNA_trafl2pdbs … AA`) | links SimRNA's `data/` folder into every run folder |
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
 | **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming and name check, CP library, TIP4P/2005 files) and the build script | see below |
@@ -867,6 +869,15 @@ dry, imaged production trajectory. The engine is pmemd,
 pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
 the same input, the version is recorded in the scripts. The *Environment* section adds
 `conda activate` / `module load` / `source amber.sh` lines.
+
+**Input structure.** *Remove Rosetta virtual residues (VRT/XXX)* (on, part of *Prepare the PDB for
+tleap*) drops the virtual residues of density-scored Rosetta models, which tleap cannot type. *Check
+O3′–P links before tleap* (off by default; warn or stop) measures O3′(i)–P(i+1) of consecutive
+nucleotides in every TER segment of the PDB tleap reads (after the preparation and the L-RNA naming)
+against 1.4–2.0 Å with MDATK's model checks, copied into the step folder: tleap bonds them whatever the
+distance, so a chain break left in a model (Rosetta numbers continuously across its cutpoints) would
+become a strained bond. *Stop* ends the script before tleap; with an existing input PDB the planner
+measures the links when the plan is written.
 
 **L-RNA.** *Name L-nucleotides for leap* (on by default) runs MDATK's PDB tools, copied into the step
 folder, on the starting structure before tleap: residues whose sugar chirality (C1′, C3′, C4′) is L
@@ -1184,9 +1195,15 @@ keeps coordinates, occupancies and B-factors verbatim:
   library; a single-residue L segment gets the 5′ unit), `ccd` for Coot / Phenix (L: 0A 0C 0G 0U and
   0A5/0A3 … - these terminal variants are not CCD entries; a 5′ end that keeps its phosphate is named
   after the component itself, e.g. 0G), `rosetta` (L: 0A …, no terminal variants,
-  every polymer residue as ATOM because Rosetta ignores HETATM residues) and `pdb` (non-standard
-  residues as HETATM). Any of these, plus common aliases (RA, G5, ADE …), is recognised on input;
-  DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
+  every polymer residue as ATOM because Rosetta ignores HETATM residues), `pdb` (non-standard
+  residues as HETATM) and `standard` (plain A C G U for both hands and every record ATOM: a copy for
+  programs that read standard RNA only and ignore chirality, such as map-model scores (Q-score) and
+  DSSR; a warning says that the names no longer record the hand, so the copy is never meant for tleap,
+  refinement or name-based analyses). Any of these, plus common aliases (RA, G5, ADE …), is recognised
+  on input; DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
+- **Hydrogens and Rosetta's virtual residues**: `--strip-h` removes hydrogens (element column, else the
+  name), `--drop-virtual` the VRT / XXX residues Rosetta writes into density-scored models (no atoms of
+  the molecule: tleap cannot type them, and a map-model score would read them as atoms).
 - **CONECT** records are stripped by default (until final deposition processing).
 - **5′ phosphates**: `--strip-5p` (window: *Remove 5′-terminal phosphates*, ticked automatically for
   the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
@@ -1197,8 +1214,18 @@ keeps coordinates, occupancies and B-factors verbatim:
 - **Numbering**: continuous across chains (default) or restarting per chain, optional start number
   and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked).
 
+`mdatk pdb check` also measures every sugar: `--expect-l` / `--expect-d RANGES` give the hands
+expected (`C:45-73`, `A,B`, `*:45-73` for every chain), `--strict` exits with status 1 when a residue
+has the other hand, cannot be measured where a hand is expected, or has an epimerised (C3′ or C1′
+against the other centres), contradicting or flat centre, and `--table` prints one line per residue
+(name, the hand the name implies, the three-centre call, the C4′ hand alone, the C4′ / C3′ / C1′
+volumes, the expectation and a note).
+
 ```bash
 mdatk pdb check model.pdb                                   # chains, sequences, names, chirality (JSON)
+mdatk pdb check refined.pdb --expect-l C --expect-d A,B --strict --table   # every sugar, per residue
+mdatk pdb clean decoy.pdb -o amber.pdb --scheme amber --strip-5p --strip-h --drop-virtual  # decoy for tleap
+mdatk pdb clean decoy.pdb -o std.pdb --scheme standard --strip-h --drop-virtual   # for a Q-score program
 mdatk pdb clean rosetta.pdb -o amber.pdb --scheme amber     # L names from the geometry
 mdatk pdb clean cpptraj.pdb -o fixed.pdb --chain-reference start.pdb --scheme amber
 mdatk pdb clean chimerax.pdb -o rosetta.pdb --scheme rosetta --l-ranges C --renumber --keep-gaps
@@ -1236,6 +1263,64 @@ mdatk pdb annotate model.pdb -o annotated.pdb --engine builtin --no-stacking
 
 `--no-pairs`, `--no-stacking` and `--no-dotbracket` leave record types out; `-p PROJECT` logs the
 step (with the Barnaba citation when it was used).
+
+### Model checks
+
+`mdatk pdb qc MODEL.pdb …` and the planner step *Model check (clashes · backbone · chirality)* look
+for what a score, a map fit and the base pairs do not show: atoms pressed together, a chain break that
+tleap would bond anyway, a loop coiled into a knot, a ribose of the wrong hand. Both run the same code
+(`mdatk/modelcheck.py` on top of the PDB tools, standard library only); residues are addressed by
+chain, number and insertion code, and every range is written as for the PDB tools (`A:7-12, B:25-34`,
+`C` for a whole chain, `*:45-73` for every chain; in the step also `group:NAME` for a residue group).
+
+- **Clashes**: heavy atoms closer than their van der Waals contact (Bondi radii) by at least 0.4 Å
+  (`--clash-tol`), listed with the overlap. An N/O pair with a donor on either side is a hydrogen bond
+  between 2.2 and 3.2 Å (`--hbond-min` / `--hbond-max`), not a clash, and closer than 2.2 Å a clash
+  (no room for the hydrogen). Donors follow the base (2′-OH; A N6; G N1, N2; C N4; U N3), plus terminal
+  5′/3′ hydroxyls, A N1 / C N3 of residues given with `--protonated`, waters, and the N/O atoms of
+  other residues; two pure acceptors (a phosphate oxygen and O4′, say) never H-bond. A carbon one bond
+  from an H-bonded atom, against its partner and no closer than the H-bond itself, is the same contact
+  and is not counted either. Atoms up to three bonds apart (four for a hydrogen) are left out, along
+  the bonds of the nucleotide templates and the O3′–P links of each TER segment, so neighbouring
+  residues (stacking, sugar–base) and all chains are checked. Waters and ions are skipped unless asked
+  for (`--waters`, `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is
+  coordination); hydrogens are optional (`--hydrogens`).
+- **Backbone**: O3′(i)–P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them:
+  longer than 2.0 Å a break, shorter than 1.4 Å an overlap, a missing atom an unmeasurable link
+  (`--link-min`, `--link-max`); consecutive P–P outside 5.0–7.5 Å are reported.
+- **Loop compaction**: end-to-end distance over contour length along C1′ for `--segments` and for the
+  runs of three or more residues unpaired in every `--secstruct` file given (two registers of one
+  sequence, say: a segment that is a hairpin in one and a strand in the other is left out). Below 0.20
+  (`--compaction-flag`) a loop is flagged for inspection; there is no verdict: a loop is meant to turn.
+- **Sugar hands** from the C4′, C3′ and C1′ geometry (never from the names, which a Rosetta silent file
+  does not keep), against `--expect-l` / `--expect-d`; epimers and flat centres are named.
+- **Decoy table** (`--scores`): Rosetta score terms per decoy (columns `run`, `tag`, `pdb` relative to
+  the plan root, then the terms by name), matched to the models by path, file name or tag:
+  `--score-terms` copies terms into the report, `--score-limits 'linear_chainbreak<=1'` gates on them,
+  `--order score` ranks by `--rank-term`.
+- **Gates** (`--max-clashes`, links and hands on by default, `--gate-pp`, score limits) and what happens
+  to failing models: `--on-fail report` (default; all models passed on), `filter` (only those that pass,
+  `--pass N` of them, else status 1) or `stop` (status 1 when any fails). `--passed-out
+  'passed-{n:02d}.pdb'` and `--best-out` copy the models passed on (in input order, `--order clashes` or
+  `--order score`). The report is text, `--tsv` (one row per model) or `--json`, with `-o FILE` for the
+  table while the text goes to the screen.
+
+```bash
+mdatk pdb qc model-*.pdb --segments 'A:7-12, B:25-34, C:58-63' --expect-d A,B --expect-l C
+mdatk pdb qc decoys/*.pdb --secstruct presentation.secstruct --secstruct invasion.secstruct \
+    --scores decoys.tsv --score-terms score,linear_chainbreak --on-fail filter --pass 5 --order score \
+    --passed-out 'passed-{n:02d}.pdb' --best-out best.pdb --tsv -o qc.tsv
+```
+
+The planner step takes the models (several), optional secondary structures and an optional decoy
+table (the FARFAR2 models step's `scores`), and writes the report (table), the passed models and the
+best one (the first passed). *Expected hands* is automatic by default: the hands measured on the first
+connected model when the plan is written (when it exists then), or the hand of a builder helix;
+*Ranges* takes them typed. Its script copies MDATK's PDB tools and model checks into the step folder,
+so the machine that runs it needs `python3` only, and removes the outputs of an earlier run first, so
+a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`, `chirality.py`
+and `bbcheck.py`; `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual` replaces
+`to_amber.py`, and `--scheme standard` the renaming of `q_prep.py`.
 
 ## Structure builder
 
@@ -1661,7 +1746,7 @@ mdatk workflow generate user-script -i NAME=PATH --set source=file --set script_
     --set interpreter=bash|python3|custom [--set command=CMD] --set 'inputs=[...]' \
     --set 'outputs=[...]' --set 'arguments=...'      a custom script step (see Custom scripts)
 mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] -o OUT.dist
-mdatk pdb check|clean|to-lrna|annotate   (see PDB clean-up)
+mdatk pdb check|clean|to-lrna|annotate|qc   (see PDB clean-up and Model checks)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 ```

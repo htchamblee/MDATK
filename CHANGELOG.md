@@ -12,6 +12,40 @@ the notes below.
   [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) · [0.0.2b](#002b-2026-10-15) ·
   [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## 0.0.12 (unreleased)
+
+### Model checks
+
+- **`mdatk pdb qc MODEL.pdb …`** (`mdatk/modelcheck.py`, standard library only): clashes as overlap inside
+  Bondi contact (0.4 Å), N/O pairs with a donor counted as hydrogen bonds from 2.2 to 3.2 Å (donors by
+  base, terminal hydroxyls, protonated A⁺ / C⁺ on request; two acceptors never), carbon contacts beside
+  an H-bond excused only when no closer than the H-bond, exclusions along bonds (up to three, four for
+  hydrogens) instead of residue numbers, every chain and neighbouring residue checked, waters and ions
+  skipped or (ions) checked against first-shell distances, hydrogens optional; O3′–P links within every
+  TER segment (1.4–2.0 Å) and P–P spacing; loop compaction for typed ranges or the residues unpaired in
+  every given dot-bracket; sugar hands from the geometry against expected ranges, epimers named; a
+  decoy table (`--scores`: run, tag, pdb, score terms) for report columns, limits and ranking; gates with
+  `--on-fail report|filter|stop`, text, `--tsv` or `--json` reports, copies of the passed and best models.
+- **Planner step *Model check (clashes · backbone · chirality)*** (Structure prediction): models (several),
+  optional secondary structures and decoy table in; a report table, the passed models and the best one
+  out. Expected hands are measured on the first model when the plan is written (or typed, or none); range
+  options take `group:NAME`. The script runs a copy of the PDB tools and the model checks (`python3`
+  only) and removes the outputs of an earlier run before it starts.
+- **`mdatk pdb check`**: `--expect-l` / `--expect-d RANGES`, `--strict` (status 1 for a residue of the
+  other hand, an unmeasurable expected one, or an epimerised, contradicting or flat centre) and `--table`
+  (per residue: the three-centre call, the C4′ hand alone, the volumes, the expectation, a note).
+- **PDB tools**: `infer_base` (the base from the atom names, for residue names that are not
+  recognised) and `nucleotide(..., infer=True)`; `--strip-h`, `--drop-virtual` (Rosetta's VRT / XXX) and
+  the scheme `standard` (plain A C G U for both hands, every record ATOM, with a warning that the names no
+  longer record the hand), so `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual`
+  turns a Rosetta decoy into a tleap input and `--scheme standard` makes the copy for chirality-blind
+  programs; the record policy `atom`; ranges accept `*` for every chain where hands are expected.
+- **Amber build**: *Remove Rosetta virtual residues (VRT/XXX)* in the PDB preparation, on by default
+  (tleap cannot type them, so only builds that failed change), and *Check O3′–P links before tleap*
+  (off, warn or stop; off by default), also measured on an existing input PDB when the plan is written.
+  Generated files are unchanged apart from the two helpers that copy library code: the PDB tools and the
+  PDB preparation (listed as intended in `tests/test_golden.py`).
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own
