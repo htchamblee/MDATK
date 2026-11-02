@@ -69,7 +69,8 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 import numpy as np
 
-from .pdbtools import PDBError, Structure, parse_ranges, parse_residue_name, read_pdb, sugar_chirality
+from .pdbtools import (PDBError, Structure, infer_base, parse_ranges, parse_residue_name, read_pdb,
+                       sugar_chirality)
 
 Range = Tuple[Optional[str], Optional[int], Optional[int]]  # (chain, None: any chain; first, last; None: all)
 Key = Tuple[str, int, str]  # (chain, residue number, insertion code)
@@ -198,21 +199,11 @@ def sides_overlap(a: Sequence[Range], b: Sequence[Range]) -> List[str]:
 
 def _infer_base(atom_names: Iterable[str]) -> Optional[str]:
     """Base letter from the atoms of a residue whose name is not a known nucleotide name; None when the
-    atoms do not make a nucleotide base.  (Private copy; pdbtools gains a shared one.)"""
+    atoms do not make a complete base ring (a fragment is never guessed)."""
     names = set(atom_names)
     if not set(PYRIMIDINE_RING) <= names:
         return None
-    if {"N7", "C8", "N9"} <= names:
-        if "O6" in names:
-            return "G"
-        if "N6" in names:
-            return "A"
-        return None
-    if "N4" in names:
-        return "C"
-    if "O4" in names:
-        return "T" if ("C7" in names or "C5M" in names) and "O2'" not in names else "U"
-    return None
+    return infer_base(names)
 
 
 def _is_hydrogen(name: str, element: str) -> bool:
