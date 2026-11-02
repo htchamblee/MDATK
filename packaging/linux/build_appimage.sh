@@ -116,13 +116,13 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp -a "$DIST" "$APPDIR/usr/lib/mdatk"
 install -m 755 "$HERE/AppRun" "$APPDIR/AppRun"
-# The desktop file of the source tree, with the bundled icon. Its "RNAdo" action becomes
+# The desktop-entry template (mdatk/assets), with the bundled icon. Its "RNAdo" action becomes
 # "mdatk-gui rnado %f": desktop integration (AppImageLauncher, appimaged) replaces the program of every
 # Exec line with the AppImage, and AppRun starts "mdatk rnado" for a first argument "rnado". The
 # X-AppImage-Version line goes into the main group, before the action group.
 sed -e '/^Icon=rnado$/!s/^Icon=.*/Icon=mdatk/' -e 's/^Exec=mdatk-gui .*/Exec=mdatk-gui %f/' \
     -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' \
-    -e "/^Actions=/i X-AppImage-Version=$VERSION" "$ROOT/data/mdatk.desktop" \
+    -e "/^Actions=/i X-AppImage-Version=$VERSION" "$ROOT/mdatk/assets/mdatk.desktop" \
     > "$APPDIR/usr/share/applications/mdatk.desktop"
 grep -q '^X-AppImage-Version=' "$APPDIR/usr/share/applications/mdatk.desktop" ||
     sed -i "/^\[Desktop Entry\]/a X-AppImage-Version=$VERSION" "$APPDIR/usr/share/applications/mdatk.desktop"
@@ -132,14 +132,15 @@ cp "$WORK/icons/mdatk.png" "$APPDIR/mdatk.png"
 ln -sf mdatk.png "$APPDIR/.DirIcon"
 # RNAdo: its icon in every size (the action's Icon=rnado) and its own desktop file for reference;
 # only the root desktop file (MDATK) is integrated, so RNAdo is started through the action,
-# "MDATK-*.AppImage rnado [PROJECT]" or a symbolic link named "rnado" to the AppImage (see AppRun)
+# "MDATK-*.AppImage rnado [PROJECT]" or a symbolic link named "rnado" to the AppImage (see AppRun);
+# "MDATK-*.AppImage desktop install" (or the GUI's menu item) puts both entries into the user's menu
 for png in "$ROOT"/mdatk/assets/rnado-icon-*.png; do
     size="$(basename "$png" .png)"
     size="${size#rnado-icon-}"
     install -D -m 644 "$png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/rnado.png"
 done
 install -D -m 644 "$ROOT/mdatk/assets/rnado-icon.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/rnado.svg"
-sed -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' -e '/^#/d' "$ROOT/data/rnado.desktop" \
+sed -e 's/^Exec=rnado-gui /Exec=mdatk-gui rnado /' -e '/^#/d' "$ROOT/mdatk/assets/rnado.desktop" \
     > "$APPDIR/usr/share/applications/rnado.desktop"
 
 echo "== appimagetool"

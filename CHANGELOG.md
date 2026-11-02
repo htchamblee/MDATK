@@ -281,6 +281,36 @@ the notes below.
     and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
     written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
 
+### MDATK and RNAdo in the applications menu
+
+- **An RNAdo menu entry from the AppImage, too.** Desktop integration takes one desktop entry from an
+  AppImage (MDATK's, with an RNAdo action), so RNAdo had no launcher of its own there. *Add MDATK and
+  RNAdo to the applications menu…* (main menu of the analysis window and of RNAdo), `mdatk desktop
+  install` or `rnado --install-launchers` (`rnado-gui --install-launchers` too) writes `mdatk.desktop` and
+  `rnado.desktop` into `$XDG_DATA_HOME/applications` (`~/.local/share`) and their icons into
+  `…/icons/hicolor/<size>/apps` (`mdatk.png`, `rnado.png` in every size, `scalable/apps/rnado.svg`).
+  The window lists the files and the commands first, then what it wrote; in the AppImage (and a bundle
+  folder) it warns that the entries hold the current path, so moving the file breaks them.
+- **The entries start what is running** (`mdatk/launchers.py`, from `mdatk.gui.launch.launch_mode`): the
+  AppImage (`"$APPIMAGE" gui %f` / `rnado %f`; without FUSE with `env APPIMAGE_EXTRACT_AND_RUN=1`), the
+  programs of a bundle folder (`mdatk gui`, `mdatk-gui` where there is one, `rnado-gui`; an extracted
+  AppImage's `AppRun`), the `mdatk-gui` / `rnado-gui` scripts that run this Python (venv `bin`, user
+  `bin`, `PATH`; recognised by their `#!` line, pip's `/bin/sh` form included) or `<python> -m mdatk gui`
+  / `-m mdatk.gui.rnado`, and a source checkout that is not installed with `env PYTHONPATH=<checkout>`.
+  Arguments are quoted as the Desktop Entry Specification asks (tested through GLib, and by launching an
+  entry whose program path has a space and a `$`).
+- **Only MDATK's own files are touched.** Each file carries `X-MDATK-Installed=<version>` (a desktop-entry
+  key, a PNG `tEXt` chunk, an SVG comment); files of the same name without it are left alone and listed
+  (`--replace` moves them to `*.bak` first); files are written through a temporary file. `mdatk desktop
+  uninstall` (or *Remove them* in the window) removes the marked files of any version and nothing else;
+  `mdatk desktop status` shows each file (`installed`, `outdated`, `missing`, `not MDATK's`) and the
+  commands. `update-desktop-database` and `gtk-update-icon-cache` (the latter only for a theme folder
+  that has a cache) run when installed and never make it fail. On Windows the menu item and the command
+  say that the installer made the Start-menu entries, and write nothing.
+- **Package data:** the desktop-entry templates moved from `data/` to `mdatk/assets/` (installed and
+  bundled with the icons; the AppImage build reads them there), and the MDATK icon is committed as
+  `mdatk/assets/mdatk-icon-<size>.png` (16–256 px), drawn by `packaging/make_icon.py --assets`.
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own

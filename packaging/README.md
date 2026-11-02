@@ -22,7 +22,7 @@ its own (see [RNAdo](#rnado)).
 | `entry_cli.py`, `entry_gui.py` | entry scripts; call `mdatk.frozen.setup()` first, then `mdatk.cli.main` |
 | `entry_rnado.py` | entry script of `rnado-gui`: `mdatk.frozen.setup()`, then `mdatk.gui.rnado.main` with every argument |
 | `trim.py` | what the builds leave out (module excludes, data/library filters); `python packaging/trim.py DIR` prints a size report |
-| `make_icon.py` | draws the MDATK icon (PNG + ICO) with Pillow at build time; puts `rnado.ico` together from the committed RNAdo PNGs |
+| `make_icon.py` | draws the MDATK icon (PNG + ICO) with Pillow at build time; puts `rnado.ico` together from the committed RNAdo PNGs; `--assets` redraws the committed `mdatk/assets/mdatk-icon-<size>.png` (the icons of `mdatk desktop install`) |
 | `make_rnado_art.py` | draws the RNAdo logo, wordmark banner and icons (`mdatk/assets`, committed) from MDATK's own A-form RNA model; run it after changing the art |
 | `collect_licenses.py` | writes `licenses/` into the bundle: licence files of every bundled Python distribution, system package copyright files (dpkg / rpm / pacman), FFmpeg notice, `THIRD_PARTY_NOTICES.txt` |
 | `notices/FFMPEG.txt` | FFmpeg licence / source notice template |
@@ -120,10 +120,10 @@ start it like this:
 
 | Build | RNAdo |
 |---|---|
-| AppImage | `./MDATK-<version>-x86_64.AppImage rnado [PROJECT]`, or a symbolic link to the AppImage named `rnado` (`ln -s MDATK-*.AppImage ~/bin/rnado`); the MDATK desktop entry has an "RNAdo" action (right-click on the launcher) once the AppImage is integrated (AppImageLauncher, appimaged) |
+| AppImage | `./MDATK-<version>-x86_64.AppImage rnado [PROJECT]`, or a symbolic link to the AppImage named `rnado` (`ln -s MDATK-*.AppImage ~/bin/rnado`); the MDATK desktop entry has an "RNAdo" action (right-click on the launcher) once the AppImage is integrated (AppImageLauncher, appimaged); `./MDATK-<version>-x86_64.AppImage desktop install` (or the GUI's *Add MDATK and RNAdo to the applications menu…*) adds an RNAdo entry of its own |
 | bundle folder (Linux, Windows) | `rnado-gui [PROJECT]` (`rnado-gui.exe` on Windows) next to `mdatk` |
 | Windows installer | Start menu "RNAdo", optional desktop shortcut |
-| source / pip install | `rnado` / `rnado-gui` (console and gui scripts of `pyproject.toml`); `data/rnado.desktop` is the desktop entry |
+| source / pip install | `rnado` / `rnado-gui` (console and gui scripts of `pyproject.toml`); `mdatk desktop install` adds the menu entries (templates `mdatk/assets/mdatk.desktop`, `rnado.desktop`) |
 
 Every further argument is passed on (the analysis window adds `--open TOOL`). An AppImage has
 one integrated desktop entry, so RNAdo is not a separate launcher there: the AppDir carries
@@ -131,6 +131,19 @@ one integrated desktop entry, so RNAdo is not a separate launcher there: the App
 (`usr/share/icons/hicolor/*/apps/rnado.png`, `scalable/apps/rnado.svg`) for tools that read them,
 and the MDATK entry's "RNAdo" action becomes `AppImage rnado %f` when desktop integration replaces
 the program of each `Exec` line.
+
+Menu entries of their own for both programs come from MDATK itself (`mdatk/launchers.py`):
+`./MDATK-*.AppImage desktop install` (`mdatk desktop install` elsewhere, `rnado --install-launchers`, or
+the GUI's *Add MDATK and RNAdo to the applications menu…*) writes `mdatk.desktop` and `rnado.desktop`
+into `~/.local/share/applications` (`$XDG_DATA_HOME`) and the icons of `mdatk/assets` into
+`~/.local/share/icons/hicolor`. The `Exec` lines start what runs: the AppImage at `$APPIMAGE` (`gui %f`,
+`rnado %f`; with `APPIMAGE_EXTRACT_AND_RUN=1` when it runs without FUSE), the programs of a bundle folder
+(`mdatk gui`, `rnado-gui`; an extracted AppDir's `AppRun`), or the scripts of a pip / venv installation.
+They hold that path, so moving the AppImage or the folder breaks them until they are added again. Every
+file carries `X-MDATK-Installed`; `desktop uninstall` removes only those, `desktop status` shows them.
+The templates are `mdatk/assets/mdatk.desktop` and `rnado.desktop` (package data, so pip installs and
+the bundles have them; `build_appimage.sh` reads them there too). On Windows the installer's Start-menu
+entries do this job, and `desktop install` says so.
 
 The logo, wordmark banner and icons in `mdatk/assets` (installed and bundled as package data) are
 drawn by `make_rnado_art.py` from the ideal A-form duplex of MDATK's own builder (P-atom ribbons,

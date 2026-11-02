@@ -192,6 +192,13 @@ def cmd_gui(args) -> int:
     return gui_main([args.params] if args.params else [])
 
 
+def cmd_desktop(args) -> int:
+    """'mdatk desktop install|uninstall|status': MDATK and RNAdo in the applications menu
+    (:mod:`mdatk.launchers`)."""
+    from . import launchers
+    return launchers.run(args.desktop_command, replace=getattr(args, "replace", False))
+
+
 def cmd_demo(args) -> int:
     from .demo import build_demo
 
@@ -995,6 +1002,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gui)
     sub.add_parser("rnado", help="RNAdo, the workflow planner: 'mdatk rnado [PROJECT]' opens it, 'mdatk "
                                  "rnado ACTION ...' is 'mdatk workflow ACTION ...' (see: rnado --help)")
+    p = sub.add_parser("desktop", help="MDATK and RNAdo in the applications menu: desktop entries and icons "
+                                       "in ~/.local/share (Linux), starting this installation or AppImage")
+    dsub = p.add_subparsers(dest="desktop_command", metavar="action")
+    d = dsub.add_parser("install", help="write mdatk.desktop, rnado.desktop and their icons (files MDATK did "
+                                        "not write are left alone)")
+    d.add_argument("--replace", action="store_true",
+                   help="move entries and icons MDATK did not write aside (FILE.bak) and write MDATK's")
+    d.set_defaults(func=cmd_desktop)
+    dsub.add_parser("uninstall", help="remove the entries and icons MDATK wrote (marked X-MDATK-Installed), "
+                                      "nothing else").set_defaults(func=cmd_desktop)
+    dsub.add_parser("status", help="what is installed and what the entries start").set_defaults(
+        func=cmd_desktop)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("demo", help="write a synthetic RNA aptamer/target system and project file")
     p.add_argument("out_dir")
@@ -1296,6 +1316,9 @@ def rnado_gui_parser() -> argparse.ArgumentParser:
     parser.add_argument("project", nargs="?", help="project file (.mdatk.toml) to open")
     parser.add_argument("--open", choices=RNADO_TOOLS,
                         help="also open the script wizard, the PDB clean-up or the structure builder")
+    parser.add_argument("--install-launchers", action="store_true",
+                        help="add MDATK and RNAdo to the applications menu and quit (the same as: mdatk "
+                        "desktop install)")
     return parser
 
 
@@ -1305,7 +1328,9 @@ def rnado_main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in WORKFLOW_ACTIONS:
         return main(["workflow"] + argv)
-    rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    args = rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    if args.install_launchers:
+        return main(["desktop", "install"])
     return _rnado_window(argv)
 
 

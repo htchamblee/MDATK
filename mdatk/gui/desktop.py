@@ -1,4 +1,5 @@
-"""Open folders and files with the user's desktop applications."""
+"""Open folders and files with the user's desktop applications, and put MDATK and RNAdo into the
+applications menu (:func:`add_launchers`, the same menu item in both windows)."""
 
 from __future__ import annotations
 
@@ -6,11 +7,19 @@ import glob
 import os
 import shutil
 import subprocess
-from typing import Optional
+from typing import Callable, Optional
 
-from gi.repository import Gio, GLib
+import gi
 
-from ..frozen import child_env
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
+
+from ..frozen import child_env  # noqa: E402
+from .projectui import ask  # noqa: E402
+
+LAUNCHERS_ITEM = "Add MDATK and RNAdo to the applications menu…"
+LAUNCHERS_TIP = ("Desktop entries for MDATK and RNAdo, with their icons, in your applications menu "
+                 "(~/.local/share), starting this installation or AppImage; asks first and lists the files")
 
 
 def _uri(path: str) -> str:
@@ -82,3 +91,62 @@ def latest_video(out_dir: str, filename: str) -> Optional[str]:
     candidates = glob.glob(os.path.join(out_dir, f"{glob.escape(root)}*{ext}"))
     candidates = [c for c in candidates if not os.path.basename(c).startswith(".")]
     return max(candidates, key=os.path.getmtime) if candidates else None
+
+
+def add_launchers(parent: Optional[Gtk.Window], info: Callable[[str, str], None],
+                  error: Callable[[str, str], None]) -> str:
+    """The menu item :data:`LAUNCHERS_ITEM` (:mod:`mdatk.launchers`): asks with the files it writes and what
+    the entries start (and, in the AppImage, that moving the file breaks them), then writes them, or
+    removes MDATK's when asked to; ``info`` / ``error`` (the window's, which also log) report the result.
+    Returns ``"installed"``, ``"removed"``, ``"cancelled"``, ``"unsupported"`` (Windows: the installer made
+    Start-menu entries) or ``"failed"``."""
+    from .. import launchers
+
+    why = launchers.unsupported()
+    if why:
+        info("MDATK and RNAdo have Start-menu entries already", why)
+        return "unsupported"
+    try:
+        found = launchers.status()
+        detail = launchers.plan_text(found)
+    except (OSError, ValueError) as exc:
+        error("Could not prepare the menu entries", str(exc))
+        return "failed"
+    buttons = [("Cancel", Gtk.ResponseType.CANCEL)]
+    if any(t.state in (launchers.INSTALLED, launchers.OUTDATED) for t in found):
+        buttons.append(("Remove them", Gtk.ResponseType.REJECT))
+    buttons.append(("Add to the menu", Gtk.ResponseType.ACCEPT))
+    response = ask(parent, "Add MDATK and RNAdo to the applications menu?", detail, buttons,
+                   Gtk.ResponseType.ACCEPT)
+    if response not in (Gtk.ResponseType.ACCEPT, Gtk.ResponseType.REJECT):
+        return "cancelled"
+    try:
+        if response == Gtk.ResponseType.REJECT:
+            result = launchers.uninstall()
+        else:
+            result = launchers.install()
+    except (OSError, RuntimeError, ValueError) as exc:
+        error("Could not write the menu entries" if response == Gtk.ResponseType.ACCEPT
+              else "Could not remove the menu entries", str(exc))
+        return "failed"
+    where = launchers.display_path(result.data_dir)
+    kept = "Left alone (not written by MDATK):\n" + launchers.listing(result.kept, result.data_dir)
+    if response == Gtk.ResponseType.REJECT:
+        parts = [f"Removed from {where}:\n" + launchers.listing(result.removed, result.data_dir)
+                 if result.removed else f"Nothing of MDATK's in {where}."]
+        info("MDATK and RNAdo were removed from the applications menu",
+             "\n\n".join(parts + ([kept] if result.kept else [])))
+        return "removed"
+    parts = []
+    if result.written:
+        parts.append(f"Written into {where}:\n" + launchers.listing(result.written, result.data_dir))
+    elif result.unchanged:
+        parts.append("They were there already: nothing changed.")
+    if result.kept:
+        parts.append(kept)
+    parts.append("Some desktops show new entries only after the next log-in.")
+    note = launchers.warning()
+    if note:
+        parts.append(note)
+    info("MDATK and RNAdo are in the applications menu", "\n\n".join(parts))
+    return "installed"
