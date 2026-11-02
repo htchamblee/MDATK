@@ -1203,12 +1203,12 @@ class AmberBuildTool(Tool):
 
     @staticmethod
     def _empty_slot_guard(pdb: str) -> List[str]:
-        """Script lines that stop the build when its structure is an empty slot of a model check (a filter
-        that passed on fewer models than it has slots), before any helper or tleap runs."""
+        """Script lines that stop the build when its structure is an empty slot of a model check (one that
+        passed on fewer models than it has slots), before any helper or tleap runs."""
         q = shell_quote(pdb)
         name = re.sub(r"[\"$`\\]", "_", os.path.basename(pdb))
-        return ["# The structure comes from a model check that passes on up to N models: an unfilled slot is",
-                "# a file with an 'empty slot' REMARK 951 and no atoms: there is nothing to build from it",
+        return ["# The structure comes from a model check's slots: a slot no model fills is a file with an",
+                "# 'empty slot' REMARK 951 and no atoms: there is nothing to build from it",
                 f"if grep -q '^REMARK 951 .*empty slot' {q}; then",
                 f"    echo \"ERROR: {name} is an empty slot of the model check ($(grep -m1 '^REMARK 951' {q} "
                 "| cut -c12-)): no model to build; tleap was not run\" >&2",

@@ -60,7 +60,11 @@ Residues are addressed by chain, number and insertion code throughout; ranges us
 '*:45-73' for every chain).  Models can be gated (``max_clashes``, links, hands, P-P spacing, kinks, limits on
 Rosetta score terms from a decoy table) and an ensemble filtered or ranked.  A filter fails only when fewer
 than ``min_pass`` models pass (1: none); it passes on up to N of them and writes the slots it cannot fill as
-empty-slot files (:func:`mdatk.pdbtools.empty_slot_text`), which every MDATK reader of models skips.
+empty-slot files (:func:`mdatk.pdbtools.empty_slot_text`); report and stop given ``--slots N`` do the same
+for fewer models than slots (inputs that were empty slots, a set of decoys that listed fewer than planned).
+MDATK's readers of model sets (this check, the decoy interfaces, the register census and ensemble
+comparison, the frame check, the map-model score) skip empty slots, ``read_pdb`` refuses one by name and
+an Amber build stops on one; programs that read one model (SimRNA, FARFAR2's -s, Phenix ...) do not check.
 
 Standard library only, so that the planner can copy this module (with :mod:`mdatk.pdbtools`) into the scripts
 it writes: ``mdatk pdb qc`` and the 'model-check' step run the same code.
@@ -1428,6 +1432,10 @@ def add_qc_arguments(p) -> None:
     g.add_argument("--pass", dest="n_pass", type=int, metavar="N", help="with --on-fail filter: pass on up "
                    "to N passing models in N slots, the slots that cannot be filled written as empty-slot "
                    "files (default: every model that passes, no slots)")
+    g.add_argument("--slots", type=int, metavar="N", help="with --on-fail report or stop: pass the models on "
+                   "in N slots, those no model fills (inputs that are empty slots, a set of decoys that "
+                   "lists fewer than planned) written as empty-slot files; more models than N fail (default: "
+                   "one per model, no slots)")
     g.add_argument("--min-pass", type=int, default=1, metavar="M", help="with --on-fail filter: fail when "
                    "fewer than M models pass (default 1: only when none does; 0: never)")
     g.add_argument("--order", choices=ORDERS, default="input", help="order of the passed models: input "
@@ -1517,15 +1525,21 @@ def validate_settings(st: QCSettings) -> None:
 
 def run_qc(args, stdout=None, stderr=None) -> Tuple[int, List[ModelReport]]:
     """Execute a parsed 'qc' command; returns (exit status, reports).  The report is written first, with 'M of
-    K models passed'.  Inputs that are empty slots (of an earlier filter) are skipped with a note.  Status 1
-    (and nothing copied): a model fails with --on-fail stop, fewer than --min-pass pass with filter, no model
-    is left to check, or, whatever the policy, a model cannot be read.  With filter and --pass N the passed
-    models fill N slots, and the slots left over are written as empty-slot files."""
+    K models passed'.  Inputs that are empty slots (of an earlier model check) are skipped with a note.
+    Status 1 (and nothing copied): a model fails with --on-fail stop, fewer than --min-pass pass with filter,
+    no model is left to check, more models are passed on than --slots, or, whatever the policy, a model
+    cannot be read.  With a number of slots (filter: --pass N; report and stop: --slots N) the passed models
+    fill them in order, and the slots left over are written as empty-slot files that say why."""
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     st = settings_from_args(args)
+    filtering = args.on_fail == "filter"
     if args.n_pass is not None and args.n_pass < 1:
         raise ValueError("--pass: at least 1 slot")
+    if args.slots is not None and filtering:
+        raise ValueError("--slots is for --on-fail report or stop (a filter's slots: --pass N)")
+    if args.slots is not None and args.slots < 1:
+        raise ValueError("--slots: at least 1 slot")
     if args.min_pass < 0:
         raise ValueError("--min-pass: 0 or more")
     terms = [t for t in re.split(r"[,\s]+", args.score_terms or "") if t]
@@ -1545,19 +1559,48 @@ def run_qc(args, stdout=None, stderr=None) -> Tuple[int, List[ModelReport]]:
         slot = pdbtools.empty_slot(path)
         if slot:
             empty.append(path)
-            stderr.write(f"note: skipped {path}: {slot} (an empty slot of an earlier filter, no model)\n")
+            stderr.write(f"note: skipped {path}: {slot} (an empty slot of a model check, no model)\n")
         else:
             models.append(path)
     reports = [check_model(path, st, table, path=path) for path in models]
-    passing = [r for r in ranked(reports, args.order, args.rank_term) if r.status == "pass"]
-    filtering = args.on_fail == "filter"
-    slots = (args.n_pass if args.n_pass is not None else len(passing)) if filtering else len(reports)
-    filled = min(len(passing), slots) if filtering else len(reports)
+    order = ranked(reports, args.order, args.rank_term)
+    passing = [r for r in order if r.status == "pass"]
+    bad = [r for r in reports if r.status != "pass"]
+    # the models passed on, in order, and how many passed files: a filter's slots (--pass N), or one per
+    # model planned (--slots N, counting inputs that are empty slots and the most a set of decoys can list);
+    # the slots no model fills are written as empty slots, which say why
+    chosen = (passing[:args.n_pass] if args.n_pass is not None else passing) if filtering else order
+    fixed = args.n_pass if filtering else args.slots
+    slots = len(chosen) if fixed is None else fixed
+    if filtering:
+        why = ""  # empty_slot_text's own: only M models passed
+    elif empty:
+        why = (f"only {len(chosen)} of {len(args.models)} inputs were models ({len(empty)} empty "
+               + ("slot)" if len(empty) == 1 else "slots)"))
+    else:
+        why = f"only {len(chosen)} models were given"
+    failure = ""  # decided before the tally, which names the files written only when they are
+    unreadable = [r for r in reports if r.error]
+    if unreadable:
+        failure = (f"{len(unreadable)} model(s) cannot be read: "
+                   + ", ".join(os.path.basename(r.path) for r in unreadable[:10]))
+    elif not reports and not (filtering and args.min_pass == 0):
+        failure = "no model to check" + (" (every input is an empty slot)" if empty else "")
+    elif filtering and len(passing) < args.min_pass:
+        failure = f"{len(passing)} of {len(reports)} models pass the gates; at least {args.min_pass} needed"
+    elif args.on_fail == "stop" and bad:
+        failure = (f"{len(bad)} of {len(reports)} models fail the gates: "
+                   + ", ".join(os.path.basename(r.path) for r in bad[:10]))
+    elif len(chosen) > slots:
+        failure = f"{len(chosen)} models to pass on in {slots} slot(s) (--slots {slots})"
+    filled = min(len(chosen), slots)
     tally = (f"{len(passing)} of {len(reports)} models passed the gates"
-             + (f" ({len(empty)} empty slot(s) among the inputs skipped)" if empty else "")
-             + (f"; passed on {filled} in {slots} slot(s)" if filtering and args.n_pass is not None else "")
-             + ("" if not filtering or slots <= filled else f", slot {slots} written empty"
-                if slots == filled + 1 else f", slots {filled + 1}-{slots} written empty"))
+             + (f" ({len(empty)} empty slot(s) among the inputs skipped)" if empty else ""))
+    if not failure and fixed is not None and (filtering or slots > filled):
+        tally += f"; passed on {filled} in {slots} slot(s)"
+        if args.passed_out and slots > filled:
+            tally += (f", slot {slots} written empty" if slots == filled + 1
+                      else f", slots {filled + 1}-{slots} written empty")
     text_out = args.output or not (args.json or args.tsv)
     if args.json or args.tsv:
         text = (json.dumps([report_data(r, terms) for r in reports], indent=2) + "\n" if args.json
@@ -1580,42 +1623,20 @@ def run_qc(args, stdout=None, stderr=None) -> Tuple[int, List[ModelReport]]:
         if len(reports) > 1:
             stdout.write(summary_text(reports) + "\n")
     (stdout if text_out else stderr).write(tally + "\n")
-    order = ranked(reports, args.order, args.rank_term)
-    unreadable = [r for r in reports if r.error]
-    if unreadable:
-        stderr.write(f"ERROR: {len(unreadable)} model(s) cannot be read: "
-                     + ", ".join(os.path.basename(r.path) for r in unreadable[:10]) + "\n")
+    if failure:
+        stderr.write(f"ERROR: {failure}\n")
         return 1, reports
-    if not reports and not (filtering and args.min_pass == 0):
-        stderr.write("ERROR: no model to check" + (" (every input is an empty slot)" if empty else "") + "\n")
-        return 1, reports
-    if filtering:
-        if len(passing) < args.min_pass:
-            stderr.write(f"ERROR: {len(passing)} of {len(reports)} models pass the gates; at least "
-                         f"{args.min_pass} needed\n")
-            return 1, reports
-        chosen = passing[:slots]
-    elif args.on_fail == "stop":
-        bad = [r for r in reports if r.status != "pass"]
-        if bad:
-            stderr.write(f"ERROR: {len(bad)} of {len(reports)} models fail the gates: "
-                         + ", ".join(os.path.basename(r.path) for r in bad[:10]) + "\n")
-            return 1, reports
-        chosen = order
-    else:
-        chosen = order
-        bad = [r for r in reports if r.status != "pass"]
-        if bad:
-            stderr.write(f"WARNING: {len(bad)} of {len(reports)} models fail the gates (reported only): "
-                         + ", ".join(os.path.basename(r.path) for r in bad[:10]) + "\n")
+    if bad and args.on_fail == "report":
+        stderr.write(f"WARNING: {len(bad)} of {len(reports)} models fail the gates (reported only): "
+                     + ", ".join(os.path.basename(r.path) for r in bad[:10]) + "\n")
     if args.passed_out:
-        for n in range(1, (slots if filtering else len(chosen)) + 1):
+        for n in range(1, slots + 1):
             dst = args.passed_out.format(n=n)
             if n <= len(chosen):
                 shutil.copyfile(chosen[n - 1].path, dst)
-            else:  # fixed arity downstream, without pretending that N models passed
+            else:  # as many files as planned downstream, without pretending that they hold models
                 with open(dst, "w", encoding="utf-8") as fh:
-                    fh.write(pdbtools.empty_slot_text(n, slots, len(passing)))
+                    fh.write(pdbtools.empty_slot_text(n, slots, len(passing), why))
     if args.best_out and chosen:
         shutil.copyfile(chosen[0].path, args.best_out)
     elif args.best_out and filtering:  # --min-pass 0 and none passed

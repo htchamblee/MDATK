@@ -34,7 +34,7 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
 * Per-residue sugar hands (:func:`residue_hands`): the three-centre call, the C4' hand alone, epimers and
   flat centres, and expected hands per residue range (``check --expect-l / --expect-d --strict --table``).
 * Empty slots (:func:`empty_slot_text`, :func:`empty_slot`, :func:`is_empty_slot`): the files a model check
-  writes for the slots no passing model fills (REMARK 951, END, no atoms); :func:`read_pdb` names one.
+  writes for the slots no model fills (REMARK 951, END, no atoms); :func:`read_pdb` names one.
 
 Every operation works in place on a :class:`Structure` and returns human-readable notes; :func:`clean`
 chains them for the CLI / GUI / planner.
@@ -65,9 +65,10 @@ RECORD_POLICIES = ("keep", "rosetta", "pdb", "atom")
 # Rosetta's virtual residues: the root of a density-scored fold tree (VRT, atoms ORIG / X / Y) and XXX.  They
 # are no atoms of the molecule: tleap has no unit for them, and a map-model score would read them as atoms.
 VIRTUAL_RESIDUES = frozenset({"VRT", "XXX"})
-# An empty slot: a model check that passes on 'up to N' models writes the slots it cannot fill as a file with
-# this remark and END, no atoms, so a step with a fixed number of files downstream sees which are empty
-# (and skips them) instead of a count that pretends N models passed.
+# An empty slot: a model check writes the slots it cannot fill (a filter's 'up to N', fewer models than
+# planned) as a file with this remark and END, no atoms, so a step with a fixed number of files downstream
+# can tell which are empty instead of a count that pretends N models passed (MDATK's readers of model sets
+# skip them, read_pdb refuses one by name).
 EMPTY_SLOT_REMARK = "REMARK 951"
 _EMPTY_SLOT_RE = re.compile(r"^REMARK 951 +(empty slot .*)$", re.IGNORECASE)
 
@@ -299,9 +300,11 @@ def _read_text(source) -> str:
     return source
 
 
-def empty_slot_text(slot: int, slots: int, passed: int) -> str:
-    """The file of an unfilled slot: 'empty slot k of N: only M models passed' and END, no atoms."""
-    return f"{EMPTY_SLOT_REMARK} empty slot {slot} of {slots}: only {passed} models passed\nEND\n"
+def empty_slot_text(slot: int, slots: int, passed: int, why: str = "") -> str:
+    """The file of an unfilled slot: 'empty slot k of N: only M models passed' (or ``why`` it is empty, e.g.
+    'only 5 models were given') and END, no atoms."""
+    why = why or f"only {passed} models passed"
+    return f"{EMPTY_SLOT_REMARK} empty slot {slot} of {slots}: {why}\nEND\n"
 
 
 def empty_slot(source) -> str:
