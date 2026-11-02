@@ -98,9 +98,8 @@ the notes below.
     defining pairs, interface atoms above a contour calibrated on fixed regions (per decoy, or common on
     unmoved regions), Clopper-Pearson / Wilson intervals, Fisher tests, the closure-threshold sweep and the
     rates the second arm would need to be told apart with a given power. Numbers only, no verdict.
-  - **Map-model score** (`map-model-score`, Refinement; `mdatk map score`): per-residue Q-score with Phenix
-    (`phenix.qscore`, a configurable command; name and output format not verified against an installation)
-    on a copy with standard residue names, or MDATK's own per-residue CC; models ranked by named regions
+  - **Map-model score** (`map-model-score`, Refinement; `mdatk map score`): per-residue Q-score with
+    ChimeraX's `qscore` command (below), or MDATK's own per-residue CC; models ranked by named regions
     against a reference region with the regions removed, chain termini left out, NaN counted
     (`mdatk ensemble regions` ranks per-residue tables from elsewhere).
   - **Body hybrids** (`body-hybrids`, Refinement; `mdatk pdb hybrids`): all 2^k old/new combinations of up
@@ -121,8 +120,40 @@ the notes below.
   recognised by the atom name; the Clopper-Pearson fallback overflowing for large n; division by zero for
   an empty arm; decoys without calibration or region atoms dropped silently; score columns read by position;
   the pilot's "POWER" band (a Wilson interval, not a power); scaffold and interface overlapping in the
-  region means, NaN averaged and 'whole' keeping the termini; virtual residues written as atoms and L names
-  other than 0A/0C/0G/0U not renamed in the Q-score copy; overlapping bodies resolved silently.
+  region means, NaN averaged and 'whole' keeping the termini; Rosetta's virtual residues scored as atoms;
+  overlapping bodies resolved silently.
+- **Q-score with ChimeraX** (the user's decision: Phenix has no official per-residue Q-score; its
+  cctbx program is `mmtbx.development.qscore`): method `qscore` of `mdatk map score`, `mdatk pdb hybrids`
+  and the steps *Map-model score* and *Body hybrids* runs ChimeraX's `qscore` command (the QScore bundle of
+  the ChimeraX Toolshed, ChimeraX-QScore by T. I. Croll) as `chimerax --nogui --cmd "open MODEL id 1
+  maxModels 1; open MAP id 2; qscore #1 toVolume #2 useGui false logDetails true [options]; exit"`, on the
+  model as it is (L names such as LG5 and HETATM records are scored; the Phenix command template and the
+  standard-name copy are gone). Options: the ChimeraX executable (`--chimerax`, default `chimerax`),
+  further qscore options as keyword value pairs (`--qscore-options 'pointsPerShell 16'`; MDATK's own
+  keywords and `;` refused, undeclared keywords warned about), models per ChimeraX run (`--batch`, default
+  1: the map opened once, each model opened as #2, scored and closed after a `log text MDATK-QSCORE k`
+  marker; a run that stops at a model resumes after it), the column the regions use (`--q-column qavg`,
+  `qbb` or `qsc`), a time limit per model. Rosetta's virtual residues are left out of the selection
+  (`#1 & ~:VRT`) and of the table. The `logDetails` table is read tolerantly (blank lines, the dashed rule,
+  tabs or spaces, `INFO:` lines and `<pre>` tags, insertion codes, `N/A`, warnings such as `Ignored bad PDB
+  record`, the `Overall mean Q-Score` line, reported per model). The per-residue table has `qavg`, `qworst`,
+  `qbb`, `qsc` and `score`; ChimeraX's log of every run stays in `qscore/`. A model ChimeraX cannot score is
+  listed in the report with the reason (e.g. atoms outside the map box, where ChimeraX-QScore 1.2 stops its
+  table) and not ranked, and the command ends with status 1 after writing the others; a missing ChimeraX or
+  qscore command stops at once. `mdatk ensemble regions` also reads ChimeraX logs (one model per table) and
+  qscore's CSV. Citations: UCSF ChimeraX (Meng et al. 2023, Pettersen et al. 2021) and the Q-score paper
+  (Pintilie et al. 2020); the pages and authors of the latter are from memory (stated in the data). Tested
+  with a stand-in `chimerax` printing the user's log format, not with ChimeraX itself.
+- **Ranking on dQ**: `mdatk map score`, `mdatk ensemble regions` and the *Map-model score* step rank by
+  default on dQ = Q(first region) − Q(reference), the interface against the scaffold, instead of the first
+  region's mean (`--sort NAME` still ranks on the mean); the report heads its columns `dQ:NAME` (`dCC:NAME`
+  for the CC), says what it ranked on and gives the spread of every dQ over the models.
+- **Planner template *Decoy validation (FARFAR2)*** (`decoy-validation`): FARFAR2 → FARFAR2 models (the
+  closure filter `linear_chainbreak ≤ 5` before clustering) → model check (clashes) → decoy interfaces
+  (segment support) → map-model score (Q-score with an *interface* region, ranked on dQ), a map input, and
+  notes on the validity filters (closure, hands, defining pairs: those the models step has no option for
+  yet are described), the rule "filter on validity before clustering; filter on quality after, when
+  choosing representatives" and the kink test (not in this model check yet).
 ### Decoy interfaces
 
 - **`mdatk/interfaces.py`**: the interface between two sides of every model of an ensemble, without a

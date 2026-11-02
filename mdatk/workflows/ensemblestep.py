@@ -4,8 +4,8 @@
   grouped by folder and by the build condition read from the Rosetta logs, never pooled across conditions.
 * ``ensemble-compare`` (Analysis): two ensembles side by side - closure, defining pairs, map occupancy -
   with exact intervals, Fisher tests, a closure-threshold sweep and the detectable difference at a power.
-* ``map-model-score`` (Refinement): per-residue Q-score (Phenix, on a copy with standard residue names)
-  or MDATK's per-residue correlation, and models ranked by named regions.
+* ``map-model-score`` (Refinement): per-residue Q-score (ChimeraX's qscore, the model as it is) or MDATK's
+  per-residue correlation, and models ranked by the dQ of named regions against a reference (scaffold).
 * ``body-hybrids`` (Refinement): every old/new combination of re-fitted bodies, optionally scored, with
   each body's main effect.
 
@@ -565,28 +565,42 @@ REGION_TEMPLATES = [("region", "Region", {"name": "interface", "ranges": ""})]
 
 
 def _score_options(default: str, optional: bool = False) -> List[Option]:
-    choices = [("qscore", "Q-score (Phenix)"), ("cc", "per-residue CC (MDATK)")]
+    choices = [("qscore", "Q-score (ChimeraX)"), ("cc", "per-residue CC (MDATK)")]
     if optional:
         choices = [("none", "do not score")] + choices
     return [
         Option("method", "Score", "radio", default,
-               "Q-score: Phenix's Q-score program on a copy with standard residue names (L residues named "
-               "A/C/G/U, all ATOM, no hydrogens: Q-score does not depend on handedness). Per-residue CC: "
-               "MDATK correlates the map with the model's simulated map around each residue (no external "
-               "program).", choices=choices),
-        Option("command", "Q-score command", "text", mapscore.QSCORE_COMMAND,
-               "Command run in the step's qscore/ folder; {model} is the standard-name copy, {map} the map "
-               "(also {stem}, {resolution}). It must write per-atom or per-residue Q-scores (a table with "
-               "chain / residue number / Q columns, or Q as B-factors of a PDB). The default follows "
-               "Phenix's command-line convention and could not be checked against an installation: adjust "
-               "it to yours.", requires={"method": "qscore"}),
+               "Q-score: ChimeraX's qscore command (the QScore bundle of the ChimeraX Toolshed) on the "
+               "model as it is: L residue names and HETATM records are scored like any other residue. "
+               "Per-residue CC: MDATK correlates the map with the model's simulated map around each residue "
+               "(no external program).", choices=choices),
+        Option("chimerax", "ChimeraX executable", "text", mapscore.CHIMERAX,
+               "The chimerax program (name on PATH or full path), run as chimerax --nogui --cmd \"open "
+               "MODEL; open MAP; qscore #1 toVolume #2 useGui false logDetails true; exit\". It needs the "
+               "QScore bundle (in ChimeraX: toolshed install QScore).", requires={"method": "qscore"}),
+        Option("qscore_options", "Further qscore options", "text", "",
+               "Keyword value pairs added to the qscore command, e.g. 'pointsPerShell 16 shellRadiusStep "
+               "0.05' (also referenceGaussianSigma, maxShellRadius). 'useGui false logDetails true' are "
+               "always set; the command has no resolution or hydrogen option.",
+               placeholder="pointsPerShell 8 shellRadiusStep 0.1", requires={"method": "qscore"}),
+        Option("q_column", "Rank on", "radio", "qavg",
+               "Which of ChimeraX's per-residue columns the regions average: Qavg (all atoms of the "
+               "residue), Qbb (backbone) or Qsc (side chain: the base), as ChimeraX classifies the atoms. "
+               "All four columns go into the per-residue table.",
+               choices=[("qavg", "Qavg"), ("qbb", "Qbb (backbone)"), ("qsc", "Qsc (base)")],
+               requires={"method": "qscore"}),
+        Option("batch", "Models per ChimeraX run", "int", 1,
+               "1: one ChimeraX run per model (the safe default). More: the map is opened once and the "
+               "models one after another, each opened as #2, scored and closed; a run that stops at a model "
+               "is resumed after it.", minimum=1, maximum=500, requires={"method": "qscore"}),
         Option("resolution", "Map resolution", "float", None, "For the simulated map of the CC.",
                minimum=0.5, maximum=50.0, step=0.1, digits=2, optional=True, unit="Å",
                requires={"method": "cc"}),
         Option("radius", "Mask radius", "float", mapscore.MASK_RADIUS,
                "Grid points this close to a residue's atoms enter its CC.", minimum=0.5, maximum=10.0,
                step=0.5, digits=1, unit="Å", requires={"method": "cc"}),
-        Option("keep_h", "Score hydrogens", "bool", False, "Default: heavy atoms only."),
+        Option("keep_h", "Score hydrogens", "bool", False, "Default: heavy atoms only (ChimeraX's Q-score "
+               "never scores hydrogens).", requires={"method": "cc"}),
         Option("timeout", "Time limit per model", "float", None, "Seconds (empty: none).", minimum=1.0,
                maximum=1e7, optional=True, unit="s", requires={"method": "qscore"}),
     ]
@@ -596,13 +610,18 @@ def _score_words(s: Dict[str, Any]) -> List[str]:
     q = shell_quote
     words = ["--method", s["method"]]
     if s["method"] == "qscore":
-        words += ["--command", q(s["command"].strip()), "--work", "qscore"]
+        words += ["--chimerax", q(s["chimerax"].strip()), "--q-column", s["q_column"]]
+        if s["qscore_options"].strip():
+            words += ["--qscore-options", q(" ".join(s["qscore_options"].split()))]
+        if s["batch"] > 1:
+            words += ["--batch", str(s["batch"])]
+        words += ["--work", "qscore"]
         if s["timeout"] is not None:
             words += ["--timeout", f"{s['timeout']:g}"]
     else:
         words += ["--resolution", f"{s['resolution']:g}", "--radius", f"{s['radius']:g}"]
-    if s["keep_h"]:
-        words.append("--keep-h")
+        if s["keep_h"]:
+            words.append("--keep-h")
     return words
 
 
@@ -610,24 +629,26 @@ def _score_issues(s: Dict[str, Any], out: List[Issue]) -> None:
     if s["method"] == "cc" and s["resolution"] is None:
         out.append(Issue("error", "enter the map resolution (for the simulated map)", ("resolution",)))
     if s["method"] == "qscore":
-        cmd = s["command"].strip()
-        if not cmd:
-            out.append(Issue("error", "enter the Q-score command", ("command",)))
-        elif "{model}" not in cmd:
-            out.append(Issue("error", "the Q-score command must contain {model}", ("command",)))
-        elif "{map}" not in cmd:
-            out.append(Issue("warning", "the Q-score command has no {map}", ("command",)))
-        out.append(Issue("info", "Q-score runs on a copy with standard residue names (D and L alike); the "
-                                 "Phenix command and its output format are read tolerantly, but were not "
-                                 "checked against a Phenix installation", ("command",)))
+        if not s["chimerax"].strip():
+            out.append(Issue("error", "enter the ChimeraX executable", ("chimerax",)))
+        try:
+            _opts, warnings = mapscore.check_qscore_options(s["qscore_options"])
+            out += [Issue("warning", w, ("qscore_options",)) for w in warnings]
+        except ensemble.EnsembleError as exc:
+            out.append(Issue("error", str(exc), ("qscore_options",)))
 
 
 def _score_notes(s: Dict[str, Any]) -> List[str]:
     notes = [_IMPORTABLE]
     if s["method"] == "qscore":
-        notes.append("Q-score: Pintilie et al., Nat. Methods 17, 328-334 (2020), "
-                     "doi:10.1038/s41592-020-0731-1")
+        notes.append("Q-score: ChimeraX's qscore command (QScore bundle of the ChimeraX Toolshed); "
+                     "Pintilie et al., Nat. Methods 17, 328-334 (2020), doi:10.1038/s41592-020-0731-1")
     return notes
+
+
+def _score_resources(s: Dict[str, Any]) -> List[str]:
+    from ..citations import RESOURCES
+    return [r for r in (["chimerax", "qscore"] if s["method"] == "qscore" else []) if r in RESOURCES]
 
 
 @register
@@ -636,9 +657,9 @@ class MapModelScoreTool(Tool):
     label = "Map-model score (Q-score / CC)"
     category = "Refinement"
     tag = "mapscore"
-    description = ("Per-residue fit of models to a map - Phenix's Q-score on a copy with standard residue "
-                   "names, or MDATK's per-residue correlation - and the models ranked by named regions "
-                   "against a reference region, chain termini left out.")
+    description = ("Per-residue fit of models to a map - ChimeraX's Q-score on the models as they are, or "
+                   "MDATK's per-residue correlation - and the models ranked by the dQ of named regions (e.g. "
+                   "the interface) against a reference region (the scaffold), chain termini left out.")
     inputs = [Port("model", "Models (PDB)", ("pdb",), multiple=True, tooltip="One or more models to score."),
               Port("map", "Density map", ("map",))]
     outputs = [Port("residues", "Per-residue scores", ("table",)), Port("regions", "Regions", ("table",)),
@@ -649,26 +670,27 @@ class MapModelScoreTool(Tool):
                 templates=REGION_TEMPLATES, tooltip="Named regions averaged per model (e.g. the interface "
                                                     "loops)."),
         Section("ranking", "Ranking", [
-            Option("reference", "Reference region", "text", "",
-                   "Ranges of the reference (e.g. the fixed helices); empty: the whole model. The named "
-                   "regions are always taken out of it.", placeholder="A:1-6,A:13-20,B:39-44"),
+            Option("reference", "Reference region (scaffold)", "text", "",
+                   "Ranges of the reference, e.g. the fixed helices every decoy shares; empty: the whole "
+                   "model. The named regions are always taken out of it. dQ of a region = its mean Q minus "
+                   "the reference's.", placeholder="A:1-6,A:13-20,B:39-44"),
             Option("keep_termini", "Keep chain termini", "bool", False,
                    "The first and last residue of every chain segment have fewer neighbours and lower "
                    "scores; by default they are left out of every mean."),
             Option("sort", "Rank by", "text", "",
-                   "A region's name, delta:NAME (its difference to the reference), reference or whole. "
-                   "Empty: the first region.", placeholder="delta:interface"),
+                   "delta:NAME (the region's difference to the reference: dQ), a region's name (its mean), "
+                   "reference or whole. Empty: the dQ of the first region, i.e. delta:NAME.",
+                   placeholder="delta:interface"),
         ]),
-        _env("source /usr/local/phenix-2.0/phenix_env.sh"),
+        _env(),
     ]
 
     def describe(self, s):
-        return ("Q-score" if s["method"] == "qscore" else "per-residue CC") + (
+        return ("Q-score (ChimeraX)" if s["method"] == "qscore" else "per-residue CC") + (
             f", {len(s['regions'])} region(s)" if s["regions"] else "")
 
     def resources(self, s):
-        from ..citations import RESOURCES
-        return [r for r in (["phenix"] if s["method"] == "qscore" else []) if r in RESOURCES]
+        return _score_resources(s)
 
     def check(self, s, ctx):
         out: List[Issue] = []
@@ -710,7 +732,7 @@ class MapModelScoreTool(Tool):
         if s["sort"].strip():
             words += ["--sort", q(s["sort"].strip())]
         words += ["-o", res, "--regions-out", regs, "--report", report, '"${MODELS[@]}"']
-        title = "Q-score" if s["method"] == "qscore" else "per-residue CC"
+        title = "Q-score (ChimeraX)" if s["method"] == "qscore" else "per-residue CC"
         sh = script_header(f"Map-model score: {title}", ctx, s, script, _score_notes(s))
         sh += ["# The models"] + _array("MODELS", ctx.inps("model")) + ["", _continued(words)]
         sh += [require_file(p, "mdatk map score") for p in (res, regs, report)]
@@ -774,8 +796,7 @@ class BodyHybridsTool(Tool):
         return f"{n} bodies, {2 ** n} hybrids{scored}"
 
     def resources(self, s):
-        from ..citations import RESOURCES
-        return [r for r in (["phenix"] if s["method"] == "qscore" else []) if r in RESOURCES]
+        return _score_resources(s)
 
     def check(self, s, ctx):
         out: List[Issue] = []

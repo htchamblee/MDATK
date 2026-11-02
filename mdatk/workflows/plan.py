@@ -676,6 +676,42 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
         ("map", "file", "mdff", "map"),
         ("model", "file", "mdff", "model"),
     ]),
+    # the user's validation order for a FARFAR2 decoy campaign against a cryo-EM map: validity filters
+    # before clustering, quality checks on the cluster centres after it
+    "decoy-validation": ("Decoy validation (FARFAR2): models → clashes → interface support → Q-score dQ", [
+        ("fold", "farfar2", 0, 0, {}),
+        ("models", "farfar2-models", 1, 0, {"filter": True, "filter_term": "linear_chainbreak",
+                                             "filter_max": 5.0, "filter_when": "before"}),
+        ("validity", "note", 1, 1, {"text": (
+            "Validity filters, applied to every decoy before clustering:\n"
+            "- closure: linear_chainbreak ≤ 5 (set here: the models step's score filter, before "
+            "clustering);\n"
+            "- hands: every sugar of the hand the construct has (L target, D aptamer);\n"
+            "- defining pairs: the register's defining base pairs formed.\n"
+            "Where the models step has no option for a filter yet, set it there when it does; until then the "
+            "model check (hands) and the register census (pairs) report them after clustering.")}),
+        ("check", "model-check", 2, 0, {}),
+        ("rule", "note", 2, 1, {"text": (
+            "'filter on validity before clustering; filter on quality after, when choosing representatives'\n"
+            "Validity (closure, hands, defining pairs) decides which decoys are clustered at all; quality "
+            "(clashes, interface support, Q-score dQ, kinks) only ranks the cluster centres.")}),
+        ("interface", "decoy-interface", 3, 0, {"support": True}),
+        ("map", "input-file", 3, 1, {"kind": "map"}),
+        ("score", "map-model-score", 4, 0, {"method": "qscore",
+                                            "regions": [{"name": "interface", "ranges": ""}]}),
+        ("kink", "note", 5, 0, {"text": (
+            "Then: model check (kink test). The model check of this MDATK has no kink test yet; when it has, "
+            "add a model check here on the passed models of the first one, with the kink test on.")}),
+    ], [
+        ("fold", "silent", "models", "silent"),
+        ("fold", "secstruct", "check", "secstruct"),
+        ("models", "models", "check", "models"),
+        ("models", "scores", "check", "scores"),
+        ("check", "passed", "interface", "models"),
+        ("models", "scores", "interface", "scores"),
+        ("check", "passed", "score", "model"),
+        ("map", "file", "score", "map"),
+    ]),
 }
 
 COLUMN_DX = 280

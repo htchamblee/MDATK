@@ -572,24 +572,6 @@ def _parsed(argv):
 
 # --- map scores --------------------------------------------------------------------------------------------
 
-def test_standard_copy_regression():
-    """regression (q_prep.py): virtual residues written as atoms, atoms counted as 'residues relabelled',
-    L names other than 0A/0C/0G/0U (LA5, LG ...) left unrenamed, HETATM kept."""
-    text = builder.build_helix("GGCA", chirality="L", scheme="amber", hydrogens=True)
-    text = text.replace("ATOM  ", "HETATM")
-    vrt = ["HETATM 9999 ORIG VRT X 999       0.000   0.000   0.000  1.00  0.00           X",
-           "HETATM 9999  X   VRT X 999       1.000   0.000   0.000  1.00  0.00           X"]
-    text = text.replace("END\n", "\n".join(vrt) + "\nEND\n")
-    s, notes = mapscore.standard_copy(pdbtools.read_pdb(text))
-    names = {r.name for r in s.residues()}
-    assert names == {"G", "C", "A", "U"}
-    assert all(a.record == "ATOM" for r in s.residues() for a in r.atoms)
-    assert not any(a.element == "H" for r in s.residues() for a in r.atoms)
-    assert notes[0].startswith("8 residues given plain names") and "2 virtual" not in notes[-1]
-    assert notes[-1] == "1 virtual residues left out"
-    assert {(r.chain, r.resseq) for r in s.residues()} == {(c, i) for c in "AB" for i in range(1, 5)}
-
-
 def test_parse_score_tables():
     per_atom = ("chain,resseq,resname,name,Q\nA,1,G,P,0.5\nA,1,G,C1',0.7\nA,2,C,P,0.4\nB,1,G,P,nan\n")
     got = mapscore.parse_score_table(per_atom)[""]
@@ -598,28 +580,11 @@ def test_parse_score_tables():
     got = mapscore.parse_score_table(stdout)[""]
     assert got[("A", 12, "A")][1] == 0.81 and len(got) == 2
     assert mapscore.parse_score_table("no table here\n1 2 3\n") is None
-
-
-def test_qscore_runner_with_a_stand_in_program(tmp_path):
-    model = write(tmp_path / "m.pdb", builder.build_helix("GC", chirality="L"))
-    mapf = write(tmp_path / "x.mrc", "not read by the stand-in")
-    prog = write(tmp_path / "fake_qscore.py", (
-        "import sys\nfrom mdatk import pdbtools\ns = pdbtools.read_pdb(sys.argv[1])\n"
-        "assert all(r.name in 'ACGU' for r in s.residues())\n"
-        "with open('scores_qscore.csv', 'w') as fh:\n"
-        "    fh.write('chain,resseq,name,Q\\n')\n"
-        "    for r in s.residues():\n"
-        "        for a in r.atoms:\n"
-        "            fh.write(f'{r.chain},{r.resseq},{a.name},{0.5 + 0.1 * r.resseq}\\n')\n"))
-    env_cmd = f"PYTHONPATH={ROOT} {sys.executable} {prog} {{model}} {{map}}"
-    scores, notes = mapscore.run_qscore(model, mapf, str(tmp_path / "work"), env_cmd)
-    assert scores[("B", 2, "")][1] == pytest.approx(0.7) and "scores_qscore.csv" in notes[-1]
-    assert os.path.exists(tmp_path / "work" / "m_standard.pdb")
-    assert os.path.exists(tmp_path / "work" / "m_qscore.log")
-    with pytest.raises(ensemble.EnsembleError, match="failed"):
-        mapscore.run_qscore(model, mapf, str(tmp_path / "w2"), "false {model}")
-    with pytest.raises(ensemble.EnsembleError, match="no per-atom or per-residue"):
-        mapscore.run_qscore(model, mapf, str(tmp_path / "w3"), "echo nothing {model}")
+    # ChimeraX's qscore CSV (outputFile): 'Number' with insertion codes, "N/A" with its quotes
+    chimerax = 'Chain,Number,Name,Qavg,Qworst,Qbackbone,Qsidechain\nA,7B,LG5,0.41,0.1,0.4,N/A\nA,8,G,"N/A",' \
+               '"N/A","N/A","N/A"\n'
+    got = mapscore.parse_score_table(chimerax)[""]
+    assert got[("A", 7, "B")] == ("LG5", 0.41, 1) and math.isnan(got[("A", 8, "")][1])
 
 
 def test_residue_cc(tmp_path):
@@ -791,7 +756,8 @@ def test_steps_registered_with_their_categories_and_ports():
     hyb = TOOLS["body-hybrids"]
     assert [p.name for p in hyb.output_ports(hyb.normalise({}))] == ["hybrids", "scores", "effects"]
     assert [p.name for p in hyb.output_ports(hyb.normalise({"method": "none"}))] == ["hybrids"]
-    assert TOOLS["map-model-score"].resources(TOOLS["map-model-score"].normalise({})) == ["phenix"]
+    score = TOOLS["map-model-score"]
+    assert score.resources(score.normalise({})) == ["chimerax", "qscore"]
 
 
 def test_step_checks():
