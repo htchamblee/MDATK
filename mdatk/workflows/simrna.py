@@ -138,6 +138,9 @@ class SimRNATool(Tool):
     def resources(self, s):
         return ["simrna"]
 
+    def run_folders(self, s, ctx):
+        return [ctx.from_own("runs")]  # SimRNA's working folders runs/rNN
+
     def describe(self, s):
         return f"{s['runs']} runs × {s['replicas']} replicas"
 

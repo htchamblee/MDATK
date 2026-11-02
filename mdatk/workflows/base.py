@@ -259,6 +259,12 @@ class Tool:
         Used when looking for earlier runs (mdatk.workflows.runstate)."""
         return []
 
+    def run_folders(self, s: Dict[str, Any], ctx: StepContext) -> List[str]:
+        """Plan-relative folders inside the step folder that a run fills and whose names carry no time stamp
+        (e.g. one working folder per parallel run).  They move with a completed run when the step is written
+        again (mdatk.workflows.supersede); a plan without step folders leaves them where they are."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # helpers shared by the generators

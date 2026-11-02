@@ -281,6 +281,36 @@ the notes below.
     and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
     written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
 
+### RNAdo: completed runs move aside
+
+- **A step that is written again first moves its completed run aside** (the user's decision: as soon as its
+  scripts are written again, even if the step is never run again, scripts included, so the run stays
+  repeatable when the step is written with changed settings). When a step is about to be written (*Write
+  all files*, *Write step*, the wizard's *Write files*, every *Run* action, `workflow write [--run]`,
+  `workflow generate`) and its folder holds a complete run of the plan's current stamp (runstate's
+  *done*), that run moves into `<step folder>/superseded/<stamp>_<YYYYMMDD-HHMMSS>/` (`no-stamp_<time>`
+  without time stamps; `superseded/<NN>_<tool>/<stamp>_<time>/` in the plan folder without step folders):
+  the step's outputs, every file it writes for the stamp (scripts, inputs, helpers), its logs (files with
+  closing lines and the other files named `<project>_<NN>_*_<stamp>.*`), stamp-free outputs with their
+  completion marker (custom scripts' fixed names), and the stamp-free folders a run fills (`runs/` of
+  FARFAR2 and SimRNA, `models/` of the FARFAR2 models step; new `Tool.run_folders`), relative paths kept.
+  A `manifest.toml` records what moved, from which step and stamp, when and why; a saved project logs each
+  move in its step log (`workflow supersede`). Partial runs, steps that use an earlier run, files of other
+  stamps, other steps' and the user's files stay; nothing in `superseded/` is replaced (`…-2`); a step's
+  move is all or nothing (on an error the files go back and the step is not written, reported as skipped).
+  `runstate` never looks inside `superseded/`. New module `mdatk/workflows/supersede.py`;
+  `Plan.write(..., project_path=, supersede=)` and `WriteReport.superseded`.
+- RNAdo asks before writing (listing the steps, where their runs go and their files; *Cancel* or *Move
+  aside and write*; refused while a step that reads them runs), the output log lists what moved, and the
+  naming bar's *Move completed runs aside* is the project option `workflow.supersede_runs` (on by default;
+  off: writing replaces as before). `mdatk workflow write` prints the moves on standard error and under
+  `superseded` in its JSON, and `--dry-run` lists the files it would write and the runs it would move
+  without touching anything. Generated files are unchanged.
+- Steps that skip finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip
+  finished runs*) reuse them from a run left in place: a partial run, or any run with the option off (a
+  complete run is moved aside, so the step runs again from the start). `tests/test_namd_mdff_tool.py`
+  writes with the option off to test that reuse.
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own

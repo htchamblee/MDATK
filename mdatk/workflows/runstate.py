@@ -12,6 +12,9 @@ Only the step's own files count (inputs passed through to an output belong to an
 can also name log files that must end with a program's closing lines (``Tool.finish_marks``), so a run that
 was interrupted after writing its first restart file is not mistaken for a finished one; a custom script's
 run script writes such a file last, after checking the outputs.
+
+Runs moved aside before a step was written again (``<step folder>/superseded/``, see
+:mod:`mdatk.workflows.supersede`) are never looked at: only the step folder's own files count.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from .naming import parse_name, sanitize_project
+from .naming import SUPERSEDED, parse_name, sanitize_project
 
 STATES = ("done", "partial", "missing", "none")
 TAIL_BYTES = 16384  # closing lines of a program's log are searched for in its last bytes
@@ -99,7 +102,8 @@ def expected(plan, node_id: str, stamp: str) -> List[str]:
 
 
 def run_stamps(plan, node_id: str) -> List[str]:
-    """Time stamps found in the names of the step's files in its folder, newest first."""
+    """Time stamps found in the names of the step's files in its folder, newest first (runs moved into
+    superseded/ do not count)."""
     step = _step(plan, node_id)
     if step is None or not plan.root:
         return []
@@ -110,7 +114,7 @@ def run_stamps(plan, node_id: str) -> List[str]:
         return []
     stamps = set()
     for name in names:
-        parts = parse_name(name)
+        parts = parse_name(name) if name != SUPERSEDED else None
         if (parts and parts["stamp"] and sanitize_project(parts["project"]) == plan.project
                 and int(parts["step"]) == step.node.step):
             stamps.add(parts["stamp"])

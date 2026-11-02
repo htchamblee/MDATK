@@ -297,7 +297,9 @@ def _write(tmp_path, d, settings=None):
     plan = Plan(WorkflowParams(project_name="apt1", stamp=STAMP, nodes=[node]), str(tmp_path / "plan"))
     st = plan.steps["m"]
     assert not messages(st, "error"), messages(st)
-    report = plan.write(["m"])
+    # completed runs stay in place: the tests check which finished runs the script reuses (since 0.0.12 a
+    # completed run moves aside when its step is written again, unless the project option is off)
+    report = plan.write(["m"], supersede=False)
     return [p for p in report.written if p.endswith("namd-mdff_" + STAMP + ".sh")][0]
 
 
