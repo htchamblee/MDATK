@@ -848,7 +848,7 @@ uses are free; otherwise steps go in plan order.
   |---|---|
   | Amber MD stages | pmemd.cuda: 1 core and 1 GPU (its *GPU* option names it); pmemd.MPI: its *MPI processes*; pmemd: 1 core |
   | NAMD MDFF | its *CPU cores* (`+p`) and 1 GPU (`+devices` names it) |
-  | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded |
+  | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded (`-gpu_id` or `-gputasks` among the extra mdrun flags name it) |
   | FARFAR2, SimRNA | their parallel runs (at most the number of runs) |
   | FARFAR2 models | its parallel extractions when every model is extracted, else 1 core |
   | Phenix RSR | its processors (`nproc`) |
@@ -858,14 +858,16 @@ uses are free; otherwise steps go in plan order.
 
   A step that uses a GPU gets a free one in `CUDA_VISIBLE_DEVICES` (the start line in the log says
   which, and how many cores the step got; the step log records it in the command), unless the step
-  names its own: the Amber MD step's *GPU*, NAMD's `+devices` or `CUDA_VISIBLE_DEVICES` in the step's
-  *Environment* setup commands; it then runs when no other step uses that GPU. A later step that fits
-  may start while an earlier one waits for room, except behind a step that needs every core: that one
-  starts once nothing runs, before the steps after it. A step larger than the whole budget runs alone
-  the same way, with a warning; with no GPU found (and none set), the steps that use a GPU run one at a
-  time, with a warning. *At once* caps the number of scripts (default *no limit*: the budgets decide);
-  projects saved before 0.0.12 keep their earlier *Parallel* value there (1: one script at a time, as
-  before). On the command line: `mdatk workflow run --cores N --gpus N [--parallel N]`.
+  names its own: the Amber MD step's *GPU*, NAMD's `+devices`, GROMACS's `-gpu_id` / `-gputasks` among
+  the extra mdrun flags or `CUDA_VISIBLE_DEVICES` in the step's *Environment* setup commands (`+devices`
+  and `-gpu_id` count the GPUs the Environment leaves visible); it then runs when no other step uses
+  that GPU. A later step that fits may start while an earlier one waits for room, except behind a step
+  that needs every core: that one starts once nothing runs, before the steps after it. A step larger
+  than the whole budget runs alone the same way, with a warning; with no GPU found (and none set), the
+  steps that use a GPU run one at a time, with a warning. *At once* caps the number of scripts (default
+  *no limit*: the budgets decide); projects saved before 0.0.12 keep their earlier *Parallel* value
+  there (1: one script at a time, as before). On the command line:
+  `mdatk workflow run --cores N --gpus N [--parallel N]`.
 - **Output:** every line goes to the [output log panel](#rnados-window), marked with its step, and
   every run is recorded in the project file.
 - **Failures:** a failed script stops every step that depends on it; independent steps carry on.

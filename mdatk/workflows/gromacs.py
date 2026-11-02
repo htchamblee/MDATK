@@ -4,12 +4,12 @@ GROMACS 2024+ (workstation) or 2023.3 (cluster module)."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from .. import PROJECT_ABBREV, __version__
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
                    script_header, separate_check, skip_when_done)
-from .budget import ALL_CORES, Resources, gpu_step
+from .budget import ALL_CORES, Resources, env_gpus, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -83,6 +83,16 @@ _TEMPLATES = [
     ("md-sd", "Production (Langevin, NPT)", dict(name="md", integrator="sd", nsteps=50_000_000,
                                                  tau_t=1.0, pcoupl="C-rescale", production=True)),
 ]
+
+
+def _mdrun_gpu_ids(text: str) -> Tuple[str, ...]:
+    """The distinct GPU ids in an mdrun ``-gpu_id`` / ``-gputasks`` value, as mdrun reads it: '0,1'
+    (comma-separated) or '01', '0011' (one digit per id); () when it is not such a value."""
+    parts = text.split(",") if "," in text else list(text)
+    parts = [p.strip() for p in parts if p.strip()]
+    if not parts or not all(p.isdigit() for p in parts):
+        return ()
+    return tuple(dict.fromkeys(str(int(p)) for p in parts))
 
 
 @register
@@ -180,17 +190,29 @@ class GromacsTool(Tool):
 
     def run_resources(self, s):
         # mdrun's OpenMP threads times its thread-MPI ranks (-ntmpi among the extra flags; -nt is the
-        # total); without -ntomp mdrun takes every core it finds.  One GPU when the work is offloaded.
+        # total); without -ntomp mdrun takes every core it finds.  One GPU when the work is offloaded;
+        # -gputasks / -gpu_id among the extra flags name it (ids among the GPUs the Environment leaves
+        # visible), so MDATK hands out none.
         words = s["extra_mdrun"].split()
 
-        def flag(name: str) -> int:
+        def value(name: str) -> str:
             for k, word in enumerate(words[:-1]):
-                if word == name and words[k + 1].isdigit():
-                    return int(words[k + 1])
-            return 0
+                if word == name:
+                    return words[k + 1]
+            return ""
+
+        def flag(name: str) -> int:
+            text = value(name)
+            return int(text) if text.isdigit() else 0
 
         cores = flag("-nt") or (s["ntomp"] * (flag("-ntmpi") or 1) if s["ntomp"] else ALL_CORES)
-        return gpu_step(cores, 1, s) if s["gpu"] else Resources(cores)
+        if not s["gpu"]:
+            return Resources(cores)
+        named = _mdrun_gpu_ids(value("-gputasks")) or _mdrun_gpu_ids(value("-gpu_id"))
+        visible = env_gpus(s)
+        if named and visible and all(int(d) < len(visible) for d in named):
+            named = tuple(visible[int(d)] for d in named)
+        return gpu_step(cores, 1, s, named)
 
     def describe(self, s):
         return f"GROMACS {s['gmx_version']}: " + " → ".join(self._tags(s))

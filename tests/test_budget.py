@@ -198,6 +198,24 @@ def test_run_resources_of_every_step_type():
         assert res(name) == Resources(1, 0, ()), name
 
 
+def test_gromacs_gpu_id_among_the_extra_flags_names_the_gpu():
+    # mdrun -gpu_id / -gputasks number the GPUs mdrun sees: MDATK must not hand out one in
+    # CUDA_VISIBLE_DEVICES, or '-gpu_id 1' meets a single visible device 0 and mdrun stops
+    assert res("gromacs", ntomp=4, extra_mdrun="-gpu_id 1") == Resources(4, 1, ("1",))
+    assert res("gromacs", ntomp=4, extra_mdrun="-pin on -gpu_id 0,1") == Resources(4, 2, ("0", "1"))
+    assert res("gromacs", ntomp=4, extra_mdrun="-gpu_id 01") == Resources(4, 2, ("0", "1"))  # one digit each
+    assert res("gromacs", ntomp=4, extra_mdrun="-gputasks 0011") == Resources(4, 2, ("0", "1"))
+    assert res("gromacs", ntomp=4, extra_mdrun="-gpu_id 01 -gputasks 11") == Resources(4, 1, ("1",))
+    # the ids count the GPUs the Environment leaves visible, as NAMD's +devices
+    assert res("gromacs", ntomp=4, extra_mdrun="-gpu_id 1",
+               env_setup="export CUDA_VISIBLE_DEVICES=2,3") == Resources(4, 1, ("3",))
+    # no GPU id, or no offload: as before
+    assert res("gromacs", ntomp=4, extra_mdrun="-gpu_id") == Resources(4, 1, ())
+    assert res("gromacs", ntomp=4, gpu=False, extra_mdrun="-gpu_id 1") == Resources(4, 0, ())
+    grant = Slots(Budget(16, ("0", "1"))).grant(res("gromacs", ntomp=4, extra_mdrun="-gpu_id 1"))
+    assert grant.gpus == ("1",) and not grant.assigned  # no CUDA_VISIBLE_DEVICES for the script
+
+
 def test_resource_texts_and_gpu_settings():
     assert Resources(8, 1).badge() == "8c+1g" and Resources(1).badge() == "1c"
     assert Resources(ALL_CORES, 1).badge() == "all cores+1g"
