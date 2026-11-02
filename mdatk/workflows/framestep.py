@@ -39,13 +39,16 @@ class RosettaAuditTool(Tool):
     tag = "rosetta-audit"
     description = ("Reads the command line each rna_denovo run logged, with its flags files expanded, "
                    "fingerprints the input files it names and compares the conditions, also in pairs that "
-                   "should differ only in the pairing.")
+                   "should differ only in the pairing; reports the Rosetta build and the seed of every run.")
     inputs = [Port("silent", "Silent files", ("silent",), optional=True, multiple=True,
                    tooltip="Silent files of FARFAR2 steps: their run logs lie beside them, and each step is "
                            "one condition.")]
     outputs = [Port("report", "Audit report", ("text",)),
                Port("table", "Flags per condition", ("table",),
-                    tooltip="One row per flag (and derived entry), one column per condition.")]
+                    tooltip="One row per flag (and derived entry), one column per condition."),
+               Port("runs", "Seed and build per run", ("table",),
+                    tooltip="One row per start of every run: the seed (-constant_seed / -jran, or the seed "
+                            "Rosetta logged) and the Rosetta build named before the command line.")]
     sections = [
         Section("audit", "Audit", [
             Option("folders", "Other run folders", "multiline", "",
@@ -71,9 +74,10 @@ class RosettaAuditTool(Tool):
             Option("full_hash", "Fingerprint whole files", "bool", True,
                    "Hash every byte of each input file the flags name (off: three 1 MiB samples of large "
                    "files)."),
-            Option("strict", "Fail on a confounded pair", "bool", False,
-                   "The step fails when a pair differs in other flags or names an unknown condition, so the "
-                   "steps after it do not run."),
+            Option("strict", "Fail on a confounded pair or duplicate seeds", "bool", False,
+                   "The step fails when a pair differs in other flags or names an unknown condition, or when "
+                   "two runs share a seed under -constant_seed with the same inputs (duplicate decoys), so "
+                   "the steps after it do not run. Duplicates are an error in the report either way."),
         ], tooltip="Which runs to read and how to compare them."),
         env_section("conda activate mdatk", [_python_option()]),
     ]
@@ -126,7 +130,8 @@ class RosettaAuditTool(Tool):
 
     def output_values(self, s, ctx):
         return {"report": PortValue([ctx.own(self.tag, "txt")], "text"),
-                "table": PortValue([ctx.own(self.tag, "tsv")], "table")}
+                "table": PortValue([ctx.own(self.tag, "tsv")], "table"),
+                "runs": PortValue([ctx.own("runs", "tsv")], "table")}
 
     def generate(self, s, ctx):
         n = ctx.name
@@ -146,7 +151,7 @@ class RosettaAuditTool(Tool):
             words.append("--fast-hash")
         if s["strict"]:
             words.append("--strict")
-        words += ["-o", n(self.tag, "txt"), "--tsv", n(self.tag, "tsv")]
+        words += ["-o", n(self.tag, "txt"), "--tsv", n(self.tag, "tsv"), "--runs-tsv", n("runs", "tsv")]
         sh = script_header("Rosetta run audit: what each rna_denovo run was given", ctx, s, script,
                            ["MDATK must be importable by the Python below (installed, or its folder on "
                             "PYTHONPATH)."])

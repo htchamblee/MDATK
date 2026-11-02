@@ -192,8 +192,11 @@ def test_farfar2_models_defaults_unchanged_and_table_port(tmp_path):
     compile(helper.content, "helper", "exec")
     sh = files[f"apt1_02_farfar2-models_{STAMP}.sh"].content
     assert f"python3 apt1_02_scores_{STAMP}.py table apt1_02_scores_{STAMP}.tsv --models" in sh
-    plan, mid = _models_plan(tmp_path, filter=True, filter_term="")
-    assert any("score term" in i.message for i in plan.steps[mid].issues if i.level == "error")
+    plan, mid = _models_plan(tmp_path, filter=True, filter_limits="")
+    assert any("score limits" in i.message for i in plan.steps[mid].issues if i.level == "error")
+    plan, mid = _models_plan(tmp_path, filter=True, filter_limits="linear_chainbreak 5")
+    assert any("cannot read the score limit" in i.message
+               for i in plan.steps[mid].issues if i.level == "error")
 
 
 def _fake_tools(folder, scripts):
@@ -225,9 +228,14 @@ FAKE_CLUSTER = ('out=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = -out:file:silent 
 
 
 def test_farfar2_models_extract_every_model(tmp_path):
+    # a score filter before clustering is still possible, chosen explicitly and with a warning (0.0.12: the
+    # default is after clustering, and validity filters are what goes before it)
     plan, mid = _models_plan(tmp_path, n_models=2, cluster=False, extract_all=True, extract_parallel=2,
-                             dssr=False, filter=True, filter_max=5.0)
+                             dssr=False, filter=True, filter_limits="linear_chainbreak <= 5",
+                             filter_when="before")
     assert not [i for i in plan.steps[mid].issues if i.level == "error"]
+    assert any("changes the cluster populations" in i.message for i in plan.steps[mid].issues
+               if i.level == "warning")
     plan.write([mid])
     for k in (1, 2):
         write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out",
@@ -277,8 +285,9 @@ def test_farfar2_models_table_names_the_ranked_models(tmp_path):
 
 
 def test_farfar2_models_filter_after_clustering(tmp_path):
-    plan, mid = _models_plan(tmp_path, n_models=2, dssr=False, filter=True, filter_when="after",
-                             filter_max=5.0)
+    plan, mid = _models_plan(tmp_path, n_models=2, dssr=False, filter=True,
+                             filter_limits="linear_chainbreak<=5")
+    assert plan.steps[mid].settings["filter_when"] == "after"  # the default
     plan.write([mid])
     for k in (1, 2):
         write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out", silent_text(DECOYS))

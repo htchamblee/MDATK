@@ -92,11 +92,11 @@ the notes below.
   `<project>_<step>_scores_<time>.tsv` with `run` (`rNN` from the silent file's name, `NN-rNN` when two
   FARFAR2 steps feed the step), `tag`, `pdb` (plan-relative, empty when not extracted) and every SCORE term,
   one row per decoy, written with *Write the decoy table*, a filter or *Extract every model*;
-  `mdatk.rosetta.read_decoy_table` reads it (TSV or CSV, extra columns kept). *Filter* section: a term
-  (`linear_chainbreak`) and a maximum (5), applied before clustering (filtered silent files per run) or
-  after it (ranked centres skipped). *Extract every model of every run*: `models/<run>/<tag>.pdb`, each run
-  in a `mktemp` folder of its own, earlier models of the run removed first, and a check that every run has
-  one PDB per SCORE line. All new options are off by default; the step's files are unchanged without them.
+  `mdatk.rosetta.read_decoy_table` reads it (TSV or CSV, extra columns kept). Filters: validity before
+  clustering, quality after it (see below). *Extract every model of every run*: `models/<run>/<tag>.pdb`,
+  each run in a `mktemp` folder of its own, earlier models of the run removed first, and a check that every
+  run has one PDB per SCORE line. All new options are off by default; the step's files are unchanged
+  without them.
 - **Run audit** (`mdatk rosetta audit`, step *Rosetta · run audit*): what each rna_denovo run was given,
   from the command lines in its logs, with `@flags` files expanded recursively, `::` read as `:`, short and
   long flag spellings folded, every command line of a log read (restarts), input files fingerprinted by
@@ -104,6 +104,38 @@ the notes below.
   compared and checked in pairs (`--pair`, `--pair-suffix`, `--allow`, `--ignore`), and, with
   `--controlled RANGES`, how each condition gives the pairing of those residues (secondary structure,
   obligate pairs, `-s` / `-input_res`, chain by chain). Report (text) and a flags-by-condition table.
+- **FARFAR2 models: validity before clustering, quality after it** (the single score filter is replaced; a
+  score cut before clustering reshapes the cluster populations a register census counts):
+  - *Validity filters (before clustering)*, judged on every decoy and counted in order (decoys -> after
+    hands -> after bases -> after closure -> after pairs): sugar hands against expected counts
+    (`44 D / 29 L`) and / or ranges (`C:*`, `group:NAME`); base identity against the FARFAR2 step's sequence
+    or a typed one; closure by a score term (`linear_chainbreak <= 5`) and / or every O3'-P <= 2.0 Å
+    (`mdatk.modelcheck.check_backbone`); the defining pairs of a register (`mdatk.ensemble.parse_register`
+    syntax, formed or approached with `mdatk.ensemble`'s distances). They imply *Extract every model*; a
+    helper copied into the step folder (`…_validity_….py`: PDB tools, model checks, silent-file scores and
+    `mdatk/workflows/scripts/decoy_validity.py`, standard library only) writes `…_validity_….tsv` and the
+    report `…_validity_….txt` (new output *validity*), the valid decoys of each run go into
+    `…_filtered-rNN_….out` and only those are clustered. The decoy table gets `valid` (1 / 0), `invalid_by`,
+    `invalid_reason` and each criterion's columns for every decoy.
+  - *Quality filters (after clustering, choosing representatives)*: score limits (`score <= -300,
+    elec_dens_fast <= -40`, read with `mdatk.modelcheck.parse_score_limits`) on the ranked cluster centres;
+    none by default. *Before clustering (changes cluster populations)* stays as an explicit choice with a
+    planner warning; the default is after. Plans with the earlier `filter_term` / `filter_max` get the limit
+    `TERM <= MAX`. With no filter (the default) the step's files are unchanged (`tests/test_golden.py`).
+  - `silent_scores`: `keep` (the decoys to cluster: valid and within the limits), `filter-ranking --limit`,
+    `table --validity`.
+- **Run audit: which Rosetta, and the seed of every part**. Provenance comes from the lines before
+  `core.init: command:` (`Rosetta version: <package> r<rev> <version> <commit> <repository> <date>`,
+  `Rosetta extras`, the `-version` block, `core.init` commit / checkout / branch lines, older
+  `… from <repository>` lines), kept raw and parsed tolerantly into `[rosetta version]`, `[rosetta extras]`
+  and `[rosetta provenance]`, compared like flags (a pair built with different versions is confounded);
+  the report lists every build with its runs and warns when there is more than one. `-constant_seed`,
+  `-jran` and `-seed_offset` are a part's identity: the seed Rosetta logs (`real_seed`), else the flags
+  (default 1111111), is reported for every run and restart (report, a `[seeds]` row in the flags table,
+  `--runs-tsv` / step output *runs*), and two runs or starts with the same seed under `-constant_seed` and
+  the same inputs are duplicates: an error in the report and on standard error (`--strict` fails). The same
+  seed with other inputs is noted as a matched-seed design. Fully expanded command lines are the normal
+  case; `@flags` files are still expanded.
 - **Frames of multi-body models** (`mdatk/frames.py`, `mdatk frame check|reframe`, step *MDATK · frame
   check*): fit on one body, measure one or more others (P, C1′, C4′ by default; chain-qualified ranges or
   residue groups; atoms keyed by chain, residue number and insertion code); one frame when the 95th

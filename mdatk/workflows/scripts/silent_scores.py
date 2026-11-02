@@ -1,4 +1,5 @@
-"""Rosetta silent files: score terms by column name, the decoy table, score filters and the extraction check.
+"""Rosetta silent files: score terms by column name, the decoy table, score filters, the decoys kept for
+clustering and the extraction check.
 
 Every silent file carries header lines ``SCORE: <term> <term> ... description``; the data lines after a header
 hold the values in the same columns and end with the decoy's tag.  Terms are looked up by name in the header
@@ -10,7 +11,8 @@ The decoy table (TSV) has the columns ``run``, ``tag``, ``pdb`` (the extracted m
 folder; empty when the decoy was not extracted) and then every SCORE term by its name, one row per decoy.
 A run is labelled ``rNN`` from MDATK's file names (``<project>_<step>_farfar2-rNN_<stamp>.out``), otherwise by
 the file name; runs and tags together are unique, so the tags that every run reuses (``S_000001`` ...) never
-collide.
+collide.  With validity filters (:mod:`decoy_validity`) the table also gets their columns and a ``valid``
+flag (1 / 0) for every decoy.
 
 Standard library only: MDATK embeds this module in the script of the FARFAR2 models step, and
 :mod:`mdatk.rosetta` uses it for ``mdatk rosetta scores``.
@@ -166,6 +168,26 @@ def passes(values, term, maximum):
     return None if x is None else x <= maximum
 
 
+# score limits as (term, operator, value); the planner reads the text with mdatk.modelcheck.parse_score_limits
+LIMIT_OPS = {"<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b, "<": lambda a, b: a < b,
+             ">": lambda a, b: a > b}
+
+
+def limits_text(limits):
+    return ", ".join(f"{t} {op} {x:g}" for t, op, x in limits)
+
+
+def within(values, limits):
+    """True / False for a decoy's ``{term: text}`` against every limit; None when a term has no number."""
+    for term, op, x in limits:
+        v = number(values.get(term))
+        if v is None:
+            return None
+        if not LIMIT_OPS[op](v, x):
+            return False
+    return True
+
+
 def missing_term(silents, term):
     """Problems for headers that lack ``term`` (the column a filter or an audit asks for)."""
     out = []
@@ -183,20 +205,46 @@ def tsv_field(text):
     return str(text).replace("\t", " ").replace("\n", " ")
 
 
-def write_table(out_path, silents, pdb_of=None):
-    """Write the decoy table; ``pdb_of(label, tag)`` gives the plan-relative PDB of a decoy ('' if none).
-    Returns the number of rows."""
+def write_table(out_path, silents, pdb_of=None, extra=None):
+    """Write the decoy table; ``pdb_of(label, tag)`` gives the plan-relative PDB of a decoy ('' if none);
+    ``extra``: (columns, {(label, tag): {column: text}}) appended after the score terms (the validity
+    columns), empty for a decoy without a row.  Returns the number of rows."""
     terms = terms_of(silents)
+    more, rows = extra or ((), {})
+    more = [c for c in more if c not in TABLE_COLUMNS and c not in terms]
     n = 0
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\t".join(TABLE_COLUMNS + tuple(terms)) + "\n")
+        fh.write("\t".join(TABLE_COLUMNS + tuple(terms) + tuple(more)) + "\n")
         for s in silents:
             for tag, values, _h in s.rows:
                 pdb = pdb_of(s.label, tag) if pdb_of else ""
                 fields = [s.label, tag, pdb or ""] + [values.get(t, "") for t in terms]
+                if more:
+                    got = rows.get((s.label, tag), {})
+                    fields += [got.get(c, "") for c in more]
                 fh.write("\t".join(tsv_field(f) for f in fields) + "\n")
                 n += 1
     return n
+
+
+def read_validity(path):
+    """(columns after run and tag, {(run, tag): {column: text}}) of a validity table (TSV)."""
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    if not lines:
+        raise ValueError(f"{path}: empty validity table")
+    header = lines[0].split("\t")
+    if header[:2] != ["run", "tag"] or "valid" not in header:
+        raise ValueError(f"{path}: not a validity table (columns: {' '.join(header[:6])})")
+    rows = {}
+    for ln in lines[1:]:
+        if not ln.strip():
+            continue
+        f = ln.split("\t")
+        f += [""] * (len(header) - len(f))
+        d = dict(zip(header, f))
+        rows[(d.pop("run"), d.pop("tag"))] = d
+    return header[2:], rows
 
 
 def percentile(sorted_values, q):
@@ -252,23 +300,62 @@ def filter_silent(src, dst, term, maximum):
     if bad:
         raise ValueError(bad[0])
     verdict = {tag: passes(values, term, maximum) for tag, values, _h in s.rows}
-    tags = set(verdict)
-    tmp = dst + ".tmp"
-    with open(src, encoding="utf-8", errors="replace") as fi, open(tmp, "w", encoding="utf-8") as fo:
-        for line in fi:
-            f = line.split()
-            if f and f[-1] in tags and not verdict[f[-1]]:
-                continue
-            fo.write(line)
-    os.replace(tmp, dst)
+    copy_decoys(src, dst, verdict, [t for t, v in verdict.items() if v])
     kept = sum(1 for v in verdict.values() if v)
     unread = sum(1 for v in verdict.values() if v is None)
     return kept, len(verdict) - kept - unread, unread
 
 
-def filter_ranking(path, term, maximum):
-    """Keep the lines ``score tag file`` of a ranking whose decoy (looked up in ``file``) passes.
-    Returns (kept, failed, without a value)."""
+def copy_decoys(src, dst, tags, keep):
+    """Copy ``src`` into ``dst`` without the lines of the decoys in ``tags`` that are not in ``keep``.  A
+    decoy line is a line that ends with the decoy's tag, as Rosetta writes every line of a structure; the
+    header lines stay."""
+    drop = set(tags) - set(keep)
+    tmp = dst + ".tmp"
+    with open(src, encoding="utf-8", errors="replace") as fi, open(tmp, "w", encoding="utf-8") as fo:
+        for line in fi:
+            f = line.split()
+            if f and f[-1] in drop:
+                continue
+            fo.write(line)
+    os.replace(tmp, dst)
+
+
+def keep_runs(runs, valid=None, limits=()):
+    """Write each run's filtered silent file (``runs``: (label, silent file, filtered file)) with the decoys
+    to cluster: those flagged valid in ``valid`` ({(run, tag): row}, None: every decoy) that are also within
+    the score ``limits``.  Returns [(label, kept, invalid, outside the limits, without a value)]."""
+    out = []
+    for label, src, dst, *_rest in runs:
+        s = read_silent(src, label)
+        if not s.read:
+            raise ValueError("; ".join(s.problems))
+        for term, _op, _x in limits:
+            bad = missing_term([s], term)
+            if bad:
+                raise ValueError(bad[0])
+        keep, invalid, outside, unread = [], 0, 0, 0
+        for tag, values, _h in s.rows:
+            if valid is not None and str(valid.get((label, tag), {}).get("valid", "")).strip() != "1":
+                invalid += 1
+                continue
+            ok = within(values, limits) if limits else True
+            if ok:
+                keep.append(tag)
+            elif ok is None:
+                unread += 1
+            else:
+                outside += 1
+        copy_decoys(src, dst, s.tags, keep)
+        out.append((label, len(keep), invalid, outside, unread))
+    return out
+
+
+def filter_ranking(path, term=None, maximum=None, limits=()):
+    """Keep the lines ``score tag file`` of a ranking whose decoy (looked up in ``file``) passes ``term`` <=
+    ``maximum`` and every one of ``limits`` ((term, operator, value)).  Returns (kept, failed, without a
+    value)."""
+    limits = list(limits) + ([(term, "<=", maximum)] if term else [])
     with open(path, encoding="utf-8") as fh:
         lines = [ln for ln in fh.read().splitlines() if ln.strip()]
     cache = {}
@@ -280,11 +367,11 @@ def filter_ranking(path, term, maximum):
         tag, src = f[1], f[2]
         if src not in cache:
             s = read_silent(src)
-            bad = missing_term([s], term) if s.read else s.problems[:1]
+            bad = [b for t, _op, _x in limits for b in missing_term([s], t)] if s.read else s.problems[:1]
             if bad:
                 raise ValueError(bad[0])
             cache[src] = s.values()
-        ok = passes(cache[src].get(tag, {}), term, maximum)
+        ok = within(cache[src].get(tag, {}), limits)
         if ok:
             kept.append(ln)
         elif ok is None:
@@ -383,13 +470,21 @@ def main(argv, runs=None, prefix="", model_pattern=""):
     t.add_argument("--extracted", default="", help="folder holding <run>/<tag>.pdb")
     t.add_argument("--models", default="", help="list of ranked models ('N score tag silent-file')")
     t.add_argument("--term", action="append", default=[], help="term to audit (repeatable)")
+    t.add_argument("--validity", default="", help="validity table: its columns are appended to the table")
     f = sub.add_parser("filter", help="copy the decoys of silent files that pass a score cut")
     f.add_argument("files", nargs="+", help="SOURCE OUTPUT [SOURCE OUTPUT ...]")
-    r = sub.add_parser("filter-ranking", help="drop the lines of a ranking whose decoy fails a score cut")
+    f.add_argument("--term", required=True)
+    f.add_argument("--max", type=float, required=True)
+    r = sub.add_parser("filter-ranking", help="drop the lines of a ranking whose decoy fails score limits")
     r.add_argument("ranking")
-    for c in (f, r):
-        c.add_argument("--term", required=True)
-        c.add_argument("--max", type=float, required=True)
+    r.add_argument("--term", help="a term with --max (term <= max)")
+    r.add_argument("--max", type=float)
+    k = sub.add_parser("keep", help="write the filtered silent file of every run of the step: the decoys to "
+                                    "cluster (valid, and within the limits)")
+    k.add_argument("--valid", default="", help="validity table: only decoys with valid 1 are kept")
+    for c in (r, k):
+        c.add_argument("--limit", nargs=3, action="append", default=[], metavar=("TERM", "OP", "VALUE"),
+                       help="a score limit, e.g. --limit score '<=' -300 (repeatable)")
     c = sub.add_parser("check-extracted", help="every decoy of every run has its <run>/<tag>.pdb")
     c.add_argument("folder")
     c.add_argument("silent", nargs="*")
@@ -398,7 +493,35 @@ def main(argv, runs=None, prefix="", model_pattern=""):
         p.print_help(sys.stderr)
         return 2
     try:
+        limits = []
+        for term, op, value in getattr(a, "limit", []):
+            if op not in LIMIT_OPS:
+                print(f"ERROR: unknown operator {op!r} in a limit on {term} (use <=, <, >= or >)",
+                      file=sys.stderr)
+                return 2
+            limits.append((term, op, float(value)))
+        if a.cmd == "keep":
+            valid = read_validity(a.valid)[1] if a.valid else None
+            total = 0
+            for label, kept, invalid, outside, unread in keep_runs([tuple(r) for r in (runs or [])], valid,
+                                                                   limits):
+                total += kept
+                why = ([f"{invalid} invalid"] if valid is not None else []) + (
+                    [f"{outside} outside {limits_text(limits)}"] if limits else []) + (
+                    [f"{unread} without a value"] if unread else [])
+                print(f"run {label}: {kept} decoys kept for clustering"
+                      + (f" ({', '.join(why)})" if why else ""))
+                if not kept:
+                    print(f"WARNING: run {label} has no decoy left to cluster", file=sys.stderr)
+            if not total:
+                print("ERROR: no decoy of any run is left to cluster", file=sys.stderr)
+                return 1
+            return 0
+        if a.cmd == "filter-ranking" and (not (a.term or limits) or (a.term and a.max is None)):
+            print("ERROR: filter-ranking needs --term with --max, or --limit", file=sys.stderr)
+            return 2
         if a.cmd in ("filter", "filter-ranking"):
+            cut = limits_text(limits + ([(a.term, "<=", a.max)] if a.term else []))
             if a.cmd == "filter":
                 if len(a.files) % 2:
                     print("ERROR: filter takes pairs of files: SOURCE OUTPUT ...", file=sys.stderr)
@@ -411,13 +534,13 @@ def main(argv, runs=None, prefix="", model_pattern=""):
                 if dst:
                     kept, failed, unread = filter_silent(src, dst, a.term, a.max)
                 else:
-                    kept, failed, unread = filter_ranking(src, a.term, a.max)
+                    kept, failed, unread = filter_ranking(src, a.term, a.max, limits)
                 total += kept
-                print(f"{a.term} <= {a.max:g}: {kept} kept, {failed} dropped"
+                print(f"{cut}: {kept} kept, {failed} dropped"
                       + (f", {unread} dropped without a value" if unread else "")
                       + f" ({src}{' -> ' + dst if dst else ''})")
             if not total:
-                print(f"ERROR: no decoy passes {a.term} <= {a.max:g}", file=sys.stderr)
+                print(f"ERROR: no decoy passes {cut}", file=sys.stderr)
                 return 1
             return 0
         run_list = [(lab, path) for lab, path in zip(unique_labels(a.silent), a.silent)] if a.silent \
@@ -434,7 +557,8 @@ def main(argv, runs=None, prefix="", model_pattern=""):
                 return 1
             return 0
         models = ranked_models(a.models, model_pattern, run_list) if a.models and model_pattern else {}
-        n = write_table(a.output, silents, pdb_finder(prefix, a.extracted, models))
+        extra = read_validity(a.validity) if a.validity else None
+        n = write_table(a.output, silents, pdb_finder(prefix, a.extracted, models), extra)
         for line in audit_lines(silents, a.term):
             print(line)
         print(f"wrote {n} decoys to {a.output}")
