@@ -5,9 +5,10 @@ work: the program invocations and the helper calls.  It leaves out the set-up an
 them: comments, ``set``, ``cd``, the environment (the *Environment* block of :func:`.base.script_header`,
 conda, modules, ``source``, ``export``), variable assignments, function definitions and calls of the
 script's own functions (their bodies are read like the rest of the script), ``if`` / ``for`` / ``while``
-/ ``case`` structure (a case's patterns too), checks (``[ … ]``, ``test``, ``command -v``, ``grep -q``, so the :func:`.base.require_file` lines
-too), file bookkeeping (``rm``, ``mkdir``, ``mv``, ``cp``, ``ln``), messages (``echo``, ``printf``),
-``exit``, and the error handling after a command (``|| { echo "ERROR: …" >&2; exit 1; }``, ``|| true``).
+/ ``case`` structure (a case's patterns too), checks (``[ … ]``, ``test``, ``command -v``, ``grep -q``, so
+the :func:`.base.require_file` lines too), file bookkeeping (``rm``, ``mkdir``, ``mv``, ``cp``, ``ln``),
+messages (``echo``, ``printf``), ``exit``, and the error handling after a command (``|| { echo "ERROR: …"
+>&2; exit 1; }``, ``|| true``).
 
 Continued lines (``\\``) are joined, a here-document stays with its command, and a variable the script
 sets once to fixed text is shown with that text (``$PMEMD -O …`` as ``pmemd.cuda -O …``), so each line

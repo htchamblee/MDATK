@@ -195,15 +195,17 @@ class GromacsTool(Tool):
         # visible), so MDATK hands out none.
         words = s["extra_mdrun"].split()
 
+        def flag(name: str) -> int:
+            for k, word in enumerate(words[:-1]):
+                if word == name and words[k + 1].isdigit():
+                    return int(words[k + 1])
+            return 0
+
         def value(name: str) -> str:
             for k, word in enumerate(words[:-1]):
                 if word == name:
                     return words[k + 1]
             return ""
-
-        def flag(name: str) -> int:
-            text = value(name)
-            return int(text) if text.isdigit() else 0
 
         cores = flag("-nt") or (s["ntomp"] * (flag("-ntmpi") or 1) if s["ntomp"] else ALL_CORES)
         if not s["gpu"]:
