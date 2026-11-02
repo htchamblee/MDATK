@@ -12,6 +12,62 @@ the notes below.
   [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) · [0.0.2b](#002b-2026-10-15) ·
   [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## 0.0.12 (unreleased)
+
+### Decoy interfaces
+
+- **`mdatk/interfaces.py`**: the interface between two sides of every model of an ensemble, without a
+  register, construct or numbering built in. Sides are chain-qualified ranges (`A:1-16,B:17-44`), whole
+  chains, ranges for every chain or residue groups (`group:NAME`); residues are keyed by chain, number and
+  insertion code, read with `pdbtools.read_pdb`; only nucleotides count (L and unknown names get their base
+  from the atoms, the hand from the sugar's chiral volumes), never ions, water, virtual residues or
+  hydrogens. Rewritten from the user's `interface_census.py`, `interface_clusters.py`, `support_check.py`
+  and `dssr_interface.py`:
+  - **census**: contacts, stacking, Watson-Crick / G·U / non-canonical pairs (builtin, barnaba or DSSR),
+    base-phosphate and 2′-OH-phosphate hydrogen bonds, Mg-bridgeable P–P pairs, residues and the
+    chain-qualified contact fingerprint; score filters on a decoy table (`linear_chainbreak <= 5` …);
+  - **clusters**: deterministic leader clustering of the fingerprints by Jaccard distance (residues,
+    blocks or pairs), exact medoids as representatives (copied as PDB files), reference interfaces typed
+    or measured on reference models, scored on both sides and normalised per reference; neutral pattern
+    and reference-share summary;
+  - **segment support**: what holds each rebuilt residue (partner side, own scaffold, optional base-pair
+    credit as its own class, or only its own rebuilt segments), longest unsupported runs, fixed or
+    automatic run threshold, per-residue profile.
+- **Decoy table reader** for the `scores` output of the FARFAR2 models step (`run`, `tag`, `pdb`, every
+  score term by name; extra columns ignored; TSV, CSV or whitespace), matching models by path, file name or
+  a tag unique across runs.
+- **`mdatk decoys census|clusters|support`** and **`mdatk pdb interface`** (TSV of the pairs, stacks and
+  base / 2′-OH to phosphate hydrogen bonds between two sides, with the hand of each partner;
+  `--engine builtin|barnaba|dssr`). `-p PROJECT` resolves residue groups and logs the step.
+- **Planner step *Decoy interfaces*** (`decoy-interface`, Analysis): inputs models (PDB, several), scores
+  (table, optional), reference models (PDB, optional); outputs census, clusters and support (tables) and the
+  cluster representatives (PDB, several). Its script calls `python3 -m mdatk decoys …` (or the AppImage);
+  groups are written into it as ranges. The rebuilt residues of the support check are the complement of
+  FARFAR2's fixed residues when the connected models carry them (`PortValue.data["input_res"]`), or typed.
+- **DSSR engine** (`mdatk/dssr.py`; `mdatk pdb annotate --engine dssr`, `annotate(engine="dssr")`):
+  x3dna-dssr (licensed separately, never bundled) runs on a copy with canonical names and MDATK's own
+  residue numbering in a temporary folder; its JSON (DSSR 1.x layout: `nts`, `pairs`, `stacks`, `hbonds`)
+  maps back by residue index, so it no longer depends on DSSR's id grammar; ids are also read tolerantly
+  (`1:A.G1`, `AB.G1`, `A.0A/45`, `A.G1^B`, atom ids in either order). Not checked against a real DSSR 2.x
+  file.
+- **Fixed on the way** (problems of the scripts, each with a regression test):
+  - an A·C mismatch and trans Watson-Crick pairs counted as Watson-Crick (one N1/N3 distance);
+  - Mg-bridgeable P–P pairs tested only for residue pairs that already had a contact;
+  - residues keyed by number, so chains numbered alike merged and sequence separation ignored chains (a
+    base-paired residue of a duplex was "unsupported"); ions inside a range counted as residues and as
+    partner support; hydrogens named `1H5'` counted as heavy atoms; base letters read from the first
+    A/G/C/U character of the residue name;
+  - one run's chainbreak applied to another run's decoys (silent-file scores keyed by a part every RNAdo
+    run shares); the census score column read from file names;
+  - the fingerprint dropped chains and broke on negative residue numbers;
+  - reference shares biased toward the reference with more exclusive residues, target side only, scored
+    from the representative alone, tallied over the printed clusters only; medoids from a 60-member sample;
+    seeding dependent on the input order; a no-reference run printed reference messages for every cluster;
+  - pair credit added to the scaffold class (and a bifurcated hydrogen bond counted as a pair);
+  - DSSR: interface pairs lost with per-chain numbering, several-letter or blank chains, names with digits
+    and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
+    written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own
