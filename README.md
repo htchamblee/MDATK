@@ -1562,14 +1562,15 @@ log gives the size-weighted shares over all recurring clusters, also without *br
 representative touches more than 10 side-B residues).
 
 **Segment support** (`support` table, plus per-residue and per-residue-share tables): for every rebuilt
-residue, its heavy-atom contacts (4.5 Å) beyond a sequence separation of 3, counted within a chain only
-(residues of other chains are never neighbours), by source: the partner side (`#`), its own side outside
-the rebuilt segments (`o`, scaffold), optionally base pairs between rebuilt residues (`=`, two distinct
-base-edge hydrogen bonds within 3.3 Å, or canonical pairs) and its own rebuilt segments only (`:`, which
-is no support). A model is flagged when it has a run of 4 unsupported residues (or *auto*: the largest gap
-of the ensemble's longest runs). The rebuilt residues are the rest of the sides outside FARFAR2's fixed
-residues when the connected models carry them (*Every decoy* of a FARFAR2 step does), or typed (fixed or
-rebuilt residues).
+residue, its heavy-atom contacts (4.5 Å) beyond a sequence separation of 3, counted within a strand only
+(residues of other strands are never neighbours; a strand ends at a chain change, a TER record, a 5′ end
+without its phosphate or an O3′–P gap over 4 Å, so files without chain ids keep their strands apart), by
+source: the partner side (`#`), its own side outside the rebuilt segments (`o`, scaffold), optionally
+base pairs between rebuilt residues (`=`, two distinct base-edge hydrogen bonds within 3.3 Å, or
+canonical pairs) and its own rebuilt segments only (`:`, which is no support). A model is flagged when
+it has a run of 4 unsupported residues (or *auto*: the largest gap of the ensemble's longest runs). The
+rebuilt residues are the rest of the sides outside FARFAR2's fixed residues when the connected models
+carry them (*Every decoy* of a FARFAR2 step does), or typed (fixed or rebuilt residues).
 
 For the 73-nt construct the scripts came from (an aptamer in chains A and B, a target in chain C), the
 sides are `A:1-16,B:17-44` and `C:45-73`, and FARFAR2's fixed helices `A:1-6 A:13-16 B:17-20 B:39-44
@@ -1836,7 +1837,12 @@ not know are mapped from the residue or its atoms), leaves ions, water and Roset
 and numbers the residues itself, so DSSR's answer maps back by residue index and never depends on how a
 DSSR version writes its residue ids (`A.G1`, `1:A.G1`, `A.0A/45`, `A.G1^B`, atom ids `N1@A.G1`). Its
 Leontis-Westhof classes are written in the same form as Barnaba's (`cWW` Watson-Crick → `WCc`, wobble →
-`GUc`, `tHS` → `HSt`), stacks as `--`. DSSR, like Barnaba, does not check chirality: it classifies a D–L
+`GUc`, `tHS` → `HSt`), stacks as `--`. The stacks are DSSR's `stacks` plus the stacking inside its
+`stems`: DSSR's list of stacks leaves out the stacking within a stem, so MDATK takes it from the stem's
+consecutive pairs (neighbours along each strand). Cross-strand stacking inside a stem, which DSSR
+reports only in its non-pair list (`--non-pair`, not run), is not included, so `mdatk pdb interface
+--engine dssr` lists no stacks between the two strands of an intermolecular stem where the builtin engine
+or Barnaba may find some. DSSR, like Barnaba, does not check chirality: it classifies a D–L
 pair like any other. `mdatk pdb interface` (see [Decoy interfaces](#decoy-interfaces)) lists the pairs,
 stacks and base / 2′-OH to phosphate hydrogen bonds between two sides of each model, with the hand of each
 partner, from the builtin engine, Barnaba or DSSR.

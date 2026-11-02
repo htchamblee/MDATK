@@ -15,7 +15,11 @@ a residue named as one in any supported scheme (A, RA5, LA, 0A, DA ...) with bac
 residue with an unknown name (Rosetta's '0', 'LA0', modified names) whose atoms show a sugar and a base
 (the base is then inferred from the atoms).  Ions, water and Rosetta's virtual residues never count.
 Hydrogens are recognised by element (atom names such as 1H5' included).  The sugar's hand (D / L) comes
-from :func:`mdatk.pdbtools.sugar_chirality`.
+from :func:`mdatk.pdbtools.sugar_chirality`.  A strand is a run of nucleotides joined by the backbone:
+it ends at a chain change, at a TER record, and between consecutive nucleotides where the next one
+starts without its phosphate (O5' but no P: a 5' end) or O3'-P is longer than ``LINK_BREAK`` (4 Å,
+generous for FARFAR2's chain breaks), so files with blank chain ids (Amber, cpptraj) keep their strands
+apart.
 
 Census (:func:`census`), counted across the A/B boundary only:
 
@@ -45,7 +49,7 @@ residue sets per side, typed or taken from the census of reference models) score
 residues exclusive to each reference, on both sides, normalised by the size of each exclusive set.
 
 Segment support (:func:`segment_support`): for each residue of the rebuilt segments, its heavy-atom
-contacts beyond a sequence separation (counted within a chain; residues of other chains are never
+contacts beyond a sequence separation (counted within a strand; residues of other strands are never
 neighbours) by source: the partner side, its own side outside the rebuilt segments (scaffold), base
 pairs inside the rebuilt segments (optional, a class of its own) or its own rebuilt segments (self,
 which is not support).
@@ -80,6 +84,7 @@ INTERFACE_ENGINES = ("builtin", "barnaba", "dssr")
 LEVELS = ("residues", "blocks", "pairs")
 SUPPORT_PAIRS = ("off", "contacts", "builtin")
 COUNTS = ("contacts", "stack", "wc", "gu", "other", "bph", "ohph", "mgbr")
+LINK_BREAK = 4.0  # Å: an O3'(i)-P(i+1) longer than this ends a strand
 
 PURINE_RING = ("N9", "C8", "N7", "C5", "C4", "N3", "C2", "N1", "C6")
 PYRIMIDINE_RING = ("N1", "C2", "N3", "C4", "C5", "C6")
@@ -226,6 +231,7 @@ class Nucleotide:
     atoms: Dict[str, np.ndarray]
     heavy: List[str]  # heavy-atom names
     index: int = 0  # position among the model's nucleotides
+    strand: int = 0  # backbone-joined run of nucleotides (see the module docstring)
 
     @property
     def key(self) -> Key:
@@ -252,35 +258,51 @@ def parse_label(text: str) -> Key:
     return (m.group(1), int(m.group(2)), m.group(3))
 
 
+def _strand_break(prev: Dict[str, np.ndarray], atoms: Dict[str, np.ndarray]) -> bool:
+    """No backbone link from the previous nucleotide: this one starts without its phosphate (O5' but no P,
+    a 5' end) or O3'-P is longer than ``LINK_BREAK``.  Without the atoms to tell, the two are joined."""
+    if "P" not in atoms:
+        return "O5'" in atoms
+    return "O3'" in prev and float(np.linalg.norm(atoms["P"] - prev["O3'"])) > LINK_BREAK
+
+
 def nucleotides(structure: Structure) -> List[Nucleotide]:
-    """The nucleotides of a structure (see the module docstring for what counts)."""
+    """The nucleotides of a structure (see the module docstring for what counts) with their strands."""
     out: List[Nucleotide] = []
-    for res in structure.residues():
-        atoms: Dict[str, np.ndarray] = {}
-        heavy: List[str] = []
-        for a in res.atoms:
-            name = a.name.replace("*", "'")
-            if name in atoms:
-                continue  # an alternate location
-            atoms[name] = np.array(a.xyz, dtype=np.float64)
-            if not _is_hydrogen(name, a.element):
-                heavy.append(name)
-        if len(atoms) < 2:
-            continue  # ions and other single atoms
-        info = parse_residue_name(res.name)
-        backbone = any("'" in n or n == "P" for n in atoms)
-        if info is not None and backbone:
-            base, dna = info.base, info.sugar == "dna"
-        elif "C1'" in atoms:
-            base = _infer_base(atoms)
-            if base is None:
+    strand = -1
+    for seg in structure.segments:  # TER-delimited, one chain each
+        first = True
+        prev: Optional[Dict[str, np.ndarray]] = None  # atoms of the previous residue, a nucleotide
+        for res in seg:
+            atoms: Dict[str, np.ndarray] = {}
+            heavy: List[str] = []
+            for a in res.atoms:
+                name = a.name.replace("*", "'")
+                if name in atoms:
+                    continue  # an alternate location
+                atoms[name] = np.array(a.xyz, dtype=np.float64)
+                if not _is_hydrogen(name, a.element):
+                    heavy.append(name)
+            prev_atoms, prev = prev, None
+            if len(atoms) < 2:
+                continue  # ions and other single atoms
+            info = parse_residue_name(res.name)
+            backbone = any("'" in n or n == "P" for n in atoms)
+            if info is not None and backbone:
+                base, dna = info.base, info.sugar == "dna"
+            elif "C1'" in atoms:
+                base = _infer_base(atoms)
+                if base is None:
+                    continue
+                dna = base == "T" or "O2'" not in atoms
+            else:
                 continue
-            dna = base == "T" or "O2'" not in atoms
-        else:
-            continue
-        hand, _vols = sugar_chirality({n: tuple(v) for n, v in atoms.items()}, base)
-        out.append(Nucleotide(res.chain, res.resseq, res.icode, res.name, base, dna, hand, atoms, heavy,
-                              len(out)))
+            if first or (prev_atoms is not None and _strand_break(prev_atoms, atoms)):
+                strand += 1
+            first, prev = False, atoms
+            hand, _vols = sugar_chirality({n: tuple(v) for n, v in atoms.items()}, base)
+            out.append(Nucleotide(res.chain, res.resseq, res.icode, res.name, base, dna, hand, atoms, heavy,
+                                  len(out), strand))
     return out
 
 
@@ -637,7 +659,11 @@ def parse_filters(text: Any) -> List[Tuple[str, str, float]]:
 
 
 def format_filter(f: Tuple[str, str, float]) -> str:
-    return f"{f[0]}{f[1]}{f[2]:g}"
+    """'term<=5' for :func:`parse_filters` to read back: the threshold exactly (the shortest text of the
+    same number, not rounded to 6 digits), whole numbers without '.0'."""
+    value = float(f[2])
+    text = str(int(value)) if value.is_integer() and abs(value) < 1e15 else repr(value)
+    return f"{f[0]}{f[1]}{text}"
 
 
 @dataclass
@@ -799,7 +825,9 @@ def _matrix(feats: Sequence[FrozenSet[str]]) -> np.ndarray:
 
 
 def _jaccard_to(m: np.ndarray, sizes: np.ndarray, rows: np.ndarray, k: int) -> np.ndarray:
-    inter = m[rows] @ m[k]
+    """Jaccard distances of ``rows`` to row ``k`` in float64 (the float32 counts are whole numbers, exact;
+    a float32 ratio missed the cut-off tolerance: 1 - 9/10 came out as 0.100000024)."""
+    inter = (m[rows] @ m[k]).astype(np.float64)
     union = sizes[rows] + sizes[k] - inter
     return 1.0 - np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
@@ -816,7 +844,7 @@ def leader_clusters(feats: Sequence[FrozenSet[str]], names: Sequence[str], cut: 
     ``cut`` Jaccard distance.  Members are listed seed first, then in that order."""
     order = sorted(range(len(feats)), key=lambda k: (-len(feats[k]), names[k], k))
     m = _matrix(feats)
-    sizes = m.sum(axis=1)
+    sizes = m.sum(axis=1, dtype=np.float64)
     claimed = np.zeros(len(feats), dtype=bool)
     rank = np.array(order, dtype=np.int64)
     clusters = []
@@ -833,19 +861,19 @@ def leader_clusters(feats: Sequence[FrozenSet[str]], names: Sequence[str], cut: 
 
 
 def medoid(feats: Sequence[FrozenSet[str]], members: Sequence[int]) -> int:
-    """The member with the smallest summed Jaccard distance to all other members (exact; ties go to the
-    earliest member, i.e. the seed)."""
+    """The member with the smallest summed Jaccard distance to all other members (exact; ties, equal up to
+    rounding, go to the earliest member, i.e. the seed)."""
     if len(members) < 3:
         return members[0]
     m = _matrix([feats[k] for k in members])
-    sizes = m.sum(axis=1)
+    sizes = m.sum(axis=1, dtype=np.float64)
     total = np.zeros(len(members))
     step = 512
     for s in range(0, len(members), step):
-        inter = m[s:s + step] @ m.T
+        inter = (m[s:s + step] @ m.T).astype(np.float64)
         union = sizes[s:s + step, None] + sizes[None, :] - inter
         total[s:s + step] = (1.0 - np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)).sum(1)
-    return members[int(np.argmin(total + np.arange(len(members)) * 1e-12))]
+    return members[int(np.flatnonzero(total <= total.min() + 1e-9)[0])]
 
 
 @dataclass
@@ -1072,7 +1100,7 @@ def write_representatives(res: ClusterResult, template: str, n: int, base_dirs: 
 
 @dataclass
 class SupportParams:
-    sep: int = 3  # contacts to residues of the same chain at most this far in sequence are ignored
+    sep: int = 3  # contacts to residues of the same strand at most this far in sequence are ignored
     cutoff: float = 4.5
     count_self: bool = False
     pairs: str = "off"  # off | contacts | builtin
@@ -1166,8 +1194,8 @@ def segment_support(structure: Structure, side_a: Sequence[Range], side_b: Optio
         counts[key] = counts.get(key, 0) + 1
     for (t, qk), c in counts.items():
         n, q = both[targets[t]], both[qk]
-        if n.key == q.key or (n.chain == q.chain and abs(n.resseq - q.resseq) <= p.sep):
-            continue  # neighbours in a chain are held by the backbone
+        if n.key == q.key or (n.strand == q.strand and abs(n.resseq - q.resseq) <= p.sep):
+            continue  # neighbours in a strand are held by the backbone
         r = rows[t]
         if mol[q.key] != mol[n.key]:
             r.partner += c
@@ -1179,12 +1207,12 @@ def segment_support(structure: Structure, side_a: Sequence[Range], side_b: Optio
         else:
             r.self_ += c
     residues = [rows[t] for t in range(len(targets))]
-    # segments: runs of rebuilt residues that follow each other in a chain
+    # segments: runs of rebuilt residues that follow each other in a strand
     segments: List[List[int]] = []
     prev = None
     for t, k in enumerate(targets):
         n = both[k]
-        follows = prev is not None and k == prev[0] + 1 and n.chain == prev[1].chain
+        follows = prev is not None and k == prev[0] + 1 and n.strand == prev[1].strand
         if follows and n.resseq - prev[1].resseq <= 1:
             segments[-1].append(t)
         else:
@@ -1236,7 +1264,8 @@ def interface_records(structure: Structure, side_a: Sequence[Range], side_b: Opt
                      "hand_a": x.hand or "", "residue_b": y.label, "name_b": y.name, "hand_b": y.hand or "",
                      "class": cls, "atoms": atoms, "distance": "" if dist is None else f"{dist:.2f}"})
 
-    stem = os.path.splitext(model)[0] if model else "model"
+    # the file names of DSSR's input and JSON in --keep: a model named with folders ('r1/S_1.pdb') stays there
+    stem = re.sub(r"[/\\]+", "_", os.path.splitext(model)[0]).lstrip("._") or "model"
     pairs, stacks, dres = engine_pairs(both, engine, True, p.pair_cutoff, dssr_exe, want_stacks=True,
                                        keep=keep, stem=stem)
     for i, j, c in pairs:
@@ -1438,7 +1467,8 @@ def add_commands(sub) -> list:
     grp.add_argument("--fixed", metavar="RANGES",
                      help="the fixed residues (e.g. FARFAR2's -input_res); the rest of the sides is rebuilt")
     c.add_argument("--sep", type=int, default=3,
-                   help="ignore contacts to residues of the same chain this close in sequence (default 3)")
+                   help="ignore contacts to residues of the same strand this close in sequence "
+                        "(default 3)")
     c.add_argument("--cutoff", type=float, default=4.5,
                    help="heavy-atom contact distance in Å (default 4.5)")
     c.add_argument("--run", default="4",
@@ -1739,7 +1769,7 @@ def run_support(args) -> Tuple[int, Dict[str, Any]]:
         write_table(args.profile, [{"residue": k, "unsupported": v[0], "models": v[1],
                                     "share": round(v[0] / v[1], 4)} for k, v in tally.items()])
         out_files.append(args.profile)
-    say(f"{len(results)} models; contacts beyond {args.sep} in sequence (within a chain), within "
+    say(f"{len(results)} models; contacts beyond {args.sep} in sequence (within a strand), within "
         f"{args.cutoff:g} Å" + ("; self-contact counts" if args.count_self else ""))
     say("longest-run distribution: " + ", ".join(str(x) for x in sorted(runs)))
     if auto:
@@ -1758,15 +1788,17 @@ def run_interface(args) -> Tuple[int, Dict[str, Any]]:
     groups = _groups(args)
     side_a, side_b = _sides(args, groups)
     rows, notes = [], []
-    for path in _unique_files(args.models):
+    files = _unique_files(args.models)
+    names = _model_names(files)  # file names, or paths where they repeat (decoys of several runs)
+    for path in files:
         s = read_pdb(path)
-        recs, n = interface_records(s, side_a, side_b, args.engine, model=os.path.basename(path),
-                                    hbond=args.hbond, bph_ch=args.bph_ch, dssr_exe=args.dssr_exe,
-                                    keep=args.keep or "")
+        name = names[path]
+        recs, n = interface_records(s, side_a, side_b, args.engine, model=name, hbond=args.hbond,
+                                    bph_ch=args.bph_ch, dssr_exe=args.dssr_exe, keep=args.keep or "")
         rows += recs
-        notes += [f"{os.path.basename(path)}: {x}" for x in n]
+        notes += [f"{name}: {x}" for x in n]
         kinds = [r["kind"] for r in recs]
-        say(f"{os.path.basename(path)}: {kinds.count('pair')} pairs, {kinds.count('stack')} stacks, "
+        say(f"{name}: {kinds.count('pair')} pairs, {kinds.count('stack')} stacks, "
             f"{kinds.count('bph')} base-phosphate and {kinds.count('ohph')} 2'-OH-phosphate hydrogen bonds "
             "across the interface")
     write_table(args.output, rows, RECORD_COLUMNS)
