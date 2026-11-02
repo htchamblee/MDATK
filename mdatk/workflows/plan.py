@@ -110,7 +110,11 @@ def remove_node(workflow: WorkflowParams, node_id: str) -> None:
 
 
 def connect(workflow: WorkflowParams, source: str, output: str, target: str, input: str) -> PlanEdge:
-    """Add a connection (replacing any other edge into a single-file input)."""
+    """Add a connection (replacing any other edge into a single-file input).
+
+    A collection output (the full set of a step's files) connects only to collection inputs; into an input
+    that takes a table it connects the output tabulating the set (``Port.table``) instead.  An output that
+    needs an option of its step (``Port.turns_on``) switches that option on."""
     nodes = {n.id: n for n in workflow.nodes}
     if source not in nodes or target not in nodes:
         raise KeyError("unknown step")
@@ -119,13 +123,22 @@ def connect(workflow: WorkflowParams, source: str, output: str, target: str, inp
     src_tool, dst_tool = TOOLS[nodes[source].tool], TOOLS[nodes[target].tool]
     src_s = src_tool.normalise(nodes[source].settings)
     dst_s = dst_tool.normalise(nodes[target].settings)
-    out_port = _port(src_tool.output_ports(src_s), output)
+    out_ports = src_tool.output_ports(src_s)
+    out_port = _port(out_ports, output)
     in_port = _port(dst_tool.input_ports(dst_s), input)
     if out_port is None or in_port is None:
         raise KeyError("unknown port")
+    if out_port.table and not in_port.accepts(out_port.kind):
+        table = _port(out_ports, out_port.table)
+        if table is not None and in_port.accepts(table.kind):
+            out_port, output = table, table.name
     if not in_port.accepts(out_port.kind):
         raise ValueError(f"{in_port.label} accepts {', '.join(kind_label(k) for k in in_port.kinds)}, "
                          f"not {kind_label(out_port.kind)}")
+    if out_port.collection and not in_port.collection:
+        raise ValueError(f"{out_port.label} is a set of files listed when its step runs; {in_port.label} "
+                         + ("takes one file" if not in_port.multiple else "takes files one by one")
+                         + ": connect the set to an input drawn as a large dot")
     if _reaches(workflow, target, source):
         raise ValueError("this connection would create a loop")
     if not in_port.multiple:
@@ -133,6 +146,8 @@ def connect(workflow: WorkflowParams, source: str, output: str, target: str, inp
     edge = PlanEdge(source, output, target, input)
     if not any(e == edge for e in workflow.edges):
         workflow.edges.append(edge)
+    if out_port.turns_on and not src_s.get(out_port.turns_on):
+        nodes[source].settings[out_port.turns_on] = True
     return edge
 
 
@@ -262,6 +277,11 @@ class Plan:
                     step.issues.append(Issue("error", f"{port.label} cannot take a "
                                                       f"{kind_label(pv.kind)}", (f"input:{port.name}",)))
                     continue
+                if pv.lists and not port.collection:
+                    step.issues.append(Issue("error", f"{port.label} cannot take the set of files "
+                                                      f"{src.label} lists when it runs: connect it to an "
+                                                      "input drawn as a large dot", (f"input:{port.name}",)))
+                    continue
                 values.append(pv)
             if len(values) > 1 and not port.multiple:
                 step.issues.append(Issue("error", f"{port.label} takes one file but "
@@ -269,7 +289,8 @@ class Plan:
                 values = values[:1]
             if values:
                 merged = PortValue([p for v in values for p in v.paths], values[0].kind,
-                                   dict(values[0].data), values[0].source, values[0].source_label)
+                                   dict(values[0].data), values[0].source, values[0].source_label,
+                                   {k: n for v in values for k, n in v.lists.items()})
                 inputs[port.name] = merged
                 if node.files.get(port.name):
                     step.issues.append(Issue("info", f"{port.label}: the connected file is used; the "

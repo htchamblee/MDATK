@@ -20,7 +20,8 @@ import re
 from typing import Any, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__, modelcheck, pdbtools
-from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .base import (PortValue, Tool, bash_array, env_section, listed_files, require_file, script_header,
+                   shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import embed
@@ -88,8 +89,9 @@ class ModelCheckTool(Tool):
     description = ("Plausibility of candidate models before MD or refinement: steric clashes (hydrogen bonds "
                    "excused by chemistry), O3′–P links and P–P spacing, loop compaction, sugar hands and "
                    "kinks; a report table, and the models passed on, filtered or stopped.")
-    inputs = [Port("models", "Models (PDB)", ("pdb",), multiple=True,
-                   tooltip="The models to check, e.g. the ranked FARFAR2 models or a refined model."),
+    inputs = [Port("models", "Models (PDB)", ("pdb",), collection=True,
+                   tooltip="The models to check, e.g. the ranked FARFAR2 models, a refined model or every "
+                           "decoy of a FARFAR2 step (the full set, a large dot)."),
               Port("secstruct", "Secondary structures", ("secstruct",), optional=True, multiple=True,
                    tooltip="Dot-brackets of the models' sequence (e.g. two registers): residues unpaired in "
                            "all of them are the loop segments of the compaction check."),
@@ -242,7 +244,7 @@ class ModelCheckTool(Tool):
     # ------------------------------------------------------------ ports
     @staticmethod
     def _n_models(ctx) -> int:
-        return len(ctx.inps("models"))
+        return ctx.count("models")  # with a set of decoys: at most as many as it can hold
 
     def _n_passed(self, s, ctx) -> int:
         n = self._n_models(ctx)
@@ -277,6 +279,24 @@ class ModelCheckTool(Tool):
         except (KeyError, ValueError):
             return s[key].strip()
 
+    @staticmethod
+    def _first_models(ctx) -> List[str]:
+        """The connected models (absolute paths) and, of a set of decoys, the first its list names once its
+        step has run."""
+        value = ctx.value("models")
+        if value is None:
+            return []
+        out = [ctx.abspath(p) for p in value.paths if p not in value.lists]
+        for listing in value.lists:
+            try:
+                with open(ctx.abspath(listing), encoding="utf-8") as fh:
+                    first = next((ln.strip() for ln in fh if ln.strip()), "")
+            except OSError:
+                continue
+            if first:
+                out.append(ctx.abspath(first))
+        return out
+
     def expected_hands(self, s, ctx) -> Tuple[str, str, str]:
         """(expected L, expected D, where they come from) - typed ranges, or (automatic) the hands measured on
         the first connected model that exists, or the builder's helix hand."""
@@ -284,9 +304,7 @@ class ModelCheckTool(Tool):
             return "", "", ""
         if s["hands"] == "ranges":
             return self._ranges(s, "expect_l", ctx), self._ranges(s, "expect_d", ctx), "ranges"
-        value = ctx.value("models")
-        for path in (value.paths if value else []):
-            full = ctx.abspath(path)
+        for full in self._first_models(ctx):
             if not os.path.isfile(full):
                 continue
             try:
@@ -376,7 +394,7 @@ class ModelCheckTool(Tool):
         relative to the step folder."""
         n = ctx.name
         q = shell_quote
-        out = [q(p) for p in ctx.inps("models")]
+        out = ['"${MODELS[@]}"'] if ctx.lists("models") else [q(p) for p in ctx.inps("models")]
 
         def opt(flag: str, value: Optional[str] = None) -> None:
             out.append(flag if value is None else f"{flag} {value}")
@@ -451,6 +469,9 @@ class ModelCheckTool(Tool):
                 "filter": f"up to {len(passed)} models that pass are passed on (the slots left over are "
                           f"written as empty slots); the step fails when fewer than {s['min_pass']} pass",
                 "stop": "the step fails when any model fails"}[s["on_fail"]]
+        if ctx.lists("models"):  # a set of decoys: listed when its step ran
+            sh += ["# The models", *bash_array("MODELS", ctx.inps("models")),
+                   *listed_files("MODELS", ctx, "models"), ""]
         lines, cur = [], ""
         for w in [shell_quote(s["python"].strip() or "python3"), helper] + self.arguments(s, ctx):
             if cur and len(cur) + 1 + len(w) > 100:  # one option per continued line, roughly
@@ -459,7 +480,8 @@ class ModelCheckTool(Tool):
             else:
                 cur = f"{cur} {w}" if cur else w
         lines.append(f"{cur} 2>&1 | tee {log}")
-        sh += [f"# Check {self._n_models(ctx)} model(s): {what}"] + lines + [
+        upto = "up to " if ctx.lists("models") else ""
+        sh += [f"# Check {upto}{self._n_models(ctx)} model(s): {what}"] + lines + [
             require_file(report, "the model check"), require_file(best, "the model check"),
             f'echo "Report: {report}  Best model: {best}"', ""]
         doc = (f"Model checks of RNA models - written by {PROJECT_ABBREV} {__version__} (mdatk.pdbtools and "

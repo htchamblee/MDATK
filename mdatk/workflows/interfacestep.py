@@ -11,11 +11,12 @@ the project file.
 
 from __future__ import annotations
 
+import dataclasses
 import posixpath
 from typing import List, Optional
 
 from .. import interfaces as ifc
-from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .base import PortValue, Tool, env_section, listed_files, require_file, script_header, shell_quote
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -41,8 +42,9 @@ class DecoyInterfaceTool(Tool):
     description = ("Interface census of an ensemble of models between two sides (contacts, stacking, base "
                    "pairs, base-phosphate, Mg-bridgeable phosphates), clusters of the contact fingerprints "
                    "with medoid representatives, and what holds the rebuilt segments.")
-    inputs = [Port("models", "Models (PDB)", ("pdb",), multiple=True,
-                   tooltip="The models to compare, e.g. the decoys of a FARFAR2 models step."),
+    inputs = [Port("models", "Models (PDB)", ("pdb",), collection=True,
+                   tooltip="The models to compare, e.g. every decoy of a FARFAR2 step (the full set, a large "
+                           "dot) or the models of a FARFAR2 models step."),
               Port("scores", "Decoy scores", ("table",), optional=True,
                    tooltip="Table of the decoys' score terms (run, tag, pdb, score, linear_chainbreak ...) "
                            "for the score filters and the score column."),
@@ -186,9 +188,7 @@ class DecoyInterfaceTool(Tool):
     # ------------------------------------------------------------ ports
     def input_ports(self, s):
         if s.get("models_from") == "scores":
-            m = self.inputs[0]
-            return [Port(m.name, m.label, m.kinds, optional=True, multiple=True, tooltip=m.tooltip),
-                    *self.inputs[1:]]
+            return [dataclasses.replace(self.inputs[0], optional=True), *self.inputs[1:]]
         return list(self.inputs)
 
     def output_ports(self, s):
@@ -417,9 +417,10 @@ class DecoyInterfaceTool(Tool):
         sh = script_header("MDATK decoy interfaces: census" + (", clusters" if s["cluster"] else "")
                            + (", segment support" if s["support"] else ""), ctx, s, script, notes)
         models = ctx.inps("models")
-        if models:
-            sh += ["# The models", *self._array("MODELS", models), ""]
-        census_words = mdatk + ["decoys", "census"] + (['"${MODELS[@]}"'] if models else [])
+        listed = listed_files("MODELS", ctx, "models")  # a set of decoys: listed when its step ran
+        if models or listed:
+            sh += ["# The models", *self._array("MODELS", models), *listed, ""]
+        census_words = mdatk + ["decoys", "census"] + (['"${MODELS[@]}"'] if models or listed else [])
         census_words += self._census_options(s, ctx)
         if ctx.has("scores"):
             census_words += ["--scores", q(ctx.inp("scores"))]

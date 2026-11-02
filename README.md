@@ -775,7 +775,15 @@ line](#command-line)).
 
 Place boxes (steps) with *Add step* or the canvas's right-click menu, and connect them by dragging from
 an output port (right edge) to an input port (left edge); only compatible files connect, and loops are
-refused. Double-click a box to edit it in the wizard. The details pane of the selected box has *Edit in
+refused. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
+the right of a FARFAR2 box, whose files are known only once that step has run (see [Every decoy from the
+FARFAR2 step](#farfar2-decoys-scores-run-audit-and-frames)). A set connects only to inputs drawn as large
+dots, on the left of the steps that take many models (the models of *Model check*, *Decoy interfaces*,
+*Register census*, *Ensemble comparison* (both arms), *MDATK · frame check* and *Map-model score*); they
+take files connected one by one as well. Dropped on an input that takes a decoy table, a set connects its
+step's decoy table instead; connections of a set are drawn thicker, and an output that needs an option of
+its step (here *Extract every decoy after the runs*) switches it on when connected. Double-click a box to
+edit it in the wizard. The details pane of the selected box has *Edit in
 wizard…*, *Write step*, *Run step…*, the previous-run buttons (see [Previous runs](#previous-runs)) and,
 on an MDATK analysis box, *Use for analysis…*. *Templates* insert pre-connected chains (FARFAR2 → models
 → Amber build → helix restraints → MD → MDATK analysis + VMD; Amber protocol; Amber → GROMACS; ideal
@@ -977,7 +985,7 @@ mdatk workflow write -p plan.mdatk.toml             # moved    03 · Amber · MD
 
 | Step | Writes | Notes |
 |---|---|---|
-| **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise) |
+| **Rosetta · FARFAR2** | FASTA + secstruct from a sequence and dot-bracket, a flags file, a script running *N* seeds in parallel (`xargs -P`), one silent file per run; optionally, after the runs, every decoy (`models/rNN/<tag>.pdb`), the decoy table and the list of the decoys | fixed helices (`-s`, `-input_res` typed or all helix residues), cryo-EM map (`-edensity:*`), score weights, constant seeds; checks that paired bases are complementary (rna_denovo stops otherwise); output *Every decoy* (a large dot: the full set for the steps that take many models) and *Decoy table*, see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
 | **Rosetta · FARFAR2 models** | script: `rna_cluster` → `extract_pdbs` → `x3dna-dssr`; optionally validity filters before clustering (hands, base identity, closure, required pairs), a quality filter after it (score limits on the ranked centres), every model of every run (`models/rNN/<tag>.pdb`) and the decoy table | ranked models `…_model-01_….pdb` (best first) feed the Amber build; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
 | **Model check (clashes · backbone · chirality)** | a script running MDATK's PDB tools and model checks (copied into the step folder, standard library only) on every connected model: a report table `…_report_….tsv`, the passed models and the best one | report, filter or stop; see [Model checks](#model-checks) |
 | **Rosetta · run audit** | script calling `python3 -m mdatk rosetta audit` | what each rna_denovo run was given (logged command lines, flags files, input fingerprints), the Rosetta build and the seed of every run (duplicate seeds are an error), conditions compared in pairs; see [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames) |
@@ -1313,6 +1321,27 @@ extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), th
 removed first, and afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the
 step and is named. A new run of the step replaces `models/`.
 
+**Every decoy from the FARFAR2 step.** The FARFAR2 box has two more outputs: *Every decoy (PDB)*, the large
+dot on its right (a set, see [The plan](#the-plan)), and *Decoy table*. Connecting either switches on
+*Extract every decoy after the runs* (section *Decoys*; it can be ticked without a connection too). After
+the rna_denovo runs, the step's script runs `<project>_<step>_decoys_<time>.sh`, which extracts every
+model of every run into `models/<run>/<tag>.pdb` of the FARFAR2 folder as *Extract every model* does
+(*Parallel extractions*, `extract_pdbs` from the box's *extract_pdbs executable* with its Rosetta database,
+one PDB per SCORE line checked) and writes the decoy table `<project>_<step>_scores_<time>.tsv` (columns as
+above) and the list of the decoys `<project>_<step>_decoys_<time>.txt` (one PDB per line, relative to the
+plan folder, in the table's order). Run that script alone to extract again without running rna_denovo. The
+decoys are known only when the runs have finished (`-autofilter`, the chain-closure filters and failed runs
+leave fewer than runs × models per run), so the set passes its list: the steps that take it (model check,
+decoy interfaces, register census, ensemble comparison, frame check, map-model score) read the list when
+their scripts run, beside any files connected one by one, and stop when it is missing or empty; what they
+plan by count (the model check's passed models, the frame check's moved models) assumes at most runs ×
+models per run. The decoys come straight from the runs: the cluster-centre models of *FARFAR2 models* are
+another output of another step. A register census groups decoys by folder: with *Group by folder level* 1
+each run (`models/rNN`) is a group, with 2 every run of the FARFAR2 step together; its *Rosetta log
+folders* take the FARFAR2 step's folder, where the runs' logs are. The set also carries FARFAR2's
+`-input_res` (the residues of the fixed-helix PDB; none without one), which the segment support of *Decoy
+interfaces* reads. Without the option the step's files are unchanged.
+
 **Run audit** (step *Rosetta · run audit*, `mdatk rosetta audit`). The authoritative record of what a run was
 given is the command line Rosetta logs (`core.init: command: …`). MDATK reads every such line of every
 rna_denovo log. A fully expanded command line is the normal case; `@flags` files are expanded recursively too
@@ -1461,7 +1490,7 @@ before running it.
 ### Decoy interfaces
 
 The **Decoy interfaces** step (`decoy-interface`, *Add step → Analysis*) describes, model by model, the
-interface between two parts of an ensemble (e.g. the decoys of a FARFAR2 models step), groups the models
+interface between two parts of an ensemble (e.g. every decoy of a FARFAR2 step), groups the models
 by the contacts they make and checks what holds their rebuilt segments. It assumes no register, construct
 or numbering: the two **sides** are residue selections, as chain-qualified ranges (`A:1-16,B:17-44`),
 whole chains (`C`), ranges for every chain (`1-44`) or the project's residue groups (`group:Aptamer`,
@@ -1514,7 +1543,8 @@ the rebuilt segments (`o`, scaffold), optionally base pairs between rebuilt resi
 base-edge hydrogen bonds within 3.3 Å, or canonical pairs) and its own rebuilt segments only (`:`, which
 is no support). A model is flagged when it has a run of 4 unsupported residues (or *auto*: the largest gap
 of the ensemble's longest runs). The rebuilt residues are the rest of the sides outside FARFAR2's fixed
-residues when the connected models carry them, or typed (fixed or rebuilt residues).
+residues when the connected models carry them (*Every decoy* of a FARFAR2 step does), or typed (fixed or
+rebuilt residues).
 
 For the 73-nt construct the scripts came from (an aptamer in chains A and B, a target in chain C), the
 sides are `A:1-16,B:17-44` and `C:45-73`, and FARFAR2's fixed helices `A:1-6 A:13-16 B:17-20 B:39-44
@@ -1750,15 +1780,17 @@ mdatk pdb qc decoys/*.pdb --kink-reactivity inline.tsv --kink-reactivity-min 0.5
     --kink-reactivity-chain C --gate-kinks --hydrogen-check --link-params tleap.leap --tsv -o qc.tsv
 ```
 
-The planner step takes the models (several), optional secondary structures and an optional decoy
-table (the FARFAR2 models step's `scores`), and writes the report (table), the passed models and the
+The planner step takes the models (several, or the set *Every decoy* of a FARFAR2 step: a large dot),
+optional secondary structures and an optional decoy table (the FARFAR2 models step's `scores`, or the
+FARFAR2 step's *Decoy table*), and writes the report (table), the passed models and the
 best one (the first passed). With *Models that fail: filter*, *Models passed on (up to)* is the number
 of slots and *Fewest passing models* the minimum (1); its *Passed models* then carry a mark that the
 slots may be empty, and an Amber build fed one writes the guard that stops it before tleap. *Kinks* and
 *Report hydrogen contacts* set the checks above. *Expected hands* is automatic by default: the hands
-measured on the first connected model when the plan is written (when it exists then), or the hand of a
-builder helix; *Ranges* takes them typed. Its script copies MDATK's PDB tools and model checks into the
-step folder, so the machine that runs it needs `python3` only, and removes the outputs of an earlier run
+measured on the first connected model when the plan is written (when it exists then; of a set of decoys
+the first it lists once its step has run), or the hand of a builder helix; *Ranges* takes them typed.
+Its script copies MDATK's PDB tools and model checks into the step folder, so the machine that runs it
+needs `python3` only, and removes the outputs of an earlier run
 first, so a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`,
 `chirality.py` and `bbcheck.py`; `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual`
 replaces `to_amber.py`, and `--scheme standard` the renaming of `q_prep.py`.
