@@ -678,7 +678,7 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
     ]),
     # the user's validation order for a FARFAR2 decoy campaign against a cryo-EM map: validity filters
     # before clustering, quality checks on the cluster centres after it
-    "decoy-validation": ("Decoy validation (FARFAR2): models → clashes → interface support → Q-score dQ → kinks", [
+    "decoy-validation": ("Decoy validation (FARFAR2): models → clashes → support → Q-score dQ → kinks", [
         ("fold", "farfar2", 0, 0, {}),
         ("models", "farfar2-models", 1, 0, {"valid_closure": True, "closure_term": "linear_chainbreak",
                                              "closure_max": 5.0}),
