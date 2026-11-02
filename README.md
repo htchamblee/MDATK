@@ -245,8 +245,11 @@ and what the entries start, and afterwards what it wrote. The entries start what
 | a pip / venv installation | the `mdatk-gui` script that runs this Python (the venv's `bin`, the user's `~/.local/bin` or `PATH`), else `<python> -m mdatk gui %f` | `rnado-gui`, else `<python> -m mdatk.gui.rnado %f` |
 | a source checkout that is not installed | `env PYTHONPATH=<checkout> <python> -m mdatk gui %f` | the same with `-m mdatk.gui.rnado` |
 
-Paths are quoted as the Desktop Entry Specification asks (spaces, `$`, quotes, backslashes). The entries
-hold these paths: after moving the AppImage, the bundle folder or the venv, add them again.
+Paths are quoted as the Desktop Entry Specification asks (spaces, `$`, quotes, backslashes, `%` written
+as `%%`); a program whose path holds a `%` starts through `env` (`sh -c 'exec "$0" "$@"'` when the path
+also holds a `=`), since GNOME-family menus look the program up before they read `%%` as `%` and would
+drop the entry. The entries hold these paths: after moving the AppImage, the bundle folder or the venv,
+add them again.
 `mdatk desktop status` lists the files, which are there, which start something else (`outdated`) and what
 the entries start now.
 
