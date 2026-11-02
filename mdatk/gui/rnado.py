@@ -33,6 +33,7 @@ import mdatk  # noqa: E402
 from .. import __version__  # noqa: E402
 from ..config import PlanNode, Project  # noqa: E402
 from ..workflows.plan import step_title  # noqa: E402
+from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .about import citation_text, export_bibtex  # noqa: E402
 from .jobs import JobControl, confirm_run, waiting_text  # noqa: E402
@@ -169,14 +170,18 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                          ("Show the output log", self.show_log),
                          ("Project log…", self.show_project_log),
                          (None, None),
+                         (desktop.LAUNCHERS_ITEM, self.add_launchers),
                          ("About RNAdo", self.show_about)):
             if text is None:
                 menu.append(Gtk.SeparatorMenuItem())
                 continue
             item = Gtk.MenuItem(label=text)
+            if text == desktop.LAUNCHERS_ITEM:
+                item.set_tooltip_text(desktop.LAUNCHERS_TIP)
             item.connect("activate", lambda _w, c=cb: c())
             menu.append(item)
         menu.show_all()
+        self.main_menu = menu
         mb = Gtk.MenuButton()
         mb.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
         mb.set_tooltip_text("New, open, save, tools, About RNAdo")
@@ -704,6 +709,10 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         self.jobs.cancel()
 
     # ================================================================ about
+    def add_launchers(self) -> str:
+        """MDATK and RNAdo in the applications menu (asks first; :func:`mdatk.gui.desktop.add_launchers`)."""
+        return desktop.add_launchers(self, self.info, self.error)
+
     def show_about(self) -> None:
         from ..citations import plan_resources
 
@@ -802,10 +811,14 @@ class RNAdoApplication(Gtk.Application):
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """``rnado-gui [PROJECT] [--open wizard|pdb|builder]``."""
+    """``rnado-gui [PROJECT] [--open wizard|pdb|builder]`` (``--install-launchers``: the menu entries)."""
     from ..cli import rnado_gui_parser
 
     args = rnado_gui_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.install_launchers:  # no window: the menu entries, as with 'rnado --install-launchers'
+        from ..launchers import run
+
+        return run("install")
     warnings.filterwarnings("ignore", module="MDAnalysis")
     GLib.set_application_name(TITLE)
     icons = icon_pixbufs()

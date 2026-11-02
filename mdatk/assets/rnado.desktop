@@ -9,5 +9,5 @@ Terminal=false
 Categories=Science;Chemistry;Education;
 MimeType=application/toml;
 Keywords=RNA;molecular dynamics;planner;Amber;GROMACS;MDATK;
-# The icon is in mdatk/assets; to add it to the icon theme of a source or pip installation:
-#   xdg-icon-resource install --novendor --size 256 mdatk/assets/rnado-icon-256.png rnado
+# A template: 'mdatk desktop install' (mdatk/launchers.py) writes this entry and the RNAdo icons
+# (mdatk/assets) into the user's menu, with the Exec lines of the installation that runs it.

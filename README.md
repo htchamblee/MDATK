@@ -31,6 +31,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
+  - [Applications menu (Linux)](#applications-menu-linux)
   - [Optional: cpptraj](#optional-cpptraj)
 - [Quick start](#quick-start)
 - [The GUI](#the-gui)
@@ -130,6 +131,7 @@ chmod +x MDATK-<version>-x86_64.AppImage
 ./MDATK-<version>-x86_64.AppImage rnado write -p plan.mdatk.toml  # = mdatk workflow write
 ./MDATK-<version>-x86_64.AppImage --help                   # the command line (any mdatk command)
 ./MDATK-<version>-x86_64.AppImage demo ~/mdatk-demo        # e.g. the synthetic demo system
+./MDATK-<version>-x86_64.AppImage desktop install          # MDATK and RNAdo in the applications menu
 ```
 
 With no argument (or a project file) the AppImage starts the analysis window; with `rnado` it is
@@ -141,6 +143,12 @@ command line. For shorter names, link it: `ln -s ~/Apps/MDATK-<version>-x86_64.A
 (right-click). If the AppImage does not start because FUSE is missing (some containers and minimal
 installs), run it with `--appimage-extract-and-run` or install `fuse`/`libfuse2`; *Open in RNAdo…* then
 starts RNAdo the same way.
+
+**An RNAdo entry in the applications menu:** desktop integration takes only one desktop entry from an
+AppImage (MDATK's), so RNAdo gets no menu entry of its own that way. *Add MDATK and RNAdo to the
+applications menu…* (main menu of either window) or `./MDATK-<version>-x86_64.AppImage desktop install`
+adds both, with their icons (see [Applications menu (Linux)](#applications-menu-linux)). The entries start
+the AppImage at its current path: after moving or renaming it, add them again from the new place.
 
 **Windows 10 / 11** (64-bit) - **beta, not yet tested on real machines**: run
 `MDATK-<version>-windows-x64-setup.exe` (installs per user, no administrator rights needed;
@@ -207,8 +215,46 @@ pip install '.[barnaba]' # optional: Barnaba for Leontis-Westhof base-pair class
 
 This installs four commands: `mdatk` (CLI), `mdatk-gui` (the analysis window), `rnado` and
 `rnado-gui` (RNAdo, the workflow planner); `python -m mdatk` works too. Activate the venv
-(`. .venv/bin/activate`) in each new shell before using them. Desktop entries are provided in
-`data/mdatk.desktop` and `data/rnado.desktop`.
+(`. .venv/bin/activate`) in each new shell before using them. `mdatk desktop install` (or *Add MDATK
+and RNAdo to the applications menu…* in either window) puts both programs into your applications menu,
+started from this installation without activating the venv (see [Applications menu
+(Linux)](#applications-menu-linux)).
+
+### Applications menu (Linux)
+
+*Add MDATK and RNAdo to the applications menu…* in the main menu of the analysis window and of RNAdo,
+`mdatk desktop install` or `rnado --install-launchers` writes two desktop entries, `mdatk.desktop` (with
+its *RNAdo* action) and `rnado.desktop`, into `~/.local/share/applications`, and their icons into
+`~/.local/share/icons/hicolor/<size>/apps` (`mdatk.png` and `rnado.png` in every size, `rnado.svg` in
+`scalable`); `$XDG_DATA_HOME` replaces `~/.local/share` when it is set. The window first lists the files
+and what the entries start, and afterwards what it wrote. The entries start what is running now:
+
+| MDATK runs from | MDATK's entry | RNAdo's entry |
+|---|---|---|
+| the AppImage | `"<AppImage>" gui %f` | `"<AppImage>" rnado %f` |
+| the AppImage without FUSE (extracted) | `env APPIMAGE_EXTRACT_AND_RUN=1 "<AppImage>" gui %f` | the same with `rnado` |
+| a bundle folder | `<folder>/mdatk gui %f` (`mdatk-gui` where there is one) | `<folder>/rnado-gui %f` |
+| an extracted AppImage folder (`squashfs-root`) | `<folder>/AppRun gui %f` | `<folder>/AppRun rnado %f` |
+| a pip / venv installation | the `mdatk-gui` script that runs this Python (the venv's `bin`, the user's `~/.local/bin` or `PATH`), else `<python> -m mdatk gui %f` | `rnado-gui`, else `<python> -m mdatk.gui.rnado %f` |
+| a source checkout that is not installed | `env PYTHONPATH=<checkout> <python> -m mdatk gui %f` | the same with `-m mdatk.gui.rnado` |
+
+Paths are quoted as the Desktop Entry Specification asks (spaces, `$`, quotes, backslashes). The entries
+hold these paths: after moving the AppImage, the bundle folder or the venv, add them again.
+`mdatk desktop status` lists the files, which are there, which start something else (`outdated`) and what
+the entries start now.
+
+Every file MDATK writes carries the mark `X-MDATK-Installed=<version>` (a key of the desktop entry, a text
+chunk of the PNG, a comment of the SVG). Adding again rewrites only MDATK's own files; an entry or icon of
+the same name that MDATK did not write (one you made yourself, or `xdg-icon-resource`'s) is left alone and
+listed, and `mdatk desktop install --replace` moves it to `<file>.bak` first. *Remove them* (offered by
+the same question once MDATK's entries are there) or `mdatk desktop uninstall` removes the marked files
+(of any MDATK version) and nothing else.
+Afterwards `update-desktop-database` runs on the applications folder and `gtk-update-icon-cache` on the
+icon folder when that has a cache (without one, GTK reads the folders; no cache is made), each only when
+installed; a failure of either is reported, never fatal. Some desktops show new entries only after the
+next log-in. An AppImage that AppImageLauncher integrated keeps its own MDATK entry, so MDATK can then be
+in the menu twice. On Windows the installer makes the Start-menu entries *MDATK* and *RNAdo*; the menu
+item says so and writes nothing.
 
 ### Optional: cpptraj
 
@@ -295,8 +341,9 @@ in your file manager) and **Open video** (the most recent video); the log of the
 cpptraj is in the expander above it. The header bar has *Open project* (Ctrl+O; its drop-down lists the
 recent projects, the demo project and *Browse…*), *Save* (Ctrl+S) and *Save as…* (Ctrl+Shift+S). The
 main menu has *New project (defaults)*, *Create demo system…*, *Project log…* (the steps that ran),
-*Export citations (BibTeX)…* and *About and citations*. The **RNAdo** menu next to them starts RNAdo on
-the project:
+*Export citations (BibTeX)…*, *Add MDATK and RNAdo to the applications menu…* (see [Applications menu
+(Linux)](#applications-menu-linux)) and *About and citations*. The **RNAdo** menu next to them starts
+RNAdo on the project:
 
 - *Open in RNAdo…* (Ctrl+P) opens the plan;
 - *Script wizard: open in RNAdo…* (Ctrl+Shift+W), *PDB clean-up: open in RNAdo…* and *Structure
@@ -315,8 +362,9 @@ seconds is reported in the analysis window.
 - **Header bar:** *Open* (Ctrl+O; its drop-down lists the recent projects and *Browse…*), *Save* (Ctrl+S;
   it saves the plan into the project file), the tools *Script wizard* (Ctrl+Shift+W), *PDB clean-up* and
   *Structure builder*, and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…*
-  (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…* and *About RNAdo* (with the
-  citations of the plan and *Export BibTeX…*).
+  (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
+  applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
+  the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
   previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Parallel*, *Open folder*), the
   naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, the plan folder and *Change…*),
@@ -711,6 +759,9 @@ line](#command-line)).
 - the stand-alone builds: `MDATK-<version>-x86_64.AppImage rnado [PROJECT]` or a link to the AppImage
   named `rnado`; on Windows `rnado-gui.exe` or the Start-menu entry *RNAdo* (see
   [Installation](#installation));
+- the applications menu (Linux): the entry *RNAdo*, or the *RNAdo* action of the entry *MDATK*, once
+  *Add MDATK and RNAdo to the applications menu…* or `mdatk desktop install` (`rnado
+  --install-launchers`) added them (see [Applications menu (Linux)](#applications-menu-linux));
 - `mdatk rnado [PROJECT]`, `mdatk gui --rnado [PROJECT]` (or `--planner`; `--open TOOL` alone starts
   RNAdo too), or `python -m mdatk.gui.rnado [PROJECT]` from a source checkout.
 
@@ -2186,6 +2237,8 @@ mdatk export-pdb -p PROJECT [--frame-list "0, last"] [--times "1ns"] [--selectio
 mdatk preview   -p PROJECT --frame N [--output still.png] [--from-cache]
 mdatk density info MAP | fit -p PROJECT [--map M] [--resolution R] [--search global|manual] [--save]
 mdatk density simulate -p PROJECT --resolution R -O OUT.mrc [--frame F] [--placed]
+mdatk desktop install [--replace] | uninstall | status   MDATK and RNAdo in the applications menu
+                                   (Linux; see Applications menu)
 ```
 
 `mdatk render` also takes `--video`, `--charts` and `--pdb` to switch an output on that the project has
@@ -2195,6 +2248,7 @@ RNAdo and its tools:
 
 ```text
 rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo, the workflow planner (rnado-gui: no terminal)
+rnado --install-launchers          the same as mdatk desktop install
 rnado ACTION ...                   the same as mdatk workflow ACTION ... (tools, check, write, run,
                                    status, generate, template, restraints)
 mdatk rnado ...                    the same as rnado ...
@@ -2406,7 +2460,9 @@ fog, glow and translucency, thread safety and a render without a display. For RN
 script generators and their checks with stand-in executables, the plan, previous runs, custom scripts,
 the run machinery (parallel runs, waiting steps, Cancel), the output log panel under a flood of lines,
 how RNAdo is started, both programs saving one project, and the stand-alone packaging (spec, AppRun,
-desktop entries, assets).
+desktop entries, assets). The menu entries (`tests/test_launchers.py`) are checked for every way MDATK
+runs, through GLib's own parser and a real launch of a program whose path has a space and a `$`, and
+installed, updated and removed in a temporary data folder next to files MDATK did not write.
 
 ## Notes and limitations
 

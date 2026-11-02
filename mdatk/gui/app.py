@@ -229,15 +229,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self.workflow_button = wf
         hb.pack_start(wf)
         menu = Gtk.Menu()
-        for text, cb in (("New project (defaults)", self.new_project),
-                         ("Create demo system…", self.create_demo),
-                         ("Project log…", self.show_project_log),
-                         ("Export citations (BibTeX)…", self.export_citations),
-                         ("About and citations", self.show_about)):
+        for text, cb, tip in (("New project (defaults)", self.new_project, None),
+                              ("Create demo system…", self.create_demo, None),
+                              ("Project log…", self.show_project_log, None),
+                              ("Export citations (BibTeX)…", self.export_citations, None),
+                              (desktop.LAUNCHERS_ITEM, self.add_launchers, desktop.LAUNCHERS_TIP),
+                              ("About and citations", self.show_about, None)):
             item = Gtk.MenuItem(label=text)
+            if tip:
+                item.set_tooltip_text(tip)
             item.connect("activate", lambda _w, c=cb: c())
             menu.append(item)
         menu.show_all()
+        self.main_menu = menu
         mb = Gtk.MenuButton()
         mb.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
         mb.set_popup(menu)
@@ -2285,6 +2289,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def citation_text(self) -> str:
         return citation_text(self._citation_resources()[1])
+
+    def add_launchers(self) -> str:
+        """MDATK and RNAdo in the applications menu (asks first; :func:`mdatk.gui.desktop.add_launchers`)."""
+        return desktop.add_launchers(self, self.info, self.error)
 
     def show_about(self):
         dlg = Gtk.Dialog(title=f"About {PROJECT_ABBREV}", transient_for=self, modal=True)
