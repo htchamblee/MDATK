@@ -526,16 +526,17 @@ def _pdb_annotate(args, name: str) -> int:
     with logged(_project_file(args), "pdb annotate", f"Base-pair annotation of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
         res = annotate(args.input, pairs=not args.no_pairs, stacking=not args.no_stacking,
-                       dotbracket=not args.no_dotbracket, engine=args.engine)
+                       dotbracket=not args.no_dotbracket, engine=args.engine,
+                       dssr_exe=getattr(args, "dssr_exe", None) or "x3dna-dssr")
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(res.text)
         for note in res.notes:
             print(f"annotate: {note}", file=sys.stderr)
         entry.files = [args.output]
         entry.summary = "\n".join(res.notes)
-        if res.engine == "barnaba":
+        if res.engine in ("barnaba", "dssr"):
             from .citations import keys_for
-            entry.citations = keys_for(["barnaba"])
+            entry.citations = keys_for([res.engine])
     return 0
 
 
@@ -579,6 +580,37 @@ def cmd_pdb_hybrids(args) -> int:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
         code = mapscore.run_hybrids(args)
         entry.files = _outputs(args, "scores_out", "effects_out", "report")
+    return code
+
+
+def cmd_pdb_interface(args) -> int:
+    from . import interfaces
+    from .projectfile import logged
+    names = ", ".join(os.path.basename(m) for m in args.models[:3]) + (" ..." if len(args.models) > 3 else "")
+    with logged(_project_file(args), "pdb interface", f"Interface records of {names}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        code, result = interfaces.run(args)
+        entry.files = list(result.get("files", []))
+        entry.summary = "\n".join(result.get("notes", []))
+        if args.engine in ("barnaba", "dssr"):
+            from .citations import keys_for
+            entry.citations = keys_for([args.engine])
+    return code
+
+
+def cmd_decoys(args) -> int:
+    from . import interfaces
+    from .projectfile import logged
+    titles = {"census": "Interface census", "clusters": "Interface clusters", "support": "Segment support"}
+    title = titles.get(args.decoys_command, args.decoys_command)
+    with logged(_project_file(args), f"decoys {args.decoys_command}", title) as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["decoys"] else ""
+        code, result = interfaces.run(args)
+        entry.files = list(result.get("files", []))
+        entry.summary = "\n".join(result.get("notes", []))
+        if args.decoys_command == "census" and args.pairs in ("barnaba", "dssr"):
+            from .citations import keys_for
+            entry.citations = keys_for([args.pairs])
     return code
 
 
@@ -1070,8 +1102,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--no-pairs", action="store_true", help="no PAIR records")
     c.add_argument("--no-stacking", action="store_true", help="no STACK records")
     c.add_argument("--no-dotbracket", action="store_true", help="no sequence / dot-bracket records")
-    c.add_argument("--engine", choices=("auto", "builtin", "barnaba"), default="auto",
-                   help="auto: barnaba if importable, else builtin")
+    c.add_argument("--engine", choices=("auto", "builtin", "barnaba", "dssr"), default="auto",
+                   help="auto: barnaba if importable, else builtin; dssr: x3dna-dssr (licensed separately)")
+    c.add_argument("--dssr-exe", default="x3dna-dssr", help="x3dna-dssr executable (--engine dssr)")
     c.add_argument("--project", "-p", "--params", dest="params",
                    help="project file whose step log records the annotation")
     c.set_defaults(func=cmd_pdb)
@@ -1082,6 +1115,22 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_pdb_qc)
     from .mapscore import add_hybrid_command
     add_hybrid_command(psub).set_defaults(func=cmd_pdb_hybrids)
+    from .interfaces import add_interface_command
+    c = add_interface_command(psub)
+    c.add_argument("--project", "-p", "--params", dest="params",
+                   help="project file: its residue groups (group:NAME) and the step log")
+    c.set_defaults(func=cmd_pdb_interface)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .interfaces import add_commands as decoys_commands
+    p = sub.add_parser("decoys", help="ensembles of models (e.g. FARFAR2 decoys): interface census between "
+                                      "two sides, clusters of the contact fingerprints, support of rebuilt "
+                                      "segments")
+    dsub = p.add_subparsers(dest="decoys_command", metavar="action")
+    for c in decoys_commands(dsub):
+        c.add_argument("--project", "-p", "--params", dest="params",
+                       help="project file: its residue groups (group:NAME) and the step log")
+        c.set_defaults(func=cmd_decoys)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands

@@ -56,6 +56,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [Step types](#step-types)
   - [FARFAR2 decoys: scores, run audit and frames](#farfar2-decoys-scores-run-audit-and-frames)
   - [Custom scripts](#custom-scripts)
+  - [Decoy interfaces](#decoy-interfaces)
   - [Command line](#command-line)
   - [What was tested](#what-was-tested)
 - [PDB clean-up](#pdb-clean-up)
@@ -859,6 +860,7 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **Map-model score (Q-score / CC)** | a script calling `mdatk map score` | per-residue Q-score (Phenix, on a standard-name copy) or MDATK's per-residue CC, and the models ranked by named regions |
 | **Body hybrids** | a script calling `mdatk pdb hybrids` | every old/new combination of up to six re-fitted bodies, optionally scored, with each body's main effect |
 | **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see [Custom scripts](#custom-scripts) |
+| **Decoy interfaces (MDATK)** | a script calling `python3 -m mdatk decoys census / clusters / support` (from the Linux AppImage, the AppImage itself) | interface census of an ensemble between two sides, clusters of the contact fingerprints with medoid representatives (PDB outputs), support of rebuilt segments; see [Decoy interfaces](#decoy-interfaces) |
 | **MDATK analysis**, **Existing file**, **Note** | nothing | link a plan to this project's analysis, feed an existing file into steps, annotate the canvas |
 
 **Amber.** The defaults reproduce a working RNA protocol: OL3 + CP (phosphate oxygens retyped, see
@@ -1237,6 +1239,83 @@ with* is a warning. The plan summary shows the command line. MDATK cites nothing
 downloads nothing for it; what the script itself does is up to you, so review it like any other script
 before running it.
 
+### Decoy interfaces
+
+The **Decoy interfaces** step (`decoy-interface`, *Add step → Analysis*) describes, model by model, the
+interface between two parts of an ensemble (e.g. the decoys of a FARFAR2 models step), groups the models
+by the contacts they make and checks what holds their rebuilt segments. It assumes no register, construct
+or numbering: the two **sides** are residue selections, as chain-qualified ranges (`A:1-16,B:17-44`),
+whole chains (`C`), ranges for every chain (`1-44`) or the project's residue groups (`group:Aptamer`,
+written into the script as ranges). Side B may be left empty: every nucleotide not in side A. Residues are
+keyed by chain, number and insertion code, so chains numbered alike (Amber or tleap output) stay apart;
+only nucleotides count (names in any scheme, also L names such as LA or 0A, and unknown names such as
+Rosetta's `0` or `LA0` whose atoms show a sugar and a base); ions, water, Rosetta's virtual residues and
+hydrogens (by element, also `1H5'`) never do. The sugar's hand (D / L) comes from its chiral volumes.
+
+**Census** (the `census` table, one row per model), across the boundary only:
+
+| Column | What is counted (defaults) |
+|---|---|
+| `contacts` | heavy-atom pairs closer than 4.5 Å |
+| `stack` | base stacking: ring centroids < 4.5 Å apart, ring normals within 30°, at least 2.5 Å of the offset along the mean normal (a coplanar base pair has its offset in the base plane) |
+| `wc`, `gu` | Watson-Crick and G·U pairs from the chosen engine: builtin (the pair's hydrogen bonds by base identity and a C1′–C1′ window, so an A·C mismatch or a trans pair is no Watson-Crick pair), barnaba or DSSR |
+| `other` | non-canonical pairs (barnaba, DSSR; empty with builtin) |
+| `bph` | base N-H donors (A N6, G N1/N2, C N4, U N3) within 3.5 Å of OP1/OP2 of the other side, per donor-acceptor atom pair; optionally also the C-H donors of the base-phosphate classes (A C2/C8, G C8, C/U C5/C6) |
+| `ohph` | 2′-OH to OP1/OP2 within 3.5 Å |
+| `mgbr` | phosphate pairs, one per side, with a P–P distance of 5–7 Å that one ion could bridge (an opportunity, not an observed ion); every P–P pair is tested |
+| `residues_a`, `residues_b`, `fingerprint` | the residues in contact and the residue pairs in contact (`A:8/C:60 …`) |
+
+With a **scores table** connected (the `scores` output of the FARFAR2 models step: columns `run`, `tag`,
+`pdb` relative to the plan folder, then every Rosetta score term by name; extra columns are ignored),
+models are matched to their rows by path (then file name, then a tag unique across runs), the table's
+`score` and the filtered terms are copied into the census, and **score filters** keep the models whose
+terms pass, one condition per line (default `linear_chainbreak <= 5`: a severed backbone lets the loops
+collapse onto each other and inflates the contacts). A filtered term missing from the table is an error,
+not a silent pass. *Models: every decoy in the scores table* takes the models from the table's `pdb`
+column instead of the connected ones.
+
+**Clusters** (`clusters` table, `representatives` PDB outputs): leader clustering of the fingerprints by
+Jaccard distance (cut 0.5), at the level of the residues of each side (default), residues binned into
+blocks per chain, or residue pairs. Seeds go in order of fingerprint size, ties by model name, so the
+input order does not matter; the representative of each cluster is its medoid over all members, and the
+medoids of the largest clusters are copied as `…_rep-01_….pdb`, `rep-02` … (*Representatives*, default
+5), ready for the Amber build, Phenix or NAMD MDFF steps. Clusters with at least *Recurring from* members
+(default 5) give the coverage and a neutral summary of the pattern in the log (dispersed / few / several
+recurring interfaces). **Reference interfaces** are typed residue sets per side, or the census of
+connected *reference models* (measured with the same cut-offs as the ensemble). Each cluster is scored on
+the residues exclusive to each reference, on both sides, as the mean share of those residues its members
+touch, normalised per reference so that a reference with more exclusive residues does not win by size; the
+log gives the size-weighted shares over all recurring clusters, also without *broad* clusters (whose
+representative touches more than 10 side-B residues).
+
+**Segment support** (`support` table, plus per-residue and per-residue-share tables): for every rebuilt
+residue, its heavy-atom contacts (4.5 Å) beyond a sequence separation of 3, counted within a chain only
+(residues of other chains are never neighbours), by source: the partner side (`#`), its own side outside
+the rebuilt segments (`o`, scaffold), optionally base pairs between rebuilt residues (`=`, two distinct
+base-edge hydrogen bonds within 3.3 Å, or canonical pairs) and its own rebuilt segments only (`:`, which
+is no support). A model is flagged when it has a run of 4 unsupported residues (or *auto*: the largest gap
+of the ensemble's longest runs). The rebuilt residues are the rest of the sides outside FARFAR2's fixed
+residues when the connected models carry them, or typed (fixed or rebuilt residues).
+
+For the 73-nt construct the scripts came from (an aptamer in chains A and B, a target in chain C), the
+sides are `A:1-16,B:17-44` and `C:45-73`, and FARFAR2's fixed helices `A:1-6 A:13-16 B:17-20 B:39-44
+C:45-57 C:64-73`. The same work on the command line:
+
+```bash
+mdatk decoys census models/*.pdb --side-a A:1-16,B:17-44 --side-b C:45-73 \
+    --scores scores.tsv --filter 'linear_chainbreak<=5' -o census.tsv
+mdatk decoys clusters census.tsv --level residues --cut 0.5 --min-size 5 \
+    --reference 'pres=A:8-9,B:25-28,B:33-35/C:58-64' \
+    --representatives 'rep-{n}.pdb' --n-representatives 5 -o clusters.tsv
+mdatk decoys support --census census.tsv --side-a A:1-16,B:17-44 --side-b C:45-73 \
+    --fixed 'A:1-6 A:13-16 B:17-20 B:39-44 C:45-57 C:64-73' --run auto --pairs contacts -o support.tsv
+mdatk pdb interface model.pdb --side-a group:Aptamer --side-b group:Target -p project.mdatk.toml \
+    --engine dssr -o interface.tsv      # pairs, stacks, base / 2'-OH - phosphate H-bonds, hands
+```
+
+`-p PROJECT` resolves `group:NAME` and records the command in the project's step log; without `-o` the
+table goes to standard output and the summary to standard error.
+
 ### Command line
 
 Every `mdatk workflow ACTION` is also `rnado ACTION` (e.g. `rnado write -p plan.mdatk.toml --run`).
@@ -1414,6 +1493,17 @@ so the machine that runs it needs `python3` only, and removes the outputs of an 
 a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`, `chirality.py`
 and `bbcheck.py`; `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual` replaces
 `to_amber.py`, and `--scheme standard` the renaming of `q_prep.py`.
+`--engine dssr` runs x3dna-dssr (licensed separately, free for academic use; never bundled; `--dssr-exe`
+names the executable) on a copy in a temporary folder, so its auxiliary `dssr-*` files never land next to
+your files. The copy gives every nucleotide its canonical name (A C G U, DA …; L names and names DSSR does
+not know are mapped from the residue or its atoms), leaves ions, water and Rosetta's virtual residues out,
+and numbers the residues itself, so DSSR's answer maps back by residue index and never depends on how a
+DSSR version writes its residue ids (`A.G1`, `1:A.G1`, `A.0A/45`, `A.G1^B`, atom ids `N1@A.G1`). Its
+Leontis-Westhof classes are written in the same form as Barnaba's (`cWW` Watson-Crick → `WCc`, wobble →
+`GUc`, `tHS` → `HSt`), stacks as `--`. DSSR, like Barnaba, does not check chirality: it classifies a D–L
+pair like any other. `mdatk pdb interface` (see [Decoy interfaces](#decoy-interfaces)) lists the pairs,
+stacks and base / 2′-OH to phosphate hydrogen bonds between two sides of each model, with the hand of each
+partner, from the builtin engine, Barnaba or DSSR.
 
 ## Structure builder
 
@@ -1972,6 +2062,8 @@ mdatk workflow generate user-script -i NAME=PATH --set source=file --set script_
     --set 'outputs=[...]' --set 'arguments=...'      a custom script step (see Custom scripts)
 mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] -o OUT.dist
 mdatk pdb check|clean|to-lrna|annotate|qc   (see PDB clean-up and Model checks)
+mdatk pdb check|clean|to-lrna|annotate|interface   (see PDB clean-up, Decoy interfaces)
+mdatk decoys census|clusters|support   interfaces of an ensemble of models (see Decoy interfaces)
 mdatk build helix|mutate|fit       (see Structure builder)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 mdatk rosetta scores SILENT|DIR ... [--term T] [--max T=X] [--tsv OUT] [--extracted DIR] [--legacy-index N]
