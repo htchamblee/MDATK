@@ -963,7 +963,8 @@ from the step's own folder and only of that stamp:
   which use `superseded/no-stamp_<time>/`) with the completion marker that ties them to the run;
 - the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of FARFAR2 (with *Extract
   every decoy after the runs*) and of the FARFAR2 models step (with *Extract every model* or validity
-  filters), moved whole so `models/r01/S_000001.pdb` keeps its place.
+  filters), moved whole so `models/r01/S_000001.pdb` keeps its place; likewise the frame check's folder of
+  moved decoys, `<project>_<NN>_reframed_<stamp>/`.
 
 A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
 run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
@@ -1351,8 +1352,9 @@ leave fewer than runs × models per run), so the set passes its list: the steps 
 decoy interfaces, register census, ensemble comparison, frame check, map-model score) read the list when
 their scripts run, beside any files connected one by one, and stop when it is missing or empty; what they
 plan by count (the model check's passed models, the frame check's moved models) assumes at most runs ×
-models per run. The decoys come straight from the runs: the cluster-centre models of *FARFAR2 models* are
-another output of another step. A register census groups decoys by folder: with *Group by folder level* 1
+models per run, and the numbered files no decoy fills are written as empty slots (no atoms), so the step
+writes every file it promised. The decoys come straight from the runs: the cluster-centre models of
+*FARFAR2 models* are another output of another step. A register census groups decoys by folder: with *Group by folder level* 1
 each run (`models/rNN`) is a group, with 2 every run of the FARFAR2 step together; its *Rosetta log
 folders* take the FARFAR2 step's folder, where the runs' logs are. The set also carries FARFAR2's
 `-input_res` (the residues of the fixed-helix PDB; none without one), which the segment support of *Decoy
@@ -1407,15 +1409,21 @@ body. A model whose fit body is more than 1 Å from the reference's does not con
 counted. With the 95th percentile of every measured body below 1 Å the models share one frame; otherwise
 the placement was sampled. Atoms are matched by chain, residue number and insertion code; *Model numbering*
 pairs differently numbered residues (`C:1-29=B:45-73`). The report table has a row per model (run and tag
-from a decoy table), also for models that could not be measured.
+from a decoy table), also for models that could not be measured. Every file is read once: a model given that
+is also a decoy of the connected table (the set of a FARFAR2 step together with its decoy table) is that
+decoy, with its run and tag, and the table's cut (*Decoys of the table*) leaves it out. Folders given are
+searched for PDB files, never inside `superseded/`.
 
 **Re-fitted reference** (`mdatk frame reframe`). The old reference is superposed onto the re-fitted one on
 the fit body; if every measured body is carried to its new place within 1 Å, one rigid transform
 describes the re-fit and the models are moved with it (ANISOU tensors rotated, decoys of a table written
-as `<run>/<tag>.pdb`, a manifest and a decoy table pointing at the moved files). Otherwise the bodies moved
-relative to each other and the step fails: the models must be built again on the new reference. Models
-sampled with the map in the score (`elec_dens_fast`) were drawn towards the old placement; moving them keeps
-their geometry, which is not what sampling in the new frame would build, and the step warns.
+as `<run>/<tag>.pdb`, a manifest and a decoy table pointing at the moved files). The step names the moved
+models `<project>_<NN>_reframed-01_<time>.pdb` … (`--pattern`) and writes exactly as many as its output
+*Moved models* lists (`--slots`): with fewer models (a set of decoys, a cut of the table) the rest are empty
+slots. Otherwise the bodies moved relative to each other and the step fails: the models must be built
+again on the new reference. Models sampled with the map in the score (`elec_dens_fast`) were drawn towards
+the old placement; moving them keeps their geometry, which is not what sampling in the new frame would
+build, and the step warns.
 
 For a construct with an aptamer of chains A and B (1-16, 17-44) and a target in chain C (45-73):
 

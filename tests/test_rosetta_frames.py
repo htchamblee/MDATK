@@ -621,6 +621,83 @@ def test_frame_check_step(tmp_path):
     assert any("connect models" in m for m in msgs)
 
 
+def test_frame_check_of_the_farfar2_set_with_its_table(tmp_path):
+    # the set of decoys and its decoy table connected together: every decoy was measured twice and the table's
+    # cut applied only to the table's copies (moved twice with reframe, too); and with fewer decoys than runs x
+    # models per run (-autofilter, a failed run) the reframed-NN files the step promised were never all
+    # written: the step stayed 'partial' and the steps after it were given files that did not exist
+    from mdatk.workflows import runstate
+    root = tmp_path / "plan"
+    ref = write(tmp_path / "ref.pdb", pdbtools.write_pdb(two_bodies()))
+    new = write(tmp_path / "new.pdb", model(0.0, MOVE))
+    groups = [ResidueGroup("Aptamer", "A:1-8,B:1-8"), ResidueGroup("Target", "C:1-8,D:1-8")]
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC", "runs": 2, "nstruct": 3, "autofilter": True})
+    fc = add_node(wf, "frame-check", settings={"reframe": True, "python": sys.executable,
+                                               "score_cut": "linear_chainbreak=1"})
+    fc.files = {"reference": ref, "new_reference": new}
+    connect(wf, fold.id, "decoys", fc.id, "models")
+    connect(wf, fold.id, "decoys", fc.id, "scores")  # into a table input: the decoy table
+    plan = Plan(wf, str(root), groups)
+    st = plan.steps[fc.id]
+    assert st.ctx.has("scores") and not [i for i in st.issues if i.level == "error"], st.issues
+    assert len(st.outputs["reframed"].paths) == 6 and st.outputs["reframed"].data["empty_slots"]
+    plan.write()
+    # what the FARFAR2 step's decoys script leaves: four decoys (autofilter), one of them fails the cut
+    decoys = [("r01", "S_000001", 0.0, 0.5), ("r01", "S_000003", 0.1, 0.2), ("r02", "S_000001", 0.2, 7.0),
+              ("r02", "S_000002", 0.3, 0.1)]
+    rows = ["run\ttag\tpdb\tscore\tlinear_chainbreak"]
+    for run, tag, shift, chainbreak in decoys:
+        write(root / "01_farfar2" / "models" / run / f"{tag}.pdb", model(shift))
+        rows.append(f"{run}\t{tag}\t01_farfar2/models/{run}/{tag}.pdb\t-10\t{chainbreak}")
+    write(root / "01_farfar2" / f"apt1_01_scores_{STAMP}.tsv", "\n".join(rows) + "\n")
+    write(root / "01_farfar2" / f"apt1_01_decoys_{STAMP}.txt",
+          "".join(f"01_farfar2/models/{run}/{tag}.pdb\n" for run, tag, _s, _c in decoys))
+    folder = root / "02_frame-check"
+    proc = subprocess.run(["bash", str(folder / f"apt1_02_frame-check_{STAMP}.sh")], capture_output=True,
+                          text=True, env=dict(os.environ, PYTHONPATH=REPO))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    report = (folder / f"apt1_02_frame-check_{STAMP}.tsv").read_text().splitlines()
+    assert len(report) == 4  # each decoy once, the one the cut drops not at all
+    assert sum("01_farfar2/models/r02/S_000001.pdb" in r for r in report) == 0
+    assert "3 models: 3 measured" in (folder / f"apt1_02_frame-check_{STAMP}.txt").read_text()
+    # exactly the six promised numbered models: the three moved decoys, then empty slots; nothing twice
+    for k in range(1, 7):
+        path = str(folder / f"apt1_02_reframed-{k:02d}_{STAMP}.pdb")
+        assert bool(pdbtools.empty_slot(path)) == (k > 3), k
+    assert pdbtools.empty_slot(str(folder / f"apt1_02_reframed-04_{STAMP}.pdb")) == \
+        "empty slot 4 of 6: only 3 models passed"
+    assert not (folder / f"apt1_02_reframed_{STAMP}").exists()
+    moved = rosetta.read_decoy_table(str(folder / f"apt1_02_reframed-scores_{STAMP}.tsv")).rows
+    assert [r.pdb for r in moved] == [f"02_frame-check/apt1_02_reframed-0{k}_{STAMP}.pdb" for k in (1, 2)] + \
+        ["", f"02_frame-check/apt1_02_reframed-03_{STAMP}.pdb"]
+    assert runstate.run_status(Plan(wf, str(root), groups), fc.id, STAMP).state == "done"
+
+
+def test_gather_models_reads_each_file_once_and_never_superseded_runs(tmp_path):
+    folder = tmp_path / "02_m"
+    a = write(folder / "models" / "r01" / "S_000001.pdb", model(0.0))
+    write(folder / "models" / "r02" / "S_000001.pdb", model(0.1))
+    write(folder / "superseded" / f"{STAMP}_20261101-120000" / "models" / "r01" / "S_000001.pdb", model(0.2))
+    models, notes, _t = frames.gather_models([str(folder), a])
+    assert [os.path.relpath(m.path, folder) for m in models] == ["models/r01/S_000001.pdb",
+                                                                 "models/r02/S_000001.pdb"]
+    assert "1 model file(s) given more than once are read once" in notes
+    # a file given that is a decoy of the table: one model with its run and tag, named like the files given
+    table = write(folder / "t.tsv", "run\ttag\tpdb\tlinear_chainbreak\n"
+                  "r01\tS_000001\t02_m/models/r01/S_000001.pdb\t9\n"
+                  "r02\tS_000001\t02_m/models/r02/S_000001.pdb\t0\n")
+    models, notes, _t = frames.gather_models([str(folder / "models")], table, str(tmp_path),
+                                             {"linear_chainbreak": 5.0})
+    assert [(m.label, m.run, m.tag, m.given) for m in models] == [("02_m/models/r02/S_000001.pdb", "r02",
+                                                                   "S_000001", True)]
+    assert "2 model(s) given are decoys of the table too: each is read once; 1 of them fail the cut and are " \
+        "left out" in notes
+    assert frames.output_names(models, "m-{n}.pdb") == ["m-01.pdb"]
+    with pytest.raises(frames.FrameError, match="numbered by"):
+        frames.fill_slots(str(tmp_path), "{stem}.pdb", 2, 1)
+
+
 def test_frame_check_warns_about_density_sampled_models(tmp_path):
     wf = WorkflowParams(project_name="apt1", stamp=STAMP)
     fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC"})

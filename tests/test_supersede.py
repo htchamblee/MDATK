@@ -295,6 +295,31 @@ def test_farfar2_extracted_decoys_move_with_their_run(tmp_path):
     assert load_toml(os.path.join(root, item.target, "manifest.toml"))["folders"] == ["runs", "models"]
 
 
+def test_frame_check_moved_decoys_move_with_their_run(tmp_path):
+    # the frame check writes the moved decoys of a decoy table into <project>_<NN>_reframed_<stamp>/<run>/;
+    # supersede skips folders found by name, so that folder stayed while the manifest and the decoy table
+    # pointing into it moved, and the next run overwrote it
+    wf = WorkflowParams(project_name="apt1", stamp=OLD)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "runs": 2})
+    fc = add_node(wf, "frame-check", settings={"reframe": True, "fit": "A:1-3", "measure": "B=A:4-6"})
+    fc.files = {"reference": str(tmp_path / "ref.pdb"), "new_reference": str(tmp_path / "new.pdb")}
+    connect(wf, f.id, "decoy_table", fc.id, "scores")
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    assert plan.steps[fc.id].ok, plan.steps[fc.id].issues
+    plan.write()
+    fake_run(plan, fc.id, OLD)
+    reframed = os.path.join(root, "02_frame-check", f"apt1_02_reframed_{OLD}")
+    touch(os.path.join(reframed, "r01", "S_000001.pdb"))
+    (item,) = supersede.pending(plan).values()
+    assert item.folders == [f"02_frame-check/apt1_02_reframed_{OLD}"]
+    item = plan.write().superseded[fc.id]
+    moved = tree(os.path.join(root, item.target))
+    assert {f"apt1_02_reframed_{OLD}/r01/S_000001.pdb", f"apt1_02_reframed-scores_{OLD}.tsv"} <= moved
+    assert not os.path.exists(reframed)
+
+
 def test_repeated_writes_get_folders_of_their_own(tmp_path):
     wf, build, restraints, md = amber_plan(tmp_path)
     root = str(tmp_path / "plan")
