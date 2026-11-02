@@ -849,7 +849,7 @@ uses are free; otherwise steps go in plan order.
   | Amber MD stages | pmemd.cuda: 1 core and 1 GPU (its *GPU* option names it); pmemd.MPI: its *MPI processes*; pmemd: 1 core |
   | NAMD MDFF | its *CPU cores* (`+p`) and 1 GPU (`+devices` names it) |
   | GROMACS | its OpenMP threads (`-ntomp`, times `-ntmpi` among the extra mdrun flags, or `-nt` there; without `-ntomp` every core, as mdrun takes them all, so no other step runs beside it) and 1 GPU when the work is offloaded |
-  | FARFAR2, SimRNA | their parallel runs (at most the number of runs) |
+  | FARFAR2, SimRNA | their parallel runs (at most the number of runs); FARFAR2 with *Extract every decoy* its parallel extractions when there are more |
   | FARFAR2 models | its parallel extractions when every model is extracted, else 1 core |
   | Phenix RSR | its processors (`nproc`) |
   | Register census, frame check | their worker processes |
@@ -961,16 +961,18 @@ from the step's own folder and only of that stamp:
   `<project>_<NN>_*_<stamp>.*` in the folder;
 - outputs whose names carry no stamp (a custom script's fixed file names, plans without time stamps,
   which use `superseded/no-stamp_<time>/`) with the completion marker that ties them to the run;
-- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of the FARFAR2 models step
-  (with *Extract every model* or validity filters), moved whole so `models/r01/S_000001.pdb` keeps its
-  place.
+- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of FARFAR2 (with *Extract
+  every decoy after the runs*) and of the FARFAR2 models step (with *Extract every model* or validity
+  filters), moved whole so `models/r01/S_000001.pdb` keeps its place; likewise the frame check's folder of
+  moved decoys, `<project>_<NN>_reframed_<stamp>/`.
 
 A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
 run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
 them), steps that use an earlier run are never written, files of other stamps and your own files stay, and
 nothing in `superseded/` is ever replaced (a second move in the same second gets `…-2`). In a plan without
 step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder, the `<project>_<NN>_*` rule
-applies only when no other step has the number, and `runs/` / `models/` are left alone (steps share them).
+applies only when no other step has the number, and `runs/` (steps share it) and the extracted models
+(`<project>_<NN>_models/`) are left alone.
 A step's move is all or nothing: if a file cannot be moved, the files moved so far go back, the step is not
 written and the write reports it. *Check previous runs* never looks inside `superseded/`. Steps that skip
 finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip finished runs*) reuse
@@ -1291,8 +1293,9 @@ decoys can be the clashing ones), so the step separates the two:
      `group:NAME`); a residue of the other hand, an epimerised or flat sugar and, with counts, any other
      count or an unmeasurable sugar make a decoy invalid.
   2. *Base identity against the sequence*: every nucleotide's base (from its atoms) at its chain and number
-     must be the sequence's (the connected FARFAR2 step's, or a typed one: FASTA with `A:1-16` tags or
-     `A: GGGC…`); a missing or extra residue is invalid too.
+     must be the sequence's (the connected FARFAR2 step's, numbered by the `A:1-16` tags of its *Existing
+     FASTA* when it uses one, or a typed one: FASTA with `A:1-16` tags or `A: GGGC…`); a missing or extra
+     residue is invalid too.
   3. *Chain closure*: a score term by name (`linear_chainbreak <= 5` by default), every O3′–P link of
      consecutive nucleotides at most 2.0 Å (`mdatk.modelcheck.check_backbone`), or both.
   4. *Required pairs*: the defining pairs of a register (`pres=B:22-B:37, B:23-B:36, B:24-B:35`, as
@@ -1328,16 +1331,18 @@ decoys can be the clashing ones), so the step separates the two:
 No filter is on by default, and the step's files are then those of 0.0.11.
 
 **Extract every model.** *Extract every model of every run* (implied by the validity filters) writes
-`models/<run>/<tag>.pdb`. `extract_pdbs` writes `<tag>.pdb` into the folder it runs in, so each run is
-extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), the run's earlier models are
-removed first, and afterwards every run must have exactly one PDB per SCORE line: a missing decoy stops the
-step and is named. A new run of the step replaces `models/`.
+`models/<run>/<tag>.pdb` (in a plan without step folders `<project>_<NN>_models/<run>/<tag>.pdb`, a folder
+per step, so two steps never extract into one). `extract_pdbs` writes `<tag>.pdb` into the folder it runs
+in, so each run is extracted in a `mktemp` folder of its own (*Parallel extractions* at a time), the run's
+earlier models are removed first, and afterwards every run must have exactly one PDB per SCORE line: a
+missing decoy stops the step and is named. A new run of the step replaces `models/`.
 
 **Every decoy from the FARFAR2 step.** The FARFAR2 box has two more outputs: *Every decoy (PDB)*, the large
 dot on its right (a set, see [The plan](#the-plan)), and *Decoy table*. Connecting either switches on
 *Extract every decoy after the runs* (section *Decoys*; it can be ticked without a connection too). After
 the rna_denovo runs, the step's script runs `<project>_<step>_decoys_<time>.sh`, which extracts every
-model of every run into `models/<run>/<tag>.pdb` of the FARFAR2 folder as *Extract every model* does
+model of every run into `models/<run>/<tag>.pdb` of the FARFAR2 folder (`<project>_<NN>_models/` without
+step folders) as *Extract every model* does
 (*Parallel extractions*, `extract_pdbs` from the box's *extract_pdbs executable* with its Rosetta database,
 one PDB per SCORE line checked) and writes the decoy table `<project>_<step>_scores_<time>.tsv` (columns as
 above) and the list of the decoys `<project>_<step>_decoys_<time>.txt` (one PDB per line, relative to the
@@ -1347,8 +1352,9 @@ leave fewer than runs × models per run), so the set passes its list: the steps 
 decoy interfaces, register census, ensemble comparison, frame check, map-model score) read the list when
 their scripts run, beside any files connected one by one, and stop when it is missing or empty; what they
 plan by count (the model check's passed models, the frame check's moved models) assumes at most runs ×
-models per run. The decoys come straight from the runs: the cluster-centre models of *FARFAR2 models* are
-another output of another step. A register census groups decoys by folder: with *Group by folder level* 1
+models per run, and the numbered files no decoy fills are written as empty slots (no atoms), so the step
+writes every file it promised. The decoys come straight from the runs: the cluster-centre models of
+*FARFAR2 models* are another output of another step. A register census groups decoys by folder: with *Group by folder level* 1
 each run (`models/rNN`) is a group, with 2 every run of the FARFAR2 step together; its *Rosetta log
 folders* take the FARFAR2 step's folder, where the runs' logs are. The set also carries FARFAR2's
 `-input_res` (the residues of the fixed-helix PDB; none without one), which the segment support of *Decoy
@@ -1363,7 +1369,8 @@ short and long spellings as one flag (`-s` = `-in:file:s`, `-obligate_pair_expli
 name (`-fasta`, `-secstruct_file`, `-s`, `-native`, `-edensity:mapfile`) are fingerprinted by their whole
 content, since two runs can name the same path and still have read different files. A condition is a folder of
 runs (a FARFAR2 step folder, or an experiment folder of a campaign run outside RNAdo); its runs must agree,
-and the report lists what differs between conditions. *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`)
+and the report lists what differs between conditions. The completed runs moved aside into a step folder's
+`superseded/` are never read (give such a run's own folder to audit it). *Pairs* (`--pair CONTROL=TREATMENT`, or `--pair-suffix`)
 should differ only in the pairing: `-secstruct_file`, `-obligate_pair(_explicit)`, `-filter_lores_base_pairs`,
 the secondary structure itself and what *Controlled residues* derive (`--allow` adds flags); seeds, output
 names, `-nstruct` and `-database` are ignored in the comparison. Any other difference makes the pair
@@ -1402,15 +1409,21 @@ body. A model whose fit body is more than 1 Å from the reference's does not con
 counted. With the 95th percentile of every measured body below 1 Å the models share one frame; otherwise
 the placement was sampled. Atoms are matched by chain, residue number and insertion code; *Model numbering*
 pairs differently numbered residues (`C:1-29=B:45-73`). The report table has a row per model (run and tag
-from a decoy table), also for models that could not be measured.
+from a decoy table), also for models that could not be measured. Every file is read once: a model given that
+is also a decoy of the connected table (the set of a FARFAR2 step together with its decoy table) is that
+decoy, with its run and tag, and the table's cut (*Decoys of the table*) leaves it out. Folders given are
+searched for PDB files, never inside `superseded/`.
 
 **Re-fitted reference** (`mdatk frame reframe`). The old reference is superposed onto the re-fitted one on
 the fit body; if every measured body is carried to its new place within 1 Å, one rigid transform
 describes the re-fit and the models are moved with it (ANISOU tensors rotated, decoys of a table written
-as `<run>/<tag>.pdb`, a manifest and a decoy table pointing at the moved files). Otherwise the bodies moved
-relative to each other and the step fails: the models must be built again on the new reference. Models
-sampled with the map in the score (`elec_dens_fast`) were drawn towards the old placement; moving them keeps
-their geometry, which is not what sampling in the new frame would build, and the step warns.
+as `<run>/<tag>.pdb`, a manifest and a decoy table pointing at the moved files). The step names the moved
+models `<project>_<NN>_reframed-01_<time>.pdb` … (`--pattern`) and writes exactly as many as its output
+*Moved models* lists (`--slots`): with fewer models (a set of decoys, a cut of the table) the rest are empty
+slots. Otherwise the bodies moved relative to each other and the step fails: the models must be built
+again on the new reference. Models sampled with the map in the score (`elec_dens_fast`) were drawn towards
+the old placement; moving them keeps their geometry, which is not what sampling in the new frame would
+build, and the step warns.
 
 For a construct with an aptamer of chains A and B (1-16, 17-44) and a target in chain C (45-73):
 

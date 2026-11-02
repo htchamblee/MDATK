@@ -272,6 +272,12 @@ class ModelRef:
     label: str  # as shown in tables (plan-relative path, or as given)
     run: str = ""
     tag: str = ""
+    given: bool = False  # a decoy of the table that was also given as a file: named like the files given
+
+    @property
+    def numbered(self) -> bool:
+        """Named by ``--pattern`` when moved ({n}: 01, 02 ... in order): a file given, not a table's decoy."""
+        return self.given or not (self.run and self.tag)
 
 
 @dataclass
@@ -502,7 +508,7 @@ def output_names(models: Sequence[ModelRef], pattern: str = "", decoy_pattern: s
     """Unique output names: ``decoy_pattern`` (``{run}``, ``{tag}``) for decoys of a table, ``pattern`` with
     ``{n}`` (01, 02 ...) and ``{stem}`` for the others, else the path below the inputs' common folder; '-2',
     '-3' ... on clashes, so models of different runs with the same tag never overwrite each other."""
-    plain = [m for m in models if not (m.run and m.tag)]
+    plain = [m for m in models if m.numbered]
     common = ""
     if len(plain) > 1:
         common = os.path.commonpath([os.path.dirname(os.path.abspath(m.path)) for m in plain])
@@ -510,7 +516,7 @@ def output_names(models: Sequence[ModelRef], pattern: str = "", decoy_pattern: s
     k = 0
     for m in models:
         stem = os.path.splitext(os.path.basename(m.path))[0]
-        if m.run and m.tag:
+        if not m.numbered:
             name = decoy_pattern.replace("{run}", m.run).replace("{tag}", m.tag)
         else:
             k += 1
@@ -547,15 +553,45 @@ def apply_transform(models: Sequence[ModelRef], t: RigidTransform, out_dir: str,
     return out
 
 
+def fill_slots(out_dir: str, pattern: str, slots: int, filled: int) -> List[str]:
+    """Write the numbered outputs ``filled + 1`` .. ``slots`` of ``pattern`` ({n}: 01, 02 ...) as empty-slot
+    files (:func:`mdatk.pdbtools.empty_slot_text`, no atoms): a step promises ``slots`` moved models to the
+    steps after it, and had only ``filled`` to move (a set of decoys holds at most as many as planned, a cut
+    of the decoy table drops some).  Returns their paths."""
+    if "{n}" not in pattern or "{stem}" in pattern:
+        raise FrameError("numbered slots need a --pattern numbered by {n} alone")
+    out = []
+    for n in range(filled + 1, slots + 1):
+        dst = os.path.join(out_dir, pattern.replace("{n}", f"{n:02d}"))
+        os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+        with open(dst, "w", encoding="utf-8") as fh:
+            fh.write(pdbtools.empty_slot_text(n, slots, filled))
+        out.append(dst)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # models from files and decoy tables
 # ---------------------------------------------------------------------------
 
 
+def _pdb_files(folder: str) -> List[str]:
+    """The PDB files below ``folder``, sorted; never those of the runs moved aside into a superseded/."""
+    from .workflows.naming import SUPERSEDED  # not at import time: the planner's frame step imports this
+
+    found = []
+    for r, dirs, fs in os.walk(folder):
+        dirs[:] = [d for d in dirs if d != SUPERSEDED]
+        found += [os.path.join(r, f) for f in fs if f.lower().endswith(".pdb")]
+    return sorted(found)
+
+
 def gather_models(paths: Sequence[str], scores: str = "", root: str = "", maxima=None,
                   exclude: Sequence[str] = ()) -> Tuple[List[ModelRef], List[str], Any]:
     """Models given as files or folders (their PDB files, recursively) and the extracted decoys of a decoy
-    table (``pdb`` relative to ``root``).  Returns (models, notes, table or None)."""
+    table (``pdb`` relative to ``root``), each file once.  A file given that is also a decoy of the table
+    (the set of a FARFAR2 step with its decoy table) is that decoy: it takes the table's run and tag, and the
+    table's cut (``maxima``) leaves it out.  Returns (models, notes, table or None)."""
     from .rosetta import read_decoy_table
 
     skip = {os.path.abspath(p) for p in exclude}
@@ -563,27 +599,56 @@ def gather_models(paths: Sequence[str], scores: str = "", root: str = "", maxima
     notes: List[str] = []
     for p in paths:
         if os.path.isdir(p):
-            found = sorted(os.path.join(r, f) for r, _d, fs in os.walk(p) for f in fs
-                           if f.lower().endswith(".pdb"))
-            models += [ModelRef(f, f) for f in found if os.path.abspath(f) not in skip]
+            models += [ModelRef(f, f) for f in _pdb_files(p) if os.path.abspath(f) not in skip]
         elif os.path.abspath(p) not in skip:
             models.append(ModelRef(p, p))
     slots = [(m, pdbtools.empty_slot(m.path)) for m in models]  # a model check's unfilled slots: no model
     notes += [f"skipped {m.path}: {slot} (an empty slot of a model check, no model)"
               for m, slot in slots if slot]
     models = [m for m, slot in slots if not slot]
+    seen: Dict[str, ModelRef] = {}  # each file once (realpath)
+    for m in models:
+        seen.setdefault(os.path.realpath(m.path), m)
+    if len(seen) < len(models):
+        notes.append(f"{len(models) - len(seen)} model file(s) given more than once are read once")
+    models = list(seen.values())
     table = None
     if scores:
         table = read_decoy_table(scores)
         rows, sel_notes = table.select(maxima or {})
         notes += sel_notes
+        passing = {id(r) for r in rows}
+        decoys: Dict[str, Any] = {}  # a decoy's PDB file -> its row
+        for row in table.rows:
+            path = table.pdb_path(row, root or None)
+            if path:
+                decoys.setdefault(os.path.realpath(path), row)
+        given: List[ModelRef] = []
+        both = cut = 0
+        for m in models:
+            row = decoys.get(os.path.realpath(m.path))
+            if row is None:
+                given.append(m)
+                continue
+            both += 1
+            if id(row) in passing:
+                given.append(ModelRef(m.path, row.pdb, row.run, row.tag, given=True))
+            else:
+                cut += 1
+        if both:
+            notes.append(f"{both} model(s) given are decoys of the table too: each is read once"
+                         + (f"; {cut} of them fail the cut and are left out" if cut else ""))
+        models = given
         missing = 0
         for row in rows:
             path = table.pdb_path(row, root or None)
             if not path:
                 missing += 1
                 continue
-            models.append(ModelRef(path, row.pdb, row.run, row.tag))
+            key = os.path.realpath(path)
+            if key not in seen:  # else given as a file too, and read once above
+                seen[key] = ModelRef(path, row.pdb, row.run, row.tag)
+                models.append(seen[key])
         if missing:
             notes.append(f"{missing} decoys of the table were not extracted (empty pdb column) and are "
                          "skipped")
@@ -643,6 +708,8 @@ def add_commands(sub) -> list:
                    "the input's name); default: as below the inputs' common folder")
     r.add_argument("--decoy-pattern", default="{run}/{tag}.pdb", help="names of the moved decoys of the "
                    "table (default {run}/{tag}.pdb)")
+    r.add_argument("--slots", type=int, default=0, help="write exactly this many files of --pattern ({n}): "
+                   "those no model fills are empty slots (no atoms), as a planner step promised them")
     r.add_argument("--manifest", help="write a table: source, output, run, tag")
     r.add_argument("--scores-out", help="write the decoy table again with pdb pointing at the moved models")
     r.add_argument("--output", "-o", help="also write the summary to this file")
@@ -707,6 +774,12 @@ def run(args, stdout=None, stderr=None) -> int:
                 if models else []
             ok = [w for w in written if not w[2]]
             lines.append(f"wrote {len(ok)} moved models" + (f" to {args.out_dir}" if ok else ""))
+            if args.slots:
+                numbered = sum(1 for m in models if m.numbered)
+                empty = fill_slots(args.out_dir, args.pattern, args.slots, numbered)
+                if empty:
+                    lines.append(f"{len(empty)} of the {args.slots} numbered models are empty slots (no "
+                                 f"atoms): {numbered} model(s) to move")
             for m, _dst, why in [w for w in written if w[2]][:4]:
                 lines.append(f"  not written: {m.label}: {why}")
             root = table.root(args.root or None) if table is not None else os.getcwd()

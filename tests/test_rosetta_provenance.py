@@ -242,3 +242,38 @@ def test_audit_step_writes_the_runs_table(tmp_path):
     args = build_parser().parse_args(["rosetta", "audit", folder, "--runs-tsv", str(tmp_path / "r.tsv")])
     assert rosetta.run(args, out, io.StringIO()) == 0
     assert "\t4101\tyes\t4101\tlog\tB1\t" in (tmp_path / "r.tsv").read_text()
+
+
+def test_runs_moved_aside_into_superseded_are_not_runs_of_the_condition(tmp_path, capsys):
+    # 0.0.12 moves a completed run into <step folder>/superseded/<stamp>_<time>/ (logs, flags, runs/ and
+    # all) before the step is written again; the audit walked into it and reported every seed of the new run
+    # twice (DUPLICATE SEEDS, a failed --strict audit) and mixed the old run's flags into the condition's
+    step = tmp_path / "plan" / "01_farfar2"
+    flags = f"apt1_01_farfar2_{STAMP}.flags"
+
+    def mdatk_run(folder, cycles):
+        write(folder / flags, f"-fasta seq.fasta -nstruct 2 -cycles {cycles}\n")
+        write(folder / "seq.fasta", ">x A:1-6\nggcgcc\n")
+        for k in (1, 2):
+            write(folder / "runs" / f"r0{k}" / "S_000001.pdb", "END\n")
+            seeds = f"-run:constant_seed -run:jran {3000 + k}"
+            write(folder / f"apt1_01_farfar2-r0{k}_{STAMP}.log",
+                  log_text(RELEASE, 3000 + k, flags=f"@../../{flags}", seed_flags=seeds))
+
+    mdatk_run(step, 20000)
+    mdatk_run(step / "superseded" / f"{STAMP}_20261101-120000", 10000)
+    res = rosetta.audit([str(step)])
+    (cond,) = res.conditions
+    assert len(cond.threads) == 2 and not res.duplicates
+    assert all("superseded" not in t.log for t in cond.threads)
+    assert cond.flags["-cycles"] == "20000"
+    assert "01_farfar2: 2 run(s), seeds 3001-3002" in "\n".join(res.lines)
+    from mdatk.cli import main
+    assert main(["rosetta", "audit", str(step), "--strict"]) == 0
+    assert "ERROR" not in capsys.readouterr().err
+    # a folder of conditions: superseded/ is not one of them; a superseded run named as the root still is
+    assert [lab for lab, _p in rosetta.find_conditions([str(step.parent)])] == ["01_farfar2"]
+    write(step.parent / "superseded" / "01_farfar2" / "x.log", "")
+    assert [lab for lab, _p in rosetta.find_conditions([str(step.parent)])] == ["01_farfar2"]
+    (old,) = rosetta.audit([str(step / "superseded" / f"{STAMP}_20261101-120000")]).conditions
+    assert len(old.threads) == 2 and old.flags["-cycles"] == "10000"

@@ -251,6 +251,10 @@ class FrameCheckTool(Tool):
     def run_resources(self, s):
         return Resources(int(s["jobs"]))  # models read at the same time
 
+    def run_folders(self, s, ctx):
+        # the moved decoys of a decoy table, <reframed folder>/<run>/<tag>.pdb (--decoy-pattern)
+        return [ctx.from_own(ctx.name("reframed"))] if s["reframe"] else []
+
     def _pattern(self, ctx) -> str:
         return ctx.name("reframed-MODELNUM", "pdb").replace("MODELNUM", "{n}")
 
@@ -261,7 +265,12 @@ class FrameCheckTool(Tool):
             n = ctx.count("models")  # with a set of decoys: at most as many as it can hold
             if n:
                 paths = [ctx.own(f"reframed-{k:02d}", "pdb") for k in range(1, n + 1)]
-                out["reframed"] = PortValue(paths, "pdb", dict(ctx.data("models")))
+                data = dict(ctx.data("models"))
+                if ctx.lists("models") or ctx.has("scores"):
+                    # fewer models than planned (a set holds at most n, a cut of the table drops some): the
+                    # rest are written as empty slots, which the steps that read one model stop on
+                    data["empty_slots"] = True
+                out["reframed"] = PortValue(paths, "pdb", data)
             if ctx.has("scores"):
                 out["reframed_scores"] = PortValue([ctx.own("reframed-scores", "tsv")], "table",
                                                    dict(ctx.data("scores")))
@@ -346,6 +355,8 @@ class FrameCheckTool(Tool):
             words += common + ["--tol", f"{s['tol']:g}", "--out-dir", ".", "--pattern", q(self._pattern(ctx)),
                                "--decoy-pattern", q(n("reframed") + "/{run}/{tag}.pdb"),
                                "--manifest", n("reframed", "tsv"), "-o", n("reframed", "txt")]
+            if ctx.count("models"):  # exactly the numbered models the output 'reframed' promises
+                words += ["--slots", str(ctx.count("models"))]
             if ctx.has("scores"):
                 words += ["--scores-out", n("reframed-scores", "tsv")]
             sh += ["# One rigid transform from the old to the re-fitted reference, if it suffices, moves the "
