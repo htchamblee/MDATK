@@ -164,7 +164,7 @@ class DecoyInterfaceTool(Tool):
             Option("rebuilt", "Rebuilt residues", "text", "", "", placeholder="A:7-12,B:21-38,C:58-63",
                    requires={"support": True, "rebuilt_from": "rebuilt"}),
             Option("sep", "Sequence separation", "int", 3,
-                   "Contacts to residues of the same chain at most this far in sequence are ignored (the "
+                   "Contacts to residues of the same strand at most this far in sequence are ignored (the "
                    "backbone holds those).", minimum=0, maximum=50, requires={"support": True}),
             Option("support_cutoff", "Contact distance", "float", 4.5, "", minimum=1.0, maximum=15.0,
                    step=0.1, digits=2, unit="Å", requires={"support": True}),

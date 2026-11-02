@@ -352,3 +352,24 @@ def test_a_relative_executable_runs_although_dssr_runs_in_a_temporary_folder(tmp
     res = annotate(builder.build_helix("GCAUGC"), engine="dssr", dssr_exe=given)
     assert res.engine == "dssr" and "REMARK 950 PAIRS 6 (WATSON-CRICK 6, WOBBLE 0, OTHER 0)" in res.records
     assert dssr.DssrRunner(["G"], [[]], exe=given).exe == str(tmp_path / "bin" / "x3dna-dssr")
+
+
+def test_pdb_interface_keeps_models_with_the_same_file_name_apart(tmp_path, monkeypatch):
+    """Decoys of different FARFAR2 runs share file names: every row was 'model.pdb' and --keep held one
+    model's DSSR files, the last one's."""
+    exe = fake_dssr(tmp_path)
+    monkeypatch.setenv("FAKE_DSSR_STYLE", "v1")
+    monkeypatch.chdir(tmp_path)
+    for run, seq in (("r1", "GCAUGC"), ("r2", "GGGGGG")):
+        (tmp_path / run).mkdir()
+        (tmp_path / run / "model.pdb").write_text(builder.build_helix(seq))
+    (tmp_path / "other.pdb").write_text(builder.build_helix("GAUC"))
+    assert main(["pdb", "interface", "r1/model.pdb", "r2/model.pdb", "other.pdb", "--side-a", "A",
+                 "--side-b", "B", "--engine", "dssr", "--dssr-exe", exe, "--keep", "keep",
+                 "-o", "two.tsv"]) == 0
+    rows = interfaces.read_table("two.tsv")
+    assert sorted({r["model"] for r in rows}) == ["other.pdb", "r1/model.pdb", "r2/model.pdb"]
+    assert {r["name_a"] for r in rows if r["model"] == "r2/model.pdb" and r["kind"] == "pair"} == {"G"}
+    assert sorted(os.listdir(tmp_path / "keep")) == ["other.json", "other_dssr.pdb", "r1_model.json",
+                                                     "r1_model_dssr.pdb", "r2_model.json",
+                                                     "r2_model_dssr.pdb"]

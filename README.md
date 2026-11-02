@@ -1549,14 +1549,15 @@ log gives the size-weighted shares over all recurring clusters, also without *br
 representative touches more than 10 side-B residues).
 
 **Segment support** (`support` table, plus per-residue and per-residue-share tables): for every rebuilt
-residue, its heavy-atom contacts (4.5 Å) beyond a sequence separation of 3, counted within a chain only
-(residues of other chains are never neighbours), by source: the partner side (`#`), its own side outside
-the rebuilt segments (`o`, scaffold), optionally base pairs between rebuilt residues (`=`, two distinct
-base-edge hydrogen bonds within 3.3 Å, or canonical pairs) and its own rebuilt segments only (`:`, which
-is no support). A model is flagged when it has a run of 4 unsupported residues (or *auto*: the largest gap
-of the ensemble's longest runs). The rebuilt residues are the rest of the sides outside FARFAR2's fixed
-residues when the connected models carry them (*Every decoy* of a FARFAR2 step does), or typed (fixed or
-rebuilt residues).
+residue, its heavy-atom contacts (4.5 Å) beyond a sequence separation of 3, counted within a strand only
+(residues of other strands are never neighbours; a strand ends at a chain change, a TER record, a 5′ end
+without its phosphate or an O3′–P gap over 4 Å, so files without chain ids keep their strands apart), by
+source: the partner side (`#`), its own side outside the rebuilt segments (`o`, scaffold), optionally
+base pairs between rebuilt residues (`=`, two distinct base-edge hydrogen bonds within 3.3 Å, or
+canonical pairs) and its own rebuilt segments only (`:`, which is no support). A model is flagged when
+it has a run of 4 unsupported residues (or *auto*: the largest gap of the ensemble's longest runs). The
+rebuilt residues are the rest of the sides outside FARFAR2's fixed residues when the connected models
+carry them (*Every decoy* of a FARFAR2 step does), or typed (fixed or rebuilt residues).
 
 For the 73-nt construct the scripts came from (an aptamer in chains A and B, a target in chain C), the
 sides are `A:1-16,B:17-44` and `C:45-73`, and FARFAR2's fixed helices `A:1-6 A:13-16 B:17-20 B:39-44
