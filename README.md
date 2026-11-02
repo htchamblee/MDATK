@@ -1773,7 +1773,12 @@ chain, number and insertion code, and every range is written as for the PDB tool
   left over are written as empty-slot files (`REMARK 951 empty slot 4 of 5: only 3 models passed`,
   `END`, no atoms), so a plan keeps its fixed number of files
   without pretending that N models passed; the report states `M of K models passed the gates` (and how
-  many slots were written empty). `--passed-out 'passed-{n:02d}.pdb'` and `--best-out` copy the models
+  many slots were written empty, once they are: a filter below its minimum writes nothing). `report`
+  and `stop` take `--slots N` for the same fixed number of files: the models fill the slots in order,
+  the slots left over (inputs that were empty slots, a set of decoys that listed fewer than planned) are
+  written as empty slots that say why (`empty slot 6 of 6: only 5 models were given`, `only 1 of 3
+  inputs were models (2 empty slots)`), and more models than slots is an error.
+  `--passed-out 'passed-{n:02d}.pdb'` and `--best-out` copy the models
   passed on (in input order, `--order clashes` or `--order score`; the best is an empty slot when none
   passed and `--min-pass 0`). The report is text, `--tsv` (one row per model) or `--json`, with `-o FILE`
   for the table while the text goes to the screen.
@@ -1781,7 +1786,9 @@ chain, number and insertion code, and every range is written as for the PDB tool
   apart; the model check itself, the decoy interfaces (`mdatk decoys`, `mdatk pdb interface`), the
   register census and ensemble comparison (`mdatk ensemble`), the frame check (`mdatk frame`) and the
   map-model score (`mdatk map score`) skip them with a note, `read_pdb` refuses one by name, and an
-  Amber build whose structure is one stops before any helper or tleap runs.
+  Amber build whose structure is one stops before any helper or tleap runs. Other steps that read one
+  model (SimRNA, FARFAR2's `-s`, RNAMake, the real-space refinements, MDFF, restraint dictionaries) do
+  not check: they take the first slot, which is empty only when a filter with `--min-pass 0` passed none.
 
 ```bash
 mdatk pdb qc model-*.pdb --segments 'A:7-12, B:25-34, C:58-63' --expect-d A,B --expect-l C
@@ -1797,7 +1804,10 @@ optional secondary structures and an optional decoy table (the FARFAR2 models st
 FARFAR2 step's *Decoy table*), and writes the report (table), the passed models and the
 best one (the first passed). With *Models that fail: filter*, *Models passed on (up to)* is the number
 of slots and *Fewest passing models* the minimum (1); its *Passed models* then carry a mark that the
-slots may be empty, and an Amber build fed one writes the guard that stops it before tleap. *Kinks* and
+slots may be empty, and an Amber build fed one writes the guard that stops it before tleap. In every
+mode the step writes one passed file per connected model (of a set of decoys, as many as it can hold),
+so the next step finds every file it was planned with: with *report* and *stop* the slots no model fills
+(inputs that were empty slots, decoys the set did not list) are empty slots too. *Kinks* and
 *Report hydrogen contacts* set the checks above. *Expected hands* is automatic by default: the hands
 measured on the first connected model when the plan is written (when it exists then; of a set of decoys
 the first it lists once its step has run), or the hand of a builder helix; *Ranges* takes them typed.

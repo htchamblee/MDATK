@@ -862,6 +862,9 @@ class AmberBuildTool(Tool):
         if s["link_check"] != "off" and s["link_fail"] < s["link_max"]:
             out.append(Issue("error", "the O3′–P break length must not be below the longest unstrained link",
                              ("link_fail", "link_max")))
+        if s["link_check"] != "off" and s["link_min"] >= s["link_max"]:  # the helper refuses it at run time
+            out.append(Issue("error", "the shortest O3′–P link must be below the longest unstrained link",
+                             ("link_min", "link_max")))
         out += self._check_input_backbone(s, ctx)
         slot = pdbtools.empty_slot(ctx.existing("structure")) if ctx.existing("structure") else ""
         if slot:
@@ -1187,7 +1190,7 @@ class AmberBuildTool(Tool):
                  "# before anything else is done with it: tleap bonds them by name whatever the distance, so",
                  "# a chain break left in the model becomes a strained bond (E = k (r - r0)^2, k and r0 of",
                  "# the P-O3' bond read from the force field the tleap input loads)"]
-        run = (f"python3 {links_py} {pdb} --checks links {limits} --link-params {leap_in} "
+        run = (f"python3 {links_py} {shell_quote(pdb)} --checks links {limits} --link-params {leap_in} "
                f'--link-types {types} --amberhome "$AMBERHOME"')
         if s["link_check"] == "stop":
             lines.append(f"{run} --on-fail stop || {{ echo \"ERROR: O3'-P links longer than "
@@ -1200,12 +1203,12 @@ class AmberBuildTool(Tool):
 
     @staticmethod
     def _empty_slot_guard(pdb: str) -> List[str]:
-        """Script lines that stop the build when its structure is an empty slot of a model check (a filter
-        that passed on fewer models than it has slots), before any helper or tleap runs."""
+        """Script lines that stop the build when its structure is an empty slot of a model check (one that
+        passed on fewer models than it has slots), before any helper or tleap runs."""
         q = shell_quote(pdb)
         name = re.sub(r"[\"$`\\]", "_", os.path.basename(pdb))
-        return ["# The structure comes from a model check that passes on up to N models: an unfilled slot is",
-                "# a file with an 'empty slot' REMARK 951 and no atoms: there is nothing to build from it",
+        return ["# The structure comes from a model check's slots: a slot no model fills is a file with an",
+                "# 'empty slot' REMARK 951 and no atoms: there is nothing to build from it",
                 f"if grep -q '^REMARK 951 .*empty slot' {q}; then",
                 f"    echo \"ERROR: {name} is an empty slot of the model check ($(grep -m1 '^REMARK 951' {q} "
                 "| cut -c12-)): no model to build; tleap was not run\" >&2",
