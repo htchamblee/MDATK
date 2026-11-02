@@ -107,9 +107,10 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   box stops that one.
 - **The commands a step runs:** the script wizard has a *Commands* tab with the commands the step's
   script will run.
-- **Fixes:** MDATK no longer stays running after its windows are closed (each program quits with its main
-  window, and the programs it starts no longer inherit the AppImage's descriptors); the NAMD MDFF result
-  PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with blank chains is read.
+- **Fixes:** the NAMD MDFF result PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with
+  blank chains is read. Each program now quits when its main window closes, and the programs it starts
+  get `close_fds`; the cause of the reported MDATK process left running after the AppImage's windows are
+  closed is still being investigated (these changes are not known to remove it).
 - **Generated workflow files** of the earlier step types are unchanged unless a new option is turned on,
   apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds (see
   [CHANGELOG.md](CHANGELOG.md)).
@@ -2537,11 +2538,13 @@ mdatk/
     launch.py        starting RNAdo from the analysis window (source, bundle, AppImage)
     projectui.py     project files in both programs: open menu, file choosers, co-editing
     about.py         About dialogs and BibTeX export; widgets.py, worker.py, desktop.py: helpers
-  assets/            RNAdo's logo, wordmark and icons (drawn by packaging/make_rnado_art.py)
+  assets/            RNAdo's logo, wordmark and icons (drawn by packaging/make_rnado_art.py), the
+                     MDATK icons (packaging/make_icon.py --assets) and the desktop-entry templates
+                     mdatk.desktop and rnado.desktop
   frozen.py          stand-alone builds: bundled FFmpeg, environments of the programs MDATK starts
   demo.py            synthetic RNA system generator
 packaging/           stand-alone builds (see packaging/README.md)
-tests/               the test suite (see Testing); examples/: example projects; data/: desktop entries
+tests/               the test suite (see Testing); examples/: example projects
 ```
 
 **Adding an analysis**: subclass `mdatk.analysis.base.Analysis`, implement `enabled`,
