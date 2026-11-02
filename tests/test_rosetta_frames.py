@@ -622,17 +622,18 @@ def test_frame_check_step(tmp_path):
 
 
 def test_frame_check_of_the_farfar2_set_with_its_table(tmp_path):
-    # the set of decoys and its decoy table connected together: every decoy was measured twice and the table's
-    # cut applied only to the table's copies (moved twice with reframe, too); and with fewer decoys than runs x
-    # models per run (-autofilter, a failed run) the reframed-NN files the step promised were never all
-    # written: the step stayed 'partial' and the steps after it were given files that did not exist
+    # the set of decoys and its decoy table connected together: every decoy was measured twice and the
+    # table's cut applied only to the table's copies (moved twice with reframe, too); and with fewer decoys
+    # than runs x models per run (-autofilter, a failed run) the reframed-NN files the step promised were
+    # never all written: the step stayed 'partial' and the steps after it got files that did not exist
     from mdatk.workflows import runstate
     root = tmp_path / "plan"
     ref = write(tmp_path / "ref.pdb", pdbtools.write_pdb(two_bodies()))
     new = write(tmp_path / "new.pdb", model(0.0, MOVE))
     groups = [ResidueGroup("Aptamer", "A:1-8,B:1-8"), ResidueGroup("Target", "C:1-8,D:1-8")]
     wf = WorkflowParams(project_name="apt1", stamp=STAMP)
-    fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC", "runs": 2, "nstruct": 3, "autofilter": True})
+    fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC", "runs": 2, "nstruct": 3,
+                                             "autofilter": True})
     fc = add_node(wf, "frame-check", settings={"reframe": True, "python": sys.executable,
                                                "score_cut": "linear_chainbreak=1"})
     fc.files = {"reference": ref, "new_reference": new}
@@ -691,8 +692,8 @@ def test_gather_models_reads_each_file_once_and_never_superseded_runs(tmp_path):
                                              {"linear_chainbreak": 5.0})
     assert [(m.label, m.run, m.tag, m.given) for m in models] == [("02_m/models/r02/S_000001.pdb", "r02",
                                                                    "S_000001", True)]
-    assert "2 model(s) given are decoys of the table too: each is read once; 1 of them fail the cut and are " \
-        "left out" in notes
+    assert ("2 model(s) given are decoys of the table too: each is read once; 1 of them fail the cut and "
+            "are left out") in notes
     assert frames.output_names(models, "m-{n}.pdb") == ["m-01.pdb"]
     with pytest.raises(frames.FrameError, match="numbered by"):
         frames.fill_slots(str(tmp_path), "{stem}.pdb", 2, 1)

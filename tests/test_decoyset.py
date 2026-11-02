@@ -317,8 +317,8 @@ def test_without_step_folders_every_step_extracts_into_a_folder_of_its_own(tmp_p
     env = _fake_tools(tmp_path, {"rna_denovo": FAKE_DENOVO, "extract_pdbs": FAKE_EXTRACT},
                       TEMPLATE=str(template))
     for step in ("01", "02"):
-        proc = subprocess.run(["bash", str(tmp_path / f"apt1_{step}_farfar2_{STAMP}.sh")], capture_output=True,
-                              text=True, env=env)
+        proc = subprocess.run(["bash", str(tmp_path / f"apt1_{step}_farfar2_{STAMP}.sh")],
+                              capture_output=True, text=True, env=env)
         assert proc.returncode == 0, proc.stderr + proc.stdout
     for step in ("01", "02"):
         listed = (tmp_path / f"apt1_{step}_decoys_{STAMP}.txt").read_text().split()

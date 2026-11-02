@@ -177,7 +177,7 @@ def test_run_resources_of_every_step_type():
     # +devices counts the GPUs the Environment leaves visible
     assert res("namd-mdff", gpu="1", env_setup="export CUDA_VISIBLE_DEVICES=2,3") == Resources(8, 1, ("3",))
     assert res("farfar2") == Resources(6) and res("farfar2", runs=4, parallel=20) == Resources(4)
-    # after the runs the step's script extracts the decoys, 'Parallel extractions' at a time (at most a run each)
+    # after the runs the step's script extracts the decoys, 'Parallel extractions' at a time (a run each)
     assert res("farfar2", parallel=2, extract_decoys=True, extract_parallel=8) == Resources(8)
     assert res("farfar2", runs=4, parallel=2, extract_decoys=True, extract_parallel=8) == Resources(4)
     assert res("farfar2", parallel=2, extract_parallel=8) == Resources(2)  # nothing extracted

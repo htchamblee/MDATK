@@ -330,7 +330,7 @@ class FarfarTool(Tool):
 
     @staticmethod
     def existing_fasta(s) -> str:
-        """The text of the existing FASTA file the step uses ('' when it writes its own, or it is unreadable)."""
+        """The text of the existing FASTA file the step uses ('' when it writes its own, or cannot read it)."""
         path = s["fasta_file"].strip()
         if s["make_inputs"] or not path:
             return ""

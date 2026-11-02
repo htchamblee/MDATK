@@ -256,8 +256,9 @@ def test_runs_moved_aside_into_superseded_are_not_runs_of_the_condition(tmp_path
         write(folder / "seq.fasta", ">x A:1-6\nggcgcc\n")
         for k in (1, 2):
             write(folder / "runs" / f"r0{k}" / "S_000001.pdb", "END\n")
-            write(folder / f"apt1_01_farfar2-r0{k}_{STAMP}.log", log_text(
-                RELEASE, 3000 + k, flags=f"@../../{flags}", seed_flags=f"-run:constant_seed -run:jran {3000 + k}"))
+            seeds = f"-run:constant_seed -run:jran {3000 + k}"
+            write(folder / f"apt1_01_farfar2-r0{k}_{STAMP}.log",
+                  log_text(RELEASE, 3000 + k, flags=f"@../../{flags}", seed_flags=seeds))
 
     mdatk_run(step, 20000)
     mdatk_run(step / "superseded" / f"{STAMP}_20261101-120000", 10000)

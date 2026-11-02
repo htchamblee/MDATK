@@ -986,8 +986,9 @@ def collect(folder: str, label: str = "", controlled=None, full_hash: bool = Tru
 def find_conditions(roots: Sequence[str], recursive: bool = True,
                     exe_pattern: str = "rna_denovo") -> List[Tuple[str, str]]:
     """(label, folder) of every condition: a root whose own folder holds rna_denovo logs is one condition,
-    otherwise each of its subfolders is (never ``superseded/``, see :func:`_searched`).  Labels are paths relative to the root (the root's name for the root
-    itself), with the root's name in front when two roots give the same label."""
+    otherwise each of its subfolders is (never ``superseded/``, see :func:`_searched`).  Labels are paths
+    relative to the root (the root's name for the root itself), with the root's name in front when two roots
+    give the same label."""
     out: List[Tuple[str, str, str]] = []
     for root in roots:
         if not os.path.isdir(root):
