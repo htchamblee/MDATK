@@ -233,6 +233,7 @@ FILE_KINDS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "trafl": ("SimRNA trajectory", (".trafl",)),
     "image": ("Image / movie", (".tga", ".png", ".mp4")),
     "text": ("Text file", (".txt", ".dat")),
+    "table": ("Table (TSV / CSV)", (".tsv", ".csv")),
 }
 
 
@@ -254,6 +255,12 @@ class Port:
 
     Inputs accept every kind listed in ``kinds``; outputs have one kind.
     ``multiple`` ports carry a list of files (e.g. trajectory segments).
+
+    A ``collection`` is the full set of N files of one kind, e.g. every decoy of every FARFAR2 run.  Its
+    members are known only once the producing step has run, so an output passes a file that lists them
+    (:attr:`mdatk.workflows.base.PortValue.lists`).  It connects only to collection inputs, whose scripts
+    read that list when they run and which take files connected one by one as well; collections are
+    ``multiple``, and the planner draws them as large dots.
     """
 
     name: str
@@ -262,6 +269,13 @@ class Port:
     optional: bool = False
     multiple: bool = False
     tooltip: str = ""
+    collection: bool = False
+    turns_on: str = ""  # outputs: the bool option the step needs to write this file; a connection sets it
+    table: str = ""  # collection outputs: the output tabulating the set; joins inputs that take a table
+
+    def __post_init__(self):
+        if self.collection:
+            self.multiple = True
 
     @property
     def kind(self) -> str:

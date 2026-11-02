@@ -229,15 +229,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self.workflow_button = wf
         hb.pack_start(wf)
         menu = Gtk.Menu()
-        for text, cb in (("New project (defaults)", self.new_project),
-                         ("Create demo system…", self.create_demo),
-                         ("Project log…", self.show_project_log),
-                         ("Export citations (BibTeX)…", self.export_citations),
-                         ("About and citations", self.show_about)):
+        for text, cb, tip in (("New project (defaults)", self.new_project, None),
+                              ("Create demo system…", self.create_demo, None),
+                              ("Project log…", self.show_project_log, None),
+                              ("Export citations (BibTeX)…", self.export_citations, None),
+                              (desktop.LAUNCHERS_ITEM, self.add_launchers, desktop.LAUNCHERS_TIP),
+                              ("About and citations", self.show_about, None)):
             item = Gtk.MenuItem(label=text)
+            if tip:
+                item.set_tooltip_text(tip)
             item.connect("activate", lambda _w, c=cb: c())
             menu.append(item)
         menu.show_all()
+        self.main_menu = menu
         mb = Gtk.MenuButton()
         mb.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
         mb.set_popup(menu)
@@ -2286,6 +2290,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def citation_text(self) -> str:
         return citation_text(self._citation_resources()[1])
 
+    def add_launchers(self) -> str:
+        """MDATK and RNAdo in the applications menu (asks first; :func:`mdatk.gui.desktop.add_launchers`)."""
+        return desktop.add_launchers(self, self.info, self.error)
+
     def show_about(self):
         dlg = Gtk.Dialog(title=f"About {PROJECT_ABBREV}", transient_for=self, modal=True)
         dlg.add_buttons("Export BibTeX…", 1, "Close", Gtk.ResponseType.CLOSE)
@@ -2579,9 +2587,18 @@ class MDATKApplication(Gtk.Application):
                 except (OSError, ValueError) as exc:
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = MainWindow(self, project, path)
-            logging.getLogger("mdatk").addHandler(GuiLogHandler(self.window))
+            handler = GuiLogHandler(self.window)
+            logging.getLogger("mdatk").addHandler(handler)
+            self.window.connect("destroy", self._on_window_destroy, handler)
         self.window.show_all()
         self.window.present()
+
+    def _on_window_destroy(self, _window: MainWindow, handler: logging.Handler) -> None:
+        logging.getLogger("mdatk").removeHandler(handler)
+        # The program ends with its window: another window attached to the application (a dialog or file
+        # chooser left hidden, a forgotten tool window) would otherwise keep run() and the process going
+        # with nothing on screen
+        self.quit()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

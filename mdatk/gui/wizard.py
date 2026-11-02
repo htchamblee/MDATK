@@ -4,7 +4,8 @@ The forms are built from each tool's option schema (check boxes, radio
 buttons, combo boxes, spin buttons, text fields - each with its tooltip).
 Logic checks run on every change; problems are listed below the form and the
 offending fields are highlighted.  A live preview shows the files that
-"Write files" will create.  Programs only run when "Write and run" is used
+"Write files" will create, and the Commands tab what the step's run scripts
+will run.  Programs only run when "Write and run" is used
 (after a confirmation; each run is logged in the project file).  The wizard uses only RNAdo's host
 interface (:class:`mdatk.gui.host.Host`).
 """
@@ -18,24 +19,37 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk, Pango  # noqa: E402
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanNode  # noqa: E402
 from ..projectfile import logged  # noqa: E402
-from ..workflows import TOOLS, tools_by_category  # noqa: E402
+from ..workflows import TOOLS, supersede, tools_by_category  # noqa: E402
+from ..workflows.commands import command_lines  # noqa: E402
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import Plan, generate_step, scratch_node, single_step_plan  # noqa: E402
 from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
-from ..workflows.schema import (FILE_KINDS, Issue, Option, Section, kind_label,  # noqa: E402
+from ..workflows.schema import (FILE_KINDS, GeneratedFile, Issue, Option, Section, kind_label,  # noqa: E402
                                 requirements_met)
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
+from .jobs import confirm_supersede  # noqa: E402
 
 LEVEL_COLORS = {"error": "#c01c28", "warning": "#b56a00", "info": "#1a5fb4"}
 TYPE_KEYS = ("kind", "integrator")  # record options that switch whole groups of fields
 LEVEL_ICONS = {"error": "dialog-error-symbolic", "warning": "dialog-warning-symbolic",
                "info": "dialog-information-symbolic"}
+RUN_ROLES = ("run", "run-separate")  # the scripts whose commands the Commands tab shows
+HANG = 28  # px: a long command wraps with its later lines indented by this much
+COMMAND_TAGS = {  # Commands tab: tag -> text properties
+    "heading": {"weight": Pango.Weight.BOLD, "pixels_above_lines": 2, "pixels_below_lines": 2},
+    "separate": {"foreground": LEVEL_COLORS["warning"], "weight": Pango.Weight.BOLD},
+    "command": {"indent": -HANG, "pixels_below_lines": 4},  # negative: a hanging indent (Pango)
+    "note": {"foreground": "#77767b", "style": Pango.Style.ITALIC},
+    "error": {"foreground": LEVEL_COLORS["error"]},
+    "error-head": {"foreground": LEVEL_COLORS["error"], "weight": Pango.Weight.BOLD},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +357,111 @@ class RecordEditor(Gtk.Paned):
             self.form.mark({k[len(prefix):]: v for k, v in issues_by_key.items() if k.startswith(prefix)})
 
 
+class CommandsView(Gtk.Box):
+    """The Commands tab: what the step's run scripts will run, generated from the settings as they are (a
+    preview: nothing is written or run).  By default the commands alone, per script under its name
+    (:func:`mdatk.workflows.commands.command_lines`); *Whole scripts* shows the scripts as written.  A step
+    with errors has no scripts yet: the tab lists the errors instead."""
+
+    HINTS = {False: "The programs and helpers this step's scripts run, with the settings as they are now "
+                    "(nothing is written or run). Set-up, checks and messages are left out; a variable set "
+                    "once shows its value.",
+             True: "The run scripts as 'Write files' will write them."}
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=10)
+        self.scripts: List[GeneratedFile] = []
+        self.errors: List[str] = []
+        bar = Gtk.Box(spacing=6)
+        self.hint = W.hint(self.HINTS[False])
+        bar.pack_start(self.hint, True, True, 0)
+        self.full_btn = Gtk.ToggleButton(label="Whole scripts")
+        self.full_btn.set_tooltip_text("Show the whole run scripts, with their set-up, checks and messages")
+        self.full_btn.set_valign(Gtk.Align.START)
+        self.full_btn.connect("toggled", lambda *_: self._render())
+        bar.pack_start(self.full_btn, False, False, 0)
+        self.copy_btn = W.button("Copy", self.copy, "Copy what is shown to the clipboard (select lines to "
+                                 "copy only those, with Ctrl+C)", "edit-copy-symbolic")
+        self.copy_btn.set_valign(Gtk.Align.START)
+        bar.pack_start(self.copy_btn, False, False, 0)
+        self.pack_start(bar, False, False, 0)
+        self.view = Gtk.TextView(editable=False, monospace=True)
+        self.view.set_cursor_visible(False)
+        self.view.set_left_margin(6)
+        self.view.set_top_margin(4)
+        self.buffer = self.view.get_buffer()
+        for name, props in COMMAND_TAGS.items():
+            self.buffer.create_tag(name, **props)
+        self.scroller = Gtk.ScrolledWindow()
+        self.scroller.set_shadow_type(Gtk.ShadowType.IN)
+        self.scroller.add(self.view)
+        self.pack_start(self.scroller, True, True, 0)
+
+    def show_step(self, files: Sequence[GeneratedFile], errors: Sequence[str]) -> None:
+        """Show the run scripts among ``files``, or ``errors`` (the step's errors) when there are any."""
+        self.scripts = [f for f in files if f.role in RUN_ROLES]
+        self.errors = list(errors)
+        self._render()
+
+    def text(self) -> str:
+        """What is shown (also what Copy copies)."""
+        buf = self.buffer
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+
+    def copy(self) -> None:
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(self.text(), -1)
+
+    def _pieces(self) -> List[Tuple[str, Optional[str]]]:
+        """(text, tag) pieces of what is shown."""
+        if self.errors:
+            out: List[Tuple[str, Optional[str]]] = [
+                ("The step has errors, so it has no scripts yet. Fix these first:\n", "error-head")]
+            out += [(f"• {e}\n", "error") for e in self.errors]
+            out.append(("\nThe Checks tab lists them too; click one there to go to its field.\n", "note"))
+            return out
+        if not self.scripts:
+            return [("This step writes no script to run.\n", "note")]
+        full = self.full_btn.get_active()
+        out = []
+        for k, f in enumerate(self.scripts):
+            if k:
+                out.append(("\n", None))
+            out.append((f"# {f.name}\n", "heading"))
+            if f.role == "run-separate":
+                out.append(("# Run separately, e.g. on a cluster (RNAdo runs it only when asked to: \"Also "
+                            "run the scripts marked 'run separately'\")\n", "separate"))
+            if full:
+                out.append((f.content.rstrip("\n") + "\n", None))
+                continue
+            commands = command_lines(f.content)
+            out += [(c + "\n", "command") for c in commands]
+            if not commands:
+                out.append(("# (no program calls)\n", "note"))
+        return out
+
+    def _render(self) -> None:
+        full = self.full_btn.get_active() and not self.errors
+        self.hint.set_text(self.HINTS[full])
+        self.view.set_wrap_mode(Gtk.WrapMode.NONE if full else Gtk.WrapMode.WORD_CHAR)
+        pieces = self._pieces()
+        self.copy_btn.set_sensitive(not self.errors and bool(self.scripts))
+        self.full_btn.set_sensitive(not self.errors and bool(self.scripts))
+        if "".join(text for text, _tag in pieces) == self.text():
+            return  # an unrelated option changed: keep the view (and its scroll position) as it is
+        adj = self.scroller.get_vadjustment()
+        pos = adj.get_value()
+        buf = self.buffer
+        buf.set_text("")
+        for text, tag in pieces:
+            if tag:
+                buf.insert_with_tags_by_name(buf.get_end_iter(), text, tag)
+            else:
+                buf.insert(buf.get_end_iter(), text)
+        # back to where the reader was, once the new text is laid out (GTK does that at a higher priority
+        # than idle callbacks)
+        GLib.idle_add(lambda: adj.set_value(min(pos, adj.get_upper() - adj.get_page_size())) and False)
+
+
 # ---------------------------------------------------------------------------
 # the wizard window
 # ---------------------------------------------------------------------------
@@ -371,6 +490,7 @@ class WizardWindow(Gtk.Window):
         self._ports_shown: List[Tuple] = []  # input ports on the Files page (see _port_signature)
         self.plan: Optional[Plan] = None
         self.files = []
+        self.commands = CommandsView()  # the Commands tab, put back each time the pages are rebuilt
         self._refresh_id = 0
         self._loading = False
         self.set_default_size(1180, 820)
@@ -595,6 +715,10 @@ class WizardWindow(Gtk.Window):
         tool, node = self.tool, self.node
         files_page = self._files_page()
         self.notebook.append_page(files_page, W.label("Files"))
+        # second, so it stays in sight however many option pages follow
+        commands_tab = W.label("Commands")
+        commands_tab.set_tooltip_text("The commands this step's scripts will run, from the current settings")
+        self.notebook.append_page(self.commands, commands_tab)
         for section in tool.sections:
             if section.repeat:
                 editor = RecordEditor(section, self._on_option_change)
@@ -773,6 +897,7 @@ class WizardWindow(Gtk.Window):
             except Exception as exc:  # pragma: no cover - shown to the user
                 issues.append(Issue("error", f"cannot generate the files: {exc}"))
         self._show_issues(issues)
+        self.commands.show_step(self.files, [i.message for i in issues if i.level == "error"])
         outs = []
         if step is not None:
             for port, value in step.outputs.items():
@@ -869,10 +994,19 @@ class WizardWindow(Gtk.Window):
         if step is None or not step.ok:
             self.refresh_now()
             return
+        # a completed run of the plan's stamp moves aside before the step is written again: ask first
+        moving = supersede.pending(plan, [self.node.id])
+        if moving and getattr(getattr(self.host, "jobs", None), "running", False):
+            self._error("Scripts are running", "Writing would move the step's completed run aside while "
+                        "scripts run that may read it. Wait for them to finish, or cancel them, then write "
+                        "again.")
+            return
+        if moving and not confirm_supersede(self, list(moving.values()), run):
+            return
         try:
             with logged(self.host.project_path, "workflow write",
                         f"Script wizard: {step.tool.label}") as entry:
-                report = plan.write([self.node.id], master=False)
+                report = plan.write([self.node.id], master=False, project_path=self.host.project_path)
                 entry.files = list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written"
         except OSError as exc:
@@ -880,6 +1014,11 @@ class WizardWindow(Gtk.Window):
             return
         if self.workflow.use_stamp and not self.workflow.stamp:
             self.workflow.stamp = plan.stamp
+        for item in report.superseded.values():
+            lines = item.lines()
+            self.host.append_log("Script wizard: " + lines[0])
+            for line in lines[1:]:
+                self.host.append_log(line)
         if report.skipped:
             self._error("Some files were not written", "\n".join(report.skipped.values()))
         written = [p for p in report.written]

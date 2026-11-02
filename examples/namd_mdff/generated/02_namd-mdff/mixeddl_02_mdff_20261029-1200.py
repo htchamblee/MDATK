@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MDFF preparation and final model for NAMD on an Amber topology - written by MDATK 0.0.11.
+"""MDFF preparation and final model for NAMD on an Amber topology - written by MDATK 0.0.12.
 
 Usage: python3 THIS_SCRIPT prep | final | check-only | is-netcdf FILE
 """
@@ -1215,7 +1215,8 @@ def final(cfg):
     back = [mat_vec(rot_t, sub(p, t)) for p in xyz]
     chains = solute_chains(top, back, cfg.get("model"))
     with open(cfg["final_pdb"], "w", encoding="ascii", errors="replace") as fh:
-        fh.write("REMARK   MDFF result (NAMD), solute only, in the frame of the map - MDATK\n")
+        # a numbered REMARK: ChimeraX and other readers reject free-text ones ("bad PDB record")
+        fh.write("REMARK 951 MDFF result (NAMD), solute only, in the frame of the map - MDATK\n")
         last = None
         for r in range(top.nres):
             if r not in chains:

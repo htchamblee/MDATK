@@ -19,6 +19,7 @@ from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
                    require_file, script_header, separate_check, shell_quote, skip_when_done)
+from .budget import Resources, gpu_ids, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import cp_retype as _cp_retype
@@ -275,6 +276,34 @@ class AmberBuildTool(Tool):
             Option("strip_water", "Remove waters from the input", "bool", True,
                    "Crystal waters are dropped; the solvent box is built by tleap.",
                    requires={"prep": True}),
+            Option("drop_virtual", "Remove Rosetta virtual residues (VRT/XXX)", "bool", True,
+                   "Drop the virtual residues Rosetta writes into density-scored models (VRT: the root of "
+                   "the fold tree, atoms ORIG / X / Y; XXX). They are no atoms of the molecule, and tleap "
+                   "has no unit for them: it cannot type their atoms and fails to save the topology.",
+                   requires={"prep": True}),
+            Option("link_check", "Check O3′–P links before tleap", "radio", "off",
+                   "Measure O3′(i)–P(i+1) of consecutive nucleotides in every TER segment of the PDB tleap "
+                   "reads (after the preparation and the L-RNA naming), as the first thing the script does "
+                   "with it: before the force-field helpers and every tleap run. tleap bonds them by name "
+                   "whatever the distance, so a chain break left in a model (Rosetta numbers across its "
+                   "cutpoints) becomes a strained bond that the first minimisation has to relax. Links "
+                   "longer than the longest unstrained link are listed with that strain, E = k(r − r0)², "
+                   "k and r0 of the P–O3′ bond read from the force field tleap loads. Warn: list every link "
+                   "outside the limits and build anyway. Stop: list the strained links and end the script "
+                   "before tleap when a link is a break (or too short, or unmeasurable).",
+                   choices=[("off", "off"), ("warn", "warn"), ("stop", "stop")]),
+            Option("link_min", "Shortest O3′–P link", "float", 1.4,
+                   "Shorter links are overlaps (ideal 1.60 Å).", minimum=0.5, maximum=3.0, step=0.05,
+                   digits=2, unit="Å", requires={"link_check": ("warn", "stop")}),
+            Option("link_max", "Longest unstrained O3′–P link", "float", 2.0,
+                   "Longer links are bonded under strain, reported with it (Amber's OS–P: about 35 kcal/mol "
+                   "at 2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å) but not a reason to stop.",
+                   minimum=1.0, maximum=10.0, step=0.1, digits=2, unit="Å",
+                   requires={"link_check": ("warn", "stop")}),
+            Option("link_fail", "Longest O3′–P link before a break", "float", 3.0,
+                   "Longer links are breaks (the chain is usually in two pieces): 'Stop' ends the script "
+                   "before tleap.", minimum=1.0, maximum=20.0, step=0.1, digits=2, unit="Å",
+                   requires={"link_check": ("warn", "stop")}),
         ], tooltip="How the starting PDB is cleaned before tleap reads it."),
         Section("forcefield", "Force field", [
             Option("rna_ff", "RNA force field", "choice", "ol3cp",
@@ -830,6 +859,14 @@ class AmberBuildTool(Tool):
                                      "same topology; the two-pass build is kept for set-ups that need the "
                                      "dry intermediate files", ("two_pass",)))
         out += self._check_lrna(s, ctx)
+        if s["link_check"] != "off" and s["link_fail"] < s["link_max"]:
+            out.append(Issue("error", "the O3′–P break length must not be below the longest unstrained link",
+                             ("link_fail", "link_max")))
+        out += self._check_input_backbone(s, ctx)
+        slot = pdbtools.empty_slot(ctx.existing("structure")) if ctx.existing("structure") else ""
+        if slot:
+            out.append(Issue("warning", f"the structure is an empty slot of a model check ({slot}): the "
+                                        "build script stops before tleap", ("input:structure",)))
         if not s["prep"] and ctx.value("structure") and ctx.value("structure").source:
             src = ctx.value("structure").source_label
             out.append(Issue("info", f"the PDB from {src} is used as is; models from Rosetta usually "
@@ -844,6 +881,65 @@ class AmberBuildTool(Tool):
                                         "also apply to every water hydrogen (and carbonyl O) for the whole run; "
                                         "tick 'Separate HO and O2 Lennard-Jones types first' unless you reproduce "
                                         "a protocol that did not separate them", ("split_types",)))
+        return out
+
+    @staticmethod
+    def _check_input_backbone(s, ctx) -> List[Issue]:
+        """An existing input PDB: Rosetta virtual residues, and (with the link check) its O3'-P links as tleap
+        will see them, i.e. after the preparation the script applies."""
+        from .. import modelcheck
+
+        path = ctx.existing("structure")
+        if not path:
+            return []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return []
+        out: List[Issue] = []
+        virtual = {(ln[21:22], ln[22:27]) for ln in lines if ln.startswith(("ATOM", "HETATM"))
+                   and ln[17:20].strip().upper() in _prep_pdb.VIRTUAL}
+        dropped = s["prep"] and s["drop_virtual"]
+        name = os.path.basename(path)
+        if virtual and dropped:
+            out.append(Issue("info", f"{name}: {len(virtual)} Rosetta virtual residue(s) (VRT / XXX) are "
+                                     "removed before tleap", ("drop_virtual",)))
+        elif virtual:
+            out.append(Issue("warning", f"{name} has {len(virtual)} Rosetta virtual residue(s) (VRT / XXX): "
+                                        "tleap cannot type their atoms; tick 'Remove Rosetta virtual "
+                                        "residues'", ("drop_virtual", "prep")))
+        if s["link_check"] == "off":
+            return out
+        if s["prep"]:
+            lines = _prep_pdb.prepare(lines, True, s["strip_5p"], s["gap_ter"], s["strip_water"], True,
+                                      s["drop_virtual"])[0]
+        try:
+            links = modelcheck.check_backbone(pdbtools.read_pdb("\n".join(lines) + "\n"), s["link_min"],
+                                              s["link_max"], link_fail=s["link_fail"])
+        except pdbtools.PDBError as exc:
+            return out + [Issue("warning", f"cannot check the O3′–P links: {exc}", ("link_check",))]
+        strained = links.strained
+        if strained:  # (k, r0 here: MDATK's default; the script reads them from the force field it loads)
+            shown = ", ".join(f"{k.first}-{k.second} {k.distance:.2f} Å ({k.strain:.0f} kcal/mol)"
+                              for k in strained[:6])
+            more = f" and {len(strained) - 6} more" if len(strained) > 6 else ""
+            out.append(Issue("warning", f"{name}: {len(strained)} O3′–P link(s) of {s['link_max']:g}–"
+                                        f"{s['link_fail']:g} Å ({shown}{more}): tleap bonds them and the "
+                                        f"first minimisation starts with that strain, E = k(r − r0)² with "
+                                        f"Amber's OS–P term (k {links.bond.k:g} kcal/mol/Å², r0 "
+                                        f"{links.bond.r0:g} Å)", ("link_check", "link_max")))
+        bad = links.problems
+        if bad:
+            shown = ", ".join(f"{k.first}-{k.second} " + (f"{k.distance:.2f} Å" if k.distance is not None
+                                                          else k.status) for k in bad[:6])
+            more = f" and {len(bad) - 6} more" if len(bad) > 6 else ""
+            then = ("the build script stops before tleap" if s["link_check"] == "stop" else
+                    "tleap bonds them anyway")
+            out.append(Issue("warning", f"{name}: {len(bad)} O3′–P link(s) longer than {s['link_fail']:g} Å "
+                                        f"(a break), shorter than {s['link_min']:g} Å or unmeasurable "
+                                        f"({shown}{more}); {then}",
+                             ("link_check", "link_fail")))
         return out
 
     def _check_mg_pairs(self, s, ctx=None) -> List[Issue]:
@@ -1070,6 +1166,52 @@ class AmberBuildTool(Tool):
                 f"python3 {names_py} {named} {leap_in} || {{ echo \"ERROR: the L residue names do not match "
                 "the residue libraries (see above); tleap was not run\" >&2; exit 1; }", ""]
 
+    @staticmethod
+    def _link_check(s, ctx, files: List[GeneratedFile], pdb: str) -> List[str]:
+        """The helper (MDATK's PDB tools and model checks) that measures the O3'-P links of the PDB tleap
+        reads, and the script lines that run it (warn: report; stop: end before tleap when a link is a
+        break).  k and r0 of the strain come from the force field the first tleap input loads (its leaprc and
+        parameter files under $AMBERHOME, its frcmods), O3' typed OR in the CP force field, else OS."""
+        from .modelcheck import helper_source  # (a step module of its own: imported when needed)
+
+        links_py = ctx.name("links", "py")
+        files.append(GeneratedFile(links_py, helper_source(
+            f"O3'-P links of the PDB tleap reads - written by {PROJECT_ABBREV} {__version__} (mdatk.pdbtools "
+            "and mdatk.modelcheck).\n\nUsage: python3 THIS_SCRIPT MODEL.pdb --checks links --link-min 1.4 "
+            "--link-max 2.0 --link-fail 3.0 [--link-params TLEAP.leap --amberhome DIR] [--on-fail stop]"),
+            "helper", "checks the O3'-P links before tleap"))
+        leap_in = ctx.name("tleap-dry" if s["two_pass"] else "tleap", "leap")
+        types = "OR,OS" if s["rna_ff"] == "ol3cp" else "OS"
+        limits = f"--link-min {s['link_min']:g} --link-max {s['link_max']:g} --link-fail {s['link_fail']:g}"
+        lines = ["# O3'-P links of consecutive nucleotides in every TER segment of the PDB tleap reads,",
+                 "# before anything else is done with it: tleap bonds them by name whatever the distance, so",
+                 "# a chain break left in the model becomes a strained bond (E = k (r - r0)^2, k and r0 of",
+                 "# the P-O3' bond read from the force field the tleap input loads)"]
+        run = (f"python3 {links_py} {pdb} --checks links {limits} --link-params {leap_in} "
+               f'--link-types {types} --amberhome "$AMBERHOME"')
+        if s["link_check"] == "stop":
+            lines.append(f"{run} --on-fail stop || {{ echo \"ERROR: O3'-P links longer than "
+                         f"{s['link_fail']:g} A (a break), shorter than {s['link_min']:g} A or unmeasurable "
+                         "(see above); tleap was not run\" >&2; exit 1; }")
+        else:
+            lines.append(f"{run} --on-fail report || echo \"WARNING: the O3'-P link check could not read the "
+                         "PDB\" >&2")
+        return lines + [""]
+
+    @staticmethod
+    def _empty_slot_guard(pdb: str) -> List[str]:
+        """Script lines that stop the build when its structure is an empty slot of a model check (a filter
+        that passed on fewer models than it has slots), before any helper or tleap runs."""
+        q = shell_quote(pdb)
+        name = re.sub(r"[\"$`\\]", "_", os.path.basename(pdb))
+        return ["# The structure comes from a model check that passes on up to N models: an unfilled slot is",
+                "# a file with an 'empty slot' REMARK 951 and no atoms: there is nothing to build from it",
+                f"if grep -q '^REMARK 951 .*empty slot' {q}; then",
+                f"    echo \"ERROR: {name} is an empty slot of the model check ($(grep -m1 '^REMARK 951' {q} "
+                "| cut -c12-)): no model to build; tleap was not run\" >&2",
+                "    exit 1",
+                "fi", ""]
+
     def generate(self, s, ctx):
         files: List[GeneratedFile] = []
         n = ctx.name
@@ -1077,12 +1219,17 @@ class AmberBuildTool(Tool):
         ff = FORCE_FIELDS[s["rna_ff"]][2]
         sh = script_header(f"Amber system build ({ff}) - tleap / ParmEd", ctx, s, script_name)
         pdb_in = ctx.inp("structure")
+        existing = ctx.existing("structure")
+        if ctx.data("structure").get("empty_slots") or (existing and pdbtools.is_empty_slot(existing)):
+            sh += self._empty_slot_guard(pdb_in)  # a model check's slot, which may hold no model at all
         gen = self.lrna_generated(s, ctx)
-        if self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005"):
+        links = s["link_check"] != "off"
+        if self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005") or links:
             sh += ["# AmberTools data folder (from tleap on PATH when AMBERHOME is not set)",
                    'AMBERHOME="${AMBERHOME:-$(dirname "$(dirname "$(readlink -f "$(command -v tleap)")")")}"',
                    '[ -f "$AMBERHOME/dat/leap/lib/RNA.lib" ] || { echo "ERROR: AmberTools data not found under '
                    '$AMBERHOME; set AMBERHOME" >&2; exit 1; }', ""]
+        helpers_at = len(sh)  # the force-field helpers (CP, L-RNA, TIP4P/2005) start here
         if self._cp_lib(s):
             cp_py = n("cp-lib", "py")
             files.append(GeneratedFile(cp_py, embed(
@@ -1116,11 +1263,14 @@ class AmberBuildTool(Tool):
                 "writes frcmod.tip4p2005 and tip4p2005box.off from AmberTools' TIP4P-Ew files"))
             sh += ["# TIP4P/2005 water (Abascal & Vega 2005), derived from AmberTools' TIP4P-Ew box",
                    f'python3 {w_py} "$AMBERHOME" .', require_file("tip4p2005box.off", "the TIP4P/2005 helper"), ""]
+        helpers = sh[helpers_at:]
+        del sh[helpers_at:]
         if s["prep"]:
             prep_py, prep_pdb = n("prep", "py"), n("prep", "pdb")
             files.append(GeneratedFile(prep_py, embed(
                 _prep_pdb, {}, "main(sys.argv[1:], strip_h=True, strip_5p=%r, gap_ter=%r, "
-                "strip_water=%r)" % (s["strip_5p"], s["gap_ter"], s["strip_water"]),
+                "strip_water=%r, drop_virtual=%r)" % (s["strip_5p"], s["gap_ter"], s["strip_water"],
+                                                      s["drop_virtual"]),
                 f"Prepare an RNA PDB for tleap - written by {PROJECT_ABBREV} {__version__}.\n\n"
                 "Usage: python3 THIS_SCRIPT INPUT.pdb OUTPUT.pdb"), "helper",
                 "cleans the starting PDB for tleap"))
@@ -1142,6 +1292,12 @@ class AmberBuildTool(Tool):
             # before the first tleap, so a mismatch costs seconds
             if not gen and self._own_libs(s) and self._lrna_setup(s, ctx):
                 sh += self._lrna_names_check(s, ctx, files, named)
+        if links:
+            # the PDB tleap reads is checked first, before the helpers and every tleap run (the dry one of a
+            # two-pass build included): what stops a build must stop it before tleap
+            sh += self._link_check(s, ctx, files, pdb_in) + helpers
+        else:
+            sh[helpers_at:helpers_at] = helpers  # the order of builds without the check, unchanged
         lj = self._lj_mods(s)
         mods = " + ".join(m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]),
                                           ("extra commands", bool(extra_lines(s["parmed_extra"]))))
@@ -1892,6 +2048,15 @@ class AmberMDTool(Tool):
 
     def resources(self, s):
         return ["ambertools", "pmemd"] + (["cpptraj"] if s.get("dry_pdb") or s.get("dry_traj") else [])
+
+    def run_resources(self, s):
+        # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
+        # processes; pmemd: one core
+        if s["engine"] == "pmemd.MPI":
+            return Resources(int(s["nproc"]))
+        if s["engine"] == "pmemd.cuda":
+            return gpu_step(1, 1, s, gpu_ids(s["gpu"]))
+        return Resources()
 
     def _production_done(self, s, ctx, runs) -> List[str]:
         """Shell tests that succeed once the separate production script has finished."""

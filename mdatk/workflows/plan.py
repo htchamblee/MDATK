@@ -62,6 +62,9 @@ class WriteReport:
     written: List[str] = field(default_factory=list)
     skipped: Dict[str, str] = field(default_factory=dict)  # node id -> reason
     kept: Dict[str, str] = field(default_factory=dict)  # node id -> stamp of the earlier run it uses
+    # node id -> the completed run moved aside before the step was written (mdatk.workflows.supersede);
+    # one that could not be moved has its error, and the step is in ``skipped``
+    superseded: Dict[str, Any] = field(default_factory=dict)
     master: str = ""
     summary: str = ""
 
@@ -107,7 +110,11 @@ def remove_node(workflow: WorkflowParams, node_id: str) -> None:
 
 
 def connect(workflow: WorkflowParams, source: str, output: str, target: str, input: str) -> PlanEdge:
-    """Add a connection (replacing any other edge into a single-file input)."""
+    """Add a connection (replacing any other edge into a single-file input).
+
+    A collection output (the full set of a step's files) connects only to collection inputs; into an input
+    that takes a table it connects the output tabulating the set (``Port.table``) instead.  An output that
+    needs an option of its step (``Port.turns_on``) switches that option on."""
     nodes = {n.id: n for n in workflow.nodes}
     if source not in nodes or target not in nodes:
         raise KeyError("unknown step")
@@ -116,13 +123,22 @@ def connect(workflow: WorkflowParams, source: str, output: str, target: str, inp
     src_tool, dst_tool = TOOLS[nodes[source].tool], TOOLS[nodes[target].tool]
     src_s = src_tool.normalise(nodes[source].settings)
     dst_s = dst_tool.normalise(nodes[target].settings)
-    out_port = _port(src_tool.output_ports(src_s), output)
+    out_ports = src_tool.output_ports(src_s)
+    out_port = _port(out_ports, output)
     in_port = _port(dst_tool.input_ports(dst_s), input)
     if out_port is None or in_port is None:
         raise KeyError("unknown port")
+    if out_port.table and not in_port.accepts(out_port.kind):
+        table = _port(out_ports, out_port.table)
+        if table is not None and in_port.accepts(table.kind):
+            out_port, output = table, table.name
     if not in_port.accepts(out_port.kind):
         raise ValueError(f"{in_port.label} accepts {', '.join(kind_label(k) for k in in_port.kinds)}, "
                          f"not {kind_label(out_port.kind)}")
+    if out_port.collection and not in_port.collection:
+        raise ValueError(f"{out_port.label} is a set of files listed when its step runs; {in_port.label} "
+                         + ("takes one file" if not in_port.multiple else "takes files one by one")
+                         + ": connect the set to an input drawn as a large dot")
     if _reaches(workflow, target, source):
         raise ValueError("this connection would create a loop")
     if not in_port.multiple:
@@ -130,6 +146,8 @@ def connect(workflow: WorkflowParams, source: str, output: str, target: str, inp
     edge = PlanEdge(source, output, target, input)
     if not any(e == edge for e in workflow.edges):
         workflow.edges.append(edge)
+    if out_port.turns_on and not src_s.get(out_port.turns_on):
+        nodes[source].settings[out_port.turns_on] = True
     return edge
 
 
@@ -259,6 +277,11 @@ class Plan:
                     step.issues.append(Issue("error", f"{port.label} cannot take a "
                                                       f"{kind_label(pv.kind)}", (f"input:{port.name}",)))
                     continue
+                if pv.lists and not port.collection:
+                    step.issues.append(Issue("error", f"{port.label} cannot take the set of files "
+                                                      f"{src.label} lists when it runs: connect it to an "
+                                                      "input drawn as a large dot", (f"input:{port.name}",)))
+                    continue
                 values.append(pv)
             if len(values) > 1 and not port.multiple:
                 step.issues.append(Issue("error", f"{port.label} takes one file but "
@@ -266,7 +289,8 @@ class Plan:
                 values = values[:1]
             if values:
                 merged = PortValue([p for v in values for p in v.paths], values[0].kind,
-                                   dict(values[0].data), values[0].source, values[0].source_label)
+                                   dict(values[0].data), values[0].source, values[0].source_label,
+                                   {k: n for v in values for k, n in v.lists.items()})
                 inputs[port.name] = merged
                 if node.files.get(port.name):
                     step.issues.append(Issue("info", f"{port.label}: the connected file is used; the "
@@ -399,8 +423,16 @@ class Plan:
             out[nid] = step.files
         return out
 
-    def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True) -> WriteReport:
-        """Write the files of every step without errors (all steps by default)."""
+    def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True,
+              project_path: Optional[str] = None, supersede: Optional[bool] = None) -> WriteReport:
+        """Write the files of every step without errors (all steps by default).
+
+        Before a step's files are written, its complete run of the plan's stamp moves into
+        ``<step folder>/superseded/`` (:mod:`mdatk.workflows.supersede`; ``supersede``, by default the
+        project option ``supersede_runs``); a step whose run cannot be moved is not written (``skipped``).
+        Moves are recorded in the step log of ``project_path``."""
+        from .supersede import move_aside
+
         if not self.root:
             raise ValueError("no plan folder set")
         report = WriteReport(self.root)
@@ -419,9 +451,18 @@ class Plan:
                 if rel in paths:
                     report.skipped[nid] = f"{rel} is also written by {self.steps[paths[rel]].label}"
                 paths.setdefault(rel, nid)
+        move = self.workflow.supersede_runs if supersede is None else supersede
+        when = _dt.datetime.now()  # one time for the runs moved by this write
         for nid, files in generated.items():
             if nid in report.skipped:
                 continue
+            moved = move_aside(self, nid, when, project_path) if move else None
+            if moved is not None:
+                report.superseded[nid] = moved
+                if moved.error:  # nothing of the run was moved (or what could not go back is kept)
+                    report.skipped[nid] = (f"its completed run could not be moved aside, so the step was not "
+                                           f"written: {moved.error}")
+                    continue
             ctx = self.steps[nid].ctx
             for f in files:
                 path = os.path.join(self.root, ctx.from_own(f.name))
@@ -563,7 +604,8 @@ def single_step_plan(workflow: WorkflowParams, node: PlanNode, root: str = "",
     """A one-step plan used by the stand-alone wizard (inputs are hand-picked files)."""
     solo = WorkflowParams(project_name=workflow.project_name, stamp=workflow.stamp,
                           use_stamp=workflow.use_stamp, out_dir=workflow.out_dir,
-                          step_folders=workflow.step_folders, nodes=[node], edges=[])
+                          step_folders=workflow.step_folders, supersede_runs=workflow.supersede_runs,
+                          nodes=[node], edges=[])
     plan = Plan(solo, root, groups)
     return plan
 
@@ -675,6 +717,43 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
         ("build", "coordinates", "mdff", "coordinates"),
         ("map", "file", "mdff", "map"),
         ("model", "file", "mdff", "model"),
+    ]),
+    # the user's validation order for a FARFAR2 decoy campaign against a cryo-EM map: validity filters
+    # before clustering, quality checks on the cluster centres after it
+    "decoy-validation": ("Decoy validation (FARFAR2): models → clashes → support → Q-score dQ → kinks", [
+        ("fold", "farfar2", 0, 0, {}),
+        ("models", "farfar2-models", 1, 0, {"valid_closure": True, "closure_term": "linear_chainbreak",
+                                             "closure_max": 5.0}),
+        ("validity", "note", 1, 1, {"text": (
+            "Validity filters, applied to every decoy before clustering (models step, Validity filters):\n"
+            "- closure: linear_chainbreak ≤ 5 (set);\n"
+            "- hands: turn on Hands with the construct's counts (e.g. 44 D / 29 L) or ranges;\n"
+            "- defining pairs: turn on Required pairs with the register's defining base pairs.\n"
+            "Hands and pairs need the construct, so they are left for you to fill in.")}),
+        ("check", "model-check", 2, 0, {}),
+        ("rule", "note", 2, 1, {"text": (
+            "'filter on validity before clustering; filter on quality after, when choosing representatives'\n"
+            "Validity (closure, hands, defining pairs) decides which decoys are clustered at all; quality "
+            "(clashes, interface support, Q-score dQ, kinks) only ranks the cluster centres.")}),
+        ("interface", "decoy-interface", 3, 0, {"support": True}),
+        ("map", "input-file", 3, 1, {"kind": "map"}),
+        ("score", "map-model-score", 4, 0, {"method": "qscore",
+                                            "regions": [{"name": "interface", "ranges": ""}]}),
+        ("kinks", "model-check", 5, 0, {"gate_kinks": True}),
+        ("kink", "note", 5, 1, {"text": (
+            "The kink test (this model check): virtual C1′ angle below 60° flagged; give the positions "
+            "in-line probing shows flexible (Kinks allowed at, or a reactivity file) so a real kink there is "
+            "not rejected.")}),
+    ], [
+        ("fold", "silent", "models", "silent"),
+        ("fold", "secstruct", "check", "secstruct"),
+        ("models", "models", "check", "models"),
+        ("models", "scores", "check", "scores"),
+        ("check", "passed", "interface", "models"),
+        ("models", "scores", "interface", "scores"),
+        ("check", "passed", "score", "model"),
+        ("map", "file", "score", "map"),
+        ("check", "passed", "kinks", "models"),
     ]),
 }
 

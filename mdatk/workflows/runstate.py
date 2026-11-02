@@ -11,7 +11,12 @@ step itself is neither written nor run again until the adoption is dropped (:fun
 Only the step's own files count (inputs passed through to an output belong to another step).  A step type
 can also name log files that must end with a program's closing lines (``Tool.finish_marks``), so a run that
 was interrupted after writing its first restart file is not mistaken for a finished one; a custom script's
-run script writes such a file last, after checking the outputs.
+run script writes such a file last, after checking the outputs.  A run the user stopped in RNAdo leaves the
+note :func:`stop_mark` beside its files; until a file of the run is written after it (the step ran again),
+the run counts as partial.
+
+Runs moved aside before a step was written again (``<step folder>/superseded/``, see
+:mod:`mdatk.workflows.supersede`) are never looked at: only the step folder's own files count.
 """
 
 from __future__ import annotations
@@ -22,10 +27,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from .naming import parse_name, sanitize_project
+from .naming import SUPERSEDED, parse_name, sanitize_project
 
 STATES = ("done", "partial", "missing", "none")
 TAIL_BYTES = 16384  # closing lines of a program's log are searched for in its last bytes
+STOP_TAG = "stopped"  # <project>_<step>_stopped_<time>.txt: the note of a run stopped by the user
 
 
 @dataclass
@@ -43,6 +49,7 @@ class RunStatus:
     found: List[str] = field(default_factory=list)  # plan-relative paths that are there
     missing: List[str] = field(default_factory=list)  # paths that are not, or logs without closing lines
     finished: float = 0.0  # newest modification time of the files found (seconds since the epoch)
+    stopped: bool = False  # the run was stopped by the user (the stop_mark note is newer than its files)
 
     @property
     def date(self) -> str:
@@ -57,12 +64,18 @@ class RunStatus:
             text = f"done: {run}, finished {self.date}"
         elif self.state == "partial":
             total = len(self.found) + len(self.missing)
-            text = f"partial: {run}, {len(self.found)} of {total} output files"
+            text = (f"partial: {run}" + (", stopped before it finished" if self.stopped else "")
+                    + f", {len(self.found)} of {total} output files")
         elif self.state == "missing":
             text = "missing: no output files of this step yet"
         else:
             text = "nothing to look for: the step has no output files of its own"
         return text + (" - in use" if self.adopted else "")
+
+
+def stop_mark(ctx) -> str:
+    """Plan-relative path of the note a stopped run of the step (``StepContext``) leaves."""
+    return ctx.own(STOP_TAG, "txt")
 
 
 def _step(plan, node_id: str):
@@ -99,7 +112,8 @@ def expected(plan, node_id: str, stamp: str) -> List[str]:
 
 
 def run_stamps(plan, node_id: str) -> List[str]:
-    """Time stamps found in the names of the step's files in its folder, newest first."""
+    """Time stamps found in the names of the step's files in its folder, newest first (runs moved into
+    superseded/ do not count)."""
     step = _step(plan, node_id)
     if step is None or not plan.root:
         return []
@@ -110,7 +124,7 @@ def run_stamps(plan, node_id: str) -> List[str]:
         return []
     stamps = set()
     for name in names:
-        parts = parse_name(name)
+        parts = parse_name(name) if name != SUPERSEDED else None
         if (parts and parts["stamp"] and sanitize_project(parts["project"]) == plan.project
                 and int(parts["step"]) == step.node.step):
             stamps.add(parts["stamp"])
@@ -140,7 +154,11 @@ def run_status(plan, node_id: str, stamp: str) -> RunStatus:
         marks = step.tool.finish_marks(step.settings, step.ctx.with_stamp(stamp))
     except Exception:  # noqa: BLE001 - as above
         marks = []
+    note = plan.node_path(stop_mark(step.ctx.with_stamp(stamp)))
+    stopped_at = os.path.getmtime(note) if os.path.isfile(note) else None
     if not paths and not marks:
+        if stopped_at is not None:
+            status.state, status.stopped = "partial", True
         return status
     unfinished = set()  # logs that are there but lack the closing lines (an interrupted or running program)
     for path, pattern in marks:
@@ -156,6 +174,8 @@ def run_status(plan, node_id: str, stamp: str) -> RunStatus:
         else:
             status.missing.append(path)
     status.state = "done" if not status.missing else ("partial" if status.found or unfinished else "missing")
+    if stopped_at is not None and stopped_at >= status.finished:  # no file of the run is newer than the stop
+        status.state, status.stopped = "partial", True
     return status
 
 

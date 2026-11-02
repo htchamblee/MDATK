@@ -192,6 +192,13 @@ def cmd_gui(args) -> int:
     return gui_main([args.params] if args.params else [])
 
 
+def cmd_desktop(args) -> int:
+    """'mdatk desktop install|uninstall|status': MDATK and RNAdo in the applications menu
+    (:mod:`mdatk.launchers`)."""
+    from . import launchers
+    return launchers.run(args.desktop_command, replace=getattr(args, "replace", False))
+
+
 def cmd_demo(args) -> int:
     from .demo import build_demo
 
@@ -514,23 +521,106 @@ def cmd_pdb(args) -> int:
     return code
 
 
+def cmd_pdb_qc(args) -> int:
+    """'mdatk pdb qc': only reads (--passed-out / --best-out copy models), so the step log is left alone."""
+    from . import modelcheck
+    return modelcheck.run_qc(args)[0]
+
+
 def _pdb_annotate(args, name: str) -> int:
     from .annotate import annotate
     from .projectfile import logged
     with logged(_project_file(args), "pdb annotate", f"Base-pair annotation of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
         res = annotate(args.input, pairs=not args.no_pairs, stacking=not args.no_stacking,
-                       dotbracket=not args.no_dotbracket, engine=args.engine)
+                       dotbracket=not args.no_dotbracket, engine=args.engine,
+                       dssr_exe=getattr(args, "dssr_exe", None) or "x3dna-dssr")
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(res.text)
         for note in res.notes:
             print(f"annotate: {note}", file=sys.stderr)
         entry.files = [args.output]
         entry.summary = "\n".join(res.notes)
-        if res.engine == "barnaba":
+        if res.engine in ("barnaba", "dssr"):
             from .citations import keys_for
-            entry.citations = keys_for(["barnaba"])
+            entry.citations = keys_for([res.engine])
     return 0
+
+
+def _outputs(args, *names: str) -> List[str]:
+    return [p for p in (getattr(args, n, None) for n in names) if p]
+
+
+def cmd_ensemble(args) -> int:
+    """'mdatk ensemble census | compare | regions' (mdatk.ensemble, mdatk.mapscore)."""
+    from . import ensemble
+    from .projectfile import logged
+    title = {"census": "Register census", "compare": f"Ensemble comparison ({getattr(args, 'mode', '')})",
+             "regions": "Regions ranked by per-residue scores"}[args.ensemble_command]
+    with logged(_project_file(args), f"ensemble {args.ensemble_command}", title) as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["ensemble"] else ""
+        code = ensemble.run(args)
+        entry.files = _outputs(args, "output", "report")
+    return code
+
+
+def cmd_map(args) -> int:
+    """'mdatk map score' (mdatk.mapscore)."""
+    from . import mapscore
+    from .projectfile import logged
+    with logged(_project_file(args), "map score", f"Map-model scores ({args.method})") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["map"] else ""
+        code = mapscore.run_score(args)
+        entry.files = _outputs(args, "output", "regions_out", "report")
+        if code:  # the tables of the others are written; the report lists the models not scored
+            entry.status, entry.summary = "failed", "some models were not scored (see the report)"
+        if args.method == "qscore":
+            from .citations import keys_for
+            entry.citations = keys_for(["chimerax", "qscore"])
+    return code
+
+
+def cmd_pdb_hybrids(args) -> int:
+    """'mdatk pdb hybrids' (mdatk.mapscore)."""
+    from . import mapscore
+    from .projectfile import logged
+    with logged(_project_file(args), "pdb hybrids", f"Body hybrids of {os.path.basename(args.old)} and "
+                f"{os.path.basename(args.new)}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        code = mapscore.run_hybrids(args)
+        entry.files = _outputs(args, "scores_out", "effects_out", "report")
+    return code
+
+
+def cmd_pdb_interface(args) -> int:
+    from . import interfaces
+    from .projectfile import logged
+    names = ", ".join(os.path.basename(m) for m in args.models[:3]) + (" ..." if len(args.models) > 3 else "")
+    with logged(_project_file(args), "pdb interface", f"Interface records of {names}") as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        code, result = interfaces.run(args)
+        entry.files = list(result.get("files", []))
+        entry.summary = "\n".join(result.get("notes", []))
+        if args.engine in ("barnaba", "dssr"):
+            from .citations import keys_for
+            entry.citations = keys_for([args.engine])
+    return code
+
+
+def cmd_decoys(args) -> int:
+    from . import interfaces
+    from .projectfile import logged
+    titles = {"census": "Interface census", "clusters": "Interface clusters", "support": "Segment support"}
+    title = titles.get(args.decoys_command, args.decoys_command)
+    with logged(_project_file(args), f"decoys {args.decoys_command}", title) as entry:
+        entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["decoys"] else ""
+        code, result = interfaces.run(args)
+        entry.files = list(result.get("files", []))
+        entry.summary = "\n".join(result.get("notes", []))
+        if args.decoys_command == "census" and args.pairs in ("barnaba", "dssr"):
+            from .citations import keys_for
+            entry.citations = keys_for([args.pairs])
+    return code
 
 
 def cmd_build(args) -> int:
@@ -576,6 +666,16 @@ def cmd_dict(args) -> int:
     except dictionaries.DictionaryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def cmd_rosetta(args) -> int:
+    from . import rosetta
+    return rosetta.run(args)
+
+
+def cmd_frame(args) -> int:
+    from . import frames
+    return frames.run(args)
 
 
 def cmd_workflow_tools(args) -> int:
@@ -630,10 +730,31 @@ def cmd_workflow_check(args) -> int:
     return 1 if n_err else 0
 
 
+def _print_superseded(items, quiet: bool = False, dry_run: bool = False) -> int:
+    """Say on standard error which completed runs moved aside (would move, with ``dry_run``: always said)
+    before their steps were written; returns how many could not be moved (always said: those steps were not
+    written)."""
+    failed = 0
+    for item in items:
+        failed += bool(item.error)
+        if quiet and not item.error and not dry_run:
+            continue
+        head = "ERROR" if item.error else ("would move" if dry_run else "moved")
+        lines = item.lines(limit=10 if dry_run else 20)
+        print(f"{head:8s} {lines[0]}", file=sys.stderr)
+        for line in lines[1:]:
+            print(f"         {line}", file=sys.stderr)
+    return failed
+
+
 def cmd_workflow_write(args) -> int:
+    from .workflows import supersede
     from .workflows.plan import Plan
     project = _workflow_project(args)
-    parallel = _parallel(args, project) if args.run else 1  # a bad --parallel fails before writing
+    if args.dry_run and args.run:
+        raise ValueError("--dry-run writes nothing, so there is nothing to --run")
+    # a bad --parallel / --cores / --gpus fails before writing
+    parallel, budget = (_parallel(args, project), _budget(args, project)) if args.run else (1, None)
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
     ids = None
     if args.step is not None:
@@ -644,13 +765,26 @@ def cmd_workflow_write(args) -> int:
     if n_err and not args.force:
         print("error: the plan has errors (fix them or use --force to write the other steps)", file=sys.stderr)
         return 1
+    if args.dry_run:  # what would be written, and which completed runs would move aside first
+        moving = supersede.pending(plan, ids)
+        _print_superseded(moving.values(), args.quiet, dry_run=True)
+        targets = [n for n in (ids if ids is not None else plan.order) if not plan.steps[n].adopted]
+        files = [os.path.join(plan.root, plan.steps[n].ctx.from_own(f.name))
+                 for n, fs in plan.generate(targets).items() for f in fs]
+        out = {"folder": plan.root, "dry_run": True, "write": files,
+               "superseded": [i.plain() for i in moving.values()]}
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
     stamp_was = project.workflow.stamp
     from .projectfile import logged
     with logged(_project_file(args), "workflow write", "Generated the plan's files") as entry:
-        report = plan.write(ids)
+        report = plan.write(ids, project_path=_project_file(args))
         entry.folder = report.root
         entry.files = list(report.written)
         entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
+        if report.superseded:
+            entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+    failed = _print_superseded(report.superseded.values(), args.quiet)
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
         _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
@@ -658,11 +792,14 @@ def cmd_workflow_write(args) -> int:
            "master": report.master, "summary": report.summary}
     if report.kept:  # steps that use the outputs of an earlier run: not written
         out["kept"] = report.kept
-    print(json.dumps(out, indent=2))
+    if report.superseded:  # completed runs moved aside before their steps were written
+        out["superseded"] = [i.plain() for i in report.superseded.values()]
+    print(json.dumps(out, indent=2, ensure_ascii=False))
     if args.run:
         ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
-        return _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate)
-    return 0
+        code = _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate, budget)
+        return code or (1 if failed else 0)
+    return 1 if failed else 0
 
 
 def cmd_workflow_run(args) -> int:
@@ -674,7 +811,8 @@ def cmd_workflow_run(args) -> int:
         ids = [n.id for n in project.workflow.nodes if n.step == args.step]
         if not ids:
             raise ValueError(f"no step number {args.step} in the plan")
-    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate)
+    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate,
+                             _budget(args, project))
 
 
 def cmd_workflow_status(args) -> int:
@@ -736,18 +874,30 @@ def cmd_workflow_status(args) -> int:
 
 
 def _parallel(args, project) -> int:
-    """--parallel, else the project's setting (at least 1)."""
+    """--parallel, else the project's setting: the most scripts at once (0: no limit)."""
     if getattr(args, "parallel", None) is not None:
-        if args.parallel < 1:
-            raise ValueError("--parallel must be at least 1")
+        if args.parallel < 0:
+            raise ValueError("--parallel must be 0 (no limit) or more")
         return args.parallel
-    return max(1, int(project.workflow.parallel or 1))
+    return max(0, int(project.workflow.parallel))
+
+
+def _budget(args, project):
+    """The CPU cores and GPUs the scripts may use together: --cores / --gpus, else the project's settings."""
+    from .workflows.budget import Budget
+    cores, gpus = getattr(args, "cores", None), getattr(args, "gpus", None)
+    if cores is not None and cores < 0:
+        raise ValueError("--cores must be 0 (half the cores) or more")
+    if gpus is not None and gpus < -1:
+        raise ValueError("--gpus must be -1 (the GPUs found), 0 or more")
+    return Budget.of(project.workflow, cores, gpus)
 
 
 def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
-                      include_separate: bool = False) -> int:
+                      include_separate: bool = False, budget=None) -> int:
     """Run the main scripts of ``ids`` (all steps when None), with ``include_separate`` also the scripts
-    marked 'run separately'; 0 when every script succeeded, WAITING_STATUS when a step waits for a
+    marked 'run separately', at most ``parallel`` at once (0: no limit) within ``budget`` (CPU cores and
+    GPUs; None: no limit); 0 when every script succeeded, WAITING_STATUS when a step waits for a
     separately run script (its dependents were not started), 1 when a script failed."""
     from .workflows.base import WAITING_STATUS
     from .workflows.runner import ScriptFailed, adopted_steps, plan_jobs, run_jobs
@@ -770,8 +920,11 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
             sys.stdout.write(line + "\n")
             sys.stdout.flush()
 
+    if budget is not None and len(jobs) > 1:
+        cap = f", at most {parallel} at once" if parallel else ""
+        show(f"running {len(jobs)} script(s) with {budget.text()}{cap}")
     try:
-        results = run_jobs(jobs, project_path, on_line=show, parallel=parallel)
+        results = run_jobs(jobs, project_path, on_line=show, parallel=parallel, budget=budget)
     except ScriptFailed as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -808,13 +961,21 @@ def cmd_workflow_generate(args) -> int:
     n_err = _print_issues(plan, quiet=args.quiet)
     if n_err:
         return 1
+    from .workflows import supersede
     if args.dry_run:
+        _print_superseded(supersede.pending(plan, [node.id]).values(), args.quiet, dry_run=True)
         for f in plan.generate([node.id]).get(node.id, []):
             print(f"===== {f.name}\n{f.content}")
         return 0
-    report = plan.write([node.id], master=False)
-    print(json.dumps({"folder": os.path.join(report.root, plan.steps[node.id].ctx.folder),
-                      "written": report.written, "stamp": plan.stamp}, indent=2))
+    report = plan.write([node.id], master=False, project_path=_project_file(args))
+    failed = _print_superseded(report.superseded.values(), args.quiet)
+    out = {"folder": os.path.join(report.root, plan.steps[node.id].ctx.folder),
+           "written": report.written, "stamp": plan.stamp}
+    if report.superseded:
+        out["superseded"] = [i.plain() for i in report.superseded.values()]
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    if failed:
+        return 1
     if args.run:
         return _run_plan_scripts(plan, [node.id], _project_file(args))
     return 0
@@ -902,6 +1063,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gui)
     sub.add_parser("rnado", help="RNAdo, the workflow planner: 'mdatk rnado [PROJECT]' opens it, 'mdatk "
                                  "rnado ACTION ...' is 'mdatk workflow ACTION ...' (see: rnado --help)")
+    p = sub.add_parser("desktop", help="MDATK and RNAdo in the applications menu: desktop entries and icons "
+                                       "in ~/.local/share (Linux), starting this installation or AppImage")
+    dsub = p.add_subparsers(dest="desktop_command", metavar="action")
+    d = dsub.add_parser("install", help="write mdatk.desktop, rnado.desktop and their icons (files MDATK did "
+                                        "not write are left alone)")
+    d.add_argument("--replace", action="store_true",
+                   help="move entries and icons MDATK did not write aside (FILE.bak) and write MDATK's")
+    d.set_defaults(func=cmd_desktop)
+    dsub.add_parser("uninstall", help="remove the entries and icons MDATK wrote (marked X-MDATK-Installed), "
+                                      "nothing else").set_defaults(func=cmd_desktop)
+    dsub.add_parser("status", help="what is installed and what the entries start").set_defaults(
+        func=cmd_desktop)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     p = sub.add_parser("demo", help="write a synthetic RNA aptamer/target system and project file")
     p.add_argument("out_dir")
@@ -1011,11 +1185,35 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--no-pairs", action="store_true", help="no PAIR records")
     c.add_argument("--no-stacking", action="store_true", help="no STACK records")
     c.add_argument("--no-dotbracket", action="store_true", help="no sequence / dot-bracket records")
-    c.add_argument("--engine", choices=("auto", "builtin", "barnaba"), default="auto",
-                   help="auto: barnaba if importable, else builtin")
+    c.add_argument("--engine", choices=("auto", "builtin", "barnaba", "dssr"), default="auto",
+                   help="auto: barnaba if importable, else builtin; dssr: x3dna-dssr (licensed separately)")
+    c.add_argument("--dssr-exe", default="x3dna-dssr", help="x3dna-dssr executable (--engine dssr)")
     c.add_argument("--project", "-p", "--params", dest="params",
                    help="project file whose step log records the annotation")
     c.set_defaults(func=cmd_pdb)
+    from .modelcheck import add_qc_arguments
+    c = psub.add_parser("qc", help="plausibility of models: clashes, O3'-P links, loop compaction, sugar "
+                                   "hands (text, --json or --tsv; gates, filtering and ranking of models)")
+    add_qc_arguments(c)
+    c.set_defaults(func=cmd_pdb_qc)
+    from .mapscore import add_hybrid_command
+    add_hybrid_command(psub).set_defaults(func=cmd_pdb_hybrids)
+    from .interfaces import add_interface_command
+    c = add_interface_command(psub)
+    c.add_argument("--project", "-p", "--params", dest="params",
+                   help="project file: its residue groups (group:NAME) and the step log")
+    c.set_defaults(func=cmd_pdb_interface)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .interfaces import add_commands as decoys_commands
+    p = sub.add_parser("decoys", help="ensembles of models (e.g. FARFAR2 decoys): interface census between "
+                                      "two sides, clusters of the contact fingerprints, support of rebuilt "
+                                      "segments")
+    dsub = p.add_subparsers(dest="decoys_command", metavar="action")
+    for c in decoys_commands(dsub):
+        c.add_argument("--project", "-p", "--params", dest="params",
+                       help="project file: its residue groups (group:NAME) and the step log")
+        c.set_defaults(func=cmd_decoys)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands
@@ -1039,6 +1237,39 @@ def build_parser() -> argparse.ArgumentParser:
         c.set_defaults(func=cmd_dict)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
+    from .rosetta import add_commands as rosetta_commands
+    p = sub.add_parser("rosetta", help="Rosetta FARFAR2 bookkeeping: SCORE terms by column name and the "
+                                       "decoy table, and an audit of what each rna_denovo run was given")
+    rsub = p.add_subparsers(dest="rosetta_command", metavar="action")
+    for c in rosetta_commands(rsub):
+        c.set_defaults(func=cmd_rosetta)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .frames import add_commands as frame_commands
+    p = sub.add_parser("frame", help="rigid frames of multi-body models: fit on one body, measure the "
+                                     "others; move models into a re-fitted reference's frame")
+    fsub = p.add_subparsers(dest="frame_command", metavar="action")
+    for c in frame_commands(fsub):
+        c.set_defaults(func=cmd_frame)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .ensemble import add_commands as ensemble_commands
+    p = sub.add_parser("ensemble", help="decoy ensembles: register census by build condition, two-ensemble "
+                                        "comparison (closure, defining pairs, map occupancy, statistics), "
+                                        "regions ranked by per-residue scores")
+    esub = p.add_subparsers(dest="ensemble_command", metavar="action")
+    for c in ensemble_commands(esub):
+        c.set_defaults(func=cmd_ensemble)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
+    from .mapscore import add_commands as map_commands
+    p = sub.add_parser("map", help="map-model scores per residue (MDATK correlation or Phenix Q-score) and "
+                                   "the regions ranked by them")
+    msub = p.add_subparsers(dest="map_command", metavar="action")
+    for c in map_commands(msub):
+        c.set_defaults(func=cmd_map)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
     p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
                                         "generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, NAMD, VMD, "
                                         "Phenix, Coot, custom scripts ...)")
@@ -1056,6 +1287,15 @@ def build_parser() -> argparse.ArgumentParser:
         w.add_argument("--no-stamp", action="store_true", help="names without a time stamp")
         w.add_argument("--quiet", "-q", action="store_true", help="only print errors")
 
+    def budget_args(w, prefix=""):
+        w.add_argument("--cores", type=int, metavar="N",
+                       help=prefix + "CPU cores the scripts may use together; a step starts when the cores "
+                       "it uses are free (0: half the cores; default: the project's setting)")
+        w.add_argument("--gpus", type=int, metavar="N",
+                       help=prefix + "GPUs they may use; a step that uses one gets a free GPU in "
+                       "CUDA_VISIBLE_DEVICES unless it names its own (-1: the GPUs found, 0: none; default: "
+                       "the project's setting)")
+
     w = wsub.add_parser("check", help="resolve the project's plan and list its problems")
     naming(w)
     w.set_defaults(func=cmd_workflow_check)
@@ -1065,10 +1305,15 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--force", action="store_true", help="write the steps without errors even if others "
                                                        "have errors")
     w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the project")
+    w.add_argument("--dry-run", action="store_true",
+                   help="write and move nothing: list the files that would be written and the completed runs "
+                        "that would move into their step's superseded/ folder first")
     w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "
-                                                            "time (default: the project's setting, 1)")
+                                                            "time (0: no limit; default: the project's "
+                                                            "setting)")
+    budget_args(w, "with --run: ")
     w.add_argument("--include-separate", action="store_true",
                    help="with --run: also run the scripts marked 'run separately' (e.g. production), each "
                         "after its step's main script")
@@ -1079,8 +1324,9 @@ def build_parser() -> argparse.ArgumentParser:
                                     "(exit status 75) and the steps after it are not started")
     naming(w)
     w.add_argument("--step", type=int, help="only this step number")
-    w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (default: "
-                                                            "the project's setting, 1)")
+    w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (0: no "
+                                                            "limit; default: the project's setting)")
+    budget_args(w)
     w.add_argument("--include-separate", action="store_true",
                    help="also run the scripts marked 'run separately' (e.g. production runs meant for a "
                         "cluster), each after its step's main script and before the steps that read from it")
@@ -1146,6 +1392,9 @@ def rnado_gui_parser() -> argparse.ArgumentParser:
     parser.add_argument("project", nargs="?", help="project file (.mdatk.toml) to open")
     parser.add_argument("--open", choices=RNADO_TOOLS,
                         help="also open the script wizard, the PDB clean-up or the structure builder")
+    parser.add_argument("--install-launchers", action="store_true",
+                        help="add MDATK and RNAdo to the applications menu and quit (the same as: mdatk "
+                        "desktop install)")
     return parser
 
 
@@ -1155,7 +1404,9 @@ def rnado_main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in WORKFLOW_ACTIONS:
         return main(["workflow"] + argv)
-    rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    args = rnado_gui_parser().parse_args(argv)  # --help, --version and wrong arguments end here, without GTK
+    if args.install_launchers:
+        return main(["desktop", "install"])
     return _rnado_window(argv)
 
 

@@ -7,7 +7,7 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.11"
+mdatk_version = "0.0.12"
 # When the settings were last saved.
 saved = 2026-11-01T02:12:54
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
@@ -483,8 +483,17 @@ use_stamp = true
 out_dir = ""
 # One sub-folder per step, e.g. 03_amber-build/
 step_folders = true
-# Scripts MDATK runs at the same time (Run all / Run selected); steps wait for their inputs
-parallel = 1
+# Before a step's files are written again, move its completed run of the plan's stamp (outputs, the
+# scripts and inputs that made them, logs) into <step folder>/superseded/<stamp>_<time>/
+supersede_runs = true
+# The most scripts MDATK runs at the same time (Run all / Run selected), within the CPU and GPU
+# budgets below; steps wait for their inputs (0: no limit; a project file without it: 1, as before
+# 0.0.12)
+parallel = 0
+# CPU cores the scripts MDATK runs at the same time may use together (0: half of them)
+cpu_cores = 0
+# GPUs they may use, each script its own (-1: the GPUs found; 0: none)
+gpus = -1
 # Stand-alone script wizard settings, one entry per step type
 scratch = []
 
@@ -513,7 +522,7 @@ files = {}
 # File: The existing file. Relative paths are read from the folder of the saved preset.
 path = "mixed_dl_model.pdb"
 # Type: What the file contains; decides which inputs it can feed. Choices: pdb, fasta, secstruct,
-# map, cif, smiles, silent, parm7, rst7, nc, dist, top, gro, xtc, trafl, image, text.
+# map, cif, smiles, silent, parm7, rst7, nc, dist, top, gro, xtc, trafl, image, text, table.
 kind = "pdb"
 
 [[workflow.nodes]]
@@ -540,7 +549,7 @@ files = {}
 # File: The existing file. Relative paths are read from the folder of the saved preset.
 path = "mixed_dl_4A.mrc"
 # Type: What the file contains; decides which inputs it can feed. Choices: pdb, fasta, secstruct,
-# map, cif, smiles, silent, parm7, rst7, nc, dist, top, gro, xtc, trafl, image, text.
+# map, cif, smiles, silent, parm7, rst7, nc, dist, top, gro, xtc, trafl, image, text, table.
 kind = "map"
 
 [[workflow.nodes]]
@@ -575,6 +584,29 @@ strip_5p = true
 gap_ter = true
 # Remove waters from the input: Crystal waters are dropped; the solvent box is built by tleap.
 strip_water = true
+# Remove Rosetta virtual residues (VRT/XXX): Drop the virtual residues Rosetta writes into density-
+# scored models (VRT: the root of the fold tree, atoms ORIG / X / Y; XXX). They are no atoms of the
+# molecule, and tleap has no unit for them: it cannot type their atoms and fails to save the
+# topology.
+drop_virtual = true
+# Check O3′–P links before tleap: Measure O3′(i)–P(i+1) of consecutive nucleotides in every TER
+# segment of the PDB tleap reads (after the preparation and the L-RNA naming), as the first thing
+# the script does with it: before the force-field helpers and every tleap run. tleap bonds them by
+# name whatever the distance, so a chain break left in a model (Rosetta numbers across its
+# cutpoints) becomes a strained bond that the first minimisation has to relax. Links longer than the
+# longest unstrained link are listed with that strain, E = k(r − r0)², k and r0 of the P–O3′ bond
+# read from the force field tleap loads. Warn: list every link outside the limits and build anyway.
+# Stop: list the strained links and end the script before tleap when a link is a break (or too
+# short, or unmeasurable). Choices: off, warn, stop.
+link_check = "off"
+# Shortest O3′–P link: Shorter links are overlaps (ideal 1.60 Å).
+link_min = 1.4
+# Longest unstrained O3′–P link: Longer links are bonded under strain, reported with it (Amber's
+# OS–P: about 35 kcal/mol at 2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å) but not a reason to stop.
+link_max = 2.0
+# Longest O3′–P link before a break: Longer links are breaks (the chain is usually in two pieces):
+# 'Stop' ends the script before tleap.
+link_fail = 3.0
 # RNA force field: leaprc file for RNA. 'OL3 + CP' adds the phosphate oxygen vdW correction of
 # Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it. Choices: ol3cp,
 # ol3, ljbb, roc, yil, shaw.

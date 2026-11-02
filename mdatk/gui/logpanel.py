@@ -5,9 +5,10 @@ the GTK main loop in batches, so a chatty script never floods the loop with one 
 holds at most :data:`MAX_BATCH` lines, the newest: when a script prints faster than the panel can show
 (``cat`` of a large file, ``seq 1 1000000``) the panel skips lines, and a note says how many, but the window
 stays responsive.
-Every script line carries its step number (``[03] ``); stderr and lines starting with ERROR or WAITING
-are highlighted.  The panel filters by step, shows the stored log of a step's last run (from the
-project's step log), and keeps at most :data:`MAX_LINES` lines like the analysis window's log.
+Every script line carries its step number (``[03] ``); stderr and lines starting with ERROR, WAITING or
+WARNING (and stopped steps) are highlighted.  The panel filters by step, shows the stored log of a step's
+last run (from the project's step log), and keeps at most :data:`MAX_LINES` lines like the analysis
+window's log.
 """
 
 from __future__ import annotations
@@ -57,7 +58,8 @@ class Line(NamedTuple):
         """How the line is highlighted."""
         if self.text.startswith("ERROR") or (self.kind == "status" and " - failed" in self.text):
             return "error"
-        if self.text.startswith("WAITING") or (self.kind == "status" and " - waiting" in self.text):
+        if (self.text.startswith(("WAITING", "WARNING"))
+                or (self.kind == "status" and (" - waiting" in self.text or " - stopped" in self.text))):
             return "waiting"
         if self.kind == "stderr":
             return "stderr"

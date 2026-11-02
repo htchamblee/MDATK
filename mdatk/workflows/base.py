@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .. import PROJECT_ABBREV, __version__
+from .budget import Resources
 from .naming import file_name, sanitize_project, step_folder
 from .schema import GeneratedFile, Issue, Option, Port, Section
 
@@ -26,6 +27,10 @@ class PortValue:
     absolute (files chosen by hand).  ``data`` carries facts known when the
     files are planned, e.g. the secondary structure behind a ``.secstruct``
     file or whether a topology carries NBfix / 12-6-4 / HMR modifications.
+
+    A collection (:attr:`mdatk.workflows.schema.Port.collection`) passes ``lists``: files, also among
+    ``paths``, that its step writes when it runs, naming one member per line (relative to the plan folder),
+    with the most members each can name.  :meth:`StepContext.inps` leaves them out.
     """
 
     paths: List[str]
@@ -33,10 +38,12 @@ class PortValue:
     data: Dict[str, Any] = field(default_factory=dict)
     source: str = ""  # producing node id ("" = chosen by hand)
     source_label: str = ""
+    lists: Dict[str, int] = field(default_factory=dict)  # collections: list file -> most members it names
 
     @property
     def path(self) -> str:
-        return self.paths[0] if self.paths else ""
+        """The first file ("" when there are only the lists of collections)."""
+        return next((p for p in self.paths if p not in self.lists), "")
 
 
 class StepContext:
@@ -102,8 +109,19 @@ class StepContext:
         return self.rel(value.path) if value and value.paths else ""
 
     def inps(self, port: str) -> List[str]:
+        """The input's files; the lists of a collection are left out (:meth:`lists`)."""
         value = self.inputs.get(port)
-        return [self.rel(p) for p in value.paths] if value else []
+        return [self.rel(p) for p in value.paths if p not in value.lists] if value else []
+
+    def lists(self, port: str) -> List[str]:
+        """The files listing the members of a collection input (written when its step runs)."""
+        value = self.inputs.get(port)
+        return [self.rel(p) for p in value.lists] if value else []
+
+    def count(self, port: str) -> int:
+        """How many files the input carries: its own, and as many as its collections can list at most."""
+        value = self.inputs.get(port)
+        return len(self.inps(port)) + sum(value.lists.values()) if value else 0
 
     def data(self, port: str) -> Dict[str, Any]:
         value = self.inputs.get(port)
@@ -253,10 +271,21 @@ class Tool:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
 
+    def run_resources(self, s: Dict[str, Any]) -> Resources:
+        """CPU cores, GPUs and named GPU ids one run of the step's scripts uses (see mdatk.workflows.budget);
+        MDATK starts the script when they are free.  Default: one core."""
+        return Resources()
+
     def finish_marks(self, s: Dict[str, Any], ctx: StepContext) -> List[Tuple[str, str]]:
         """(plan-relative path, regular expression) pairs: a run of this step is complete only when each
         file exists and its end matches (e.g. a program's closing timing lines), besides its output files.
         Used when looking for earlier runs (mdatk.workflows.runstate)."""
+        return []
+
+    def run_folders(self, s: Dict[str, Any], ctx: StepContext) -> List[str]:
+        """Plan-relative folders inside the step folder that a run fills and whose names carry no time stamp
+        (e.g. one working folder per parallel run).  They move with a completed run when the step is written
+        again (mdatk.workflows.supersede); a plan without step folders leaves them where they are."""
         return []
 
 
@@ -308,6 +337,32 @@ def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
 def require_file(path: str, what: str) -> str:
     """Shell line that stops the script when a program did not produce ``path``."""
     return f'[ -s "{path}" ] || {{ echo "ERROR: {what} did not write {path}" >&2; exit 1; }}'
+
+
+def bash_array(name: str, paths: Sequence[str]) -> List[str]:
+    """A bash array of file names, one per line (decoy lists can be long)."""
+    return [f"{name}=("] + [f"  {shell_quote(p)}" for p in paths] + [")"]
+
+
+def listed_files(name: str, ctx: StepContext, port: str) -> List[str]:
+    """Shell lines that add the members of a collection input to the bash array ``name``, read from its lists
+    when the script runs (their paths are relative to the plan folder); the script stops when a list is
+    missing or the array stays empty.  No lines when the input has no collection."""
+    lists = ctx.lists(port)
+    if not lists:
+        return []
+    root = posixpath.relpath(".", ctx.folder) if ctx.folder else "."
+    out = ["# ... and every member of the set of files, as listed when its step ran (from the plan folder)"]
+    for path in lists:
+        q = shell_quote(path)
+        out += [f'[ -f {q} ] || {{ echo "ERROR: {path} is missing: run the step that lists the set first" '
+                ">&2; exit 1; }",
+                'while IFS= read -r f || [ -n "$f" ]; do',
+                f'  case "$f" in "") ;; /*) {name}+=("$f") ;; *) {name}+=("{root}/$f") ;; esac',
+                f"done < {q}"]
+    out.append(f'[ "${{#{name}[@]}}" -gt 0 ] || {{ echo "ERROR: no files in {" ".join(lists)}" >&2; '
+               "exit 1; }")
+    return out
 
 
 # Exit status of a step's main script while part of the step runs in a separate script (e.g. production on

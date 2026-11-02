@@ -5,12 +5,459 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) · [0.0.8](#008-2026-10-29) ·
-  [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) · [0.0.5.1](#0051-2026-10-25) ·
-  [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) · [0.0.4](#004-2026-10-21) ·
-  [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) · [0.0.3b](#003b-2026-10-18) ·
-  [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) · [0.0.2b](#002b-2026-10-15) ·
-  [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+- [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+  [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
+  [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
+  [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
+  [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
+  [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+
+## 0.0.12 (2026-11-02)
+
+### Model checks
+
+- **`mdatk pdb qc MODEL.pdb …`** (`mdatk/modelcheck.py`, standard library only): clashes as overlap inside
+  Bondi contact (0.4 Å), N/O pairs with a donor counted as hydrogen bonds from 2.2 to 3.2 Å (donors by
+  base, terminal hydroxyls, protonated A⁺ / C⁺ on request; two acceptors never), carbon contacts beside
+  an H-bond excused only when no closer than the H-bond, exclusions along bonds (up to three) instead of
+  residue numbers, every chain and neighbouring residue checked, waters and ions skipped or (ions)
+  checked against first-shell distances, heavy atoms only; O3′–P links within every TER segment
+  (1.4–2.0 Å a bond, 2.0–3.0 Å strained, beyond a break) and P–P spacing; loop compaction for typed
+  ranges or the residues unpaired in every given dot-bracket; sugar hands from the geometry against
+  expected ranges, epimers named; kinks; a decoy table (`--scores`: run, tag, pdb, score terms) for
+  report columns, limits and ranking; gates with `--on-fail report|filter|stop`, text, `--tsv` or
+  `--json` reports, copies of the passed and best models.
+- **Hydrogens stay out of the clash check** (no `--hydrogens`; the step's *Include hydrogens* is gone):
+  their positions differ between programs, and the builder's ideal A-form helix has H2′(i)…H6/H8(i+1) at
+  1.57–1.70 Å. Checked: the builder places H2′ (and H1′, H3′, H4′) from the sugar's own geometry, along
+  the negative sum of the three bond directions, 1.09 Å from C2′ and 4.6° from the exact tetrahedral
+  (equal-angle) direction, which would move the contact by under 0.03 Å; the short contact is the Arnott
+  fiber's C2′(i)…C8/C6(i+1) of 3.5 Å, so the builder is unchanged and no radius is tuned.
+- **Hydrogen contacts on MolProbity's conventions** (`--hydrogen-check`, step option *Report hydrogen
+  contacts*; off by default; never a gate or a filter): explicit hydrogens only, Probe's radii (1.17 Å on
+  carbon, 1.00 Å polar or aromatic at nuclear positions; 1.22 / 1.05 Å at electron-cloud positions,
+  chosen from the median C–H or `--hydrogen-radii`; C 1.70, N 1.55, O 1.40, P 1.80 Å), a clash at an
+  overlap of 0.4 Å or more, 0.6 Å allowed to a hydrogen bond, pairs up to four bonds apart left out,
+  clashscore per 1000 atoms; its own report section and columns (`h_atoms h_clashes h_worst_overlap
+  h_clashscore h_radii`).
+- **O3′–P links: warn with a number.** Up to `--link-max` (2.0 Å) a bond; up to `--link-fail` (3.0 Å) a
+  strained bond, reported with the strain tleap's bond puts into the first minimisation, E = k(r − r0)²
+  (Amber's k: 230 kcal/mol/Å², 1.61 Å, OS–P of parm10.dat: 35 kcal/mol at 2.0 Å, 182 at 2.5, 444 at 3.0)
+  in the text, the new columns `warnings`, `strained_links` and `link_strain` and the JSON; beyond, a
+  break that fails the links gate. k and r0 from the force field with `--link-params` (tleap input,
+  leaprc, parm*.dat, frcmod; `--link-types`, `--amberhome`) or `--link-k` / `--link-r0`
+  (`modelcheck.link_bond_from_files`). Step option *Longest O3′–P link before a break*.
+- **Kinks** (`--kink-min 60`, step section *Kinks*): the virtual C1′(i−1)–C1′(i)–C1′(i+1) angle per
+  residue within each TER segment, flagged below 60° except at allowed positions (`--kink-allow
+  RANGES`, or a two-column reactivity file of in-line probing with `--kink-reactivity FILE
+  --kink-reactivity-min X [--kink-reactivity-chain C]`); report columns `kinks`, `sharpest_kink`,
+  `sharpest_kink_at`; a gate only with `--gate-kinks` (off by default).
+- **Filter: up to N, fail only below a minimum.** `--pass N` means up to N slots, `--min-pass M`
+  (default 1) the fewest passing models (status 1 only below it; 0: never); slots no passing model fills
+  are written as empty-slot files (`REMARK 951 empty slot k of N: only M models passed`, `END`, no
+  atoms; `pdbtools.empty_slot_text`, `empty_slot`, `is_empty_slot`), and the report states `M of K models
+  passed the gates`. Step options *Models passed on (up to)* and *Fewest passing models*; the step's
+  passed models carry `empty_slots` in their port data. Empty slots are skipped with a note by the model
+  check, `mdatk decoys` / `pdb interface`, `mdatk ensemble census|compare`, `mdatk frame` and `mdatk map
+  score`; `read_pdb` refuses one by name; the PDB preparation of the Amber build says what it is.
+- **Planner step *Model check (clashes · backbone · chirality)*** (Structure prediction): models (several),
+  optional secondary structures and decoy table in; a report table, the passed models and the best one
+  out. Expected hands are measured on the first model when the plan is written (or typed, or none); range
+  options take `group:NAME`. The script runs a copy of the PDB tools and the model checks (`python3`
+  only) and removes the outputs of an earlier run before it starts.
+- **`mdatk pdb check`**: `--expect-l` / `--expect-d RANGES`, `--strict` (status 1 for a residue of the
+  other hand, an unmeasurable expected one, or an epimerised, contradicting or flat centre) and `--table`
+  (per residue: the three-centre call, the C4′ hand alone, the volumes, the expectation, a note).
+- **PDB tools**: `infer_base` (the base from the atom names, for residue names that are not
+  recognised) and `nucleotide(..., infer=True)`; `--strip-h`, `--drop-virtual` (Rosetta's VRT / XXX) and
+  the scheme `standard` (plain A C G U for both hands, every record ATOM, with a warning that the names no
+  longer record the hand), so `mdatk pdb clean --scheme amber --strip-5p --strip-h --drop-virtual`
+  turns a Rosetta decoy into a tleap input and `--scheme standard` makes the copy for chirality-blind
+  programs; the record policy `atom`; ranges accept `*` for every chain where hands are expected.
+- **Amber build**: *Remove Rosetta virtual residues (VRT/XXX)* in the PDB preparation, on by default
+  (tleap cannot type them, so only builds that failed change), and *Check O3′–P links before tleap*
+  (off, warn or stop; off by default), also measured on an existing input PDB when the plan is written.
+  The check warns with the strain from 2.0 Å and stops (stop) only beyond *Longest O3′–P link before a
+  break* (3.0 Å), short or unmeasurable links; it reads k and r0 from the force field the first tleap
+  input loads (`--link-params` of that input, `$AMBERHOME`; O3′ typed OR for OL3 + CP, else OS), and,
+  when on, the PDB is prepared, named and checked first: before the CP, L-RNA library and TIP4P/2005
+  helpers and every tleap run, the dry one of a two-pass build included (tested for each). A structure
+  that is an empty slot of a model check (its port data say so, or the existing file is one) gets a guard
+  as the script's first lines that stops it before any helper or tleap; the PDB preparation names an
+  empty slot too. Generated files are unchanged apart from the two helpers that copy library code: the
+  PDB tools and the PDB preparation (listed as intended in `tests/test_golden.py`).
+
+### Rosetta: decoy table, validity filters, run audit, frames
+
+- **FARFAR2 decoy table and score filter** (step *Rosetta · FARFAR2 models*, `mdatk rosetta scores`): SCORE
+  terms are looked up by column name in the header that applies (`mdatk/workflows/scripts/silent_scores.py`,
+  standard library, embedded in the step's folder). New output *scores* (file kind *table*):
+  `<project>_<step>_scores_<time>.tsv` with `run` (`rNN` from the silent file's name, `NN-rNN` when two
+  FARFAR2 steps feed the step), `tag`, `pdb` (plan-relative, empty when not extracted) and every SCORE term,
+  one row per decoy, written with *Write the decoy table*, a filter or *Extract every model*;
+  `mdatk.rosetta.read_decoy_table` reads it (TSV or CSV, extra columns kept). Filters: validity before
+  clustering, quality after it (see below). *Extract every model of every run*: `models/<run>/<tag>.pdb`,
+  each run in a `mktemp` folder of its own, earlier models of the run removed first, and a check that every
+  run has one PDB per SCORE line. All new options are off by default; the step's files are unchanged
+  without them.
+- **Run audit** (`mdatk rosetta audit`, step *Rosetta · run audit*): what each rna_denovo run was given,
+  from the command lines in its logs, with `@flags` files expanded recursively, `::` read as `:`, short and
+  long flag spellings folded, every command line of a log read (restarts), input files fingerprinted by
+  their whole content (same content under MDATK's step-numbered names is no difference), conditions
+  compared and checked in pairs (`--pair`, `--pair-suffix`, `--allow`, `--ignore`), and, with
+  `--controlled RANGES`, how each condition gives the pairing of those residues (secondary structure,
+  obligate pairs, `-s` / `-input_res`, chain by chain). Report (text) and a flags-by-condition table.
+- **FARFAR2 models: validity before clustering, quality after it** (the single score filter is replaced; a
+  score cut before clustering reshapes the cluster populations a register census counts):
+  - *Validity filters (before clustering)*, judged on every decoy and counted in order (decoys -> after
+    hands -> after bases -> after closure -> after pairs): sugar hands against expected counts
+    (`44 D / 29 L`) and / or ranges (`C:*`, `group:NAME`); base identity against the FARFAR2 step's sequence
+    or a typed one; closure by a score term (`linear_chainbreak <= 5`) and / or every O3'-P <= 2.0 Å
+    (`mdatk.modelcheck.check_backbone`); the defining pairs of a register (`mdatk.ensemble.parse_register`
+    syntax, formed or approached with `mdatk.ensemble`'s distances). They imply *Extract every model*; a
+    helper copied into the step folder (`…_validity_….py`: PDB tools, model checks, silent-file scores and
+    `mdatk/workflows/scripts/decoy_validity.py`, standard library only) writes `…_validity_….tsv` and the
+    report `…_validity_….txt` (new output *validity*), the valid decoys of each run go into
+    `…_filtered-rNN_….out` and only those are clustered. The decoy table gets `valid` (1 / 0), `invalid_by`,
+    `invalid_reason` and each criterion's columns for every decoy.
+  - *Quality filters (after clustering, choosing representatives)*: score limits (`score <= -300,
+    elec_dens_fast <= -40`, read with `mdatk.modelcheck.parse_score_limits`) on the ranked cluster centres;
+    none by default. *Before clustering (changes cluster populations)* stays as an explicit choice with a
+    planner warning; the default is after. Plans with the earlier `filter_term` / `filter_max` get the limit
+    `TERM <= MAX`. With no filter (the default) the step's files are unchanged (`tests/test_golden.py`).
+  - `silent_scores`: `keep` (the decoys to cluster: valid and within the limits), `filter-ranking --limit`,
+    `table --validity`.
+- **Run audit: which Rosetta, and the seed of every part**. Provenance comes from the lines before
+  `core.init: command:` (`Rosetta version: <package> r<rev> <version> <commit> <repository> <date>`,
+  `Rosetta extras`, the `-version` block, `core.init` commit / checkout / branch lines, older
+  `… from <repository>` lines), kept raw and parsed tolerantly into `[rosetta version]`, `[rosetta extras]`
+  and `[rosetta provenance]`, compared like flags (a pair built with different versions is confounded);
+  the report lists every build with its runs and warns when there is more than one. `-constant_seed`,
+  `-jran` and `-seed_offset` are a part's identity: the seed Rosetta logs (`real_seed`), else the flags
+  (default 1111111), is reported for every run and restart (report, a `[seeds]` row in the flags table,
+  `--runs-tsv` / step output *runs*), and two runs or starts with the same seed under `-constant_seed` and
+  the same inputs are duplicates: an error in the report and on standard error (`--strict` fails). The same
+  seed with other inputs is noted as a matched-seed design. Fully expanded command lines are the normal
+  case; `@flags` files are still expanded.
+- **Frames of multi-body models** (`mdatk/frames.py`, `mdatk frame check|reframe`, step *MDATK · frame
+  check*): fit on one body, measure one or more others (P, C1′, C4′ by default; chain-qualified ranges or
+  residue groups; atoms keyed by chain, residue number and insertion code); one frame when the 95th
+  percentile of every body stays below 1 Å, models without the fit body listed but not counted; a re-fitted
+  reference applied to the models when one rigid transform suffices (carried RMSD ≤ 1 Å), otherwise the
+  step fails; moved decoys written as `<run>/<tag>.pdb` with ANISOU rotated, a manifest and a decoy table
+  of the moved files; a warning for models sampled with the map in the score. Models come from PDB files
+  or a decoy table's `pdb` column.
+- Bugs of the user scripts these replace, fixed: runs of MDATK-named silent files collided on the stamp;
+  a missing score term crashed the audit; duplicate tags overwrote each other silently; problems went to
+  standard error only; extracted decoys of earlier runs stayed beside new ones and failed extractions went
+  unnoticed; `::` flags and `@flags` files hid confounds; `-r` could not be switched off; relative paths
+  were resolved for the first run only; flag aliases and restarts were missed; directory keys depended on
+  the working folder; inputs were sampled, not hashed; atoms and output files were keyed without the chain
+  or the run (same-named decoys of different runs overwrote each other or shared a label); a set-wide
+  median let models without the fit body into the statistics; unusable models vanished from the table;
+  ANISOU records were not rotated.
+
+### Decoy ensembles, map-model scores and statistics
+
+- **Four planner steps** with their commands, written from the user's analysis scripts (register census,
+  register comparison, threshold sweep, pilot comparison, Q-score preparation and regions, body hybrids)
+  and generalised: every residue range, chain, register, reference sequence and path is an option
+  (chain-qualified ranges or project residue groups `group:NAME`), with the scripts' thresholds as defaults.
+  - **Register census** (`register-census`, Analysis; `mdatk ensemble census`): which register (a named set
+    of defining base pairs, `pres=B:22-B:37, ...`) each decoy formed (Watson-Crick N1/N3 < 3.5 Å) or
+    approached (N1-N3 < 6 Å at C1'-C1' 8-13 Å), per folder and per build condition (FORCED / UNFORCED /
+    PARTIAL / UNKNOWN per register) read from the Rosetta logs' command lines (`@flags` expanded:
+    `-secstruct_file`, `-secstruct`, `-obligate_pair(_explicit)`), a `*.secstruct` beside the decoys or a
+    connected secondary structure; never pooled across conditions; matched groups by folder suffix; score
+    deciles within one weight set; Mann-Whitney between single-register decoys; L-ribose counts.
+  - **Ensemble comparison** (`ensemble-compare`, Analysis; `mdatk ensemble compare`, modes compare / sweep
+    / pilot): closure (a score term by name, default `linear_chainbreak < 5`, or every O3'-P < 2.0 Å),
+    defining pairs, interface atoms above a contour calibrated on fixed regions (per decoy, or common on
+    unmoved regions), Clopper-Pearson / Wilson intervals, Fisher tests, the closure-threshold sweep and the
+    rates the second arm would need to be told apart with a given power. Numbers only, no verdict.
+  - **Map-model score** (`map-model-score`, Refinement; `mdatk map score`): per-residue Q-score with
+    ChimeraX's `qscore` command (below), or MDATK's own per-residue CC; models ranked by named regions
+    against a reference region with the regions removed, chain termini left out, NaN counted
+    (`mdatk ensemble regions` ranks per-residue tables from elsewhere).
+  - **Body hybrids** (`body-hybrids`, Refinement; `mdatk pdb hybrids`): all 2^k old/new combinations of up
+    to six bodies over the atoms both models have, coordinates verbatim; with a map, each body's main
+    effect.
+- **Numbering**: register pairs and ranges are in a reference construct's numbering; each chain of a decoy
+  is located in the reference sequence (typed, FASTA, or the plan's FARFAR2 sequence) and the bases of the
+  defining residues are checked. Bases from MDATK's residue-name parser, else from a diagnostic atom.
+- **Decoy table**: steps take the FARFAR2 models step's `scores` table (`run`, `tag`, `pdb`, SCORE terms
+  by name) as an optional input; the commands take `--scores TSV`.
+- `mdatk/ensemble_stats.py` (standard library only): two-sided Fisher exact test, Clopper-Pearson in log
+  space, Wilson, exact Fisher power and the detectable rates at a power, Mann-Whitney U (exact / normal);
+  each checked against SciPy in the tests.
+- Bugs of the scripts fixed in the rewrite (regression tests in `tests/test_ensemble.py`): residues keyed by
+  number alone (chains merged in compare.py, register_census.py, body_hybrids.py and q_regions.py);
+  a register counted only at exactly 3 pairs; a secondary structure called FORCED when its brackets stood at
+  the register's positions but paired other residues; `-secstruct_file=` and `@flags` not read; hydrogens
+  recognised by the atom name; the Clopper-Pearson fallback overflowing for large n; division by zero for
+  an empty arm; decoys without calibration or region atoms dropped silently; score columns read by position;
+  the pilot's "POWER" band (a Wilson interval, not a power); scaffold and interface overlapping in the
+  region means, NaN averaged and 'whole' keeping the termini; Rosetta's virtual residues scored as atoms;
+  overlapping bodies resolved silently.
+- **Q-score with ChimeraX** (the user's decision: Phenix has no official per-residue Q-score; its
+  cctbx program is `mmtbx.development.qscore`): method `qscore` of `mdatk map score`, `mdatk pdb hybrids`
+  and the steps *Map-model score* and *Body hybrids* runs ChimeraX's `qscore` command (the QScore bundle of
+  the ChimeraX Toolshed, ChimeraX-QScore by T. I. Croll) as `chimerax --nogui --cmd "open MODEL id 1
+  maxModels 1; open MAP id 2; qscore #1 toVolume #2 useGui false logDetails true [options]; exit"`, on the
+  model as it is (L names such as LG5 and HETATM records are scored; the Phenix command template and the
+  standard-name copy are gone). Options: the ChimeraX executable (`--chimerax`, default `chimerax`),
+  further qscore options as keyword value pairs (`--qscore-options 'pointsPerShell 16'`; MDATK's own
+  keywords and `;` refused, undeclared keywords warned about), models per ChimeraX run (`--batch`, default
+  1: the map opened once, each model opened as #2, scored and closed after a `log text MDATK-QSCORE k`
+  marker; a run that stops at a model resumes after it), the column the regions use (`--q-column qavg`,
+  `qbb` or `qsc`), a time limit per model. Rosetta's virtual residues are left out of the selection
+  (`#1 & ~:VRT`) and of the table. The `logDetails` table is read tolerantly (blank lines, the dashed rule,
+  tabs or spaces, `INFO:` lines and `<pre>` tags, insertion codes, `N/A`, warnings such as `Ignored bad PDB
+  record`, the `Overall mean Q-Score` line, reported per model). The per-residue table has `qavg`, `qworst`,
+  `qbb`, `qsc` and `score`; ChimeraX's log of every run stays in `qscore/`. A model ChimeraX cannot score is
+  listed in the report with the reason (e.g. atoms outside the map box, where ChimeraX-QScore 1.2 stops its
+  table) and not ranked, and the command ends with status 1 after writing the others; a missing ChimeraX or
+  qscore command stops at once. `mdatk ensemble regions` also reads ChimeraX logs (one model per table) and
+  qscore's CSV. Citations: UCSF ChimeraX (Meng et al. 2023, Pettersen et al. 2021) and the Q-score paper
+  (Pintilie et al. 2020); the pages and authors of the latter are from memory (stated in the data). Tested
+  with a stand-in `chimerax` printing the user's log format, not with ChimeraX itself.
+- **Ranking on dQ**: `mdatk map score`, `mdatk ensemble regions` and the *Map-model score* step rank by
+  default on dQ = Q(first region) − Q(reference), the interface against the scaffold, instead of the first
+  region's mean (`--sort NAME` still ranks on the mean); the report heads its columns `dQ:NAME` (`dCC:NAME`
+  for the CC), says what it ranked on and gives the spread of every dQ over the models.
+- **Planner template *Decoy validation (FARFAR2)*** (`decoy-validation`): FARFAR2 → FARFAR2 models (the
+  closure validity filter `linear_chainbreak ≤ 5` before clustering) → model check (clashes) → decoy
+  interfaces (segment support) → map-model score (Q-score with an *interface* region, ranked on dQ) and a
+  second model check gating on kinks, a map input, and notes on the validity filters left to fill in (hands
+  and defining pairs need the construct), the rule "filter on validity before clustering; filter on quality
+  after, when choosing representatives" and the kink test (positions that in-line probing shows flexible
+  are allowed).
+
+### Decoy interfaces
+
+- **`mdatk/interfaces.py`**: the interface between two sides of every model of an ensemble, without a
+  register, construct or numbering built in. Sides are chain-qualified ranges (`A:1-16,B:17-44`), whole
+  chains, ranges for every chain or residue groups (`group:NAME`); residues are keyed by chain, number and
+  insertion code, read with `pdbtools.read_pdb`; only nucleotides count (L and unknown names get their base
+  from the atoms, the hand from the sugar's chiral volumes), never ions, water, virtual residues or
+  hydrogens. Rewritten from the user's `interface_census.py`, `interface_clusters.py`, `support_check.py`
+  and `dssr_interface.py`:
+  - **census**: contacts, stacking, Watson-Crick / G·U / non-canonical pairs (builtin, barnaba or DSSR),
+    base-phosphate and 2′-OH-phosphate hydrogen bonds, Mg-bridgeable P–P pairs, residues and the
+    chain-qualified contact fingerprint; score filters on a decoy table (`linear_chainbreak <= 5` …);
+  - **clusters**: deterministic leader clustering of the fingerprints by Jaccard distance (residues,
+    blocks or pairs), exact medoids as representatives (copied as PDB files), reference interfaces typed
+    or measured on reference models, scored on both sides and normalised per reference; neutral pattern
+    and reference-share summary;
+  - **segment support**: what holds each rebuilt residue (partner side, own scaffold, optional base-pair
+    credit as its own class, or only its own rebuilt segments), longest unsupported runs, fixed or
+    automatic run threshold, per-residue profile.
+- **Decoy table reader** for the `scores` output of the FARFAR2 models step (`run`, `tag`, `pdb`, every
+  score term by name; extra columns ignored; TSV, CSV or whitespace), matching models by path, file name or
+  a tag unique across runs.
+- **`mdatk decoys census|clusters|support`** and **`mdatk pdb interface`** (TSV of the pairs, stacks and
+  base / 2′-OH to phosphate hydrogen bonds between two sides, with the hand of each partner;
+  `--engine builtin|barnaba|dssr`). `-p PROJECT` resolves residue groups and logs the step.
+- **Planner step *Decoy interfaces*** (`decoy-interface`, Analysis): inputs models (PDB, several), scores
+  (table, optional), reference models (PDB, optional); outputs census, clusters and support (tables) and the
+  cluster representatives (PDB, several). Its script calls `python3 -m mdatk decoys …` (or the AppImage);
+  groups are written into it as ranges. The rebuilt residues of the support check are the complement of
+  FARFAR2's fixed residues when the connected models carry them (`PortValue.data["input_res"]`), or typed.
+- **DSSR engine** (`mdatk/dssr.py`; `mdatk pdb annotate --engine dssr`, `annotate(engine="dssr")`):
+  x3dna-dssr (licensed separately, never bundled) runs on a copy with canonical names and MDATK's own
+  residue numbering in a temporary folder; its JSON (DSSR 1.x layout: `nts`, `pairs`, `stacks`, `hbonds`)
+  maps back by residue index, so it no longer depends on DSSR's id grammar; ids are also read tolerantly
+  (`1:A.G1`, `AB.G1`, `A.0A/45`, `A.G1^B`, atom ids in either order). Checked against the JSON of DSSR
+  2.9.4 (four files of the user's, with and without chain ids): a blank chain gives chain-less ids (`G1`,
+  `O6@G1`), now read as the first chain of the copy instead of being dropped.
+- **Fixed on the way** (problems of the scripts, each with a regression test):
+  - an A·C mismatch and trans Watson-Crick pairs counted as Watson-Crick (one N1/N3 distance);
+  - Mg-bridgeable P–P pairs tested only for residue pairs that already had a contact;
+  - residues keyed by number, so chains numbered alike merged and sequence separation ignored chains (a
+    base-paired residue of a duplex was "unsupported"); ions inside a range counted as residues and as
+    partner support; hydrogens named `1H5'` counted as heavy atoms; base letters read from the first
+    A/G/C/U character of the residue name;
+  - one run's chainbreak applied to another run's decoys (silent-file scores keyed by a part every RNAdo
+    run shares); the census score column read from file names;
+  - the fingerprint dropped chains and broke on negative residue numbers;
+  - reference shares biased toward the reference with more exclusive residues, target side only, scored
+    from the representative alone, tallied over the printed clusters only; medoids from a 60-member sample;
+    seeding dependent on the input order; a no-reference run printed reference messages for every cluster;
+  - pair credit added to the scaffold class (and a bifurcated hydrogen bond counted as a pair);
+  - DSSR: interface pairs lost with per-chain numbering, several-letter or blank chains, names with digits
+    and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
+    written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
+
+### MDATK and RNAdo in the applications menu
+
+- **An RNAdo menu entry from the AppImage, too.** Desktop integration takes one desktop entry from an
+  AppImage (MDATK's, with an RNAdo action), so RNAdo had no launcher of its own there. *Add MDATK and
+  RNAdo to the applications menu…* (main menu of the analysis window and of RNAdo), `mdatk desktop
+  install` or `rnado --install-launchers` (`rnado-gui --install-launchers` too) writes `mdatk.desktop` and
+  `rnado.desktop` into `$XDG_DATA_HOME/applications` (`~/.local/share`) and their icons into
+  `…/icons/hicolor/<size>/apps` (`mdatk.png`, `rnado.png` in every size, `scalable/apps/rnado.svg`).
+  The window lists the files and the commands first, then what it wrote; in the AppImage (and a bundle
+  folder) it warns that the entries hold the current path, so moving the file breaks them.
+- **The entries start what is running** (`mdatk/launchers.py`, from `mdatk.gui.launch.launch_mode`): the
+  AppImage (`"$APPIMAGE" gui %f` / `rnado %f`; without FUSE with `env APPIMAGE_EXTRACT_AND_RUN=1`), the
+  programs of a bundle folder (`mdatk gui`, `mdatk-gui` where there is one, `rnado-gui`; an extracted
+  AppImage's `AppRun`), the `mdatk-gui` / `rnado-gui` scripts that run this Python (venv `bin`, user
+  `bin`, `PATH`; recognised by their `#!` line, pip's `/bin/sh` form included) or `<python> -m mdatk gui`
+  / `-m mdatk.gui.rnado`, and a source checkout that is not installed with `env PYTHONPATH=<checkout>`.
+  Arguments are quoted as the Desktop Entry Specification asks (tested through GLib, and by launching an
+  entry whose program path has a space and a `$`).
+- **Only MDATK's own files are touched.** Each file carries `X-MDATK-Installed=<version>` (a desktop-entry
+  key, a PNG `tEXt` chunk, an SVG comment); files of the same name without it are left alone and listed
+  (`--replace` moves them to `*.bak` first); files are written through a temporary file. `mdatk desktop
+  uninstall` (or *Remove them* in the window) removes the marked files of any version and nothing else;
+  `mdatk desktop status` shows each file (`installed`, `outdated`, `missing`, `not MDATK's`) and the
+  commands. `update-desktop-database` and `gtk-update-icon-cache` (the latter only for a theme folder
+  that has a cache) run when installed and never make it fail. On Windows the menu item and the command
+  say that the installer made the Start-menu entries, and write nothing.
+- **Package data:** the desktop-entry templates moved from `data/` to `mdatk/assets/` (installed and
+  bundled with the icons; the AppImage build reads them there), and the MDATK icon is committed as
+  `mdatk/assets/mdatk-icon-<size>.png` (16–256 px), drawn by `packaging/make_icon.py --assets`.
+
+### RNAdo: completed runs move aside
+
+- **A step that is written again first moves its completed run aside** (the user's decision: as soon as its
+  scripts are written again, even if the step is never run again, scripts included, so the run stays
+  repeatable when the step is written with changed settings). When a step is about to be written (*Write
+  all files*, *Write step*, the wizard's *Write files*, every *Run* action, `workflow write [--run]`,
+  `workflow generate`) and its folder holds a complete run of the plan's current stamp (runstate's
+  *done*), that run moves into `<step folder>/superseded/<stamp>_<YYYYMMDD-HHMMSS>/` (`no-stamp_<time>`
+  without time stamps; `superseded/<NN>_<tool>/<stamp>_<time>/` in the plan folder without step folders):
+  the step's outputs, every file it writes for the stamp (scripts, inputs, helpers), its logs (files with
+  closing lines and the other files named `<project>_<NN>_*_<stamp>.*`), stamp-free outputs with their
+  completion marker (custom scripts' fixed names), and the stamp-free folders a run fills (`runs/` of
+  FARFAR2 and SimRNA, `models/` of the FARFAR2 models step; new `Tool.run_folders`), relative paths kept.
+  A `manifest.toml` records what moved, from which step and stamp, when and why; a saved project logs each
+  move in its step log (`workflow supersede`). Partial runs, steps that use an earlier run, files of other
+  stamps, other steps' and the user's files stay; nothing in `superseded/` is replaced (`…-2`); a step's
+  move is all or nothing (on an error the files go back and the step is not written, reported as skipped).
+  `runstate` never looks inside `superseded/`. New module `mdatk/workflows/supersede.py`;
+  `Plan.write(..., project_path=, supersede=)` and `WriteReport.superseded`.
+- RNAdo asks before writing (listing the steps, where their runs go and their files; *Cancel* or *Move
+  aside and write*; refused while a step that reads them runs), the output log lists what moved, and the
+  naming bar's *Move completed runs aside* is the project option `workflow.supersede_runs` (on by default;
+  off: writing replaces as before). `mdatk workflow write` prints the moves on standard error and under
+  `superseded` in its JSON, and `--dry-run` lists the files it would write and the runs it would move
+  without touching anything. Generated files are unchanged.
+- Steps that skip finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip
+  finished runs*) reuse them from a run left in place: a partial run, or any run with the option off (a
+  complete run is moved aside, so the step runs again from the start). `tests/test_namd_mdff_tool.py`
+  writes with the option off to test that reuse.
+
+### Running steps: CPU and GPU budgets, stop buttons
+
+- **Two budgets instead of *Parallel*** (the user's decision): the scripts RNAdo and `mdatk workflow run`
+  run at the same time share *CPU cores* (default: half of this computer's cores) and *GPUs* (default: the
+  GPUs found, `nvidia-smi -L`, or the ids in MDATK's own `CUDA_VISIBLE_DEVICES`, which then limit what
+  the scripts may use). A ready step starts when the cores and GPUs it uses are free, in plan order (a
+  later, smaller step may start while an earlier one waits for room, but not behind a step that needs
+  every core: that one starts once nothing runs, before the steps after it); the scheduling is a pure
+  function of the plan order, the needs and the finished steps (`mdatk/workflows/budget.py`: `Slots`,
+  `schedule`). Project file: `workflow.cpu_cores` (0: auto), `workflow.gpus` (-1: auto, 0: none); command
+  line: `mdatk workflow run / write --run --cores N --gpus N`; RNAdo: *CPU cores* (shown as *auto (N)*),
+  *GPUs* (*auto (N)*, *none*, 1, 2, ...) and *At once* in the naming bar.
+- **What each step uses** (`Tool.run_resources(settings)` -> `Resources(cores, gpus, pinned)`, one core
+  by default): Amber MD with pmemd.cuda 1 core + 1 GPU, pmemd.MPI its MPI processes, pmemd 1 core; NAMD
+  MDFF its `+p` cores and one GPU; GROMACS its OpenMP threads (`-ntomp`, times `-ntmpi`, or `-nt`, from the
+  extra mdrun flags; without `-ntomp` every core, since mdrun takes them all) + a GPU when offloading;
+  FARFAR2 and SimRNA their parallel runs; FARFAR2 models its parallel extractions when it extracts every
+  model; Phenix RSR `nproc`; register census and frame check their worker processes; a custom script its
+  new section *Cores and GPUs* (*CPU cores*, 0: all; *GPUs*; its run script is unchanged). Planner boxes
+  show it as a badge (`8c+1g`), the details pane in words, the run confirmation per script.
+- **GPUs handed out:** a step that uses a GPU gets free ones in `CUDA_VISIBLE_DEVICES`, unless it names
+  its own (the Amber MD step's *GPU*, NAMD's `+devices`, which counts the GPUs its *Environment* leaves
+  visible, or `CUDA_VISIBLE_DEVICES` in the step's *Environment* setup commands): those ids are used as
+  named and kept from other steps. Each start line says what the step got (`==== step 04: … - bash
+  x.sh (1 core, GPU 1)`), and the step log's command shows the `CUDA_VISIBLE_DEVICES` given.
+- **No deadlock, clear warnings:** a step larger than the whole budget runs alone once nothing else runs
+  (and holds back the steps after it meanwhile); with no GPU found and none set, the steps that use a
+  GPU run one at a time; a named GPU outside the budget is reported. The warnings open the run's output
+  (`WARNING: …`, amber in RNAdo's log).
+- **`parallel` stays, as a cap** on the scripts at once (*At once*; new default 0: no limit, the budgets
+  decide; `--parallel 0` allowed). Project files keep their value, so a project saved with `parallel = 1`
+  still runs one script at a time until *At once* is changed; a project file without the key (before
+  0.0.7) gets 1, as it did. Without a budget (`run_jobs(budget=None)`, e.g. the wizard's *Write and
+  run…*) only the cap counts and the environment is left as it is.
+- **Stop scripts** in the planner toolbar (red, sensitive while scripts run) stops every running script,
+  as *Cancel* in the status bar does.
+- **Stopping one step:** a square stop button in the title bar of every running box, and *Stop this step*
+  in a running or queued box's right-click menu, stop that step's script only (`runner.StepStops`; the
+  script's process group is terminated, its children too). The step ends as *stopped* (a square marker,
+  an amber `==== step 03: … - stopped` line, status `stopped` in the step log), the steps that depend on
+  it are not started (`not started (step 03 was stopped)`), the other scripts go on, and the run is not
+  reported as failed. The stopped run leaves `<project>_<step>_stopped_<time>.txt` beside the step's
+  files, so *Check previous runs* / `mdatk workflow status` call it partial (`partial (stopped)`) until
+  the step runs again (the next run removes the note) or a file of the run is written after it.
+- Generated files are unchanged (`tests/test_golden.py` passes without new intended changes).
+
+### The full set of decoys on the FARFAR2 box
+
+- **Sets of files in the planner** (`Port(..., collection=True)`): the full set of N files of one kind,
+  known only once its step has run, drawn as a large, stacked dot (radius 9 px against 5, a white ring
+  inside; hit within 5 px of its edge; its connections thicker). Its output passes a list of the files
+  (`PortValue.lists`: plan-relative paths, one per line, and the most it can name), and the scripts of the
+  steps that take it read the list when they run (`base.listed_files`; a missing or empty list stops them).
+  A set connects only to inputs drawn as large dots, which take files connected one by one as well; onto an
+  input that takes a table it connects its step's table (`Port.table`); an output that needs an option of its
+  step switches it on when connected (`Port.turns_on`). Hand-written edges of a set into another input are
+  an error of the plan.
+- **FARFAR2: *Every decoy (PDB)* and *Decoy table*** (section *Decoys*, *Extract every decoy after the runs*,
+  off by default and switched on by connecting either output): after the runs the step's script runs
+  `<project>_<step>_decoys_<time>.sh`, which extracts every model of every run into `models/<run>/<tag>.pdb`
+  (the *Extract every model* machinery of the FARFAR2 models step, shared: a `mktemp` folder per run,
+  earlier models removed, one PDB per SCORE line checked), then writes the decoy table
+  `<project>_<step>_scores_<time>.tsv` and the list `<project>_<step>_decoys_<time>.txt` (`silent_scores table
+  --list`; none listed is an error). It can be run alone to extract again without rna_denovo. The set
+  carries FARFAR2's `-input_res` for the segment support of *Decoy interfaces*. Without the option the step's
+  files are unchanged (`tests/test_golden.py`); the FARFAR2 models step's copies of `silent_scores` gain
+  `--list`.
+- **Steps that take the set**: the models of *Model check*, *Decoy interfaces*, *Register census*,
+  *Map-model score* and *MDATK · frame check* and both arms of *Ensemble comparison*; their files are
+  unchanged without a set. Counts planned from the inputs (passed models, moved models) take at most runs ×
+  models per run; the model check's automatic hands are measured on the first listed decoy once it exists.
+
+### Script wizard: the commands a step runs
+
+- **Commands tab** (the script wizard's second tab, stand-alone and in a box's *Edit in wizard…*): what the
+  step's run scripts will run, generated from the settings as they are (as the preview is: nothing written,
+  no network) and updated with the checks after each change. By default the commands alone, under each
+  script's name: the program and helper calls, continued lines joined, here-documents with their command,
+  a variable the script sets once to fixed text shown with its value (`$PMEMD` as `pmemd.cuda`). Left out:
+  the header and comments, `set`, `cd`, the environment set-up (conda, modules, `source`, `export`),
+  assignments, `if` / `for` / `while` structure, checks (`[ … ]`, `command -v`, `grep -q`, the "did not
+  write" lines), `rm` / `mkdir` / `mv` / `cp`, `echo` and the error handling after a command
+  (`|| { echo "ERROR: …" >&2; exit 1; }`). A script run separately (production) is headed as such.
+  *Whole scripts* shows the scripts as written, *Copy* copies what is shown; a step with errors lists its
+  errors instead of a preview.
+- **`mdatk.workflows.commands.command_lines(script)`**: the commands of a bash script as the tab shows
+  them, tested on the generated scripts of the Amber build, Amber MD, FARFAR2, NAMD MDFF and custom script
+  steps. Generated files are unchanged.
+
+### Both programs end with their windows
+
+- **The analysis window and RNAdo quit when their main window closes**, so a window attached to the
+  application but hidden (a dialog, a file chooser, a tool window) can never keep the process running with
+  nothing on screen. Reported for the AppImage started from the applications menu: after *Open in RNAdo…*,
+  closing the analysis window and then RNAdo left an MDATK process running. The cause is not confirmed (it
+  did not happen from source), so both programs are guarded. RNAdo's tool windows are not attached to the
+  application and still close with its window.
+- **The programs MDATK starts inherit no AppImage descriptors.** The AppImage runtime keeps its FUSE mount,
+  and its own process, alive while any process holds the read end of its keepalive pipe, which it leaves to
+  the program without close-on-exec, and it also leaves an fd 1023 open on the mount. RNAdo (*Open in
+  RNAdo…*), the scripts RNAdo runs and `xdg-open` are started with `close_fds` (Python's default on POSIX,
+  now stated), and desktop applications opened through Gio are spawned by GLib, which closes every other
+  descriptor in the child too (checked with GLib 2.80). Tests start each of them while holding stand-ins
+  of both descriptors.
+
+### Fixes
+
+- **NAMD MDFF**: the fitted PDB's first line is `REMARK 951 MDFF result (NAMD), …` instead of an unnumbered
+  `REMARK   MDFF result …`, which ChimeraX ignores as a bad PDB record (example regenerated).
+- **Planner file kind *table*** (`.tsv`, `.csv`) for the decoy tables and reports the new steps pass on.
 
 ## 0.0.11 (2026-10-31)
 

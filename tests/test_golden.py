@@ -37,6 +37,13 @@ INTENDED = [
      | {f"tool:gromacs:{v}" for v in ("default", "allow_nbfix_loss=True", "convert=acpype", "convert=none",
                                       "gmx_version=2023", "gpu=False", "mass_repartition=True",
                                       "update_gpu=True")}),
+    # 0.0.12: the Amber build's two helpers are copies of library code, and that code grew: the PDB tools
+    # (mdatk.pdbtools: infer_base, residue hands, the 'standard' scheme, hydrogen / virtual-residue removal,
+    # empty slots of a model check) and the PDB preparation, which now drops Rosetta's virtual residues
+    # VRT / XXX (on by default: tleap cannot type them, so only builds that failed change) and names an
+    # empty slot instead of reporting 'no atoms'.  The build script, the leap / ParmEd inputs and
+    # the planner messages stay as they were (":forced:" keys: the files of builds refused for errors)
+    (re.compile(r"(^\d+_amber-build/|^:forced:[^:]+:)[^/]*_(pdbtools|prep)_\d{8}-\d{4}\.py$"), None),
 ]
 
 

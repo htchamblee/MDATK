@@ -3,8 +3,9 @@
 tleap rebuilds hydrogens from its residue templates and expects 5'-terminal
 nucleotides without a phosphate, a TER record between chains, and residue
 names it knows.  This keeps the first MODEL only, drops hydrogens, the
-phosphate atoms of every chain's first residue and (optionally) waters, and
-writes TER records at chain changes and residue-number gaps.
+phosphate atoms of every chain's first residue and (optionally) waters and
+Rosetta's virtual residues, and writes TER records at chain changes and
+residue-number gaps.
 """
 
 from __future__ import annotations
@@ -13,6 +14,9 @@ import sys
 
 PHOSPHATE = {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
 WATERS = {"HOH", "WAT", "H2O", "TIP", "TIP3", "SOL", "DOD"}
+# Rosetta's virtual residues (VRT: the root of a density-scored fold tree, atoms ORIG / X / Y; XXX): tleap has
+# no unit for them, cannot type their atoms and fails to save the topology
+VIRTUAL = {"VRT", "XXX"}
 RESNAMES = {"RA": "A", "RC": "C", "RG": "G", "RU": "U", "ADE": "A", "CYT": "C", "GUA": "G",
             "URA": "U", "URI": "U", "A5": "A", "C5": "C", "G5": "G", "U5": "U", "A3": "A",
             "C3": "C", "G3": "G", "U3": "U"}
@@ -26,7 +30,8 @@ def is_hydrogen(line):
     return name.upper().startswith(("H", "D"))
 
 
-def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rename=True):
+def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rename=True,
+            drop_virtual=False):
     out = []
     prev_key = None
     prev_chain = None
@@ -34,6 +39,8 @@ def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, 
     pending_ter = False
     first_residue = False
     stats = {"atoms": 0, "hydrogens": 0, "phosphates": 0, "waters": 0, "chains": 0}
+    if drop_virtual:
+        stats["virtual"] = 0
     for raw in lines:
         line = raw.rstrip("\n")
         rec = line[:6]
@@ -48,6 +55,9 @@ def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, 
         resname = line[17:20].strip()
         if strip_water and resname.upper() in WATERS:
             stats["waters"] += 1
+            continue
+        if drop_virtual and resname.upper() in VIRTUAL:  # dropped before the chain logic: no TER of its own
+            stats["virtual"] += 1
             continue
         chain = line[21]
         try:
@@ -83,22 +93,29 @@ def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, 
     return out, stats
 
 
-def main(argv, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rename=True):
+def main(argv, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rename=True, drop_virtual=False):
     if len(argv) != 2 or argv[0] in ("-h", "--help"):
         print("usage: python3 THIS_SCRIPT INPUT.pdb OUTPUT.pdb", file=sys.stderr)
         return 2
     try:
         with open(argv[0], "r", encoding="utf-8", errors="replace") as fh:
-            lines, stats = prepare(fh, strip_h, strip_5p, gap_ter, strip_water, rename)
+            raw = fh.readlines()
     except OSError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    lines, stats = prepare(raw, strip_h, strip_5p, gap_ter, strip_water, rename, drop_virtual)
     if not stats["atoms"]:
-        print(f"ERROR: no atoms found in {argv[0]}", file=sys.stderr)
+        # a model check that passes on up to N models writes the slots it cannot fill without atoms
+        slot = next((ln[11:].strip() for ln in raw if ln.startswith("REMARK 951") and "empty slot" in ln), "")
+        what = (f"{argv[0]} is an empty slot of a model check ({slot}): no model to build" if slot
+                else f"no atoms found in {argv[0]}")
+        print(f"ERROR: {what}", file=sys.stderr)
         return 1
     with open(argv[1], "w") as fh:
         fh.write("\n".join(lines) + "\n")
     print(f"{argv[1]}: {stats['atoms']} atoms in {stats['chains']} chain(s); removed "
           f"{stats['hydrogens']} hydrogens, {stats['phosphates']} 5'-phosphate atoms, "
-          f"{stats['waters']} water atoms", file=sys.stderr)
+          f"{stats['waters']} water atoms"
+          + (f", {stats['virtual']} atoms of Rosetta virtual residues" if stats.get("virtual") else ""),
+          file=sys.stderr)
     return 0

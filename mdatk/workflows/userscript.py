@@ -19,6 +19,7 @@ import re
 from typing import Dict, List, Set, Tuple
 
 from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .budget import gpu_step
 from .naming import file_name
 from .registry import register
 from .schema import FILE_KINDS, GeneratedFile, Issue, Option, Port, Section, kind_label
@@ -164,6 +165,17 @@ class UserScriptTool(Tool):
         Section("outputs", "Output files", OUTPUT_OPTIONS, repeat=True, item_label="name",
                 templates=OUTPUT_TEMPLATES,
                 tooltip="Files the script must write into the step folder; each one is an output port."),
+        Section("resources", "Cores and GPUs", [
+            Option("cores", "CPU cores", "int", 1,
+                   "CPU cores the script uses. When RNAdo runs several steps at once, it starts this one "
+                   "when that many of the cores it may use are free (0: all of them, so no other step runs "
+                   "beside it).", minimum=0, maximum=4096),
+            Option("gpus", "GPUs", "int", 0,
+                   "GPUs the script uses. RNAdo starts it when that many are free and hands them to it in "
+                   "CUDA_VISIBLE_DEVICES, unless the Environment's setup commands set CUDA_VISIBLE_DEVICES "
+                   "(the script then uses those GPUs).", minimum=0, maximum=64),
+        ], tooltip="What the script needs when RNAdo runs it beside other steps (the CPU cores and GPUs "
+                   "below the planner's toolbar). The run script does not change."),
         env_section("conda activate myenv   or   module load R/4.3"),
     ]
 
@@ -446,6 +458,9 @@ class UserScriptTool(Tool):
 
     def summary_lines(self, s, ctx) -> List[str]:
         return [f"Runs: `{self.command(s, ctx)}`"]
+
+    def run_resources(self, s):
+        return gpu_step(int(s["cores"]), int(s["gpus"]), s)
 
     def describe(self, s):
         if s.get("source") == "file":

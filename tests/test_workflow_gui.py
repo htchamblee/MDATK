@@ -65,7 +65,8 @@ def test_standalone_wizard_every_tool(main, tmp_path):
             continue
         wz.select_tool(name)
         pump(0.1)
-        assert wz.tool.name == name and wz.notebook.get_n_pages() == 1 + len(tool.sections)
+        # Files, Commands and the option pages
+        assert wz.tool.name == name and wz.notebook.get_n_pages() == 2 + len(tool.sections)
     wz.select_tool("amber-md")
     pump()
     # an option change updates the node, the checks and the preview
@@ -96,6 +97,89 @@ def test_standalone_wizard_every_tool(main, tmp_path):
     # scratch settings are kept per tool in the project's workflow
     assert any(n.tool == "amber-md" and n.settings["engine"] == "pmemd.MPI"
                for n in main.project.workflow.scratch)
+
+
+def test_wizard_commands_tab(main, tmp_path):
+    """The Commands tab: the commands of the step's run scripts, from the settings as they are (stand-alone
+    and in a box's wizard), the whole scripts on request, the step's errors instead when it has some."""
+    main.open_wizard("amber-md")
+    wz = main.wizard
+    pump()
+    cv = wz.commands
+    nb = wz.notebook
+    assert nb.get_tab_label_text(nb.get_nth_page(1)) == "Commands" and nb.get_nth_page(1) is cv
+    for port, path in (("topology", "/x/sys.parm7"), ("coordinates", "/x/sys.rst7"),
+                       ("restraints", "/x/h.dist")):
+        wz.input_widgets[port].entry.set_text(path)
+    env = wz.forms["environment"]
+    env.rows["conda_env"][4]("AmberTools25")
+    env.rows["env_setup"][4]("module load amber/24")
+    pump(0.6)
+    nb.set_current_page(1)
+    pump(0.2)
+    main_sh, prod_sh = [f.name for f in wz.files if f.role in ("run", "run-separate")]
+    text = cv.text()
+    lines = text.splitlines()
+    assert lines[0] == f"# {main_sh}" and f"# {prod_sh}" in lines
+    assert lines[lines.index(f"# {prod_sh}") + 1].startswith("# Run separately")
+    pmemd = [ln for ln in lines if ln.startswith("pmemd.cuda -O -i ")]
+    assert len(pmemd) == 6 and all('-p "/x/sys.parm7"' in ln for ln in pmemd)
+    assert "cpptraj << EOF" in lines and "EOF" in lines
+    for left_out in ("#!/bin/bash", "set -eo", "cd ", "conda", "module load", "echo", "[ -s", "$PMEMD",
+                     "exit"):
+        assert not any(ln.startswith(left_out) or f" {left_out}" in ln for ln in lines), left_out
+    assert cv.view.get_monospace() and not cv.view.get_editable() and cv.copy_btn.get_sensitive()
+    # what is shown is copied
+    cv.copy_btn.clicked()
+    assert Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text() == text
+    # the whole scripts, as written
+    cv.full_btn.set_active(True)
+    pump(0.1)
+    whole = cv.text()
+    assert "#!/bin/bash" in whole and "set -eo pipefail" in whole and "conda activate AmberTools25" in whole
+    assert whole.count("$PMEMD -O -i ") == 6 and cv.view.get_wrap_mode() == Gtk.WrapMode.NONE
+    cv.full_btn.set_active(False)
+    pump(0.1)
+    assert cv.text() == text
+    # an option change shows up after the wizard's usual short delay
+    wz.forms["engine"].rows["engine"][4]("pmemd.MPI")
+    assert cv.text() == text
+    pump(0.6)
+    assert "mpirun -np 8 pmemd.MPI -O -i " in cv.text() and "pmemd.cuda" not in cv.text()
+    # a custom script: the user's command
+    wz.select_tool("user-script")
+    pump(0.3)
+    script = wz.forms["script"]
+    script.rows["script"][4]("x <- 1\n")
+    script.rows["interpreter"][4]("custom")
+    script.rows["command"][4]("Rscript --vanilla")
+    script.rows["arguments"][4]("--seed 7")
+    pump(0.6)
+    copy = next(f.name for f in wz.files if f.role == "helper")  # the script's copy in the step folder
+    shown = [ln for ln in cv.text().splitlines() if not ln.startswith("#")]
+    assert shown == [f"Rscript --vanilla {copy} --seed 7"]
+    # a step with errors: its errors instead of commands
+    wz.select_tool("farfar2")
+    pump(0.3)
+    text = cv.text()
+    assert text.startswith("The step has errors") and "• enter the RNA sequence" in text
+    assert "rna_denovo" not in text and not cv.copy_btn.get_sensitive()
+    # a box's wizard
+    pl = main.planner
+    pl.add_template("amber")
+    pump(0.3)
+    nodes = {n.tool: n for n in main.project.workflow.nodes}
+    nodes["amber-build"].files["structure"] = str(tmp_path / "model.pdb")
+    nodes["amber-restraints"].settings.update(sequence="GGGCAC GUGCCC", dotbracket="(((((( ))))))")
+    pl.changed()
+    pump(0.2)
+    md = nodes["amber-md"]
+    pl.open_wizard(md)
+    pump(0.5)
+    box = pl.wizards[md.id]
+    text = box.commands.text()
+    assert box.notebook.get_nth_page(1) is box.commands is not cv
+    assert "pmemd.cuda -O -i " in text and "../01_amber-build/" in text and "set -eo" not in text
 
 
 def test_wizard_stage_editor(main):

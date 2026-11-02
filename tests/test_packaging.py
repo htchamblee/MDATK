@@ -464,7 +464,7 @@ def test_rnado_desktop_entries():
     def read(name):
         cp = configparser.ConfigParser(interpolation=None)
         cp.optionxform = str
-        cp.read(os.path.join(ROOT, "data", name), encoding="utf-8")
+        cp.read(os.path.join(ASSETS, name), encoding="utf-8")  # the templates of 'mdatk desktop install'
         return cp
 
     rnado = read("rnado.desktop")["Desktop Entry"]

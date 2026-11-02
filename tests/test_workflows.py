@@ -1001,6 +1001,57 @@ def test_builder_and_cryoem_templates_write_valid_plans(tmp_path):
         assert proc.returncode == 0, (path, proc.stderr)
 
 
+def test_decoy_validation_template_follows_the_users_order(tmp_path):
+    """FARFAR2 -> models (closure filter before clustering) -> model check -> decoy interfaces (support) ->
+    map-model score (Q-score, dQ); notes for the validity filters, the rule and the kink test still to come.
+    Given its input files and the residues only the user knows, the plan has no errors and writes scripts."""
+    from mdatk.workflows.plan import TEMPLATES
+    label, steps, edges = TEMPLATES["decoy-validation"]
+    assert label.startswith("Decoy validation (FARFAR2)")
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    nodes = apply_template(wf, "decoy-validation")
+    by_key = dict(zip([k for k, *_rest in steps], nodes))
+    assert len(nodes) == len(steps) and len(wf.edges) == len(edges)  # every step made, every edge connected
+    tools = [n.tool for n in sorted(nodes, key=lambda n: (n.x, n.y)) if n.tool not in ("note", "input-file")]
+    assert tools == ["farfar2", "farfar2-models", "model-check", "decoy-interface", "map-model-score",
+                     "model-check"]
+    models = TOOLS["farfar2-models"].normalise(by_key["models"].settings)
+    assert (models["valid_closure"], models["closure_term"], models["closure_max"]) == (
+        True, "linear_chainbreak", 5.0)  # validity before clustering; no score filter
+    assert not models["filter"]
+    assert TOOLS["model-check"].normalise(by_key["kinks"].settings)["gate_kinks"] is True
+    assert TOOLS["map-model-score"].normalise(by_key["score"].settings)["method"] == "qscore"
+    assert TOOLS["decoy-interface"].normalise(by_key["interface"].settings)["support"] is True
+    notes = [n.settings["text"] for n in nodes if n.tool == "note"]
+    assert any(t.startswith("'filter on validity before clustering; filter on quality after, when choosing "
+                            "representatives'") for t in notes)
+    assert any("Validity filters" in t and "hands" in t and "defining pairs" in t for t in notes)
+    assert any("kink test" in t for t in notes)
+    for key, settings in by_key.items():  # only options the steps have
+        tool = TOOLS[settings.tool]
+        known = {o.key for sec in tool.sections for o in sec.options} | {sec.key for sec in tool.sections}
+        assert set(settings.settings) <= known, (key, set(settings.settings) - known)
+    # what the user types: sequence and pairs, the map, the two sides, the rebuilt residues, the interface
+    mp = tmp_path / "map.mrc"
+    mp.write_text("map")
+    by_key["fold"].settings.update(sequence="GGGCAC GUGCCC", dotbracket="(((((( ))))))")
+    by_key["map"].settings["path"] = str(mp)
+    by_key["interface"].settings.update(side_a="A", side_b="B", rebuilt_from="rebuilt", rebuilt="A:4-6")
+    by_key["score"].settings["regions"] = [{"name": "interface", "ranges": "A:4-6,B:7-9"}]
+    by_key["score"].settings["reference"] = "A:1-3,B:10-12"
+    plan = Plan(wf, str(tmp_path / "plan"))
+    errors = [(plan.steps[n].label, i.message) for n, i in plan.all_issues() if i.level == "error"]
+    assert errors == []
+    report = plan.write()
+    scripts = [p for p in report.written if p.endswith(".sh") and "_00_" not in os.path.basename(p)]
+    assert len(scripts) == 6
+    for path in scripts:
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        assert proc.returncode == 0, (path, proc.stderr)
+    score = re.sub(r"\s*\\\n\s*", " ", next(open(p).read() for p in scripts if "_mapscore_" in p))
+    assert "--method qscore --chimerax chimerax" in score and "--region interface=A:4-6,B:7-9" in score
+    assert "--reference-region A:1-3,B:10-12" in score and "/03_model-check/" in score
+
 
 def test_lrna_force_field_fixes_are_automatic():
     """NBfix19 / 0BPh pairs for the L-RNA bridging-oxygen type and its atom types for tleap, as in the

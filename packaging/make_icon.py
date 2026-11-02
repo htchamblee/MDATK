@@ -1,8 +1,10 @@
 """Program icons of the stand-alone builds (PNG for Linux, ICO for Windows) with Pillow.
 
-MDATK: the source tree has no bitmap icon (the desktop file uses the theme icon
-``applications-science``); the builds need one, so it is drawn here at build
-time: an RNA double helix on a dark rounded square.
+MDATK: an RNA double helix on a dark rounded square, drawn here: at build time
+for the builds' PNG and ICO, and with ``--assets`` into ``mdatk/assets``
+(``mdatk-icon-<size>.png``, committed), the icons that ``mdatk desktop install``
+puts into the user's icon theme (the desktop-entry template itself names the
+theme icon ``applications-science``).
 
 RNAdo: the icon is committed as PNGs in ``mdatk/assets`` (drawn by
 ``packaging/make_rnado_art.py``); its ICO is put together from those PNGs, one
@@ -10,6 +12,8 @@ image per size, so Windows shows the simplified small sizes as drawn.
 
     python packaging/make_icon.py OUT_DIR
         # writes mdatk.png (256 px), mdatk.ico, rnado.png (256 px) and rnado.ico
+    python packaging/make_icon.py --assets
+        # redraws mdatk/assets/mdatk-icon-<size>.png (after changing the drawing)
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from PIL import Image, ImageDraw
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mdatk", "assets")
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)  # 256 px is the largest size an ICO holds
+ASSET_SIZES = ICO_SIZES  # mdatk/assets/mdatk-icon-<size>.png: the hicolor sizes of the menu entry
 
 SIZE = 1024  # drawn large, scaled down (anti-aliasing)
 BG = (28, 45, 72, 255)
@@ -67,8 +72,19 @@ def rnado(out: str, assets: str = ASSETS) -> None:
               append_images=[images[n] for n in sorted(images)])
 
 
+def mdatk_assets(assets: str = ASSETS) -> None:
+    """mdatk/assets/mdatk-icon-<size>.png for every size of :data:`ASSET_SIZES` (Pillow writes the same
+    bytes for the same drawing, so redrawing an unchanged icon changes no file)."""
+    img = draw()
+    for n in ASSET_SIZES:
+        img.resize((n, n), Image.LANCZOS).save(os.path.join(assets, f"mdatk-icon-{n}.png"), optimize=True)
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--assets"]:
+        mdatk_assets()
+        return 0
     out = argv[0] if argv else "."
     os.makedirs(out, exist_ok=True)
     img = draw()

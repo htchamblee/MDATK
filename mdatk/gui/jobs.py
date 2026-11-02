@@ -1,5 +1,5 @@
-"""Background jobs with a progress bar and a Cancel button, and the questions around running generated
-scripts.  The analysis window (renders, cleaning) and RNAdo (generated scripts) share them."""
+"""Background jobs with a progress bar and a Cancel button, and the questions around writing and running
+generated scripts.  The analysis window (renders, cleaning) and RNAdo (generated scripts) share them."""
 
 from __future__ import annotations
 
@@ -16,18 +16,25 @@ from .worker import Worker  # noqa: E402
 
 
 class JobControl:
-    """One background job at a time: the progress bar shows it, the Cancel button stops it and the
-    ``busy_widgets`` are greyed out while it runs."""
+    """One background job at a time: the progress bar shows it, the Cancel button (and the
+    ``stop_widgets``, e.g. RNAdo's *Stop scripts*) stops it and the ``busy_widgets`` are greyed out while
+    it runs."""
 
     def __init__(self, progress: Gtk.ProgressBar, cancel_button: Gtk.Button, log: Callable[[str], None],
-                 error: Callable[[str, str], None], busy_widgets: Optional[List[Gtk.Widget]] = None):
+                 error: Callable[[str, str], None], busy_widgets: Optional[List[Gtk.Widget]] = None,
+                 stop_widgets: Optional[List[Gtk.Widget]] = None):
         self.progress = progress
         self.cancel_button = cancel_button
         self.log = log
         self.error = error
         self.busy_widgets: List[Gtk.Widget] = busy_widgets if busy_widgets is not None else []
+        self.stop_widgets: List[Gtk.Widget] = stop_widgets if stop_widgets is not None else []
         self.worker: Optional[Worker] = None
-        cancel_button.set_sensitive(False)
+        self._set_stoppable(False)
+
+    def _set_stoppable(self, on: bool) -> None:
+        for w in [self.cancel_button] + self.stop_widgets:
+            w.set_sensitive(on)
 
     @property
     def running(self) -> bool:
@@ -46,13 +53,13 @@ class JobControl:
         self.progress.set_text(f"{title} …")
         for w in self.busy_widgets:
             w.set_sensitive(False)
-        self.cancel_button.set_sensitive(True)
+        self._set_stoppable(True)
         self.log(f"--- {title} ---")
 
         def done(result, exc, tb):
             for w in self.busy_widgets:
                 w.set_sensitive(True)
-            self.cancel_button.set_sensitive(False)
+            self._set_stoppable(False)
             self.worker = None
             if isinstance(exc, Cancelled):
                 self.progress.set_text("Cancelled")
@@ -100,12 +107,22 @@ class JobControl:
 
 def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence[str] = (),
                 project_path: Optional[str] = None, parallel: int = 1,
-                with_separate: Optional[Sequence] = None) -> Optional[List]:
+                with_separate: Optional[Sequence] = None, budget=None) -> Optional[List]:
     """Ask before running generated scripts; returns the jobs to run (``with_separate`` when the user
-    also runs the scripts marked 'run separately'), or None when the user cancels."""
-    lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}" for j in jobs]
+    also runs the scripts marked 'run separately'), or None when the user cancels.  ``parallel``: the most
+    scripts at once (0: no limit); ``budget``: the CPU cores and GPUs they share (None: not counted)."""
+    lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}"
+             + (f" - {j.resources.text()}" if budget is not None else "") for j in jobs]
     detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
-    if parallel > 1 and len(jobs) > 1:
+    if budget is not None and parallel != 1 and len(jobs) > 1:
+        cap = f", at most {parallel} at a time" if parallel else ""
+        detail += (f"\n\nScripts run side by side on this computer as long as they fit in {budget.text()}"
+                   f"{cap}; a step that uses a GPU gets a free one unless it names its own. Each step "
+                   "starts when the steps it reads from have finished. A failure stops the steps that "
+                   "depend on it; Stop scripts stops every running script, the stop button on a running "
+                   "box only that step's. Their output appears in the output log, each line marked with its "
+                   "step number.")
+    elif parallel > 1 and len(jobs) > 1:
         detail += (f"\n\nUp to {parallel} scripts run at the same time on this computer; each step starts "
                    "when the steps it reads from have finished. A failure stops the steps that depend "
                    "on it, Cancel stops every running script. Their output appears in the output log, each "
@@ -138,6 +155,35 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
     chosen = list(with_separate) if ok and include is not None and include.get_active() else list(jobs)
     dlg.destroy()
     return chosen if ok else None
+
+
+SUPERSEDE_LIMIT = 12  # steps listed in the question (each with a few of its files)
+
+
+def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> bool:
+    """Ask before writing steps whose folders hold a completed run of the plan's stamp: that run moves
+    into the step's superseded/ folder first (mdatk.workflows.supersede; ``items`` are its
+    :class:`~mdatk.workflows.supersede.Supersede` records).  True to go on."""
+    lines: List[str] = []
+    for item in list(items)[:SUPERSEDE_LIMIT]:
+        lines += item.lines(limit=4)
+    if len(items) > SUPERSEDE_LIMIT:
+        lines.append(f"… and {len(items) - SUPERSEDE_LIMIT} more step(s)")
+    detail = ("\n".join(lines) + "\n\nWriting a step again moves its completed run - the outputs, the "
+              "scripts and inputs that made them, and its logs - into the step's superseded/ folder "
+              "(<time> is the time of writing), with a manifest, so the run stays repeatable. Steps that "
+              "read these outputs need the steps to run again. Partial runs stay where they are. To keep a "
+              "run in place, cancel and let the step use it (Check previous runs, then Use this run).")
+    verb = "write and run" if run else "write"
+    dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.WARNING,
+                            buttons=Gtk.ButtonsType.NONE,
+                            text=f"Move the completed run(s) of {len(items)} step(s) aside and {verb} them?")
+    dlg.format_secondary_text(detail)
+    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Move aside and " + verb, Gtk.ResponseType.OK)
+    dlg.set_default_response(Gtk.ResponseType.CANCEL)
+    ok = dlg.run() == Gtk.ResponseType.OK
+    dlg.destroy()
+    return ok
 
 
 def waiting_text(results: Sequence) -> str:

@@ -28,7 +28,9 @@ from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from ..config import PlanEdge, PlanNode  # noqa: E402
 from ..projectfile import logged  # noqa: E402
-from ..workflows import TOOLS, runstate, tools_by_category  # noqa: E402
+from ..workflows import TOOLS, runstate, supersede, tools_by_category  # noqa: E402
+from ..workflows.budget import (ALL_CORES, MAX_GPUS_LISTED, Budget, Resources, auto_cores,  # noqa: E402
+                                detected_gpus)
 from ..workflows.naming import new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
                               connect, next_step, remove_node, step_title)
@@ -37,16 +39,19 @@ from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
+from .jobs import confirm_supersede  # noqa: E402
 from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
 
 NODE_W = 236
 HEAD_H = 26
 DESC_H = 20
 CHECK = 13  # side of the "run" check box in a step's header
+STOP = 14  # side of the stop button in the header of a step whose script runs
 FOOT_H = 18  # row under the ports: the step's previous run (Check previous runs) or the run it uses
 MAX_PARALLEL = 64
 PORT_H = 18
 PORT_R = 5.0
+SET_R = 9.0  # a collection port (the full set of N files of one kind, e.g. every decoy): a large, stacked dot
 GRID = 10
 
 CATEGORY_COLORS = {
@@ -92,6 +97,7 @@ class PlannerCanvas(Gtk.DrawingArea):
         self.selected_edge: Optional[int] = None
         self.drag: Optional[dict] = None
         self.hover_port: Optional[Tuple[str, str, bool]] = None
+        self.hover_stop = False  # the pointer is on a running step's stop button
         self.spin_phase = 0.0  # angle of the running-script spinner
         self.set_can_focus(True)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
@@ -130,8 +136,8 @@ class PlannerCanvas(Gtk.DrawingArea):
         run = self.win.prev_runs.get(node.id)
         if run is not None:
             text = {"done": f"done · {run.stamp or 'no stamp'} · {run.date}",
-                    "partial": f"partial · {run.stamp or 'no stamp'} · {len(run.found)} of "
-                               f"{len(run.found) + len(run.missing)} files",
+                    "partial": f"partial{' (stopped)' if run.stopped else ''} · {run.stamp or 'no stamp'} · "
+                               f"{len(run.found)} of {len(run.found) + len(run.missing)} files",
                     "missing": "missing · no outputs yet", "none": "no output files to look for"}[run.state]
             if node.adopted:
                 text = ("uses " if run.adopted else f"uses {node.adopted} · found ") + text
@@ -139,6 +145,22 @@ class PlannerCanvas(Gtk.DrawingArea):
         if node.adopted and checkable(node):
             return f"uses the run of {node.adopted}", (0.10, 0.37, 0.71)
         return None
+
+    def node_resources(self, node: PlanNode) -> Optional[Resources]:
+        """What one run of the step's scripts uses (None: a box that runs nothing)."""
+        tool = TOOLS.get(node.tool)
+        if tool is None or not tool.generates:
+            return None
+        step = self.win.plan.steps.get(node.id) if self.win.plan else None
+        try:
+            return tool.run_resources(step.settings if step is not None and step.settings
+                                      else tool.normalise(node.settings))
+        except Exception:  # noqa: BLE001 - drawing never breaks on a generator's bug
+            return Resources()
+
+    @staticmethod
+    def port_radius(port: Port) -> float:
+        return SET_R if port.collection else PORT_R
 
     def port_pos(self, node: PlanNode, name: str, output: bool) -> Optional[Tuple[float, float]]:
         ins, outs = self.ports(node)
@@ -187,14 +209,35 @@ class PlannerCanvas(Gtk.DrawingArea):
                 return n
         return None
 
+    @staticmethod
+    def stop_rect(node: PlanNode) -> Tuple[float, float, float, float]:
+        """The stop button of a running step: left of the run marker in its header."""
+        return node.x + NODE_W - 57, node.y + (HEAD_H - STOP) / 2, STOP, STOP
+
+    def stop_at(self, x: float, y: float) -> Optional[PlanNode]:
+        """The running step whose stop button is under (x, y) (2 px tolerance)."""
+        for n in reversed(self.workflow.nodes):
+            if self.win.run_state.get(n.id) != "running":
+                continue
+            bx, by, bw, bh = self.stop_rect(n)
+            if bx - 2 <= x <= bx + bw + 2 and by - 2 <= y <= by + bh + 2:
+                return n
+        return None
+
     def port_at(self, x: float, y: float) -> Optional[Tuple[PlanNode, Port, bool]]:
+        """The port under (x, y), within 5 px of its dot; of a step's ports the one whose dot's edge is
+        nearest (a large collection dot reaches towards its neighbours)."""
         for n in reversed(self.workflow.nodes):
             ins, outs = self.ports(n)
+            best, best_d = None, 5.0 + 1e-9
             for output, ports in ((True, outs), (False, ins)):
                 for p in ports:
                     pos = self.port_pos(n, p.name, output)
-                    if pos and math.hypot(pos[0] - x, pos[1] - y) <= PORT_R + 5:
-                        return n, p, output
+                    d = math.hypot(pos[0] - x, pos[1] - y) - self.port_radius(p) if pos else best_d
+                    if d < best_d:
+                        best, best_d = (n, p, output), d
+            if best is not None:
+                return best
         return None
 
     def edge_points(self, e: PlanEdge):
@@ -270,10 +313,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             return
         nodes = {n.id: n for n in self.workflow.nodes}
         _ins, outs = self.ports(nodes[e.source])
-        kind = next((p.kind for p in outs if p.name == e.output), "text")
+        port = next((p for p in outs if p.name == e.output), None)
+        kind = port.kind if port is not None else "text"
         rgb = KIND_COLORS.get(kind, (0.4, 0.4, 0.4))
         (x0, y0), (x1, y1), (x2, y2), (x3, y3) = pts
-        cr.set_line_width(4.0 if selected else 2.2)
+        cr.set_line_width(4.0 if selected else 3.4 if port is not None and port.collection else 2.2)
         if selected:
             cr.set_source_rgb(0.10, 0.37, 0.71)
         else:
@@ -365,8 +409,10 @@ class PlannerCanvas(Gtk.DrawingArea):
         run = self.win.run_state.get(n.id)
         if run:
             self._draw_run_state(cr, run, n.x + w - 31, n.y + HEAD_H / 2, rgb)
+        if run == "running":
+            self._draw_stop_button(cr, n)
         self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1),
-                   n.x + w - (43 if run else 25) - title_x)
+                   n.x + w - (62 if run == "running" else 43 if run else 25) - title_x)
         step = self.win.plan.steps.get(n.id) if self.win.plan else None
         level = step.level() if step else "ok"
         cr.new_path()
@@ -382,7 +428,9 @@ class PlannerCanvas(Gtk.DrawingArea):
                 desc = tool.describe(step.settings if step and step.settings else tool.normalise(n.settings))
             except Exception:  # describe must never break drawing
                 desc = tool.label
-        self._text(cr, desc, n.x + 9, n.y + HEAD_H + 14, 9.5, False, (0.35, 0.35, 0.35), w - 18)
+        res = self.node_resources(n)
+        badge_w = self._draw_badge(cr, res.badge(), n.x + w - 8, n.y + HEAD_H + 4) + 6 if res else 0
+        self._text(cr, desc, n.x + 9, n.y + HEAD_H + 14, 9.5, False, (0.35, 0.35, 0.35), w - 18 - badge_w)
         ins, outs = self.ports(n)
         connected_in = {e.input for e in self.workflow.edges if e.target == n.id}
         for output, ports in ((False, ins), (True, outs)):
@@ -390,8 +438,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 px = n.x + (w if output else 0)
                 py = n.y + HEAD_H + DESC_H + (k + 0.5) * PORT_H
                 prgb = KIND_COLORS.get(p.kind, (0.4, 0.4, 0.4))
+                r = self.port_radius(p)
+                if p.collection:
+                    self._draw_set_stack(cr, px, py, prgb, 1 if output else -1)
                 cr.new_path()
-                cr.arc(px, py, PORT_R, 0, 2 * math.pi)
+                cr.arc(px, py, r, 0, 2 * math.pi)
                 cr.set_source_rgb(*prgb)
                 cr.fill_preserve()
                 missing = (not output and not p.optional and p.name not in connected_in
@@ -399,15 +450,21 @@ class PlannerCanvas(Gtk.DrawingArea):
                 cr.set_source_rgb(0.75, 0.11, 0.16) if missing else cr.set_source_rgb(1, 1, 1)
                 cr.set_line_width(2.0 if missing else 1.2)
                 cr.stroke()
+                if p.collection:  # a white ring inside: a set of files, not one
+                    cr.arc(px, py, r * 0.42, 0, 2 * math.pi)
+                    cr.set_source_rgb(1, 1, 1)
+                    cr.set_line_width(1.4)
+                    cr.stroke()
                 hover = self.hover_port and self.hover_port[:2] == (n.id, p.name)
                 label = p.label + (" *" if not output and not p.optional else "")
+                pad = r + 5  # the label starts beside the dot
                 # inputs and outputs share rows: each label gets its own half of the box
                 if output:
-                    self._text(cr, label, px - 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
-                               w / 2 - 14, align_right=True)
+                    self._text(cr, label, px - pad, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
+                               w / 2 - 4 - pad, align_right=True)
                 else:
-                    self._text(cr, label, px + 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
-                               w / 2 - 14 if k < len(outs) else w - 24)
+                    self._text(cr, label, px + pad, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
+                               w / 2 - 4 - pad if k < len(outs) else w - 14 - pad)
         info = self.run_info(n)
         if info is not None:  # footer: the previous run found, or the run the step uses
             text, frgb = info
@@ -418,10 +475,48 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.fill()
             self._text(cr, text, n.x + 23, fy + 3.5, 9.0, bool(n.adopted), (0.25, 0.25, 0.25), w - 32)
 
+    def _draw_badge(self, cr, text: str, right: float, top: float) -> float:
+        """The CPU cores and GPUs a step uses ('8c+1g'), right-aligned at ``right``; returns its width."""
+        cr.select_font_face("Sans", 0, 0)
+        cr.set_font_size(8.5)
+        width = cr.text_extents(text).x_advance + 8
+        self._rounded(cr, right - width, top, width, 13, 4.0)
+        cr.set_source_rgb(0.92, 0.92, 0.91)
+        cr.fill()
+        self._text(cr, text, right - 4, top + 9.5, 8.5, False, (0.30, 0.30, 0.30), align_right=True)
+        return width
+
+    def _draw_stop_button(self, cr, n: PlanNode) -> None:
+        """A small square stop button in the header of a running step (stops its script only)."""
+        bx, by, bw, bh = self.stop_rect(n)
+        self._rounded(cr, bx, by, bw, bh, 3.0)
+        cr.set_source_rgb(1, 1, 1)
+        cr.fill_preserve()
+        cr.set_source_rgba(0, 0, 0, 0.35)
+        cr.set_line_width(1.0)
+        cr.stroke()
+        cr.rectangle(bx + 4, by + 4, bw - 8, bh - 8)
+        cr.set_source_rgb(*STATUS_COLORS["error"])
+        cr.fill()
+
+    @staticmethod
+    def _draw_set_stack(cr, x: float, y: float, rgb, side: int) -> None:
+        """Two fainter dots behind a collection port's dot, offset outwards (``side``: 1 right, -1 left) and
+        up: a stack, the full set of files."""
+        light = tuple(c + (1.0 - c) * 0.35 for c in rgb)
+        for k in (2, 1):
+            cr.new_path()
+            cr.arc(x + side * 2.6 * k, y - 2.6 * k, SET_R - 1.2 * k, 0, 2 * math.pi)
+            cr.set_source_rgb(*light)
+            cr.fill_preserve()
+            cr.set_source_rgb(1, 1, 1)
+            cr.set_line_width(1.0)
+            cr.stroke()
+
     def _draw_run_state(self, cr, state: str, cx: float, cy: float, head_rgb) -> None:
         """Run marker left of the status dot: a turning arc while the script runs, a ring while it
-        is queued, then a tick (ok), a cross (failed), two bars (waiting for a separately run script)
-        or a dash (cancelled / not started)."""
+        is queued, then a tick (ok), a cross (failed), two bars (waiting for a separately run script),
+        a square (stopped by the user) or a dash (cancelled / not started)."""
         r = 6.0
         cr.new_path()
         if state == "running":
@@ -463,6 +558,10 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.line_to(cx - 1.8, cy + 3.0)
             cr.move_to(cx + 1.8, cy - 3.0)
             cr.line_to(cx + 1.8, cy + 3.0)
+        elif state == "stopped":  # stopped by the user
+            cr.set_source_rgb(*STATUS_COLORS["warning"])
+            cr.rectangle(cx - 2.8, cy - 2.8, 5.6, 5.6)
+            cr.fill()
         else:  # cancelled / skipped
             cr.set_source_rgb(0.45, 0.45, 0.45)
             cr.move_to(cx - 3.0, cy)
@@ -500,6 +599,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             if ev.type == Gdk.EventType.BUTTON_PRESS:  # a double click must not toggle twice
                 self.win.toggle_checked(box.id)
             return True
+        running = self.stop_at(x, y)
+        if running is not None:
+            if ev.type == Gdk.EventType.BUTTON_PRESS:
+                self.win.stop_step(running.id)
+            return True
         if ev.type == Gdk.EventType._2BUTTON_PRESS:
             n = self.node_at(x, y)
             if n is not None:
@@ -534,13 +638,21 @@ class PlannerCanvas(Gtk.DrawingArea):
         if d is None:
             hit = self.port_at(x, y)
             new = (hit[0].id, hit[1].name, hit[2]) if hit else None
-            if new != self.hover_port:
-                self.hover_port = new
+            stop = None if hit else self.stop_at(x, y)
+            if new != self.hover_port or (stop is not None) != self.hover_stop:
+                self.hover_port, self.hover_stop = new, stop is not None
                 if hit:
                     n, p, output = hit
                     kinds = ", ".join(kind_label(k) for k in p.kinds)
+                    if p.collection:
+                        kinds += (" · the full set of files (large dot): connect it to an input drawn as a "
+                                  "large dot" if output else
+                                  " · takes the full set of files of a large dot, or files one by one")
                     self.set_tooltip_text(f"{'Output' if output else 'Input'}: {p.label}\n{kinds}"
                                           + (f"\n{p.tooltip}" if p.tooltip else ""))
+                elif stop is not None:
+                    self.set_tooltip_text("Stop this step's script (the other scripts go on; the steps that "
+                                          "read from this one do not start)")
                 else:
                     self.set_tooltip_text(None)
                 self.queue_draw()
@@ -576,9 +688,14 @@ class PlannerCanvas(Gtk.DrawingArea):
                     args = (d["node"], d["port"], n.id, p.name)
                 else:
                     args = (n.id, p.name, d["node"], d["port"])
+                source = self.win.node(args[0])
+                before = dict(source.settings) if source is not None else {}
                 try:
-                    connect(self.workflow, *args)
-                    self.win.set_status(f"Connected {args[1]} → {args[3]}")
+                    edge = connect(self.workflow, *args)
+                    self.win.set_status(f"Connected {edge.output} → {edge.input}")
+                    wizard = self.win.wizards.get(edge.source)
+                    if wizard is not None and source is not None and source.settings != before:
+                        wizard.reload()  # the connection switched on an option the output needs
                     self.win.changed()
                 except (KeyError, ValueError) as exc:
                     self.win.set_status(f"Cannot connect: {exc}", error=True)
@@ -624,6 +741,9 @@ class PlannerCanvas(Gtk.DrawingArea):
         n = self.node_at(x, y)
         if n is not None:
             self.select(n.id)
+            if self.win.run_state.get(n.id) in ("running", "queued"):
+                self._menu_item(menu, "Stop this step", lambda: self.win.stop_step(n.id))
+                menu.append(Gtk.SeparatorMenuItem())
             if TOOLS.get(n.tool) and TOOLS[n.tool].generates:
                 self._menu_item(menu, "Edit in wizard…", lambda: self.win.open_wizard(n))
                 self._menu_item(menu, "Untick for 'Run selected'" if n.id in self.win.checked
@@ -744,8 +864,13 @@ class PlannerPanel(Gtk.Box):
             self.project_entry.set_text(wf.project_name)
             self.stamp_check.set_active(wf.use_stamp)
             self.folders_check.set_active(wf.step_folders)
-            self.parallel_spin.set_value(max(1, wf.parallel))
-            wf.parallel = int(self.parallel_spin.get_value())  # what the run will use (1-64)
+            self.supersede_check.set_active(wf.supersede_runs)
+            self.parallel_spin.set_value(max(0, wf.parallel))
+            wf.parallel = int(self.parallel_spin.get_value())  # what the run will use (0-64)
+            self.cores_spin.set_value(max(0, wf.cpu_cores))
+            wf.cpu_cores = int(self.cores_spin.get_value())
+            self._fill_gpus(wf.gpus)
+            wf.gpus = max(-1, wf.gpus)
         finally:
             self._loading = False
         self.canvas.selected = None
@@ -835,17 +960,12 @@ class PlannerPanel(Gtk.Box):
                        False, False, 0)
         bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
-        par = Gtk.Box(spacing=4)
-        par.pack_start(W.label("Parallel"), False, False, 0)
-        self.parallel_spin = W.spin(1, MAX_PARALLEL, 1, 0)
-        self.parallel_spin.set_tooltip_text(
-            "How many scripts Run all / Run selected start at the same time. Each step still waits for the "
-            "steps it reads from. GPU steps (pmemd.cuda, gmx mdrun) running together share the GPU unless "
-            "their Environment section sets CUDA_VISIBLE_DEVICES; CPU steps share the cores. Saved with "
-            "the project.")
-        self.parallel_spin.connect("value-changed", self._on_parallel)
-        par.pack_start(self.parallel_spin, False, False, 0)
-        bar.pack_end(par, False, False, 0)
+        self.stop_button = W.button("Stop scripts", self.stop_scripts,
+                                    "Stop every running script (the same as Cancel). The stop button on a "
+                                    "running box stops only that step's script.", "process-stop-symbolic")
+        self.stop_button.get_style_context().add_class("destructive-action")
+        self.stop_button.set_sensitive(False)  # the host enables it while scripts run
+        bar.pack_end(self.stop_button, False, False, 0)
         self.run_selected_btn = W.button("Run selected steps", self.run_selected,
                                          "Write the ticked steps' files and run their main scripts in plan "
                                          "order (tick a step with the box in its title bar, Space, or the "
@@ -884,6 +1004,14 @@ class PlannerPanel(Gtk.Box):
                                                     "03_amber-build/")
         self.folders_check.connect("toggled", self._on_naming)
         bar.pack_start(self.folders_check, False, False, 0)
+        self.supersede_check = W.check(
+            "Move completed runs aside", "Before a step's files are written again, move its completed run "
+            "of the plan's time stamp (outputs, the scripts and inputs that made them, logs) into "
+            "<step folder>/superseded/<stamp>_<time>/, with a manifest, so the run stays repeatable; you are "
+            "asked first. Off: writing replaces the scripts and the next run the outputs. Saved with the "
+            "project.")
+        self.supersede_check.connect("toggled", self._on_naming)
+        bar.pack_start(self.supersede_check, False, False, 0)
         bar.pack_start(W.label("Folder"), False, False, 0)
         self.folder_label = W.label("")
         self.folder_label.set_ellipsize(Pango.EllipsizeMode.START)
@@ -891,7 +1019,71 @@ class PlannerPanel(Gtk.Box):
         bar.pack_start(self.folder_label, True, True, 0)
         bar.pack_start(W.button("Change…", self.choose_folder, "Folder that receives the plan"), False,
                        False, 0)
+        bar.pack_start(self._budget_controls(), False, False, 0)
         return bar
+
+    def _budget_controls(self) -> Gtk.Widget:
+        """CPU cores, GPUs and the most scripts at once for Run all / Run selected (saved with the plan)."""
+        box = Gtk.Box(spacing=4)
+        box.set_margin_start(8)
+        box.pack_start(W.label("CPU cores"), False, False, 0)
+        self.cores_spin = W.spin(0, 4096, 1, 0)
+        self.cores_spin.set_width_chars(9)
+        self.cores_spin.set_numeric(False)
+        self.cores_spin.connect("output", self._spin_text, lambda: f"auto ({auto_cores()})")
+        self.cores_spin.set_tooltip_text(
+            "CPU cores the scripts that Run all / Run selected start may use together. A step starts when "
+            "the cores it uses are free (its box shows them, e.g. 8c+1g: NAMD's +p, pmemd.MPI's processes, "
+            "GROMACS's threads, FARFAR2's parallel runs; one for most steps). 0: auto, half of this "
+            "computer's cores. Saved with the project.")
+        self.cores_spin.connect("value-changed", self._on_budget)
+        self.cores_spin.update()  # shows 'auto (N)' from the start
+        box.pack_start(self.cores_spin, False, False, 0)
+        box.pack_start(W.label("GPUs"), False, False, 0)
+        self.gpus_combo = W.no_wheel(Gtk.ComboBoxText())
+        self.gpus_combo.connect("changed", self._on_budget)
+        box.pack_start(self.gpus_combo, False, False, 0)
+        box.pack_start(W.label("At once"), False, False, 0)
+        self.parallel_spin = W.spin(0, MAX_PARALLEL, 1, 0)
+        self.parallel_spin.set_width_chars(8)
+        self.parallel_spin.set_numeric(False)
+        self.parallel_spin.connect("output", self._spin_text, lambda: "no limit")
+        self.parallel_spin.set_tooltip_text(
+            "The most scripts Run all / Run selected run at the same time, besides the CPU cores and GPUs "
+            "(0: no limit, the cores and GPUs decide). Each step still waits for the steps it reads from. "
+            "Projects saved before 0.0.12 keep their Parallel value here (1: one at a time). Saved with the "
+            "project.")
+        self.parallel_spin.connect("value-changed", self._on_parallel)
+        self.parallel_spin.update()
+        box.pack_start(self.parallel_spin, False, False, 0)
+        return box
+
+    @staticmethod
+    def _spin_text(spin: Gtk.SpinButton, zero: Callable[[], str]) -> bool:
+        """Show the meaning of 0 ('auto (8)', 'no limit') instead of the number (the spin is not numeric-only,
+        or the text would be refused; text that is no number reads as 0)."""
+        if spin.get_value_as_int() != 0:
+            return False
+        spin.set_text(zero())
+        return True
+
+    def _fill_gpus(self, value: int) -> None:
+        """The GPUs choices: auto (with the GPUs found), none, 1, 2, ... and select ``value``."""
+        found = detected_gpus()
+        combo = self.gpus_combo
+        combo.remove_all()
+        combo.append("-1", f"auto ({len(found)})")
+        combo.append("0", "none")
+        for k in range(1, max(MAX_GPUS_LISTED, len(found), value) + 1):
+            combo.append(str(k), str(k))
+        combo.set_tooltip_text(
+            "GPUs the scripts may use. A step that uses a GPU (pmemd.cuda, NAMD, GROMACS with the GPU, a "
+            "custom script that asks for one) starts when one is free and gets it in CUDA_VISIBLE_DEVICES, "
+            "unless the step names its own (its GPU option, NAMD's +devices or CUDA_VISIBLE_DEVICES in its "
+            f"Environment). auto: the GPUs found ({', '.join(found) or 'none'}: nvidia-smi -L, or "
+            "CUDA_VISIBLE_DEVICES of RNAdo's own environment). With none, steps that use a GPU run one at "
+            "a time. Saved with the project.")
+        combo.set_active_id(str(max(-1, value)))
 
     def _refresh_naming(self) -> None:
         wf = self.workflow
@@ -941,6 +1133,8 @@ class PlannerPanel(Gtk.Box):
                               "window (Input & cleaning)")
         btns.pack_start(self.d_use, False, False, 0)
         box.pack_start(btns, False, False, 0)
+        self.d_res = W.label("", wrap=True)  # the CPU cores and GPUs the step uses
+        box.pack_start(self.d_res, False, False, 0)
         self.d_files = W.label("", wrap=True)
         self.d_files.set_selectable(True)
         self.d_files.set_line_wrap_mode(Pango.WrapMode.CHAR)
@@ -995,6 +1189,7 @@ class PlannerPanel(Gtk.Box):
                     w.set_sensitive(False)
                 self.d_note_sw.hide()
                 self.d_files.set_text("")
+                self.d_res.set_text("")
                 self.d_prev.set_text("")
                 return
             tool = TOOLS.get(n.tool)
@@ -1028,6 +1223,7 @@ class PlannerPanel(Gtk.Box):
                     for port, v in step.outputs.items():
                         lines.append(f"  {port}: {', '.join(v.paths[:2])}{' …' if len(v.paths) > 2 else ''}")
             self.d_files.set_text("\n".join(lines))
+            self.d_res.set_text(self._resources_text(n) if gen else "")
             self.d_prev.set_text(self._previous_run_text(n) if gen else "")
             run = self.prev_runs.get(n.id)
             self.d_check.set_sensitive(gen)
@@ -1161,6 +1357,7 @@ class PlannerPanel(Gtk.Box):
         wf.project_name = self.project_entry.get_text().strip() or "project"
         wf.use_stamp = self.stamp_check.get_active()
         wf.step_folders = self.folders_check.get_active()
+        wf.supersede_runs = self.supersede_check.get_active()
         self.schedule_resolve()
 
     def new_stamp(self) -> None:
@@ -1213,22 +1410,41 @@ class PlannerPanel(Gtk.Box):
             if not self._ask("Some steps have errors", text + "\n\nWrite the other steps anyway? Steps "
                              "with errors are skipped."):
                 return
+        # completed runs of the plan's stamp move aside before their steps are written again: ask first
+        moving = supersede.pending(plan, node_ids)
+        readers = self.running_readers(moving) if moving else []
+        if readers:  # those runs' outputs are being read (or will be, by a queued step)
+            self._message("Scripts are running", "Writing would move the completed runs of "
+                          + ", ".join(i.label for i in moving.values()) + " aside while "
+                          + ", ".join(readers) + " may read them. Wait for the scripts to finish, or cancel "
+                          "them, then write again.", Gtk.MessageType.ERROR)
+            return
+        if moving and not confirm_supersede(self.toplevel(), list(moving.values()), run):
+            return
         try:
             with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
-                report = plan.write(node_ids)
+                report = plan.write(node_ids, project_path=self.host.project_path)
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
+                if report.superseded:
+                    entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
         except OSError as exc:
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
+        for nid in report.superseded:
+            self.prev_runs.pop(nid, None)  # that run is in superseded/ now
         self.changed()
         msg = f"Wrote {len(report.written)} files to {report.root}"
         if report.skipped:
             msg += f" ({len(report.skipped)} steps skipped)"
         if report.kept:
             msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
+        moved = [i for i in report.superseded.values() if not i.error]
+        if moved:
+            msg += f" ({len(moved)} completed runs moved aside)"
         self.set_status(msg)
         self.host.append_log("Planner: " + msg)
+        self.log_superseded(report)
         if report.master:
             self.host.append_log(f"Master script: {report.master}")
         if run:
@@ -1242,6 +1458,7 @@ class PlannerPanel(Gtk.Box):
             separate = separate_scripts(plan, ok_ids)
             started = self.host.run_scripts(jobs, separate, parent=self.toplevel(),
                                             parallel=int(self.parallel_spin.get_value()),
+                                            budget=self.budget(),
                                             on_state=lambda j, st: self._on_run_state(j, st, token),
                                             on_finished=lambda: self._on_run_finished(token),
                                             with_separate=plan_jobs(plan, ok_ids, include_separate=True)
@@ -1250,6 +1467,60 @@ class PlannerPanel(Gtk.Box):
             # confirmed) the running run's marks must still reach their end (None: a host without the answer)
             if started is not False:
                 self._run_token = token
+
+    def running_readers(self, moving) -> List[str]:
+        """The running or queued steps that are among the steps of ``moving`` (node ids) or read their
+        outputs; a run the planner does not follow (one the wizard started) counts as reading them all."""
+        active = [n for n, st in self.run_state.items() if st in ("queued", "running")]
+        if not active:
+            jobs = getattr(self.host, "jobs", None)
+            return ["the scripts that are running"] if getattr(jobs, "running", False) else []
+        reads = {e.target for e in self.workflow.edges if e.source in moving}
+        return [step_title(n) for n in self.workflow.nodes
+                if n.id in active and (n.id in moving or n.id in reads)]
+
+    def log_superseded(self, report) -> None:
+        """List the completed runs a write moved aside in the output log (and the moves that failed in a
+        message: those steps were not written)."""
+        failed = []
+        for item in report.superseded.values():
+            lines = item.lines()
+            self.host.append_log("Planner: " + lines[0])
+            for line in lines[1:]:
+                self.host.append_log(line)
+            if item.error:
+                failed.append(item.summary())
+        if failed:
+            self._message(f"{len(failed)} step(s) not written", "\n".join(failed) + "\n\nNothing of these "
+                          "runs was lost: what was moved went back (or stays in superseded/, as said).",
+                          Gtk.MessageType.ERROR)
+
+    def _resources_text(self, n: PlanNode) -> str:
+        res = self.canvas.node_resources(n)
+        if res is None:
+            return ""
+        text = f"Uses {res.text()} when it runs"
+        if res.cores == ALL_CORES:
+            text += " (its program takes every core it finds: no other step runs beside it)"
+        if res.uses_gpu and not res.pinned:
+            text += "; RNAdo hands it a free GPU in CUDA_VISIBLE_DEVICES"
+        return text + "."
+
+    def budget(self) -> Budget:
+        """The CPU cores and GPUs Run all / Run selected may use (the plan's settings)."""
+        return Budget.of(self.workflow)
+
+    def stop_scripts(self) -> None:
+        """*Stop scripts*: stop every running script (the host cancels the run)."""
+        stop = getattr(self.host, "stop_scripts", None)
+        if stop is not None:
+            stop()
+
+    def stop_step(self, node_id: str) -> None:
+        """The stop button of a running box: stop that step's script only."""
+        stop = getattr(self.host, "stop_step", None)
+        if stop is None or not stop(node_id):
+            self.set_status("No script of this step is running", error=True)
 
     # ------------------------------------------------------- previous runs
     def _previous_run_text(self, n: PlanNode) -> str:
@@ -1362,6 +1633,13 @@ class PlannerPanel(Gtk.Box):
         if not self._loading:
             self.workflow.parallel = int(spin.get_value())
 
+    def _on_budget(self, *_) -> None:
+        if self._loading:
+            return
+        self.workflow.cpu_cores = int(self.cores_spin.get_value())
+        gpus = self.gpus_combo.get_active_id()
+        self.workflow.gpus = int(gpus) if gpus is not None else -1
+
     def _on_run_state(self, job, state: str, token: Optional[int] = None) -> None:
         """A script changed state (main loop); the first 'queued' of a run clears the last run's marks."""
         if (token is not None and token != self._run_token) or self._closed:
@@ -1371,8 +1649,8 @@ class PlannerPanel(Gtk.Box):
         if state == "queued" and not any(v in ("queued", "running") for v in self.run_state.values()):
             self.run_state.clear()
         prev = self.run_state.get(job.node_id)
-        # a step with several scripts: keep 'failed' and do not fall back from running/ok to queued
-        if prev == "failed" or (state == "queued" and prev is not None):
+        # a step with several scripts: keep 'failed' / 'stopped', do not fall back from running/ok to queued
+        if prev in ("failed", "stopped") or (state == "queued" and prev is not None):
             return
         self.run_state[job.node_id] = state
         if state == "running" and not self._spin_id:

@@ -12,11 +12,11 @@ Record layout (fixed columns; residue fields are chain id, residue number in 4 c
 code, residue name left-justified in 3 columns)::
 
     REMARK 950 MDATK BASE-PAIR ANNOTATION
-    REMARK 950 ENGINE barnaba 0.1.9                      (or: builtin, canonical pairs ...)
+    REMARK 950 ENGINE barnaba 0.1.9                      (or: builtin, canonical pairs ... / dssr)
     REMARK 950 PAIRS 20 (WATSON-CRICK 18, WOBBLE 2, OTHER 0)
     REMARK 950 PAIR  A  12 G   B  33 C   WCc             one per base pair (Leontis-Westhof class;
                                                          the builtin engine writes WCc / GUc)
-    REMARK 950 STACK A  12 G   A  13 C   >>              one per stacking (barnaba only)
+    REMARK 950 STACK A  12 G   A  13 C   >>              one per stacking (barnaba; dssr writes '--')
     REMARK 950 CHAINS A,B                                one block per group of chains joined by pairs
     REMARK 950 SEQ   GGGCAAAGCU&AGCUUUGCCC              sequence, '&' between chains
     REMARK 950 DBN   ((((...(((&)))...))))              Watson-Crick and wobble pairs as dot-bracket
@@ -25,6 +25,10 @@ SEQ and DBN are wrapped to 60 characters per line (continuation lines repeat the
 nucleotides (a known name plus backbone atoms) appear in SEQ / DBN; chains without nucleotides are left
 out.  A strand is a TER-delimited segment of one chain, so files with blank chain ids (Amber, cpptraj)
 still get a '&' between strands.
+
+The dssr engine runs x3dna-dssr (external, licensed separately, never bundled; :mod:`mdatk.dssr`) on a
+copy with canonical residue names and synthetic residue ids; its Leontis-Westhof classes are written in
+barnaba's form ('cWW' Watson-Crick -> WCc, wobble -> GUc, 'tHS' -> HSt).
 """
 
 from __future__ import annotations
@@ -36,9 +40,10 @@ import numpy as np
 
 from .pdbtools import Residue, Structure, _nucleotide, _read_text, parse_residue_name, read_pdb, write_pdb
 from .secstruct import (OTHER, WATSON_CRICK, WOBBLE, BarnabaRunner, PairDetector, barnaba_available,
-                        base_letter, import_barnaba, lw_kind, pairs_to_dotbracket, unique_pairs)
+                        base_letter, canonical_name, import_barnaba, lw_kind, pairs_to_dotbracket,
+                        unique_pairs)
 
-ENGINES = ("auto", "builtin", "barnaba")
+ENGINES = ("auto", "builtin", "barnaba", "dssr")
 REMARK = "REMARK 950"
 WRAP = 60
 
@@ -143,11 +148,13 @@ def _insert_records(text: str, records: Sequence[str]) -> str:
 
 
 def annotate(source, pairs: bool = True, stacking: bool = True, dotbracket: bool = True,
-             engine: str = "auto", cutoff: float = 3.5, wobble: bool = True) -> AnnotationResult:
+             engine: str = "auto", cutoff: float = 3.5, wobble: bool = True,
+             dssr_exe: str = "x3dna-dssr") -> AnnotationResult:
     """Annotate PDB text or a path; see the module docstring for the records.
 
     ``engine``: "barnaba", "builtin" (canonical pairs from H-bond distances, ``cutoff`` / ``wobble``
-    as in the basepairs analysis; no stacking) or "auto" (barnaba when importable).
+    as in the basepairs analysis; no stacking), "dssr" (x3dna-dssr, ``dssr_exe``) or "auto" (barnaba
+    when importable; DSSR is used only when asked for).
     """
     if engine not in ENGINES:
         raise ValueError(f"unknown annotation engine {engine!r} (choose from {', '.join(ENGINES)})")
@@ -195,6 +202,20 @@ def annotate(source, pairs: bool = True, stacking: bool = True, dotbracket: bool
         if any((parse_residue_name(residues[k].name) or (0, 0, "D"))[2] == "L" for k in nucleotide):
             notes.append("barnaba classifies pairs from base geometry made for D-nucleotides; Leontis-"
                          "Westhof classes of L-RNA pairs may be mirrored (edges / cis-trans)")
+    elif engine == "dssr":
+        from .dssr import DssrRunner, lw_code
+        canonical = [(canonical_name(n) or "") if n else "" for n in names]  # L names -> A C G U
+        coords = [res.coords() for res in residues]
+        atoms = [[(a, coords[k][a]) for a, _row in heavy_atoms[k]] for k in range(len(residues))]
+        dres = DssrRunner(canonical, atoms, exe=dssr_exe).run()
+        found = [(i, j, lw_code(lw, name)) for i, j, lw, name in dres.pairs
+                 if wobble or lw_code(lw, name) != "GUc"]
+        stacks = [(i, j, "--") for i, j in dres.stacks] if stacking else []
+        notes += [n for n in dres.notes if "hydrogen" not in n]  # pairs and stacks only here
+        header = [f"{REMARK} ENGINE dssr{' ' + dres.version if dres.version else ''}"]
+        if any((parse_residue_name(residues[k].name) or (0, 0, "D"))[2] == "L" for k in nucleotide):
+            notes.append("DSSR does not check sugar chirality: pairs with L-RNA residues are classified like "
+                         "D pairs")
     else:
         code = {WATSON_CRICK: "WCc", WOBBLE: "GUc"}
         detected = PairDetector(names, atom_index, cutoff=cutoff, wobble=wobble).detect(xyz)
@@ -210,7 +231,7 @@ def annotate(source, pairs: bool = True, stacking: bool = True, dotbracket: bool
     if pairs:
         records += [f"{REMARK} PAIR  {_res_field(residues[i])} {_res_field(residues[j])} {c}"
                     for i, j, c in found]
-    if stacking and engine == "barnaba":
+    if stacking and engine in ("barnaba", "dssr"):
         records += [f"{REMARK} STACK {_res_field(residues[i])} {_res_field(residues[j])} {c}"
                     for i, j, c in stacks]
     if dotbracket:
