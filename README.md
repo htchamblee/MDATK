@@ -983,12 +983,14 @@ RNAdo asks first: *Write all files*, *Write step*, the *Run* actions and the wiz
 completed runs would move and where (*Cancel*, or *Move aside and write*); the output log then lists what
 moved, and a saved project records each move in its step log (`workflow supersede`). While a step that
 reads those outputs runs or waits to run (or the wizard's run, which RNAdo does not follow), RNAdo refuses
-such a write: write again once the scripts have finished. To keep a run in place, let the step use it
-instead (*Use this run*). The naming bar's *Move completed runs aside* (project
-option `workflow.supersede_runs`, on by default) turns moving off: writing then replaces the scripts, and
-the next run the outputs, as before 0.0.12. On the command line `workflow write` (also with `--run`) and
-`workflow generate` print the runs they moved on standard error and under `superseded` in their JSON;
-`workflow run` only runs scripts already written, so it moves nothing:
+such a write: write again once the scripts have finished. Only the runs listed move: a run that completes
+while the question is open (the runner works on) stays in place and its step is not written, with a
+message; write again. To keep a run in place, let the step use it instead (*Use this run*). The naming
+bar's *Move completed runs aside* (project option `workflow.supersede_runs`, on by default) turns moving
+off: writing then replaces the scripts, and the next run the outputs, as before 0.0.12. On the command
+line `workflow write` (also with `--run`) and `workflow generate` print the runs they moved on standard
+error and under `superseded` in their JSON; `workflow run` only runs scripts already written, so it moves
+nothing:
 
 ```bash
 mdatk workflow write -p plan.mdatk.toml --dry-run   # what would be written, and which runs would move

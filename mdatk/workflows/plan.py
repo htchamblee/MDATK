@@ -15,7 +15,7 @@ import datetime as _dt
 import heapq
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 
 from .. import PROJECT_ABBREV, __version__
 from ..config import PlanEdge, PlanNode, WorkflowParams
@@ -65,6 +65,9 @@ class WriteReport:
     # node id -> the completed run moved aside before the step was written (mdatk.workflows.supersede);
     # one that could not be moved has its error, and the step is in ``skipped``
     superseded: Dict[str, Any] = field(default_factory=dict)
+    # node ids not written because their run completed after the caller asked which runs move aside
+    # (``confirmed`` of Plan.write); they are in ``skipped`` too
+    late: List[str] = field(default_factory=list)
     master: str = ""
     summary: str = ""
 
@@ -424,14 +427,18 @@ class Plan:
         return out
 
     def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True,
-              project_path: Optional[str] = None, supersede: Optional[bool] = None) -> WriteReport:
+              project_path: Optional[str] = None, supersede: Optional[bool] = None,
+              confirmed: Optional[Collection[str]] = None) -> WriteReport:
         """Write the files of every step without errors (all steps by default).
 
         Before a step's files are written, its complete run of the plan's stamp moves into
         ``<step folder>/superseded/`` (:mod:`mdatk.workflows.supersede`; ``supersede``, by default the
         project option ``supersede_runs``); a step whose run cannot be moved is not written (``skipped``).
-        Moves are recorded in the step log of ``project_path``."""
-        from .supersede import move_aside
+        Moves are recorded in the step log of ``project_path``.  ``confirmed``: the steps whose runs the
+        caller listed (:func:`mdatk.workflows.supersede.pending`) before asking; another step whose run has
+        completed since is neither moved nor written (``late``), since nobody was asked about it and a
+        running step may be reading it (None: every run may move)."""
+        from .supersede import candidate, move_aside
 
         if not self.root:
             raise ValueError("no plan folder set")
@@ -455,6 +462,11 @@ class Plan:
         when = _dt.datetime.now()  # one time for the runs moved by this write
         for nid, files in generated.items():
             if nid in report.skipped:
+                continue
+            if move and confirmed is not None and nid not in confirmed and candidate(self, nid) is not None:
+                report.late.append(nid)
+                report.skipped[nid] = ("its run completed after the question which runs move aside, so it "
+                                       "was neither moved nor written; write the step again")
                 continue
             moved = move_aside(self, nid, when, project_path) if move else None
             if moved is not None:
