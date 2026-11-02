@@ -1813,7 +1813,12 @@ not know are mapped from the residue or its atoms), leaves ions, water and Roset
 and numbers the residues itself, so DSSR's answer maps back by residue index and never depends on how a
 DSSR version writes its residue ids (`A.G1`, `1:A.G1`, `A.0A/45`, `A.G1^B`, atom ids `N1@A.G1`). Its
 Leontis-Westhof classes are written in the same form as Barnaba's (`cWW` Watson-Crick → `WCc`, wobble →
-`GUc`, `tHS` → `HSt`), stacks as `--`. DSSR, like Barnaba, does not check chirality: it classifies a D–L
+`GUc`, `tHS` → `HSt`), stacks as `--`. The stacks are DSSR's `stacks` plus the stacking inside its
+`stems`: DSSR's list of stacks leaves out the stacking within a stem, so MDATK takes it from the stem's
+consecutive pairs (neighbours along each strand). Cross-strand stacking inside a stem, which DSSR
+reports only in its non-pair list (`--non-pair`, not run), is not included, so `mdatk pdb interface
+--engine dssr` lists no stacks between the two strands of an intermolecular stem where the builtin engine
+or Barnaba may find some. DSSR, like Barnaba, does not check chirality: it classifies a D–L
 pair like any other. `mdatk pdb interface` (see [Decoy interfaces](#decoy-interfaces)) lists the pairs,
 stacks and base / 2′-OH to phosphate hydrogen bonds between two sides of each model, with the hand of each
 partner, from the builtin engine, Barnaba or DSSR.
