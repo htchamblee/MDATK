@@ -1052,6 +1052,67 @@ REFERENCE_DATA = [
             'dynamics.pdf (authors, title, journal, volume, pages, May 2008, DOI on the first page)'
         ),
     },
+    {
+        "key": 'meng2023chimerax',
+        "text": (
+            'Meng E. C., Goddard T. D., Pettersen E. F., Couch G. S., Pearson Z. J., Morris J. H., Ferrin '
+            'T. E. Protein Sci. 2023, 32, e4792. doi:10.1002/pro.4792'
+        ),
+        "bibtex": (
+            '@article{meng2023chimerax,\n  author = {Meng, E. C. and Goddard, T. D. and Pettersen, E. F. '
+            'and Couch, G. S. and Pearson, Z. J. and Morris, J. H. and Ferrin, T. E.},\n  title = {{UCSF '
+            'ChimeraX: Tools for structure building and analysis}},\n  journal = {Protein Science},\n  '
+            'year = {2023},\n  volume = {32},\n  number = {11},\n  pages = {e4792},\n  doi = '
+            '{10.1002/pro.4792}\n}'
+        ),
+        "doi": '10.1002/pro.4792',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/RBVI/ChimeraX/blob/develop/docs/credits.html (authors, title, Protein '
+            'Sci. 2023 Nov;32(11):e4792, the first of the references it asks for); doi from memory'
+        ),
+    },
+    {
+        "key": 'pettersen2021chimerax',
+        "text": (
+            'Pettersen E. F., Goddard T. D., Huang C. C., Meng E. C., Couch G. S., Croll T. I., Morris J. '
+            'H., Ferrin T. E. Protein Sci. 2021, 30, 70-82. doi:10.1002/pro.3943'
+        ),
+        "bibtex": (
+            '@article{pettersen2021chimerax,\n  author = {Pettersen, E. F. and Goddard, T. D. and Huang, '
+            'C. C. and Meng, E. C. and Couch, G. S. and Croll, T. I. and Morris, J. H. and Ferrin, T. '
+            'E.},\n  title = {{UCSF ChimeraX: Structure visualization for researchers, educators, and '
+            'developers}},\n  journal = {Protein Science},\n  year = {2021},\n  volume = {30},\n  number = '
+            '{1},\n  pages = {70--82},\n  doi = {10.1002/pro.3943}\n}'
+        ),
+        "doi": '10.1002/pro.3943',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/RBVI/ChimeraX/blob/develop/docs/credits.html (authors, title, Protein '
+            'Sci. 2021 Jan;30(1):70-82); repo:https://github.com/RBVI/ChimeraX/blob/develop/CITATION.cff '
+            '(doi)'
+        ),
+    },
+    {
+        "key": 'pintilie2020qscore',
+        "text": (
+            'Pintilie G., Zhang K., Su Z., Li S., Schmid M. F., Chiu W. Nat. Methods 2020, 17, 328-334. '
+            'doi:10.1038/s41592-020-0731-1'
+        ),
+        "bibtex": (
+            '@article{pintilie2020qscore,\n  author = {Pintilie, G. and Zhang, K. and Su, Z. and Li, S. '
+            'and Schmid, M. F. and Chiu, W.},\n  title = {{Measurement of atom resolvability in cryo-EM '
+            'maps with Q-scores}},\n  journal = {Nature Methods},\n  year = {2020},\n  volume = {17},\n  '
+            'number = {3},\n  pages = {328--334},\n  doi = {10.1038/s41592-020-0731-1}\n}'
+        ),
+        "doi": '10.1038/s41592-020-0731-1',
+        "url": '',
+        "verified": (
+            'repo:https://github.com/gregdp/mapq (README: title, 2020, Nature Methods, article '
+            's41592-020-0731-1); repo:https://github.com/tristanic/chimerax-qscore (README: the same '
+            'article); authors, volume, issue and pages from memory, not checked against the article'
+        ),
+    },
 ]
 
 RESOURCE_DATA = [
@@ -1403,5 +1464,18 @@ RESOURCE_DATA = [
         "name": 'Molecular dynamics flexible fitting (MDFF)',
         "keys": ['trabuco2008mdff'],
         "note": 'The MDFF method; MDATK writes the potential with the mdff griddx formula.',
+    },
+    {
+        "id": 'chimerax',
+        "name": 'UCSF ChimeraX',
+        "keys": ['meng2023chimerax', 'pettersen2021chimerax'],
+        "note": 'The two most recent of the references ChimeraX asks to be cited for (docs/credits.html).',
+    },
+    {
+        "id": 'qscore',
+        "name": 'Q-score (ChimeraX qscore command)',
+        "keys": ['pintilie2020qscore'],
+        "note": ('The method; computed by the QScore bundle of the ChimeraX Toolshed (ChimeraX-QScore, '
+                 'T. I. Croll), which refers to this paper.'),
     },
 ]

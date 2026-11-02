@@ -1,18 +1,18 @@
 """Map-model scores per residue, regions ranked by them, and old/new body hybrids.
 
 Scores
-    ``qscore``: an external Q-score program (Pintilie et al., Nat. Methods 17, 328 (2020)), by default
-    Phenix's ``phenix.qscore`` (cctbx's ``mmtbx.qscore``), run on a copy of the model with standard
-    residue names: plain A / C / G / U for D and L residues alike, every nucleotide an ATOM record,
-    hydrogens and Rosetta's virtual residues dropped.  Q-score samples the radial density profile around
-    each atom, which does not depend on handedness, so the plain names change nothing it measures, while
-    programs that look residues up in their library would otherwise skip or reject L names (0A, LG ...)
-    and HETATM records.  The copy never leaves the score's work folder.  The command is a template
-    (``{model}``, ``{map}``, ``{stem}``, ``{resolution}``); its per-atom or per-residue output is read
-    tolerantly: any table in the files it writes or on its standard output with a Q column and residue
-    columns (chain, residue number), else a PDB it writes with Q in the B-factor column.  The command
-    name and its output format could not be checked against a Phenix installation here; adjust the
-    template to the installed version.
+    ``qscore``: the map-model Q-score (Pintilie et al., Nat. Methods 2020) computed by ChimeraX's
+    ``qscore`` command, which comes with the QScore bundle of the ChimeraX Toolshed (ChimeraX-QScore,
+    T. I. Croll).  ChimeraX reads the model as it is: L residue names (LG5, 0A ...) and HETATM records
+    are scored like any other residue, so no renamed copy is made.  Each model is scored by
+    ``chimerax --nogui --cmd "open MODEL id 1 maxModels 1; open MAP id 2; qscore #1 toVolume #2 useGui
+    false logDetails true [options]; exit"`` (``maxModels 1``: the first model of a multi-model file, as
+    MDATK reads it), or several models in one ChimeraX run: the map opened once as #1, each model opened as
+    #2, scored and closed, with a marker line logged before it.  The per-residue table that ``logDetails``
+    prints (Chain, Number, Name, Qavg, Qworst, Qbb, Qsc) is read from the log tolerantly: blank lines,
+    the dashed rule, tabs or spaces, ``<pre>`` tags or ChimeraX's ``INFO:`` lines around each row,
+    insertion codes after the number and ``N/A`` cells; the ``Overall mean Q-Score`` line (a mean over
+    atoms) closes it.  Qavg ranks the regions, or Qbb / Qsc.
     ``cc``: MDATK's own per-residue correlation, no external program: the model's map is simulated
     (:func:`mdatk.density.simulate_map`, molmap-style Gaussians at the given resolution) and, for each
     residue, correlated with the experimental map (trilinear) over the grid points within a radius of the
@@ -23,6 +23,9 @@ Regions
     both sides.  Chain termini (the first and last nucleotide of every chain segment, from the model) are
     left out of every mean unless kept: a terminal residue has fewer neighbours and a lower Q for that
     reason alone.  Residues without a score (NaN, e.g. outside the map) are counted, never averaged.
+    Models are ranked by default on the first region's difference to the reference, dQ = Q(interface) -
+    Q(scaffold): the scaffold every decoy shares would dominate a whole-model mean, and dQ survives a change
+    of map scaling or sharpening where an absolute Q does not.
 Hybrids
     Every old/new combination of up to six bodies (residue ranges of an old and a re-fitted model), over the
     atoms both files have, coordinates copied verbatim; scored against a map, each body's main effect is the
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import html
 import itertools
 import math
 import os
@@ -40,7 +44,7 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -50,72 +54,28 @@ from .ensemble import (EnsembleError, Range, ResKey, in_selection, is_hydrogen, 
                        residue_base, residue_key, selection_residues, selection_text, write_table)
 from .pdbtools import Residue, Structure
 
-QSCORE_COMMAND = "phenix.qscore {model} {map}"
+CHIMERAX = "chimerax"
 MASK_RADIUS = 2.5  # Å around a residue's atoms for its correlation
 MAX_BODIES = 6
 _VIRTUAL = frozenset({"VRT", "XXX"})
 _VIRTUAL_ATOMS = frozenset({"ORIG", "X", "Y", "Z"})
 ResidueScores = Dict[ResKey, Tuple[str, float, int]]  # key -> (residue name, score, atoms / points)
 
+# "qavg" last: MDATK's Q-score table has both it and 'score' (the column the regions were ranked on)
 _Q_COLS = ("q", "qscore", "q_score", "q-score", "qscore_mean", "q_mean", "mean_q", "qscore_per_residue",
-           "q_residue", "q-residue", "score", "cc")
+           "q_residue", "q-residue", "score", "cc", "qavg")
 _CHAIN_COLS = ("chain", "chain_id", "chainid", "chn", "auth_asym_id", "label_asym_id", "asym_id")
 _RESSEQ_COLS = ("resseq", "resnum", "resid", "resi", "res_num", "resno", "res_seq", "residue_number",
-                "auth_seq_id", "seq_id", "residue_seq")
+                "auth_seq_id", "seq_id", "residue_seq", "number")
 _ICODE_COLS = ("icode", "ins_code", "insertion_code", "pdbx_pdb_ins_code", "inscode")
-_RESNAME_COLS = ("resname", "resn", "res_name", "comp_id", "auth_comp_id", "residue_name", "base")
+_RESNAME_COLS = ("resname", "resn", "res_name", "comp_id", "auth_comp_id", "residue_name", "base", "name")
 _MODEL_COLS = ("model",)
+_NOT_A_NUMBER = ("nan", "na", "n/a", "", "none")
 
 
 def _is_virtual(res: Residue) -> bool:
     names = {a.name for a in res.atoms}
     return res.name.strip().upper() in _VIRTUAL or (bool(names) and names <= _VIRTUAL_ATOMS)
-
-
-# --- the standard-name copy -------------------------------------------------------------------------------
-
-def standard_copy(structure: Structure, keep_h: bool = False) -> Tuple[Structure, List[str]]:
-    """A copy for chirality-blind scoring: plain nucleotide names (A C G U; DNA DA ...), nucleotides as ATOM,
-    hydrogens (``keep_h`` keeps them) and virtual residues dropped; other residues unchanged.
-
-    Private stand-in for the pdbtools 'standard' scheme of the model-check work; the names here no longer
-    show the chirality, so the copy is for scoring only."""
-    s = copy.deepcopy(structure)
-    renamed = hydrogens = virtual = 0
-    segments = []
-    for seg in s.segments:
-        kept = []
-        for res in seg:
-            if _is_virtual(res):
-                virtual += 1
-                continue
-            info = pdbtools.parse_residue_name(res.name)
-            base = residue_base(res)
-            if base:  # every nucleotide as ATOM: scoring programs commonly skip HETATM as ligands
-                name = ("D" + base) if info is not None and info.sugar == "dna" else base
-                if name != res.name:
-                    renamed += 1
-                res.name = name
-                for a in res.atoms:
-                    a.record = "ATOM"
-            if not keep_h:
-                before = len(res.atoms)
-                res.atoms = [a for a in res.atoms if not is_hydrogen(a)]
-                hydrogens += before - len(res.atoms)
-            if res.atoms:
-                kept.append(res)
-        if kept:
-            segments.append(kept)
-    s.segments = segments
-    s.conect = []
-    notes = []
-    if renamed:
-        notes.append(f"{renamed} residues given plain names for scoring (the copy no longer shows chirality)")
-    if hydrogens:
-        notes.append(f"{hydrogens} hydrogens left out")
-    if virtual:
-        notes.append(f"{virtual} virtual residues left out")
-    return s, notes
 
 
 # --- reading score output ---------------------------------------------------------------------------------
@@ -158,8 +118,8 @@ def parse_score_table(text: str, column: str = "") -> Optional[Dict[str, Residue
                 continue
             try:
                 q = float(vals[qcol])
-            except ValueError:
-                q = math.nan if vals[qcol].strip().lower() in ("nan", "na", "") else None
+            except ValueError:  # ChimeraX writes "N/A", quotes included
+                q = math.nan if vals[qcol].strip().strip('"').lower() in _NOT_A_NUMBER else None
                 if q is None:
                     continue
             chain = vals[ccol].strip() if ccol is not None and ccol < len(vals) else ""
@@ -182,89 +142,325 @@ def parse_score_table(text: str, column: str = "") -> Optional[Dict[str, Residue
     return None
 
 
-def scores_from_bfactors(structure: Structure) -> Optional[ResidueScores]:
-    """Per-residue mean of the B-factor column when every value lies in [-1, 1] (Q written as B)."""
-    out: ResidueScores = {}
-    for res in structure.residues():
-        vals = []
-        for a in res.atoms:
-            if is_hydrogen(a):
-                continue
-            try:
-                b = float(a.tail[33:39])
-            except ValueError:
-                continue
-            if not -1.0 <= b <= 1.0:
-                return None
-            vals.append(b)
-        if vals:
-            out[residue_key(res)] = (res.name, sum(vals) / len(vals), len(vals))
-    return out or None
+# --- Q-score with ChimeraX ----------------------------------------------------------------------------------
+
+# fixed qscore options: no GUI (ChimeraX runs with --nogui) and the per-residue table in the log
+QSCORE_FIXED = "useGui false logDetails true"
+# keywords the qscore command declares (ChimeraX-QScore 1.2, src/cmd.py); toVolume, useGui, logDetails and
+# outputFile are MDATK's (an outputFile would not change the log, but each model would overwrite it)
+QSCORE_KEYWORDS = ("referenceGaussianSigma", "pointsPerShell", "maxShellRadius", "shellRadiusStep",
+                   "assignAttr")
+QSCORE_RESERVED = ("toVolume", "useGui", "logDetails", "outputFile")
+Q_COLUMNS = ("qavg", "qbb", "qsc")
+QSCORE_MARKER = "MDATK-QSCORE"  # logged ('log text') before each model of a several-model ChimeraX run
+MAX_COMMAND = 100_000  # characters in one --cmd argument: Linux limits a single argument to 128 KiB
 
 
-def _command(template: str, **values: str) -> str:
-    """Placeholders replaced by shell-quoted values; other braces (e.g. in a ChimeraX command) stay."""
-    text = template
-    for k, v in values.items():
-        text = text.replace("{" + k + "}", shlex.quote(v))
-    return text
+@dataclass
+class QRow:
+    """One residue of ChimeraX's qscore table; N/A cells are NaN."""
+    name: str
+    qavg: float
+    qworst: float
+    qbb: float = math.nan
+    qsc: float = math.nan
 
 
-def run_qscore(model: str, map_path: str, work_dir: str, command: str = QSCORE_COMMAND,
-               keep_h: bool = False, resolution: Optional[float] = None, timeout: Optional[float] = None
-               ) -> Tuple[ResidueScores, List[str]]:
-    """Run the Q-score program on the standard-name copy of ``model`` in ``work_dir`` and read its scores
-    (keys are the model's own: the copy keeps chains and residue numbers)."""
-    os.makedirs(work_dir, exist_ok=True)
-    structure = pdbtools.read_pdb(model)
-    std, notes = standard_copy(structure, keep_h)
-    stem = os.path.splitext(os.path.basename(model))[0]
-    copy_path = os.path.join(work_dir, f"{stem}_standard.pdb")
-    with open(copy_path, "w", encoding="utf-8") as fh:
-        fh.write(pdbtools.write_pdb(std))
-    before = set(os.listdir(work_dir))
-    cmd = _command(command, model=os.path.basename(copy_path), map=os.path.abspath(map_path), stem=stem,
-                   resolution="" if resolution is None else f"{resolution:g}")
+@dataclass
+class QTable:
+    """One per-residue table of a ChimeraX log: rows keyed (chain, number, insertion code) as ChimeraX prints
+    them, the 'Overall mean Q-Score' that follows it (a mean over atoms; None while it is missing, e.g. when
+    ChimeraX stopped inside the table) and the model index of the MDATK marker logged before it."""
+    rows: Dict[ResKey, QRow] = field(default_factory=dict)
+    overall: Optional[float] = None
+    marker: Optional[int] = None
+
+    @property
+    def complete(self) -> bool:
+        return self.overall is not None
+
+
+def check_qscore_options(text: str) -> Tuple[str, List[str]]:
+    """Further qscore options ('pointsPerShell 16 shellRadiusStep 0.05') as one line, and warnings for
+    keywords the command does not declare.  EnsembleError for a ';' (another ChimeraX command), a keyword
+    without a value, or one MDATK sets."""
+    if ";" in (text or ""):
+        raise EnsembleError("qscore options: no ';' (it would start another ChimeraX command)")
+    words = (text or "").split()
+    if len(words) % 2:
+        raise EnsembleError(f"qscore options: {words[-1]!r} has no value (keyword value pairs, e.g. "
+                            "'pointsPerShell 16')")
+    known = {k.lower() for k in QSCORE_KEYWORDS}
+    reserved = {k.lower() for k in QSCORE_RESERVED}
+    warnings = []
+    for kw in words[::2]:
+        if kw.lower() in reserved:
+            raise EnsembleError(f"qscore options: {kw} is set by MDATK ('{QSCORE_FIXED}', toVolume the map)")
+        if kw.lower() not in known:
+            warnings.append(f"qscore options: {kw} is not a keyword of the qscore command (ChimeraX-QScore "
+                            f"1.2 has {', '.join(QSCORE_KEYWORDS)}); ChimeraX stops at a keyword it does not "
+                            "know")
+    return " ".join(words), warnings
+
+
+_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_LEVEL = re.compile(r"(?:INFO|WARNING|ERROR|BUG|STATUS):\s*$")  # ChimeraX's --nogui log prefixes
+_OVERALL = re.compile(r"overall\s+mean\s+q-?score\s*[:=]?\s*(\S+)", re.I)
+_RULE = re.compile(r"-{5,}")
+_Q_HEADER = ["chain", "number", "name", "qavg", "qworst"]
+_RES_NUMBER = re.compile(r"(-?\d+)([A-Za-z]?)")
+
+
+def _q_value(text: str) -> float:
+    t = text.strip().strip("\"'")
+    return math.nan if t.lower() in _NOT_A_NUMBER else float(t)
+
+
+def _q_cells(line: str) -> List[str]:
+    """Tab-separated (the log), else comma-separated (qscore's outputFile), else split on spaces."""
+    if "\t" in line:
+        return [c.strip() for c in line.split("\t")]
+    if "," in line:
+        return [c.strip() for c in line.split(",")]
+    return line.split()
+
+
+def _q_row(cells: List[str], width: int) -> Optional[Tuple[ResKey, QRow]]:
+    if len(cells) == width - 1 and _RES_NUMBER.fullmatch(cells[0]):  # a blank chain, lost in a space split
+        cells = [""] + cells
+    if len(cells) < 5:
+        return None
+    m = _RES_NUMBER.fullmatch(cells[1])
+    if not m:
+        return None
     try:
-        proc = subprocess.run(cmd, shell=True, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise EnsembleError(f"the Q-score command did not finish within {timeout:g} s: {cmd}") from None
-    log = os.path.join(work_dir, f"{stem}_qscore.log")
-    with open(log, "w", encoding="utf-8") as fh:
-        fh.write(f"$ {cmd}\n{proc.stdout}\n{proc.stderr}")
-    if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or proc.stdout).strip().splitlines()[-5:])
-        raise EnsembleError(f"the Q-score command failed (exit {proc.returncode}): {cmd}\n{tail}")
-    made = sorted(set(os.listdir(work_dir)) - before - {os.path.basename(log)})
-    for name in made:  # a table first
-        if name.lower().endswith((".csv", ".tsv", ".txt", ".dat", ".log")):
-            with open(os.path.join(work_dir, name), encoding="utf-8", errors="replace") as fh:
-                got = parse_score_table(fh.read())
-            if got:
-                notes.append(f"Q-scores read from {name}")
-                return _one_model(got), notes
-    got = parse_score_table(proc.stdout)
-    if got:
-        notes.append("Q-scores read from the program's output")
-        return _one_model(got), notes
-    for name in made:  # then a PDB with Q in the B-factors
-        if name.lower().endswith((".pdb", ".ent")):
-            try:
-                scores = scores_from_bfactors(pdbtools.read_pdb(os.path.join(work_dir, name)))
-            except pdbtools.PDBError:
-                continue
-            if scores:
-                notes.append(f"Q-scores read from the B-factors of {name}")
-                return scores, notes
-    raise EnsembleError(f"no per-atom or per-residue Q-scores found in the output of: {cmd} (see {log}); "
-                        "adjust the command so that it writes them")
+        values = [_q_value(c) for c in cells[3:7]]
+    except ValueError:
+        return None
+    values += [math.nan] * (4 - len(values))
+    return (cells[0], int(m.group(1)), m.group(2)), QRow(cells[2], *values)
 
 
-def _one_model(tables: Dict[str, ResidueScores]) -> ResidueScores:
-    out: ResidueScores = {}
-    for scores in tables.values():
-        out.update(scores)
-    return out
+def parse_chimerax_qscore(text: str) -> List[QTable]:
+    """Every per-residue table in a ChimeraX log, in order.
+
+    Tolerant of what ChimeraX's plain-text log puts around the rows: blank lines, ``INFO:`` lines (or the
+    prefix glued to the end of a row), ``<pre>`` tags when html2text is not installed, ANSI colours, the
+    dashed rule, tabs or runs of spaces, warnings between the tables.  The number may carry an insertion
+    code ('12A'); 'N/A' (with or without quotes) is NaN.  A table ends at its 'Overall mean Q-Score'
+    line, the next header or the next MDATK marker; one without its overall line is not complete."""
+    tables: List[QTable] = []
+    cur: Optional[QTable] = None
+    marker: Optional[int] = None
+    width = 7
+    for raw in (text or "").splitlines():
+        line = _LEVEL.sub("", html.unescape(_TAG.sub("", _ANSI.sub("", raw)))).rstrip()
+        body = line.lstrip(" ")  # html2text indents <pre> blocks; a blank chain is an empty cell before a tab
+        if not body.strip():
+            continue
+        m = re.match(rf"{QSCORE_MARKER}\s+(\d+)\b", body.strip())
+        if m:
+            cur, marker = None, int(m.group(1))
+            continue
+        m = _OVERALL.search(body)
+        if m:
+            if cur is not None:
+                try:
+                    cur.overall = float(m.group(1))
+                except ValueError:
+                    cur.overall = math.nan
+            cur = None
+            continue
+        cells = _q_cells(body)
+        if [c.lower() for c in cells[:5]] == _Q_HEADER:
+            cur = QTable(marker=marker)
+            tables.append(cur)
+            marker, width = None, len(cells)
+            continue
+        if cur is None or _RULE.fullmatch(body.strip()):
+            continue
+        row = _q_row(cells, width)
+        if row is not None:
+            cur.rows[row[0]] = row[1]
+    return tables
+
+
+def qscore_residues(table: QTable, structure: Optional[Structure] = None, column: str = "qavg"
+                    ) -> Tuple[ResidueScores, Dict[ResKey, QRow], int]:
+    """(scores by the chosen column, the ChimeraX rows, virtual residues left out), keyed as the model's
+    residues: ChimeraX prints a blank chain as an empty cell.  The atom count is the residue's heavy atoms
+    in the model (ChimeraX scores no hydrogens)."""
+    if column not in Q_COLUMNS + ("qworst",):
+        raise EnsembleError(f"unknown Q column {column!r} ({', '.join(Q_COLUMNS)})")
+    index: Dict[Tuple[str, int, str], Residue] = {}
+    for res in (structure.residues() if structure is not None else []):
+        index.setdefault((res.chain.strip(), res.resseq, res.icode.strip()), res)
+    scores: ResidueScores = {}
+    rows: Dict[ResKey, QRow] = {}
+    virtual = 0
+    for (chain, number, icode), row in table.rows.items():
+        res = index.get((chain.strip(), number, icode.strip()))
+        if row.name.strip().upper() in _VIRTUAL or (res is not None and _is_virtual(res)):
+            virtual += 1
+            continue
+        key = residue_key(res) if res is not None else (chain, number, icode)
+        n = len({a.name for a in res.atoms if not is_hydrogen(a)}) if res is not None else 0
+        scores[key] = (row.name, getattr(row, column), n)
+        rows[key] = row
+    return scores, rows, virtual
+
+
+def _cx_path(path: str) -> str:
+    """A file name in a ChimeraX command: absolute, in double quotes."""
+    p = os.path.abspath(path)
+    if '"' in p or ";" in p:
+        raise EnsembleError(f"{p}: a ChimeraX command cannot name a file with '\"' or ';' in its path "
+                            "(rename or link it)")
+    return f'"{p}"'
+
+
+def _virtual_names(structure: Optional[Structure]) -> List[str]:
+    if structure is None:
+        return []
+    return sorted({r.name.strip() for r in structure.residues() if _is_virtual(r) and r.name.strip()})
+
+
+def _qscore_target(model_id: int, virtual: Sequence[str]) -> str:
+    """The residues to score: the whole model, minus Rosetta's virtual residues when it has any (their
+    atoms sit near the origin, often outside the map box, where ChimeraX-QScore 1.2 stops)."""
+    return f"#{model_id}" + "".join(f" & ~:{name}" for name in virtual)
+
+
+def qscore_command(models: Sequence[Tuple[str, Sequence[str]]], map_path: str, options: str = "") -> str:
+    """The ``--cmd`` text scoring ``models`` ([(path, its virtual residue names)]) against the map.
+
+    One model: the user's command, model #1 and map #2.  Several: the map is opened once as #1 and each
+    model in turn as #2 (``id 2``, so the numbering never drifts), scored and closed, a marker line logged
+    before it so that each table can be told apart.  ``maxModels 1``: the first model of a multi-model PDB,
+    as MDATK reads it (several submodels would make qscore refuse the selection)."""
+    tail = QSCORE_FIXED + (f" {options}" if options else "")
+    if len(models) == 1:
+        path, virtual = models[0]
+        return (f"open {_cx_path(path)} id 1 maxModels 1; open {_cx_path(map_path)} id 2; "
+                f"qscore {_qscore_target(1, virtual)} toVolume #2 {tail}; exit")
+    parts = [f"open {_cx_path(map_path)} id 1"]
+    for k, (path, virtual) in enumerate(models, 1):
+        parts += [f"log text {QSCORE_MARKER} {k}", f"open {_cx_path(path)} id 2 maxModels 1",
+                  f"qscore {_qscore_target(2, virtual)} toVolume #1 {tail}", "close #2"]
+    return "; ".join(parts + ["exit"])
+
+
+def _failure(text: str, code: Optional[int]) -> str:
+    """Why ChimeraX did not score a model, from its output."""
+    m = re.search(r"have atoms outside the bounds of volume[^\n]*\n?([^\n]*)", text)
+    if m:
+        where = m.group(1).strip()[:200]
+        return ("atoms outside the map box: ChimeraX-QScore stops its per-residue table at the first such "
+                f"residue{' (' + where + ')' if where else ''}; enlarge or re-centre the map box")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not _LEVEL.fullmatch(ln.strip())]
+    tail = lines[-1][:300] if lines else ""
+    if code == 0:
+        return "ChimeraX printed no complete per-residue Q-score table for it" + (
+            f" ({tail})" if tail else "")
+    return f"ChimeraX ended with status {code}" + (f": {tail}" if tail else "")
+
+
+def _decoded(data: Any) -> str:
+    if data is None:
+        return ""
+    return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+
+
+def run_chimerax_qscore(models: Sequence[str], map_path: str, work_dir: str, chimerax: str = CHIMERAX,
+                        options: str = "", batch: int = 1, timeout: Optional[float] = None,
+                        structures: Optional[Dict[str, Structure]] = None
+                        ) -> Tuple[Dict[str, QTable], Dict[str, str], List[str]]:
+    """Score ``models`` with ChimeraX's qscore, ChimeraX's log of each run kept in ``work_dir``:
+    ({model: its table}, {model: why it was not scored}, notes).
+
+    ``batch`` models share one ChimeraX run (1: one run per model, the safe default).  A run that stops at
+    a model (ChimeraX ends a --nogui run at the first failing command) is resumed after it, so a bad model
+    costs only its own score.  ``timeout`` is per model.  EnsembleError when ChimeraX cannot be started or
+    has no qscore command."""
+    opts, notes = check_qscore_options(options)
+    exe = (chimerax or CHIMERAX).strip()
+    try:  # a program path as it is (it may hold spaces), else a command line such as 'xvfb-run -a chimerax'
+        argv0 = [exe] if os.path.isfile(exe) else shlex.split(exe)
+    except ValueError as exc:
+        raise EnsembleError(f"cannot read the ChimeraX executable {chimerax!r}: {exc}") from None
+    if not argv0:
+        raise EnsembleError("give the ChimeraX executable")
+    os.makedirs(work_dir, exist_ok=True)
+    structures = structures or {}
+    virtual = {m: _virtual_names(structures.get(m)) for m in models}
+    tables: Dict[str, QTable] = {}
+    failed: Dict[str, str] = {}
+    ignored = runs = 0
+    used: Set[str] = set()
+    pending = list(models)
+    while pending:
+        chunk = pending[:max(1, batch)]
+        cmd = qscore_command([(m, virtual[m]) for m in chunk], map_path, opts)
+        while len(chunk) > 1 and len(cmd) > MAX_COMMAND:
+            chunk = chunk[:len(chunk) // 2]
+            cmd = qscore_command([(m, virtual[m]) for m in chunk], map_path, opts)
+        runs += 1
+        stem = os.path.splitext(os.path.basename(chunk[0]))[0] if len(chunk) == 1 else f"run-{runs:03d}"
+        name, same = f"{stem}_chimerax.log", 1
+        while name in used:  # decoys of different runs share their tags (file names)
+            same += 1
+            name = f"{stem}-{same}_chimerax.log"
+        used.add(name)
+        log_path = os.path.join(work_dir, name)
+        argv = argv0 + ["--nogui", "--cmd", cmd]
+        limit = None if timeout is None else timeout * len(chunk)
+        try:
+            proc = subprocess.run(argv, cwd=work_dir, capture_output=True, text=True, timeout=limit,
+                                  stdin=subprocess.DEVNULL)
+            out, err, code = proc.stdout or "", proc.stderr or "", proc.returncode
+        except FileNotFoundError:
+            raise EnsembleError(f"ChimeraX not found: {argv0[0]} (give the chimerax program, e.g. "
+                                "/usr/bin/chimerax or /opt/UCSF/ChimeraX/bin/ChimeraX)") from None
+        except subprocess.TimeoutExpired as exc:
+            out = _decoded(exc.stdout)
+            err, code = _decoded(exc.stderr) + f"\nstopped after {limit:g} s (time limit)", None
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write(f"$ {shlex.join(argv)}\n{out}\n{err}")
+        both = out + "\n" + err
+        ignored += len(re.findall(r"Ignored bad PDB record", both))
+        if re.search(r"unknown command:?\s*qscore", both, re.I):
+            raise EnsembleError("ChimeraX has no qscore command: install the QScore bundle from the ChimeraX "
+                                f"Toolshed (in ChimeraX: toolshed install QScore); see {log_path}")
+        found = parse_chimerax_qscore(out)
+        got: Dict[str, QTable] = {}
+        if len(chunk) == 1:
+            first = next((t for t in found if t.complete), None)
+            if first is not None:
+                got[chunk[0]] = first
+        else:
+            for t in found:
+                if t.complete and t.marker is not None and 1 <= t.marker <= len(chunk):
+                    got.setdefault(chunk[t.marker - 1], t)
+        tables.update(got)
+        rest = pending[len(chunk):]
+        missing = [m for m in chunk if m not in got]
+        if not missing:
+            if code != 0:
+                notes.append(f"ChimeraX ended with status {code} after scoring every model of "
+                             f"{os.path.basename(log_path)}")
+        elif code == 0:  # ChimeraX ran to the end: the models without a table will not get one
+            for m in missing:
+                failed[m] = _failure(both, code) + f" (log: {log_path})"
+        else:  # it stopped at the first model without a table; those after it never ran
+            k = chunk.index(missing[0])
+            failed[chunk[k]] = _failure(both, code) + f" (log: {log_path})"
+            rest = chunk[k + 1:] + rest
+        pending = rest
+    if ignored:
+        notes.append(f"ChimeraX ignored {ignored} PDB record(s) it could not read (e.g. free-text REMARK "
+                     "lines); the scores do not depend on them")
+    return tables, failed, notes
 
 
 # --- MDATK's per-residue correlation -----------------------------------------------------------------------
@@ -330,20 +526,57 @@ def residue_cc(structure: Structure, dmap, resolution: float, radius: float = MA
     return out
 
 
-def score_model(model: str, map_path: str, method: str = "cc", *, resolution: Optional[float] = None,
-                radius: float = MASK_RADIUS, keep_h: bool = False, command: str = QSCORE_COMMAND,
-                work_dir: str = "", timeout: Optional[float] = None
-                ) -> Tuple[Structure, ResidueScores, List[str]]:
-    """(structure, per-residue scores, notes) of one model by 'cc' or 'qscore'."""
-    structure = pdbtools.read_pdb(model)
-    if method == "qscore":
-        work = work_dir or os.path.join(os.path.dirname(os.path.abspath(model)), "qscore")
-        scores, notes = run_qscore(model, map_path, work, command, keep_h, resolution, timeout)
-        return structure, scores, notes
-    if method != "cc":
+# --- scoring several models ---------------------------------------------------------------------------------
+
+@dataclass
+class ModelScores:
+    """One model's per-residue scores; for Q-scores also ChimeraX's rows and its overall mean."""
+    model: str
+    structure: Structure
+    scores: ResidueScores
+    q_rows: Optional[Dict[ResKey, QRow]] = None
+    overall: Optional[float] = None
+    notes: List[str] = field(default_factory=list)
+
+
+def score_models(models: Sequence[str], map_path: str, method: str = "cc", *,
+                 resolution: Optional[float] = None, radius: float = MASK_RADIUS, keep_h: bool = False,
+                 chimerax: str = CHIMERAX, options: str = "", batch: int = 1, column: str = "qavg",
+                 work_dir: str = "", timeout: Optional[float] = None
+                 ) -> Tuple[List[ModelScores], Dict[str, str], List[str]]:
+    """Per-residue scores of every model by 'cc' or 'qscore': (the scored models in order, {model: why it
+    was not scored} (qscore), notes)."""
+    if method not in ("cc", "qscore"):
         raise EnsembleError(f"unknown scoring method {method!r} (cc or qscore)")
-    from .density import load_map_cached
-    return structure, residue_cc(structure, load_map_cached(map_path), resolution or 0.0, radius, keep_h), []
+    models = list(dict.fromkeys(models))  # a file given twice is scored (and ranked) once
+    structures = {m: pdbtools.read_pdb(m) for m in models}
+    if method == "cc":
+        from .density import load_map_cached
+        dmap = load_map_cached(map_path)
+        return [ModelScores(m, s, residue_cc(s, dmap, resolution or 0.0, radius, keep_h))
+                for m, s in structures.items()], {}, []
+    if column not in Q_COLUMNS:
+        raise EnsembleError(f"unknown Q column {column!r} ({', '.join(Q_COLUMNS)})")
+    if not os.path.isfile(map_path):
+        raise EnsembleError(f"map not found: {map_path}")
+    work = work_dir or os.path.join(os.path.dirname(os.path.abspath(models[0])), "qscore")
+    tables, failed, notes = run_chimerax_qscore(models, map_path, work, chimerax, options, batch, timeout,
+                                                structures)
+    if keep_h:
+        notes.append("ChimeraX's qscore never scores hydrogens: --keep-h has no effect on Q-scores")
+    out = []
+    for m in models:
+        if m not in tables:
+            continue
+        scores, rows, virtual = qscore_residues(tables[m], structures[m], column)
+        more = [f"ChimeraX's overall mean Q-Score {tables[m].overall:.2f} (all atoms, termini included)"]
+        if virtual:
+            more.append(f"{virtual} virtual residue(s) (Rosetta VRT / XXX) left out")
+        if not scores:
+            failed[m] = "ChimeraX's table has no residue of the model"
+            continue
+        out.append(ModelScores(m, structures[m], scores, rows, tables[m].overall, more))
+    return out, failed, notes
 
 
 # --- regions ------------------------------------------------------------------------------------------------
@@ -442,11 +675,11 @@ REGION_COLUMNS = ["model", "region", "residues", "scored", "nan", "missing", "me
 def rank_models(rows: List[Dict[str, Any]], sort: str) -> List[str]:
     """Models best first by a region's mean ('NAME'), its difference to the reference ('delta:NAME'),
     'reference' or 'whole'; NaN last.  Sets each row's 'rank'."""
-    region, field = (sort.split(":", 1)[1], "delta") if sort.startswith("delta:") else (sort, "mean")
+    region, which = (sort.split(":", 1)[1], "delta") if sort.startswith("delta:") else (sort, "mean")
     key = {}
     for r in rows:
         if r["region"] == region:
-            v = r[field]
+            v = r[which]
             key[r["model"]] = -v if v == v else math.inf
     models = list(dict.fromkeys(r["model"] for r in rows))
     if region not in {r["region"] for r in rows}:
@@ -458,29 +691,44 @@ def rank_models(rows: List[Dict[str, Any]], sort: str) -> List[str]:
     return order
 
 
+def sort_text(sort: str, label: str = "") -> str:
+    """'delta:interface' -> 'dQ:interface (Q of interface minus Q of the reference)' and so on."""
+    if sort.startswith("delta:"):
+        name = sort.split(":", 1)[1]
+        what = label or "the score"
+        return f"d{label}:{name} ({what} of {name} minus {what} of the reference)"
+    return f"{label}:{sort}" if label else sort
+
+
 def regions_report(rows: List[Dict[str, Any]], order: Sequence[str], regions: Sequence[Region],
-                   reference: Optional[Sequence[Range]], keep_termini: bool, sort: str, what: str) -> str:
+                   reference: Optional[Sequence[Range]], keep_termini: bool, sort: str, what: str,
+                   label: str = "") -> str:
+    """The ranking: per model the mean of every region, its difference to the reference ('dQ:NAME' with
+    ``label`` 'Q'), the reference and the whole model, best first by ``sort``."""
     names = [r.name for r in regions]
     cols = names + [f"d:{n}" for n in names] + ["reference", "whole"]
+    heads = [(f"d{label}:{c[2:]}" if c.startswith("d:") else c) for c in cols]
+    widths = [max(10, len(h)) for h in heads]
     by = {(r["model"], r["region"]): r for r in rows}
-    out = [f"{len(order)} models ranked by {sort} ({what}); "
+    out = [f"{len(order)} models ranked by {sort_text(sort, label)}, best first ({what}); "
            f"{'chain termini kept' if keep_termini else 'chain termini left out'}"]
     for reg in regions:
         out.append(f"  {reg.name}: {selection_text(reg.selection)}")
     out.append(f"  reference: {selection_text(reference) if reference else 'the whole model'} minus the "
                "named regions")
     out.append("")
-    out.append(f"{'rank':>4} {'model':<32} " + " ".join(f"{c[:10]:>10}" for c in cols) + "  notes")
+    out.append(f"{'rank':>4} {'model':<32} " + " ".join(f"{h:>{w}}" for h, w in zip(heads, widths))
+               + "  notes")
     for i, m in enumerate(order, 1):
         cells, notes = [], []
-        for c in cols:
+        for c, w in zip(cols, widths):
             if c.startswith("d:"):
                 v = by.get((m, c[2:]), {}).get("delta", math.nan)
-                cells.append(f"{v:+10.3f}" if v == v else f"{'-':>10}")
+                cells.append(f"{v:+{w}.3f}" if v == v else f"{'-':>{w}}")
             else:
                 r = by.get((m, c), {})
                 v = r.get("mean", math.nan)
-                cells.append(f"{v:10.3f}" if v == v else f"{'-':>10}")
+                cells.append(f"{v:{w}.3f}" if v == v else f"{'-':>{w}}")
                 if r.get("missing"):
                     notes.append(f"{c}: {r['missing']} missing")
                 if r.get("nan"):
@@ -489,19 +737,28 @@ def regions_report(rows: List[Dict[str, Any]], order: Sequence[str], regions: Se
                                                                                    if notes else ""))
     if len(order) > 1:
         out.append("")
-        for c in names + ["reference", "whole"]:
-            v = [by[(m, c)]["mean"] for m in order if (m, c) in by]
+        spreads = [(c, "mean", c) for c in names] + [(n, "delta", f"d{label}:{n}") for n in names]
+        for c, which, head in spreads + [("reference", "mean", "reference"), ("whole", "mean", "whole")]:
+            v = [by[(m, c)][which] for m in order if (m, c) in by]
             v = [x for x in v if x == x]
             if v:
-                out.append(f"{c:<16} spread {min(v):+.3f} to {max(v):+.3f} (range {max(v) - min(v):.3f})")
+                out.append(f"{head:<16} spread {min(v):+.3f} to {max(v):+.3f} (range {max(v) - min(v):.3f})")
     return "\n".join(out) + "\n"
 
 
 def read_residue_scores(path: str, column: str = "") -> Dict[str, ResidueScores]:
-    """Per-residue tables: MDATK's (model, chain, resseq, ...), or headed / headless CSV with the columns
-    chain, residue number, base, Q (as written per decoy by Q-score scripts).  Keys are chain-qualified."""
+    """Per-residue tables: MDATK's (model, chain, resseq, ...), a ChimeraX log with qscore tables (one model
+    per table: ``path#1``, ``path#2`` ... when it has several) or qscore's CSV, or headed / headless CSV with
+    the columns chain, residue number, base, Q (as written per decoy by Q-score scripts).  Keys are
+    chain-qualified."""
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
+    q_tables = [t for t in parse_chimerax_qscore(text) if t.rows]
+    if q_tables:
+        q_column = (column or "qavg").lower()
+        named = len(q_tables) > 1
+        return {(f"{path}#{k}" if named else path): qscore_residues(t, None, q_column)[0]
+                for k, t in enumerate(q_tables, 1)}
     got = parse_score_table(text, column)
     if got:
         return {(m or path): s for m, s in got.items()}
@@ -524,13 +781,28 @@ def read_residue_scores(path: str, column: str = "") -> Dict[str, ResidueScores]
 # --- per-residue table -------------------------------------------------------------------------------------
 
 RESIDUE_COLUMNS = ["model", "chain", "resseq", "icode", "resname", "score", "n", "method"]
+# Q-scores: ChimeraX's four columns, then 'score' (the one the regions are ranked on) and the heavy atoms
+QSCORE_COLUMNS = ["model", "chain", "resseq", "icode", "resname", "qavg", "qworst", "qbb", "qsc", "score",
+                  "n", "method"]
 
 
-def residue_table_rows(model: str, scores: ResidueScores, method: str) -> List[List[Any]]:
+def residue_table_rows(model: str, scores: ResidueScores, method: str,
+                       q_rows: Optional[Dict[ResKey, QRow]] = None) -> List[List[Any]]:
+    """Rows of the per-residue table (QSCORE_COLUMNS with ``q_rows``, else RESIDUE_COLUMNS)."""
+    def num(v: float, digits: int) -> str:
+        return "nan" if v != v else f"{v:.{digits}f}"
+
     rows = []
     for k in sorted(scores, key=lambda k: (k[0], k[1], k[2])):
         name, v, n = scores[k]
-        rows.append([model, k[0], k[1], k[2], name, "nan" if v != v else f"{v:.4f}", n, method])
+        row = [model, k[0], k[1], k[2], name]
+        if q_rows is not None:  # ChimeraX prints three decimals
+            q = q_rows.get(k)
+            row += [num(x, 3) for x in (q.qavg, q.qworst, q.qbb, q.qsc)] if q else ["nan"] * 4
+            row.append(num(v, 3))
+        else:
+            row.append(num(v, 4))
+        rows.append(row + [n, method])
     return rows
 
 
@@ -679,19 +951,31 @@ EFFECT_COLUMNS = ["body", "residues", "effect_whole", "old_whole", "new_whole", 
 
 # --- command line -------------------------------------------------------------------------------------------
 
+def _add_qscore_arguments(p) -> None:
+    p.add_argument("--chimerax", default=CHIMERAX, help="qscore: the ChimeraX program (with the QScore "
+                   "bundle of the ChimeraX Toolshed)")
+    p.add_argument("--qscore-options", default="", metavar="OPTIONS",
+                   help=f"qscore: further options of the qscore command, e.g. 'pointsPerShell 16' (always "
+                        f"'{QSCORE_FIXED}')")
+    p.add_argument("--batch", type=int, default=1, help="qscore: models per ChimeraX run (default 1: one run "
+                   "per model; more: the map is opened once)")
+    p.add_argument("--q-column", choices=Q_COLUMNS, default="qavg",
+                   help="qscore: the column the regions are ranked on (Qavg, Qbb backbone, Qsc base)")
+    p.add_argument("--work", default="", help="qscore: work folder for ChimeraX's logs (default: qscore/ "
+                   "beside the first output file)")
+    p.add_argument("--timeout", type=float, help="qscore: seconds per model")
+
+
 def add_score_arguments(p) -> None:
     p.add_argument("--map", required=True, help="density map (MRC / CCP4)")
     p.add_argument("--method", choices=("cc", "qscore"), default="cc",
-                   help="cc: MDATK's per-residue correlation (no external program); qscore: the Q-score "
-                        "program")
+                   help="cc: MDATK's per-residue correlation (no external program); qscore: ChimeraX's "
+                        "Q-score")
     p.add_argument("--resolution", type=float, help="map resolution (Å; needed by cc)")
     p.add_argument("--radius", type=float, default=MASK_RADIUS, help="cc: grid points this close to a "
                    "residue's atoms (Å)")
-    p.add_argument("--command", default=QSCORE_COMMAND, help="qscore: command template with {model} {map} "
-                   "{stem} {resolution} (run in the work folder)")
-    p.add_argument("--work", default="", help="qscore: work folder (default: qscore/ beside the output)")
-    p.add_argument("--timeout", type=float, help="qscore: seconds per model")
-    p.add_argument("--keep-h", action="store_true", help="score hydrogens too")
+    _add_qscore_arguments(p)
+    p.add_argument("--keep-h", action="store_true", help="cc: score hydrogens too (qscore never does)")
 
 
 def add_region_arguments(p) -> None:
@@ -700,8 +984,9 @@ def add_region_arguments(p) -> None:
     p.add_argument("--reference-region", default="", help="reference ranges (default: the whole model); the "
                    "named regions are always removed from it")
     p.add_argument("--keep-termini", action="store_true", help="keep chain termini in the means")
-    p.add_argument("--sort", default="", help="rank by a region ('NAME'), 'delta:NAME', 'reference' or "
-                   "'whole' (default: the first region, else whole)")
+    p.add_argument("--sort", default="", help="rank by a region's mean ('NAME'), its difference to the "
+                   "reference ('delta:NAME', dQ for Q-scores), 'reference' or 'whole' (default: delta of the "
+                   "first region, else whole)")
 
 
 def add_commands(sub) -> list:
@@ -734,9 +1019,7 @@ def add_hybrid_command(sub):
     c.add_argument("--method", choices=("cc", "qscore"), default="cc")
     c.add_argument("--resolution", type=float, help="map resolution (Å; needed by cc)")
     c.add_argument("--radius", type=float, default=MASK_RADIUS)
-    c.add_argument("--command", default=QSCORE_COMMAND)
-    c.add_argument("--work", default="")
-    c.add_argument("--timeout", type=float)
+    _add_qscore_arguments(c)
     c.add_argument("--keep-h", action="store_true")
     c.add_argument("--scores-out", help="per-hybrid scores (.tsv / .csv)")
     c.add_argument("--effects-out", help="main effect of every body (.tsv / .csv)")
@@ -761,44 +1044,78 @@ def _emit(text: str, path: Optional[str]) -> None:
 
 
 def _region_setup(args, groups) -> Tuple[List[Region], Optional[List[Range]], str]:
+    """Regions, reference and ranking; by default the models are ranked on the first region's difference to
+    the reference (dQ = Q(interface) - Q(scaffold)), which the scaffold shared by every decoy normalises."""
     regions = [parse_region(t, groups) for t in args.region]
     reference = parse_selection(args.reference_region, groups) if args.reference_region.strip() else None
-    sort = args.sort or (regions[0].name if regions else "whole")
+    sort = args.sort or (f"delta:{regions[0].name}" if regions else "whole")
     return regions, reference, sort
 
 
-def run_score(args) -> int:
-    groups = _groups(args)
-    regions, reference, sort = _region_setup(args, groups)
+def _scored(args, models: Sequence[str], work: str) -> Tuple[List[ModelScores], Dict[str, str], List[str]]:
     if args.method == "cc" and not args.resolution:
         raise EnsembleError("--method cc needs --resolution")
-    work = args.work or os.path.join(os.path.dirname(os.path.abspath(args.output or "x")), "qscore")
-    res_rows, reg_rows, notes = [], [], []
-    for model in args.models:
+    if args.batch < 1:
+        raise EnsembleError("--batch: at least 1 model per ChimeraX run")
+    kept, skipped = [], []
+    for model in models:
         slot = pdbtools.empty_slot(model)
         if slot:  # an unfilled slot of a model check's filter: no model to score
-            notes.append(f"skipped {os.path.basename(model)}: {slot} (an empty slot of a model check, "
-                         "no model)")
-            continue
-        structure, scores, more = score_model(model, args.map, args.method, resolution=args.resolution,
-                                              radius=args.radius, keep_h=args.keep_h, command=args.command,
-                                              work_dir=work, timeout=args.timeout)
-        notes += [f"{os.path.basename(model)}: {n}" for n in more]
-        res_rows += residue_table_rows(model, scores, args.method)
-        reg_rows += region_rows(model, scores, regions, reference, structure_termini(structure),
+            skipped.append(f"skipped {os.path.basename(model)}: {slot} (an empty slot of a model check, "
+                           "no model)")
+        else:
+            kept.append(model)
+    if not kept:
+        return [], {}, skipped
+    scored, failed, notes = score_models(kept, args.map, args.method, resolution=args.resolution,
+                                         radius=args.radius, keep_h=args.keep_h, chimerax=args.chimerax,
+                                         options=args.qscore_options, batch=args.batch, column=args.q_column,
+                                         work_dir=work, timeout=args.timeout)
+    return scored, failed, skipped + notes
+
+
+def _what(args) -> Tuple[str, str]:
+    """(the score in words, its label in the report: Q or CC)."""
+    if args.method == "qscore":
+        return f"ChimeraX Q-score, {args.q_column.replace('q', 'Q', 1)}", "Q"
+    return f"per-residue CC at {args.resolution:g} Å", "CC"
+
+
+def run_score(args) -> int:
+    """'mdatk map score'.  Every model is tried; one ChimeraX could not score is listed in the report and
+    the command then ends with status 1, after writing the tables of the others."""
+    groups = _groups(args)
+    regions, reference, sort = _region_setup(args, groups)
+    beside = args.output or args.regions_out or args.report or "x"  # x: the current folder
+    work = args.work or os.path.join(os.path.dirname(os.path.abspath(beside)), "qscore")
+    scored, failed, notes = _scored(args, args.models, work)
+    if not scored:
+        raise EnsembleError("no model was scored: " + "; ".join(f"{os.path.basename(m)}: {why}"
+                                                               for m, why in list(failed.items())[:5]))
+    method = f"qscore:{args.q_column}" if args.method == "qscore" else "cc"
+    res_rows, reg_rows = [], []
+    for ms in scored:
+        notes += [f"{os.path.basename(ms.model)}: {n}" for n in ms.notes]
+        res_rows += residue_table_rows(ms.model, ms.scores, method, ms.q_rows)
+        reg_rows += region_rows(ms.model, ms.scores, regions, reference, structure_termini(ms.structure),
                                 args.keep_termini)
     order = rank_models(reg_rows, sort)
     if args.output:
-        write_table(args.output, RESIDUE_COLUMNS, res_rows)
+        write_table(args.output, QSCORE_COLUMNS if args.method == "qscore" else RESIDUE_COLUMNS, res_rows)
     if args.regions_out:
         write_table(args.regions_out, REGION_COLUMNS,
                     [[_cell(r[c]) for c in REGION_COLUMNS] for r in reg_rows])
-    what = "Q-score" if args.method == "qscore" else f"per-residue CC at {args.resolution:g} Å"
-    text = regions_report(reg_rows, order, regions, reference, args.keep_termini, sort, what)
+    what, label = _what(args)
+    text = regions_report(reg_rows, order, regions, reference, args.keep_termini, sort, what, label)
+    if failed:
+        text += f"\n{len(failed)} model(s) not scored (not ranked):\n" + "".join(
+            f"  {os.path.basename(m)}: {why}\n" for m, why in failed.items())
     if notes:
-        text += "\n" + "\n".join(notes[:20]) + "\n"
+        text += "\n" + "\n".join(notes[:40]) + ("\n..." if len(notes) > 40 else "") + "\n"
     _emit(text, args.report)
-    return 0
+    if failed and args.report:
+        sys.stderr.write(f"mdatk map score: {len(failed)} model(s) not scored; see {args.report}\n")
+    return 1 if failed else 0
 
 
 def _cell(v: Any) -> Any:
@@ -846,21 +1163,21 @@ def run_hybrids(args) -> int:
         paths[code] = path
         lines.append(f"  wrote {os.path.basename(path)} ({sum(len(r.atoms) for r in s.residues())} atoms)")
     if args.map:
-        if args.method == "cc" and not args.resolution:
-            raise EnsembleError("--method cc needs --resolution")
-        scores = {}
-        for code, path in paths.items():
-            _s, sc, more = score_model(path, args.map, args.method, resolution=args.resolution,
-                                       radius=args.radius, keep_h=args.keep_h, command=args.command,
-                                       work_dir=args.work or os.path.join(args.out_dir, "qscore"),
-                                       timeout=args.timeout)
-            scores[code] = sc
+        codes = list(paths)
+        scored, failed, more = _scored(args, [paths[c] for c in codes],
+                                       args.work or os.path.join(args.out_dir, "qscore"))
+        if failed:  # a main effect needs every combination
+            raise EnsembleError("hybrids not scored: " + "; ".join(f"{os.path.basename(m)}: {why}"
+                                                                   for m, why in failed.items()))
+        by_path = {ms.model: ms.scores for ms in scored}
+        scores = {c: by_path[paths[c]] for c in codes}
+        lines += [f"  {n}" for n in more]
         hyb_rows, body_rows = body_effects(bodies, scores, members)
         if args.scores_out:
             write_table(args.scores_out, HYBRID_COLUMNS + [b.name for b in bodies], hyb_rows)
         if args.effects_out:
             write_table(args.effects_out, EFFECT_COLUMNS, body_rows)
-        what = "Q-score" if args.method == "qscore" else f"per-residue CC at {args.resolution:g} Å"
+        what = _what(args)[0]
         lines += ["", f"scores ({what}; mean over all residues, and over each body's own):",
                   f"  {'hybrid':<10} {'whole':>8} " + " ".join(f"{b.name[:10]:>10}" for b in bodies)]
         for row in hyb_rows:

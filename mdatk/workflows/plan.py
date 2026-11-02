@@ -676,6 +676,43 @@ TEMPLATES: Dict[str, Tuple[str, List[Tuple[str, str, int, int, Dict[str, Any]]],
         ("map", "file", "mdff", "map"),
         ("model", "file", "mdff", "model"),
     ]),
+    # the user's validation order for a FARFAR2 decoy campaign against a cryo-EM map: validity filters
+    # before clustering, quality checks on the cluster centres after it
+    "decoy-validation": ("Decoy validation (FARFAR2): models → clashes → interface support → Q-score dQ → kinks", [
+        ("fold", "farfar2", 0, 0, {}),
+        ("models", "farfar2-models", 1, 0, {"valid_closure": True, "closure_term": "linear_chainbreak",
+                                             "closure_max": 5.0}),
+        ("validity", "note", 1, 1, {"text": (
+            "Validity filters, applied to every decoy before clustering (models step, Validity filters):\n"
+            "- closure: linear_chainbreak ≤ 5 (set);\n"
+            "- hands: turn on Hands with the construct's counts (e.g. 44 D / 29 L) or ranges;\n"
+            "- defining pairs: turn on Required pairs with the register's defining base pairs.\n"
+            "Hands and pairs need the construct, so they are left for you to fill in.")}),
+        ("check", "model-check", 2, 0, {}),
+        ("rule", "note", 2, 1, {"text": (
+            "'filter on validity before clustering; filter on quality after, when choosing representatives'\n"
+            "Validity (closure, hands, defining pairs) decides which decoys are clustered at all; quality "
+            "(clashes, interface support, Q-score dQ, kinks) only ranks the cluster centres.")}),
+        ("interface", "decoy-interface", 3, 0, {"support": True}),
+        ("map", "input-file", 3, 1, {"kind": "map"}),
+        ("score", "map-model-score", 4, 0, {"method": "qscore",
+                                            "regions": [{"name": "interface", "ranges": ""}]}),
+        ("kinks", "model-check", 5, 0, {"gate_kinks": True}),
+        ("kink", "note", 5, 1, {"text": (
+            "The kink test (this model check): virtual C1′ angle below 60° flagged; give the positions "
+            "in-line probing shows flexible (Kinks allowed at, or a reactivity file) so a real kink there is "
+            "not rejected.")}),
+    ], [
+        ("fold", "silent", "models", "silent"),
+        ("fold", "secstruct", "check", "secstruct"),
+        ("models", "models", "check", "models"),
+        ("models", "scores", "check", "scores"),
+        ("check", "passed", "interface", "models"),
+        ("models", "scores", "interface", "scores"),
+        ("check", "passed", "score", "model"),
+        ("map", "file", "score", "map"),
+        ("check", "passed", "kinks", "models"),
+    ]),
 }
 
 COLUMN_DX = 280

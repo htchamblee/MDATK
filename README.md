@@ -726,8 +726,12 @@ wizard…*, *Write step*, *Run step…*, the previous-run buttons (see [Previous
 on an MDATK analysis box, *Use for analysis…*. *Templates* insert pre-connected chains (FARFAR2 → models
 → Amber build → helix restraints → MD → MDATK analysis + VMD; Amber protocol; Amber → GROMACS; ideal
 helix → Amber build → restraints → MD; model + map → restraint dictionaries → Phenix RSR → Coot RSR;
-model + map → Amber build → NAMD MDFF). *Write all files* writes every step, a master script that runs
-the steps in order, and a Markdown summary of the plan.
+model + map → Amber build → NAMD MDFF; and *Decoy validation (FARFAR2)*, the order for a decoy campaign
+against a map: FARFAR2 → models (closure filter before clustering) → model check (clashes) → decoy
+interfaces (segment support) → map-model score (Q-score, interface vs scaffold dQ), with notes on the
+validity filters, the rule "filter on validity before clustering; filter on quality after, when choosing
+representatives" and the kink test still to come). *Write all files* writes every step, a master script
+that runs the steps in order, and a Markdown summary of the plan.
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click
 menu; *Tick all steps* / *Untick all steps* on the canvas): *Run selected steps (N)* writes the ticked
@@ -857,7 +861,7 @@ mdatk workflow status -p plan.mdatk.toml --forget --step 3   # step 3 is written
 | **NAMD · MDFF (Amber topology)** | NAMD configurations per stage, the sander / NAMD energy comparison, a preparation helper and the run script | NAMD reads the Amber topology natively; see [MDFF with NAMD](#mdff-with-namd-on-the-amber-topology-namd-mdff) |
 | **Register census (MDATK)** | a script calling `python3 -m mdatk ensemble census` | which register (named set of defining base pairs) each decoy formed or approached, by folder and build condition; see [Decoy ensembles](#decoy-ensembles-map-model-scores-and-statistics) |
 | **Ensemble comparison (MDATK)** | a script calling `mdatk ensemble compare` | two ensembles: closure, defining pairs, map occupancy, exact statistics and the detectable difference (modes compare / sweep / pilot) |
-| **Map-model score (Q-score / CC)** | a script calling `mdatk map score` | per-residue Q-score (Phenix, on a standard-name copy) or MDATK's per-residue CC, and the models ranked by named regions |
+| **Map-model score (Q-score / CC)** | a script calling `mdatk map score` | per-residue Q-score (ChimeraX's `qscore`, on the models as they are) or MDATK's per-residue CC, and the models ranked by the dQ of named regions against a reference (scaffold) |
 | **Body hybrids** | a script calling `mdatk pdb hybrids` | every old/new combination of up to six re-fitted bodies, optionally scored, with each body's main effect |
 | **Custom script** | your bash, Python or other script (typed in, or copied from a file) and a run script that passes it the file names and checks its outputs | input and output files you declare; see [Custom scripts](#custom-scripts) |
 | **Decoy interfaces (MDATK)** | a script calling `python3 -m mdatk decoys census / clusters / support` (from the Linux AppImage, the AppImage itself) | interface census of an ensemble between two sides, clusters of the contact fingerprints with medoid representatives (PDB outputs), support of rebuilt segments; see [Decoy interfaces](#decoy-interfaces) |
@@ -1445,10 +1449,11 @@ keeps coordinates, occupancies and B-factors verbatim:
   after the component itself, e.g. 0G), `rosetta` (L: 0A …, no terminal variants,
   every polymer residue as ATOM because Rosetta ignores HETATM residues), `pdb` (non-standard
   residues as HETATM) and `standard` (plain A C G U for both hands and every record ATOM: a copy for
-  programs that read standard RNA only and ignore chirality, such as map-model scores (Q-score) and
-  DSSR; a warning says that the names no longer record the hand, so the copy is never meant for tleap,
-  refinement or name-based analyses). Any of these, plus common aliases (RA, G5, ADE …), is recognised
-  on input; DNA and unknown residues pass through. *5′/3′ terminal names* can be switched off.
+  programs that read standard RNA only and ignore chirality, such as DSSR; ChimeraX's Q-score reads L
+  names as they are and needs no copy; a warning says that the names no longer record the hand, so the
+  copy is never meant for tleap, refinement or name-based analyses). Any of these, plus common aliases
+  (RA, G5, ADE …), is recognised on input; DNA and unknown residues pass through. *5′/3′ terminal names*
+  can be switched off.
 - **Hydrogens and Rosetta's virtual residues**: `--strip-h` removes hydrogens (element column, else the
   name), `--drop-virtual` the VRT / XXX residues Rosetta writes into density-scored models (no atoms of
   the molecule: tleap cannot type them, and a map-model score would read them as atoms).
@@ -1473,7 +1478,7 @@ volumes, the expectation and a note).
 mdatk pdb check model.pdb                                   # chains, sequences, names, chirality (JSON)
 mdatk pdb check refined.pdb --expect-l C --expect-d A,B --strict --table   # every sugar, per residue
 mdatk pdb clean decoy.pdb -o amber.pdb --scheme amber --strip-5p --strip-h --drop-virtual  # decoy for tleap
-mdatk pdb clean decoy.pdb -o std.pdb --scheme standard --strip-h --drop-virtual   # for a Q-score program
+mdatk pdb clean decoy.pdb -o std.pdb --scheme standard --strip-h --drop-virtual   # chirality-blind tools
 mdatk pdb clean rosetta.pdb -o amber.pdb --scheme amber     # L names from the geometry
 mdatk pdb clean cpptraj.pdb -o fixed.pdb --chain-reference start.pdb --scheme amber
 mdatk pdb clean chimerax.pdb -o rosetta.pdb --scheme rosetta --l-ranges C --renumber --keep-gaps
@@ -2069,27 +2074,47 @@ by name; extra columns are ignored, comma-separated files are read too.
 
 **Map-model score** (`map-model-score`, `mdatk map score`). Per residue of every model:
 
-- `qscore` (default): Phenix's Q-score (Pintilie et al., Nat. Methods 17, 328 (2020)), run as
-  `phenix.qscore {model} {map}` in the step's `qscore/` folder on a copy with standard names: plain
-  A/C/G/U for D and L residues alike, every nucleotide an ATOM record, hydrogens and Rosetta's virtual
-  residues dropped. Q-score samples the radial density profile around each atom, which does not depend on
-  handedness; programs that look residues up in a library would otherwise skip or reject L names and
-  HETATM records. The copy stays inside the step's folder. The command is a template (`{model}`, `{map}`,
-  `{stem}`, `{resolution}`), and its output is read tolerantly: a table in the files it writes or on its
-  output with a Q column and chain / residue-number columns (per atom or per residue), else a PDB it
-  writes with Q in the B-factor column. **Not verified:** no Phenix installation was available, so the
-  command name (`phenix.qscore`, also `mmtbx.qscore`) and its output format follow Phenix's conventions as
-  far as known; adjust the template to the installed version.
+- `qscore` (default): the Q-score (Pintilie et al., Nat. Methods 17, 328-334 (2020)) computed by
+  ChimeraX's `qscore` command, which comes with the *QScore* bundle of the ChimeraX Toolshed
+  (ChimeraX-QScore by T. I. Croll; in ChimeraX: `toolshed install QScore`). ChimeraX reads the model as it
+  is: L residue names (LG5, 0A …) and HETATM records are scored like any other residue, so no renamed copy
+  is made. Each model is one ChimeraX run, the command you would type yourself:
+  `chimerax --nogui --cmd "open MODEL id 1 maxModels 1; open MAP id 2; qscore #1 toVolume #2 useGui false
+  logDetails true [options]; exit"` (`maxModels 1`: the first model of a multi-model file, as MDATK reads
+  it). *Models per ChimeraX run* (`--batch N`) opens the map once and the models one after another, each
+  opened as #2 (`id 2`, so the numbering never drifts), scored and closed, with a marker line (`log text
+  MDATK-QSCORE k`) logged before each so that the tables are told apart; ChimeraX ends a `--nogui` run at the
+  first command that fails, and MDATK then resumes after that model. Further qscore options are typed as
+  keyword value pairs (`pointsPerShell 16 shellRadiusStep 0.05`; also `referenceGaussianSigma`,
+  `maxShellRadius`); `useGui false logDetails true` are always set, and the command has no resolution or
+  hydrogen option (hydrogens are never scored). Rosetta's virtual residues (VRT / XXX) are left out of the
+  selection (`#1 & ~:VRT`) and of the table. The per-residue table that `logDetails` prints (Chain, Number,
+  Name, Qavg, Qworst, Qbb, Qsc) is read from ChimeraX's log tolerantly: blank lines between the rows, the
+  dashed rule, tabs or spaces, the `INFO:` lines and `<pre>` tags of a plain-text log, insertion codes
+  after the number, `N/A` cells, warnings such as `Ignored bad PDB record` (counted in the report); the
+  `Overall mean Q-Score` line closes the table and is reported per model (a mean over atoms, termini
+  included). The per-residue output has all four Q columns plus `score`, the one the regions use: Qavg by
+  default, or Qbb (backbone) / Qsc (side chain, i.e. the base) as ChimeraX classifies the atoms. ChimeraX's
+  log of every run stays in the step's `qscore/` folder. A model ChimeraX cannot score is listed in the
+  report (with the reason and its log) and not ranked; the others are written and the command ends with
+  status 1. Known limit of ChimeraX-QScore 1.2: a residue with an atom outside the map box makes its
+  per-residue table stop there, so such a model fails with "atoms outside the map box".
 - `cc`: MDATK's per-residue correlation, no external program: the model's map is simulated at the given
   resolution and, for each residue, correlated with the map over the grid points within 2.5 Å of its atoms.
 
 Named regions (`interface=B:25-34,C:58-63`) are then averaged per model, with their difference to a reference
-region (default the whole model) from which every named region is removed, so no residue counts on both
-sides. The first and last residue of every chain segment are left out of every mean unless kept (a terminal
-residue scores lower for lack of neighbours); residues without a score (outside the map) are counted, never
-averaged; models are ranked by a region's mean or its difference (`delta:interface`). Outputs: the
-per-residue table, the region table and a ranking report. `mdatk ensemble regions TABLE…` ranks per-residue
-tables written elsewhere (also headless `chain,resnum,base,Q` CSV files).
+region (default the whole model; typically the scaffold, e.g. the fixed helices every decoy shares) from
+which every named region is removed, so no residue counts on both sides. The first and last residue of every
+chain segment are left out of every mean unless kept (a terminal residue scores lower for lack of
+neighbours); residues without a score (outside the map) are counted, never averaged. Models are ranked by
+**dQ** = Q(interface) − Q(scaffold) of the first region unless another order is given (`--sort NAME` for a
+region's mean, `delta:NAME`, `reference`, `whole`): the scaffold is the same in every decoy and the
+best-ordered part of the map, so dQ follows the interface and survives a change of map scaling or
+sharpening, where a whole-model mean mostly measures the shared scaffold. The report gives, per model, the
+mean of each region, its `dQ:NAME`, the reference and the whole model, then the spread of each over the
+models. Outputs: the per-residue table, the region table (`delta` per region) and the ranking report.
+`mdatk ensemble regions TABLE…` ranks per-residue tables written elsewhere (also ChimeraX logs with qscore
+tables, one model per table, qscore's CSV and headless `chain,resnum,base,Q` CSV files).
 
 **Body hybrids** (`body-hybrids`, `mdatk pdb hybrids`). Up to six bodies (name and ranges, a body may span
 chains) of an old and a re-fitted model; every one of the 2^k combinations is written, over the residues and
@@ -2113,16 +2138,18 @@ mdatk ensemble compare --mode sweep --arm-a run/pres --arm-b run/inv --labels pr
 mdatk ensemble compare --mode pilot --register 'pres=B:22-B:37,B:23-B:36,B:24-B:35' --arm-a run/pres \
     --arm-b pilot/pres --labels baseline,pilot --scores scores.tsv --map map.mrc \
     --calibration A:13-16,B:17-20,C:45-57,C:64-73 --regions B:25-34,C:58-63 --matched-runs
-mdatk map score decoy_*.pdb --map map.mrc --method qscore --region pres-loops=B:25-34,C:58-63 \
-    --reference-region A:1-6,A:13-16,B:17-20,B:39-44,C:45-57,C:64-73 --sort delta:pres-loops
+mdatk map score decoy_*.pdb --map map.mrc --method qscore --chimerax /usr/bin/chimerax --batch 20 \
+    --region pres-loops=B:25-34,C:58-63 --reference-region A:1-6,A:13-16,B:17-20,B:39-44,C:45-57,C:64-73
 mdatk pdb hybrids helices_old.pdb helices_new.pdb --body terminal=A:1-6,B:39-44 \
     --body junction=A:13-16,B:17-20 --body L-TAR=C:45-57,C:64-73 --match number \
     --map map.mrc --resolution 4.8 --effects-out effects.tsv -o hybrids
 ```
 
 Tested on synthetic D- and L-RNA duplexes (`tests/test_ensemble.py`): the register counts and the
-nearest-voxel occupancy equal those of the scripts they replace; the Q-score runner was tested with a
-stand-in program, not with Phenix.
+nearest-voxel occupancy equal those of the scripts they replace. The Q-score runner was tested with a
+stand-in `chimerax` that prints the log format of a real run (`tests/test_chimerax_qscore.py`), not with
+ChimeraX itself; the command options (`open … id`, `maxModels`, `log text`, the qscore keywords) were checked
+against the ChimeraX and ChimeraX-QScore sources.
 
 ## Citations
 
@@ -2197,7 +2224,8 @@ mdatk frame check REF [MODELS|DIR ...] [--scores TSV [--root DIR] [--max T=X]] -
 mdatk frame reframe OLD NEW [MODELS|DIR ...] [--scores TSV] --fit RANGES --measure RANGES ... [--tol 1]
     [-O DIR] [--manifest TSV] [--scores-out TSV]      (see FARFAR2 decoys)
 mdatk ensemble census|compare|regions   (see Decoy ensembles, map-model scores and statistics)
-mdatk map score MODEL... --map MAP [--method cc|qscore]   per-residue map-model scores and regions
+mdatk map score MODEL... --map MAP [--method cc|qscore] [--chimerax EXE] [--batch N] [--q-column qavg|qbb|qsc]
+    [--region NAME=RANGES ...] [--reference-region RANGES]   per-residue map-model scores, ranked on dQ
 mdatk pdb hybrids OLD NEW --body NAME=RANGES ... [--map MAP]   old/new body combinations
 ```
 

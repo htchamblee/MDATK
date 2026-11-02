@@ -565,9 +565,11 @@ def cmd_map(args) -> int:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["map"] else ""
         code = mapscore.run_score(args)
         entry.files = _outputs(args, "output", "regions_out", "report")
+        if code:  # the tables of the others are written; the report lists the models not scored
+            entry.status, entry.summary = "failed", "some models were not scored (see the report)"
         if args.method == "qscore":
             from .citations import keys_for
-            entry.citations = keys_for(["phenix"])
+            entry.citations = keys_for(["chimerax", "qscore"])
     return code
 
 
