@@ -11,7 +11,8 @@ import re
 from typing import List
 
 from .. import frames, rosetta
-from .base import PortValue, Tool, env_section, require_file, script_header, shell_quote
+from .base import (PortValue, Tool, bash_array, env_section, listed_files, require_file, script_header,
+                   shell_quote)
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -176,8 +177,9 @@ class FrameCheckTool(Tool):
     inputs = [Port("reference", "Reference (PDB)", ("pdb",),
                    tooltip="The placed bodies the models were built on (e.g. the helices given to rna_denovo "
                            "with -s)."),
-              Port("models", "Models (PDB)", ("pdb",), optional=True, multiple=True,
-                   tooltip="Model PDB files, e.g. the ranked models of a FARFAR2 models step."),
+              Port("models", "Models (PDB)", ("pdb",), optional=True, collection=True,
+                   tooltip="Model PDB files, e.g. the ranked models of a FARFAR2 models step or every decoy "
+                           "of a FARFAR2 step (the full set, a large dot)."),
               Port("scores", "Decoy table", ("table",), optional=True,
                    tooltip="A decoy table (run, tag, pdb, score terms): its extracted models are checked.")]
     new_reference = Port("new_reference", "Re-fitted reference (PDB)", ("pdb",),
@@ -252,7 +254,7 @@ class FrameCheckTool(Tool):
         out = {"report": PortValue([ctx.own(self.tag, "tsv")], "table"),
                "summary": PortValue([ctx.own(self.tag, "txt")], "text")}
         if s["reframe"]:
-            n = len(ctx.inps("models"))
+            n = ctx.count("models")  # with a set of decoys: at most as many as it can hold
             if n:
                 paths = [ctx.own(f"reframed-{k:02d}", "pdb") for k in range(1, n + 1)]
                 out["reframed"] = PortValue(paths, "pdb", dict(ctx.data("models")))
@@ -303,7 +305,7 @@ class FrameCheckTool(Tool):
 
     def _common(self, s, ctx, fit: str, bodies: List[str]) -> List[str]:
         q = shell_quote
-        words = [q(p) for p in ctx.inps("models")]
+        words = ['"${MODELS[@]}"'] if ctx.lists("models") else [q(p) for p in ctx.inps("models")]
         if ctx.has("scores"):
             root = posixpath.relpath(".", ctx.folder) if ctx.folder else "."  # the plan folder
             words += ["--scores", q(ctx.inp("scores")), "--root", q(root)]
@@ -330,6 +332,9 @@ class FrameCheckTool(Tool):
         notes = ["MDATK must be importable by the Python below (installed, or its folder on PYTHONPATH).",
                  f"Fit on {fit}; measured: {', '.join(bodies)}."]
         sh = script_header("MDATK frame check: fit one body, measure the others", ctx, s, script, notes)
+        if ctx.lists("models"):  # a set of decoys: listed when its step ran
+            sh += ["# The models", *bash_array("MODELS", ctx.inps("models")),
+                   *listed_files("MODELS", ctx, "models"), ""]
         sh += ["# Superpose every model on the fit body of the reference and measure the other bodies",
                " ".join(check), require_file(n(self.tag, "tsv"), "mdatk frame check"), ""]
         if s["reframe"]:

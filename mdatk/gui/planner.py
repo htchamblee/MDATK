@@ -47,6 +47,7 @@ FOOT_H = 18  # row under the ports: the step's previous run (Check previous runs
 MAX_PARALLEL = 64
 PORT_H = 18
 PORT_R = 5.0
+SET_R = 9.0  # a collection port (the full set of N files of one kind, e.g. every decoy): a large, stacked dot
 GRID = 10
 
 CATEGORY_COLORS = {
@@ -140,6 +141,10 @@ class PlannerCanvas(Gtk.DrawingArea):
             return f"uses the run of {node.adopted}", (0.10, 0.37, 0.71)
         return None
 
+    @staticmethod
+    def port_radius(port: Port) -> float:
+        return SET_R if port.collection else PORT_R
+
     def port_pos(self, node: PlanNode, name: str, output: bool) -> Optional[Tuple[float, float]]:
         ins, outs = self.ports(node)
         ports = outs if output else ins
@@ -188,13 +193,19 @@ class PlannerCanvas(Gtk.DrawingArea):
         return None
 
     def port_at(self, x: float, y: float) -> Optional[Tuple[PlanNode, Port, bool]]:
+        """The port under (x, y), within 5 px of its dot; of a step's ports the one whose dot's edge is
+        nearest (a large collection dot reaches towards its neighbours)."""
         for n in reversed(self.workflow.nodes):
             ins, outs = self.ports(n)
+            best, best_d = None, 5.0 + 1e-9
             for output, ports in ((True, outs), (False, ins)):
                 for p in ports:
                     pos = self.port_pos(n, p.name, output)
-                    if pos and math.hypot(pos[0] - x, pos[1] - y) <= PORT_R + 5:
-                        return n, p, output
+                    d = math.hypot(pos[0] - x, pos[1] - y) - self.port_radius(p) if pos else best_d
+                    if d < best_d:
+                        best, best_d = (n, p, output), d
+            if best is not None:
+                return best
         return None
 
     def edge_points(self, e: PlanEdge):
@@ -270,10 +281,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             return
         nodes = {n.id: n for n in self.workflow.nodes}
         _ins, outs = self.ports(nodes[e.source])
-        kind = next((p.kind for p in outs if p.name == e.output), "text")
+        port = next((p for p in outs if p.name == e.output), None)
+        kind = port.kind if port is not None else "text"
         rgb = KIND_COLORS.get(kind, (0.4, 0.4, 0.4))
         (x0, y0), (x1, y1), (x2, y2), (x3, y3) = pts
-        cr.set_line_width(4.0 if selected else 2.2)
+        cr.set_line_width(4.0 if selected else 3.4 if port is not None and port.collection else 2.2)
         if selected:
             cr.set_source_rgb(0.10, 0.37, 0.71)
         else:
@@ -390,8 +402,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 px = n.x + (w if output else 0)
                 py = n.y + HEAD_H + DESC_H + (k + 0.5) * PORT_H
                 prgb = KIND_COLORS.get(p.kind, (0.4, 0.4, 0.4))
+                r = self.port_radius(p)
+                if p.collection:
+                    self._draw_set_stack(cr, px, py, prgb, 1 if output else -1)
                 cr.new_path()
-                cr.arc(px, py, PORT_R, 0, 2 * math.pi)
+                cr.arc(px, py, r, 0, 2 * math.pi)
                 cr.set_source_rgb(*prgb)
                 cr.fill_preserve()
                 missing = (not output and not p.optional and p.name not in connected_in
@@ -399,15 +414,21 @@ class PlannerCanvas(Gtk.DrawingArea):
                 cr.set_source_rgb(0.75, 0.11, 0.16) if missing else cr.set_source_rgb(1, 1, 1)
                 cr.set_line_width(2.0 if missing else 1.2)
                 cr.stroke()
+                if p.collection:  # a white ring inside: a set of files, not one
+                    cr.arc(px, py, r * 0.42, 0, 2 * math.pi)
+                    cr.set_source_rgb(1, 1, 1)
+                    cr.set_line_width(1.4)
+                    cr.stroke()
                 hover = self.hover_port and self.hover_port[:2] == (n.id, p.name)
                 label = p.label + (" *" if not output and not p.optional else "")
+                pad = r + 5  # the label starts beside the dot
                 # inputs and outputs share rows: each label gets its own half of the box
                 if output:
-                    self._text(cr, label, px - 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
-                               w / 2 - 14, align_right=True)
+                    self._text(cr, label, px - pad, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
+                               w / 2 - 4 - pad, align_right=True)
                 else:
-                    self._text(cr, label, px + 10, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
-                               w / 2 - 14 if k < len(outs) else w - 24)
+                    self._text(cr, label, px + pad, py + 4, 9.5, bool(hover), (0.15, 0.15, 0.15),
+                               w / 2 - 4 - pad if k < len(outs) else w - 14 - pad)
         info = self.run_info(n)
         if info is not None:  # footer: the previous run found, or the run the step uses
             text, frgb = info
@@ -417,6 +438,20 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.set_source_rgb(*frgb)
             cr.fill()
             self._text(cr, text, n.x + 23, fy + 3.5, 9.0, bool(n.adopted), (0.25, 0.25, 0.25), w - 32)
+
+    @staticmethod
+    def _draw_set_stack(cr, x: float, y: float, rgb, side: int) -> None:
+        """Two fainter dots behind a collection port's dot, offset outwards (``side``: 1 right, -1 left) and
+        up: a stack, the full set of files."""
+        light = tuple(c + (1.0 - c) * 0.35 for c in rgb)
+        for k in (2, 1):
+            cr.new_path()
+            cr.arc(x + side * 2.6 * k, y - 2.6 * k, SET_R - 1.2 * k, 0, 2 * math.pi)
+            cr.set_source_rgb(*light)
+            cr.fill_preserve()
+            cr.set_source_rgb(1, 1, 1)
+            cr.set_line_width(1.0)
+            cr.stroke()
 
     def _draw_run_state(self, cr, state: str, cx: float, cy: float, head_rgb) -> None:
         """Run marker left of the status dot: a turning arc while the script runs, a ring while it
@@ -539,6 +574,10 @@ class PlannerCanvas(Gtk.DrawingArea):
                 if hit:
                     n, p, output = hit
                     kinds = ", ".join(kind_label(k) for k in p.kinds)
+                    if p.collection:
+                        kinds += (" · the full set of files (large dot): connect it to an input drawn as a "
+                                  "large dot" if output else
+                                  " · takes the full set of files of a large dot, or files one by one")
                     self.set_tooltip_text(f"{'Output' if output else 'Input'}: {p.label}\n{kinds}"
                                           + (f"\n{p.tooltip}" if p.tooltip else ""))
                 else:
@@ -576,9 +615,14 @@ class PlannerCanvas(Gtk.DrawingArea):
                     args = (d["node"], d["port"], n.id, p.name)
                 else:
                     args = (n.id, p.name, d["node"], d["port"])
+                source = self.win.node(args[0])
+                before = dict(source.settings) if source is not None else {}
                 try:
-                    connect(self.workflow, *args)
-                    self.win.set_status(f"Connected {args[1]} → {args[3]}")
+                    edge = connect(self.workflow, *args)
+                    self.win.set_status(f"Connected {edge.output} → {edge.input}")
+                    wizard = self.win.wizards.get(edge.source)
+                    if wizard is not None and source is not None and source.settings != before:
+                        wizard.reload()  # the connection switched on an option the output needs
                     self.win.changed()
                 except (KeyError, ValueError) as exc:
                     self.win.set_status(f"Cannot connect: {exc}", error=True)

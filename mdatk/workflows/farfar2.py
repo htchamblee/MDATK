@@ -45,6 +45,58 @@ def _module_body(module) -> str:
     return "\n".join(ln for ln in lines[k:] if not ln.startswith("from __future__")).strip("\n")
 
 
+def extract_every_model(exe: str, parallel: int, runs: List[List[str]], db: str, helper: str) -> List[str]:
+    """Shell lines that extract every model of every run into models/<run>/<tag>.pdb and check that each run
+    has one PDB per SCORE line (``runs``: [label, silent file relative to the step folder, ...]; ``helper``:
+    the step's copy of :mod:`silent_scores`)."""
+    exe = exe.strip() or "extract_pdbs"
+    m = MODELS_DIR
+    lines = [f"# Extract every model of every run into {m}/<run>/<tag>.pdb. extract_pdbs writes",
+             "# <tag>.pdb into the folder it runs in, and every run reuses the same tags, so each run is",
+             "# extracted in a scratch folder of its own; the run's earlier models are removed first.",
+             "extract_run() {",
+             "  local run=$1 silent=$2 tmp f",
+             f'  rm -rf "{m}/$run" "{m}/.extract-$run".*',
+             f"  mkdir -p {m}",
+             f'  tmp=$(mktemp -d "{m}/.extract-$run.XXXXXX")',
+             f'  ( cd "$tmp" && {exe}{db} -in:file:silent "$silent" ) > "{m}/extract-$run.log" 2>&1 \\',
+             f'    || echo "extract_pdbs reported an error for run $run (see {m}/extract-$run.log)" >&2',
+             f'  mkdir -p "{m}/$run"',
+             f'  for f in "$tmp"/*.pdb; do if [ -e "$f" ]; then mv -- "$f" "{m}/$run/"; fi; done',
+             '  rm -rf "$tmp"',
+             "}"]
+    for label, path, *_rest in runs:
+        src = path if posixpath.isabs(path) else posixpath.join("../..", path)  # from models/.extract-*
+        if parallel > 1:
+            lines += [f"extract_run {shell_quote(label)} {shell_quote(src)} &",
+                      f'[ "$(jobs -rp | wc -l)" -lt {parallel} ] || wait -n || true']
+        else:
+            lines.append(f"extract_run {shell_quote(label)} {shell_quote(src)}")
+    if parallel > 1:
+        lines.append("wait")
+    lines += ["# every run has one PDB per decoy (SCORE line) and no other PDB",
+              f"python3 {helper} check-extracted {m}", ""]
+    return lines
+
+
+def scores_helper(ctx: StepContext, runs: List[List[str]], model_pattern: str) -> GeneratedFile:
+    """The step's copy of :mod:`silent_scores` (standard library only) with its runs written in."""
+    doc = (f"Rosetta silent-file scores for project {ctx.project}, step {ctx.step:02d} - written by "
+           f"{PROJECT_ABBREV} {__version__}.\n\nScore terms are looked up by column name. Usage:\n"
+           "    python3 THIS_SCRIPT table OUT.tsv [--extracted models] [--models MODELS.txt] "
+           "[--validity VALIDITY.tsv] [--list LIST.txt]\n"
+           "    python3 THIS_SCRIPT filter SILENT FILTERED [SILENT FILTERED ...] --term T --max X\n"
+           "    python3 THIS_SCRIPT keep [--valid VALIDITY.tsv] [--limit TERM OP VALUE ...]\n"
+           "    python3 THIS_SCRIPT filter-ranking RANKING.txt [--term T --max X] "
+           "[--limit TERM OP VALUE ...]\n"
+           "    python3 THIS_SCRIPT check-extracted models\n"
+           "Needs only Python 3.")
+    constants = {"RUNS": [tuple(r) for r in runs], "PREFIX": ctx.folder, "MODEL_PATTERN": model_pattern}
+    return GeneratedFile(ctx.name("scores", "py"), embed(
+        _silent_scores, constants, "main(sys.argv[1:], RUNS, PREFIX, MODEL_PATTERN)", doc), "helper",
+        "silent-file scores by column name, the decoy table and the extraction check")
+
+
 @register
 class FarfarTool(Tool):
     name = "farfar2"
@@ -149,13 +201,38 @@ class FarfarTool(Tool):
             Option("extra", "Extra flags", "multiline", "", "Additional rna_denovo flags, one or more "
                    "per line (written to the flags file).", placeholder="-vary_geometry"),
         ]),
+        Section("decoys", "Decoys (every model of every run)", [
+            Option("extract_decoys", "Extract every decoy after the runs", "bool", False,
+                   "Every model of every run as models/<run>/<tag>.pdb (runs r01, r02 ...), each run checked "
+                   "against the SCORE lines of its silent file, the decoy table "
+                   "<project>_<step>_scores_<time>.tsv and the list of the decoys' PDB files "
+                   "<project>_<step>_decoys_<time>.txt: the outputs 'Every decoy' (the full set, a large "
+                   "dot) and 'Decoy table'. Connecting either switches this on. A script of its own, "
+                   "<project>_<step>_decoys_<time>.sh, extracts them; the step's script runs it after the "
+                   "runs, and it can be run alone to extract again without running rna_denovo."),
+            Option("extract_exe", "extract_pdbs executable", "text", "extract_pdbs",
+                   "Name on PATH or full path (the Rosetta database is the one above).",
+                   requires={"extract_decoys": True}),
+            Option("extract_parallel", "Parallel extractions", "int", 1, "Runs extracted at the same time.",
+                   minimum=1, maximum=256, requires={"extract_decoys": True}),
+        ], tooltip="The full set of decoys for the steps that classify many models (model check, decoy "
+                   "interfaces, register census, ensemble comparison, frame check, map-model score)."),
         env_section("export PATH=$HOME/rosetta/main/source/bin:$PATH"),
     ]
 
     def output_ports(self, s):
         return [Port("silent", "Silent files", ("silent",), multiple=True),
                 Port("fasta", "FASTA", ("fasta",)),
-                Port("secstruct", "Secondary structure", ("secstruct",))]
+                Port("secstruct", "Secondary structure", ("secstruct",)),
+                Port("decoys", "Every decoy (PDB)", ("pdb",), collection=True, turns_on="extract_decoys",
+                     table="decoy_table",
+                     tooltip="The full set: every model of every run, extracted from the silent files after "
+                             "the runs (models/<run>/<tag>.pdb), for the steps that take many models. "
+                             "Connecting it switches on 'Extract every decoy after the runs'; into an input "
+                             "that takes a decoy table it connects the decoy table."),
+                Port("decoy_table", "Decoy table", ("table",), turns_on="extract_decoys",
+                     tooltip="One row per decoy of every run: run, tag, its extracted PDB (relative to the "
+                             "plan folder) and every SCORE term by name.")]
 
     # ------------------------------------------------------------ model
     def model(self, s) -> Tuple[Optional[rna.RNAModel], List[Issue]]:
@@ -230,6 +307,10 @@ class FarfarTool(Tool):
             name = flag.split()[0]
             if name in self._generated_flags(s, ctx):
                 out.append(Issue("warning", f"extra flag {name} repeats a generated flag", ("extra",)))
+        if s["extract_decoys"]:
+            out.append(Issue("info", f"every decoy is extracted after the runs: up to "
+                                     f"{s['runs'] * s['nstruct']} PDB files in {MODELS_DIR}/",
+                             ("extract_decoys",)))
         return out
 
     # ------------------------------------------------------------ names
@@ -251,7 +332,23 @@ class FarfarTool(Tool):
         if ss:
             out["secstruct"] = PortValue([ctx.from_own(ss) if s["make_inputs"] else ss], "secstruct",
                                          dict(data))
+        if s["extract_decoys"]:
+            # the decoys are known only after the runs: the extraction lists them (at most runs x nstruct)
+            listing = ctx.own("decoys", "txt")
+            fixed = {"input_res": self.fixed_residues(s, ctx)}  # what the decoy interfaces' support reads
+            out["decoys"] = PortValue([listing], "pdb", dict(data, **dens, **fixed),
+                                      lists={listing: s["runs"] * s["nstruct"]})
+            out["decoy_table"] = PortValue([ctx.own("scores", "tsv")], "table", dict(data, **dens))
         return out
+
+    def fixed_residues(self, s, ctx) -> str:
+        """The residues the fixed-helix PDB provides (-input_res); '' without one: every residue is built."""
+        if not ctx.has("structure"):
+            return ""
+        if s["input_res_mode"] == "stems":
+            model, _ = self.model(s)
+            return model.ranges([r for p in model.pairs for r in p]) if model is not None else ""
+        return s["input_res"].strip()
 
     def resources(self, s):
         return ["rosetta", "farfar2"]
@@ -368,8 +465,41 @@ class FarfarTool(Tool):
                f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}'",
                "",
                f'echo "Silent files: {ctx.name(self.tag + "-rRUNNUM", "out").replace("RUNNUM", "*")}"', ""]
+        if s["extract_decoys"]:
+            decoys = ctx.name("decoys", "sh")
+            sh += ["# Every decoy of every run as a PDB file, the decoy table and the list of the decoys:",
+                   "# a script of its own, which can also be run alone to extract again (without rna_denovo)",
+                   f'bash {decoys} || {{ echo "ERROR: the decoys were not extracted (see above)" >&2; '
+                   "exit 1; }", ""]
         files.append(GeneratedFile(script, "\n".join(sh), "run", "runs rna_denovo"))
+        if s["extract_decoys"]:
+            files += self._decoy_files(s, ctx)
         return files
+
+    def _decoy_files(self, s, ctx) -> List[GeneratedFile]:
+        """The extraction script of the full set of decoys and its copy of the silent-file scores."""
+        n = ctx.name
+        script, listing = n("decoys", "sh"), n("decoys", "txt")
+        table, helper = n("scores", "tsv"), n("scores", "py")
+        silents = [n(f"{self.tag}-r{k:02d}", "out") for k in range(1, s["runs"] + 1)]
+        runs = [[label, path] for label, path in zip(_silent_scores.unique_labels(silents), silents)]
+        db = f" -database {s['database'].strip()}" if s["database"].strip() else ""
+        sh = script_header(f"FARFAR2: every decoy of the {s['runs']} runs as a PDB file, the decoy table and "
+                           "the list of the decoys", ctx, s, script,
+                           ["The step's script runs this after the rna_denovo runs; run it alone to extract "
+                            "again (the runs are not repeated)."])
+        sh += ["# Outputs of an earlier extraction go first: a failed one leaves nothing that looks finished",
+               f"rm -f {listing} {table}", ""]
+        sh += extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper)
+        sh += ["# The decoy table (run, tag, pdb and every SCORE term by name) and the list of the",
+               "# decoys' PDB files (from the plan folder) in its order, which the steps taking the set read",
+               f"python3 {helper} table {table} --extracted {MODELS_DIR} --term score --list {listing}",
+               require_file(table, "the decoy table"), require_file(listing, "the list of the decoys"),
+               f'echo "Decoys: $(wc -l < {listing}) PDB files in {MODELS_DIR}/, listed in {listing}; '
+               f'decoy table: {table}"', ""]
+        return [GeneratedFile(script, "\n".join(sh), "helper", "extracts every decoy, writes the decoy table "
+                              "and the list of the decoys"),
+                scores_helper(ctx, runs, "")]
 
 
 # ---------------------------------------------------------------------------
@@ -678,21 +808,7 @@ class FarfarModelsTool(Tool):
                 for lab, path in zip(labels, silents)]
 
     def _scores_helper(self, ctx, runs) -> GeneratedFile:
-        doc = (f"Rosetta silent-file scores for project {ctx.project}, step {ctx.step:02d} - written by "
-               f"{PROJECT_ABBREV} {__version__}.\n\nScore terms are looked up by column name. Usage:\n"
-               "    python3 THIS_SCRIPT table OUT.tsv [--extracted models] [--models MODELS.txt] "
-               "[--validity VALIDITY.tsv]\n"
-               "    python3 THIS_SCRIPT filter SILENT FILTERED [SILENT FILTERED ...] --term T --max X\n"
-               "    python3 THIS_SCRIPT keep [--valid VALIDITY.tsv] [--limit TERM OP VALUE ...]\n"
-               "    python3 THIS_SCRIPT filter-ranking RANKING.txt [--term T --max X] "
-               "[--limit TERM OP VALUE ...]\n"
-               "    python3 THIS_SCRIPT check-extracted models\n"
-               "Needs only Python 3.")
-        pattern = ctx.name("model-MODELNUM", "pdb").replace("MODELNUM", "{N}")
-        constants = {"RUNS": [tuple(r) for r in runs], "PREFIX": ctx.folder, "MODEL_PATTERN": pattern}
-        return GeneratedFile(ctx.name("scores", "py"), embed(
-            _silent_scores, constants, "main(sys.argv[1:], RUNS, PREFIX, MODEL_PATTERN)", doc), "helper",
-            "silent-file scores by column name, the decoy table and the extraction check")
+        return scores_helper(ctx, runs, ctx.name("model-MODELNUM", "pdb").replace("MODELNUM", "{N}"))
 
     def _validity_helper(self, ctx, runs, settings) -> GeneratedFile:
         """MDATK's PDB tools, model checks and silent-file scores, then the validity criteria: one standalone
@@ -715,35 +831,7 @@ class FarfarModelsTool(Tool):
             "required pairs")
 
     def _extract_all(self, s, runs, db: str, helper: str) -> List[str]:
-        exe = s["extract_exe"].strip() or "extract_pdbs"
-        m = MODELS_DIR
-        lines = [f"# Extract every model of every run into {m}/<run>/<tag>.pdb. extract_pdbs writes",
-                 "# <tag>.pdb into the folder it runs in, and every run reuses the same tags, so each run is",
-                 "# extracted in a scratch folder of its own; the run's earlier models are removed first.",
-                 "extract_run() {",
-                 "  local run=$1 silent=$2 tmp f",
-                 f'  rm -rf "{m}/$run" "{m}/.extract-$run".*',
-                 f"  mkdir -p {m}",
-                 f'  tmp=$(mktemp -d "{m}/.extract-$run.XXXXXX")',
-                 f'  ( cd "$tmp" && {exe}{db} -in:file:silent "$silent" ) > "{m}/extract-$run.log" 2>&1 \\',
-                 f'    || echo "extract_pdbs reported an error for run $run (see {m}/extract-$run.log)" >&2',
-                 f'  mkdir -p "{m}/$run"',
-                 f'  for f in "$tmp"/*.pdb; do if [ -e "$f" ]; then mv -- "$f" "{m}/$run/"; fi; done',
-                 '  rm -rf "$tmp"',
-                 "}"]
-        par = s["extract_parallel"]
-        for label, path, _filtered in runs:
-            src = path if posixpath.isabs(path) else posixpath.join("../..", path)  # from models/.extract-*
-            if par > 1:
-                lines += [f"extract_run {shell_quote(label)} {shell_quote(src)} &",
-                          f'[ "$(jobs -rp | wc -l)" -lt {par} ] || wait -n || true']
-            else:
-                lines.append(f"extract_run {shell_quote(label)} {shell_quote(src)}")
-        if par > 1:
-            lines.append("wait")
-        lines += ["# every run has one PDB per decoy (SCORE line) and no other PDB",
-                  f"python3 {helper} check-extracted {m}", ""]
-        return lines
+        return extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper)
 
     def generate(self, s, ctx):
         n = ctx.name

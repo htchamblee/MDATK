@@ -1,5 +1,5 @@
-"""Rosetta silent files: score terms by column name, the decoy table, score filters, the decoys kept for
-clustering and the extraction check.
+"""Rosetta silent files: score terms by column name, the decoy table (and the list of the extracted decoys),
+score filters, the decoys kept for clustering and the extraction check.
 
 Every silent file carries header lines ``SCORE: <term> <term> ... description``; the data lines after a header
 hold the values in the same columns and end with the decoy's tag.  Terms are looked up by name in the header
@@ -225,6 +225,15 @@ def write_table(out_path, silents, pdb_of=None, extra=None):
                 fh.write("\t".join(tsv_field(f) for f in fields) + "\n")
                 n += 1
     return n
+
+
+def write_list(out_path, silents, pdb_of):
+    """Write the PDB file of every decoy that has one, one per line in the order of the decoy table (the list
+    the steps that take the full set of decoys read).  Returns the number of files."""
+    paths = [p for s in silents for tag, _v, _h in s.rows for p in [pdb_of(s.label, tag)] if p]
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("".join(p + "\n" for p in paths))
+    return len(paths)
 
 
 def read_validity(path):
@@ -471,6 +480,8 @@ def main(argv, runs=None, prefix="", model_pattern=""):
     t.add_argument("--models", default="", help="list of ranked models ('N score tag silent-file')")
     t.add_argument("--term", action="append", default=[], help="term to audit (repeatable)")
     t.add_argument("--validity", default="", help="validity table: its columns are appended to the table")
+    t.add_argument("--list", default="", help="also write the PDB file of every decoy that has one, one per "
+                                              "line (relative to the plan folder); none is an error")
     f = sub.add_parser("filter", help="copy the decoys of silent files that pass a score cut")
     f.add_argument("files", nargs="+", help="SOURCE OUTPUT [SOURCE OUTPUT ...]")
     f.add_argument("--term", required=True)
@@ -558,13 +569,20 @@ def main(argv, runs=None, prefix="", model_pattern=""):
             return 0
         models = ranked_models(a.models, model_pattern, run_list) if a.models and model_pattern else {}
         extra = read_validity(a.validity) if a.validity else None
-        n = write_table(a.output, silents, pdb_finder(prefix, a.extracted, models), extra)
+        pdb_of = pdb_finder(prefix, a.extracted, models)
+        n = write_table(a.output, silents, pdb_of, extra)
         for line in audit_lines(silents, a.term):
             print(line)
         print(f"wrote {n} decoys to {a.output}")
         if problems:
             print(f"{len(problems)} problem(s) reading the silent files:", file=sys.stderr)
             _report(problems)
+        if a.list:
+            listed = write_list(a.list, silents, pdb_of)
+            print(f"listed {listed} PDB files in {a.list}")
+            if not listed:
+                print(f"ERROR: no decoy has a PDB file to list in {a.list}", file=sys.stderr)
+                return 1
         return 0
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

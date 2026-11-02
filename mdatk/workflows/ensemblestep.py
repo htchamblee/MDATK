@@ -22,7 +22,8 @@ import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from .. import ensemble, mapscore
-from .base import PortValue, StepContext, Tool, env_section, require_file, script_header, shell_quote
+from .base import (PortValue, StepContext, Tool, env_section, listed_files, require_file, script_header,
+                   shell_quote)
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -207,9 +208,10 @@ class RegisterCensusTool(Tool):
                    "grouped by folder and by the build condition read from the Rosetta logs; groups are "
                    "never pooled across conditions.")
     inputs = [
-        Port("models", "Decoys (PDB)", ("pdb",), optional=True, multiple=True,
-             tooltip="The decoys. Several connections are allowed (one per condition or arm): decoys are "
-                     "grouped by the folder they are in."),
+        Port("models", "Decoys (PDB)", ("pdb",), optional=True, collection=True,
+             tooltip="The decoys, e.g. every decoy of a FARFAR2 step (the full set, a large dot). Several "
+                     "connections are allowed (one per condition or arm): decoys are grouped by the folder "
+                     "they are in."),
         Port("scores", "Decoy table", ("table",), optional=True, multiple=True,
              tooltip="Score terms by name (the FARFAR2 models step's table); it can also list the decoys."),
         Port("secstruct", "Secondary structure", ("secstruct",), optional=True, multiple=True,
@@ -328,9 +330,10 @@ class RegisterCensusTool(Tool):
                 words += ["--expect-l", str(s["expect_l"])]
         words += ["--jobs", str(s["jobs"]), "-o", table, "--report", report]
         models = ctx.inps("models")
+        listed = listed_files("MODELS", ctx, "models")  # a set of decoys: listed when its step ran
         sh = script_header("MDATK register census", ctx, s, script, [_IMPORTABLE])
-        if models:
-            sh += ["# The decoys (one group per folder)"] + _array("MODELS", models) + [""]
+        if models or listed:
+            sh += ["# The decoys (one group per folder)"] + _array("MODELS", models) + listed + [""]
             words.append('"${MODELS[@]}"')
         sh += [_continued(words), require_file(table, "mdatk ensemble census"),
                require_file(report, "mdatk ensemble census"), f'echo "Census: {table}, report: {report}"', ""]
@@ -356,9 +359,10 @@ class EnsembleCompareTool(Tool):
                    "atoms in the density, with exact intervals, Fisher tests, a closure-threshold sweep and "
                    "the difference detectable at a stated power. It reports numbers, no verdict.")
     inputs = [
-        Port("arm_a", "Arm A decoys (PDB)", ("pdb",), multiple=True,
-             tooltip="First ensemble (e.g. a register, or the baseline run)."),
-        Port("arm_b", "Arm B decoys (PDB)", ("pdb",), multiple=True, tooltip="Second ensemble."),
+        Port("arm_a", "Arm A decoys (PDB)", ("pdb",), collection=True,
+             tooltip="First ensemble (e.g. a register, or the baseline run), e.g. every decoy of a FARFAR2 "
+                     "step (the full set, a large dot)."),
+        Port("arm_b", "Arm B decoys (PDB)", ("pdb",), collection=True, tooltip="Second ensemble."),
         Port("scores", "Decoy table", ("table",), optional=True, multiple=True,
              tooltip="Score terms by name (score, linear_chainbreak ...) for both arms."),
         Port("map", "Density map", ("map",), optional=True, tooltip="For the interface occupancy."),
@@ -543,8 +547,9 @@ class EnsembleCompareTool(Tool):
                 words += ["--log-dir-b", q(_rel_dir(d, ctx))]
         words += ["-o", table, "--report", report, "--arm-a", '"${ARM_A[@]}"', "--arm-b", '"${ARM_B[@]}"']
         sh = script_header(f"MDATK ensemble comparison ({s['mode']})", ctx, s, script, [_IMPORTABLE])
-        sh += ["# The two ensembles"] + _array("ARM_A", ctx.inps("arm_a"))
-        sh += _array("ARM_B", ctx.inps("arm_b"))
+        sh += ["# The two ensembles"]  # each with a set of decoys listed when its step ran, if connected
+        sh += _array("ARM_A", ctx.inps("arm_a")) + listed_files("ARM_A", ctx, "arm_a")
+        sh += _array("ARM_B", ctx.inps("arm_b")) + listed_files("ARM_B", ctx, "arm_b")
         sh += ["", _continued(words), require_file(table, "mdatk ensemble compare"),
                require_file(report, "mdatk ensemble compare"), f'echo "Comparison: {report}"', ""]
         files.insert(0, GeneratedFile(script, "\n".join(sh), "run", f"compares the arms into {report}"))
@@ -660,7 +665,9 @@ class MapModelScoreTool(Tool):
     description = ("Per-residue fit of models to a map - ChimeraX's Q-score on the models as they are, or "
                    "MDATK's per-residue correlation - and the models ranked by the dQ of named regions (e.g. "
                    "the interface) against a reference region (the scaffold), chain termini left out.")
-    inputs = [Port("model", "Models (PDB)", ("pdb",), multiple=True, tooltip="One or more models to score."),
+    inputs = [Port("model", "Models (PDB)", ("pdb",), collection=True,
+                   tooltip="One or more models to score, or every decoy of a FARFAR2 step (the full set, a "
+                           "large dot)."),
               Port("map", "Density map", ("map",))]
     outputs = [Port("residues", "Per-residue scores", ("table",)), Port("regions", "Regions", ("table",)),
                Port("report", "Ranking report", ("text",))]
@@ -734,7 +741,8 @@ class MapModelScoreTool(Tool):
         words += ["-o", res, "--regions-out", regs, "--report", report, '"${MODELS[@]}"']
         title = "Q-score (ChimeraX)" if s["method"] == "qscore" else "per-residue CC"
         sh = script_header(f"Map-model score: {title}", ctx, s, script, _score_notes(s))
-        sh += ["# The models"] + _array("MODELS", ctx.inps("model")) + ["", _continued(words)]
+        sh += ["# The models"] + _array("MODELS", ctx.inps("model")) + listed_files("MODELS", ctx, "model")
+        sh += ["", _continued(words)]
         sh += [require_file(p, "mdatk map score") for p in (res, regs, report)]
         sh += [f'echo "Per-residue scores: {res}, regions: {regs}"', ""]
         return [GeneratedFile(script, "\n".join(sh), "run", f"scores the models into {res}")]

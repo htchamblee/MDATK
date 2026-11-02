@@ -281,6 +281,32 @@ the notes below.
     and insertion codes; every residue renamed (Mg and virtual residues became U); multi-model files
     written without ENDMDL; a flat sugar called L; DSSR's auxiliary files left in the working folder.
 
+### The full set of decoys on the FARFAR2 box
+
+- **Sets of files in the planner** (`Port(..., collection=True)`): the full set of N files of one kind,
+  known only once its step has run, drawn as a large, stacked dot (radius 9 px against 5, a white ring
+  inside; hit within 5 px of its edge; its connections thicker). Its output passes a list of the files
+  (`PortValue.lists`: plan-relative paths, one per line, and the most it can name), and the scripts of the
+  steps that take it read the list when they run (`base.listed_files`; a missing or empty list stops them).
+  A set connects only to inputs drawn as large dots, which take files connected one by one as well; onto an
+  input that takes a table it connects its step's table (`Port.table`); an output that needs an option of its
+  step switches it on when connected (`Port.turns_on`). Hand-written edges of a set into another input are
+  an error of the plan.
+- **FARFAR2: *Every decoy (PDB)* and *Decoy table*** (section *Decoys*, *Extract every decoy after the runs*,
+  off by default and switched on by connecting either output): after the runs the step's script runs
+  `<project>_<step>_decoys_<time>.sh`, which extracts every model of every run into `models/<run>/<tag>.pdb`
+  (the *Extract every model* machinery of the FARFAR2 models step, shared: a `mktemp` folder per run,
+  earlier models removed, one PDB per SCORE line checked), then writes the decoy table
+  `<project>_<step>_scores_<time>.tsv` and the list `<project>_<step>_decoys_<time>.txt` (`silent_scores table
+  --list`; none listed is an error). It can be run alone to extract again without rna_denovo. The set
+  carries FARFAR2's `-input_res` for the segment support of *Decoy interfaces*. Without the option the step's
+  files are unchanged (`tests/test_golden.py`); the FARFAR2 models step's copies of `silent_scores` gain
+  `--list`.
+- **Steps that take the set**: the models of *Model check*, *Decoy interfaces*, *Register census*,
+  *Map-model score* and *MDATK · frame check* and both arms of *Ensemble comparison*; their files are
+  unchanged without a set. Counts planned from the inputs (passed models, moved models) take at most runs ×
+  models per run; the model check's automatic hands are measured on the first listed decoy once it exists.
+
 ## 0.0.11 (2026-10-31)
 
 ### RNAdo, a program of its own
