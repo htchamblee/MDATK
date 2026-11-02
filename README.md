@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.11](#whats-new-in-0011)
+- [What's new in 0.0.12](#whats-new-in-0012)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -79,34 +79,40 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.11
+## What's new in 0.0.12
 
-- **RNAdo is a program of its own.** The workflow planner (the *Project Planner* until 0.0.10) moved
-  out of the analysis window, together with the **script wizard**, the **PDB clean-up** and the
-  **structure builder**. RNAdo's window holds the plan canvas with its toolbar and details pane, the
-  three tools in its header bar, and a status bar with progress and *Cancel*; it opens, saves and
-  remembers the same project files and runs without the analysis window (see [RNAdo's
-  window](#rnados-window)).
-- **Output log panel.** The bottom of RNAdo's window shows what the planner did (files written,
-  previous runs checked, runs used or dropped) and every line of the scripts it runs, marked with its
-  step; standard error and lines starting with ERROR or WAITING are highlighted. It filters by step,
-  shows the stored log of a step's last run, and copies, saves or clears its lines.
-- **One project in both programs.** RNAdo saves only the plan, the analysis window keeps the plan RNAdo
-  saved (with its own residue-group renames), and each program notices when the other saved: it takes
-  the change, or asks when both changed the same part (see [One project in both
-  programs](#one-project-in-both-programs)).
-- **Generated workflow files** are unchanged from 0.0.10, apart from the version in their headers.
-- **Starting RNAdo:** `rnado [PROJECT]` (`rnado-gui` without a terminal), `mdatk rnado`, or *RNAdo →
-  Open in RNAdo…* (Ctrl+P) in the analysis window; the stand-alone builds start it too (see [Starting
-  RNAdo](#starting-rnado)).
-- **The plan's files for the analysis:** *Use the plan's files* (analysis window, Input & cleaning, also
-  in its *RNAdo* menu) takes the topology and trajectories the plan's MDATK analysis step reads.
-- **A logo drawn from a real RNA model:** RNAdo's logo, wordmark and icons are drawn from the ideal
-  A-form duplex of MDATK's own structure builder, so the helix has 11 bp per turn, pairs off the axis
-  and inclined, a narrow, deep major groove and a wide, shallow minor groove.
-- **Fixes from the release review** (saving a project both programs have open, the `PYTHONPATH` of
-  the scripts RNAdo runs, a bounded output log, RNAdo's actions in the AppImage): see
-  [CHANGELOG.md](CHANGELOG.md#fixes-from-the-release-review).
+- **Your analysis scripts as RNAdo steps.** New steps and commands, each generalised so that ranges,
+  chains, registers and paths are options: *Model check* (`mdatk pdb qc`: clashes, O3′–P links with the
+  strain a stretched link would put into tleap, sugar hands, kinks, a filter that passes on up to N
+  models and fails only below a minimum), *Decoy interfaces* (`mdatk decoys`: census, clusters, segment
+  support; builtin, barnaba or DSSR pairs), *Register census* and *Ensemble comparison* (`mdatk
+  ensemble`), *Map-model score* (`mdatk map score`: per-residue Q-score with ChimeraX's `qscore`,
+  ranked on dQ), *Body hybrids* (`mdatk pdb hybrids`), *Rosetta · run audit* (`mdatk rosetta audit`:
+  flags, Rosetta build and seeds of every run) and *MDATK · frame check* (`mdatk frame`). See [Model
+  checks](#model-checks), [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames), [Decoy
+  interfaces](#decoy-interfaces) and [Decoy ensembles](#decoy-ensembles-map-model-scores-and-statistics).
+- **FARFAR2 decoys:** a decoy table (`run`, `tag`, `pdb`, every score term by name); validity filters
+  (hands, bases, closure, defining pairs) before clustering and quality filters after it; *Every decoy
+  (PDB)*, a large dot on the right of the FARFAR2 box, passes the whole set to the steps that take
+  several models. A template, *Decoy validation (FARFAR2)*, chains them.
+- **Applications menu:** `mdatk desktop install` (or *Add MDATK and RNAdo to the applications menu…*)
+  adds MDATK and RNAdo as two entries, from a source install or the AppImage (see [Applications menu
+  (Linux)](#applications-menu-linux)).
+- **Completed runs move aside:** writing a step again first moves its completed run, with the scripts
+  that made it, into `<step folder>/superseded/<stamp>_<time>/` (see [Previous runs](#previous-runs)).
+- **CPU and GPU budgets** replace *Parallel*: scripts start while their cores and GPUs fit (default:
+  half the cores, every GPU found); NAMD counts its `+p` cores and a GPU; a GPU step gets a free GPU in
+  `CUDA_VISIBLE_DEVICES` unless it names its own (see [Running steps](#running-steps)).
+- **Stop buttons:** *Stop scripts* in RNAdo's toolbar stops every script; a stop button on each running
+  box stops that one.
+- **The commands a step runs:** the script wizard has a *Commands* tab with the commands the step's
+  script will run.
+- **Fixes:** MDATK no longer stays running after its windows are closed (each program quits with its main
+  window, and the programs it starts no longer inherit the AppImage's descriptors); the NAMD MDFF result
+  PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with blank chains is read.
+- **Generated workflow files** of the earlier step types are unchanged unless a new option is turned on,
+  apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds (see
+  [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 

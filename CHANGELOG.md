@@ -5,14 +5,14 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) · [0.0.8](#008-2026-10-29) ·
-  [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) · [0.0.5.1](#0051-2026-10-25) ·
-  [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) · [0.0.4](#004-2026-10-21) ·
-  [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) · [0.0.3b](#003b-2026-10-18) ·
-  [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) · [0.0.2b](#002b-2026-10-15) ·
-  [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+- [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+  [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
+  [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
+  [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
+  [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
+  [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
-## 0.0.12 (unreleased)
+## 0.0.12 (2026-11-02)
 
 ### Model checks
 
@@ -86,6 +86,9 @@ the notes below.
   as the script's first lines that stops it before any helper or tleap; the PDB preparation names an
   empty slot too. Generated files are unchanged apart from the two helpers that copy library code: the
   PDB tools and the PDB preparation (listed as intended in `tests/test_golden.py`).
+
+### Rosetta: decoy table, validity filters, run audit, frames
+
 - **FARFAR2 decoy table and score filter** (step *Rosetta · FARFAR2 models*, `mdatk rosetta scores`): SCORE
   terms are looked up by column name in the header that applies (`mdatk/workflows/scripts/silent_scores.py`,
   standard library, embedded in the step's folder). New output *scores* (file kind *table*):
@@ -153,6 +156,7 @@ the notes below.
   or the run (same-named decoys of different runs overwrote each other or shared a label); a set-wide
   median let models without the fit body into the statistics; unusable models vanished from the table;
   ANISOU records were not rotated.
+
 ### Decoy ensembles, map-model scores and statistics
 
 - **Four planner steps** with their commands, written from the user's analysis scripts (register census,
@@ -222,11 +226,13 @@ the notes below.
   region's mean (`--sort NAME` still ranks on the mean); the report heads its columns `dQ:NAME` (`dCC:NAME`
   for the CC), says what it ranked on and gives the spread of every dQ over the models.
 - **Planner template *Decoy validation (FARFAR2)*** (`decoy-validation`): FARFAR2 → FARFAR2 models (the
-  closure filter `linear_chainbreak ≤ 5` before clustering) → model check (clashes) → decoy interfaces
-  (segment support) → map-model score (Q-score with an *interface* region, ranked on dQ), a map input, and
-  notes on the validity filters (closure, hands, defining pairs: those the models step has no option for
-  yet are described), the rule "filter on validity before clustering; filter on quality after, when
-  choosing representatives" and the kink test (not in this model check yet).
+  closure validity filter `linear_chainbreak ≤ 5` before clustering) → model check (clashes) → decoy
+  interfaces (segment support) → map-model score (Q-score with an *interface* region, ranked on dQ) and a
+  second model check gating on kinks, a map input, and notes on the validity filters left to fill in (hands
+  and defining pairs need the construct), the rule "filter on validity before clustering; filter on quality
+  after, when choosing representatives" and the kink test (positions that in-line probing shows flexible
+  are allowed).
+
 ### Decoy interfaces
 
 - **`mdatk/interfaces.py`**: the interface between two sides of every model of an ensemble, without a
@@ -261,8 +267,9 @@ the notes below.
   x3dna-dssr (licensed separately, never bundled) runs on a copy with canonical names and MDATK's own
   residue numbering in a temporary folder; its JSON (DSSR 1.x layout: `nts`, `pairs`, `stacks`, `hbonds`)
   maps back by residue index, so it no longer depends on DSSR's id grammar; ids are also read tolerantly
-  (`1:A.G1`, `AB.G1`, `A.0A/45`, `A.G1^B`, atom ids in either order). Not checked against a real DSSR 2.x
-  file.
+  (`1:A.G1`, `AB.G1`, `A.0A/45`, `A.G1^B`, atom ids in either order). Checked against the JSON of DSSR
+  2.9.4 (four files of the user's, with and without chain ids): a blank chain gives chain-less ids (`G1`,
+  `O6@G1`), now read as the first chain of the copy instead of being dropped.
 - **Fixed on the way** (problems of the scripts, each with a regression test):
   - an A·C mismatch and trans Watson-Crick pairs counted as Watson-Crick (one N1/N3 distance);
   - Mg-bridgeable P–P pairs tested only for residue pairs that already had a contact;
@@ -310,6 +317,7 @@ the notes below.
 - **Package data:** the desktop-entry templates moved from `data/` to `mdatk/assets/` (installed and
   bundled with the icons; the AppImage build reads them there), and the MDATK icon is committed as
   `mdatk/assets/mdatk-icon-<size>.png` (16–256 px), drawn by `packaging/make_icon.py --assets`.
+
 ### RNAdo: completed runs move aside
 
 - **A step that is written again first moves its completed run aside** (the user's decision: as soon as its
@@ -339,6 +347,7 @@ the notes below.
   finished runs*) reuse them from a run left in place: a partial run, or any run with the option off (a
   complete run is moved aside, so the step runs again from the start). `tests/test_namd_mdff_tool.py`
   writes with the option off to test that reuse.
+
 ### Running steps: CPU and GPU budgets, stop buttons
 
 - **Two budgets instead of *Parallel*** (the user's decision): the scripts RNAdo and `mdatk workflow run`
@@ -384,6 +393,7 @@ the notes below.
   files, so *Check previous runs* / `mdatk workflow status` call it partial (`partial (stopped)`) until
   the step runs again (the next run removes the note) or a file of the run is written after it.
 - Generated files are unchanged (`tests/test_golden.py` passes without new intended changes).
+
 ### The full set of decoys on the FARFAR2 box
 
 - **Sets of files in the planner** (`Port(..., collection=True)`): the full set of N files of one kind,
@@ -409,6 +419,7 @@ the notes below.
   *Map-model score* and *MDATK · frame check* and both arms of *Ensemble comparison*; their files are
   unchanged without a set. Counts planned from the inputs (passed models, moved models) take at most runs ×
   models per run; the model check's automatic hands are measured on the first listed decoy once it exists.
+
 ### Script wizard: the commands a step runs
 
 - **Commands tab** (the script wizard's second tab, stand-alone and in a box's *Edit in wizard…*): what the
@@ -441,6 +452,12 @@ the notes below.
   now stated), and desktop applications opened through Gio are spawned by GLib, which closes every other
   descriptor in the child too (checked with GLib 2.80). Tests start each of them while holding stand-ins
   of both descriptors.
+
+### Fixes
+
+- **NAMD MDFF**: the fitted PDB's first line is `REMARK 951 MDFF result (NAMD), …` instead of an unnumbered
+  `REMARK   MDFF result …`, which ChimeraX ignores as a bad PDB record (example regenerated).
+- **Planner file kind *table*** (`.tsv`, `.csv`) for the decoy tables and reports the new steps pass on.
 
 ## 0.0.11 (2026-10-31)
 
