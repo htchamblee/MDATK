@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .. import ensemble, mapscore
 from .base import PortValue, StepContext, Tool, env_section, require_file, script_header, shell_quote
+from .budget import Resources
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -265,6 +266,9 @@ class RegisterCensusTool(Tool):
     def describe(self, s):
         names = ", ".join(r["name"] for r in s["registers"]) or "no registers"
         return f"census of {names}"
+
+    def run_resources(self, s):
+        return Resources(int(s["jobs"]))  # worker processes
 
     def resources(self, s):
         return []

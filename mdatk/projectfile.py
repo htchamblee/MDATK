@@ -67,7 +67,8 @@ _LOG_DOCS = {
                "aside before the step was written again), 'pdb clean', or the planner step number of a "
                f"generated script that {PROJECT_ABBREV} ran (e.g. '03').",
     ("title",): "Short human-readable description.",
-    ("status",): "ok, failed, cancelled or waiting (for a script the step leaves to be run separately).",
+    ("status",): "ok, failed, cancelled, waiting (for a script the step leaves to be run separately) or "
+                 "stopped (the step's script alone, by the user).",
     ("duration_s",): "Wall time in seconds.",
     ("command",): "Command line that was run (for generated scripts).",
     ("folder",): "Working folder of the command.",

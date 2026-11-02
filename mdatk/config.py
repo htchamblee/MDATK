@@ -481,7 +481,11 @@ class WorkflowParams:
     # Before a step's files are written again, move its completed run of the plan's stamp (outputs, the
     # scripts and inputs that made them, logs) into <step folder>/superseded/<stamp>_<time>/
     supersede_runs: bool = True
-    parallel: int = 1  # Scripts MDATK runs at the same time (Run all / Run selected); steps wait for their inputs
+    # The most scripts MDATK runs at the same time (Run all / Run selected), within the CPU and GPU budgets
+    # below; steps wait for their inputs (0: no limit; a project file without it: 1, as before 0.0.12)
+    parallel: int = 0
+    cpu_cores: int = 0  # CPU cores the scripts MDATK runs at the same time may use together (0: half of them)
+    gpus: int = -1  # GPUs they may use, each script its own (-1: the GPUs found; 0: none)
     nodes: List[PlanNode] = field(default_factory=list)  # Planner steps
     edges: List[PlanEdge] = field(default_factory=list)  # Planner connections
     # Stand-alone script wizard settings, one entry per step type
@@ -1005,6 +1009,8 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
             if tp is InputParams and key == "trajectories" and isinstance(val, str):
                 val = [val]
             kwargs[key] = _from_plain(hints[key], val, f"{where}.{key}")
+        if tp is WorkflowParams:  # saved before 0.0.12 without 'parallel': one script at a time, as then
+            kwargs.setdefault("parallel", 1)
         return tp(**kwargs)
 
     if origin in (list, List):

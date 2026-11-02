@@ -36,11 +36,19 @@ class Host(Protocol):
 
     def run_scripts(self, jobs: Sequence, separate: Sequence[str] = (), parent=None, parallel: int = 1,
                     on_state: Optional[Callable] = None, on_finished: Optional[Callable] = None,
-                    with_separate: Optional[Sequence] = None) -> bool:
+                    with_separate: Optional[Sequence] = None, budget=None) -> bool:
         """Run generated scripts after a confirmation; ``on_state(job, state)`` and ``on_finished()`` are
         called on the GTK main loop, ``with_separate`` (the jobs including the scripts marked 'run
-        separately') adds the choice to run those too.  False when no run started (nothing to run, not
-        confirmed, scripts still running)."""
+        separately') adds the choice to run those too.  At most ``parallel`` scripts at once (0: no limit),
+        within ``budget`` (:class:`mdatk.workflows.budget.Budget`: CPU cores and GPUs; None: not counted).
+        False when no run started (nothing to run, not confirmed, scripts still running)."""
+
+    def stop_scripts(self) -> None:
+        """Stop every running script (the run is cancelled)."""
+
+    def stop_step(self, node_id: str) -> bool:
+        """Stop the running (or not yet started) scripts of one step; the others go on, the steps that
+        depend on it are not started.  False when no run is going."""
 
     def use_for_analysis(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
         """Hand the files an MDATK analysis step reads to the analysis window."""

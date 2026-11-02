@@ -753,7 +753,8 @@ def cmd_workflow_write(args) -> int:
     project = _workflow_project(args)
     if args.dry_run and args.run:
         raise ValueError("--dry-run writes nothing, so there is nothing to --run")
-    parallel = _parallel(args, project) if args.run else 1  # a bad --parallel fails before writing
+    # a bad --parallel / --cores / --gpus fails before writing
+    parallel, budget = (_parallel(args, project), _budget(args, project)) if args.run else (1, None)
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
     ids = None
     if args.step is not None:
@@ -796,7 +797,7 @@ def cmd_workflow_write(args) -> int:
     print(json.dumps(out, indent=2, ensure_ascii=False))
     if args.run:
         ok_ids = [n for n in (ids if ids is not None else plan.order) if n not in report.skipped]
-        code = _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate)
+        code = _run_plan_scripts(plan, ok_ids, _project_file(args), parallel, args.include_separate, budget)
         return code or (1 if failed else 0)
     return 1 if failed else 0
 
@@ -810,7 +811,8 @@ def cmd_workflow_run(args) -> int:
         ids = [n.id for n in project.workflow.nodes if n.step == args.step]
         if not ids:
             raise ValueError(f"no step number {args.step} in the plan")
-    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate)
+    return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate,
+                             _budget(args, project))
 
 
 def cmd_workflow_status(args) -> int:
@@ -872,18 +874,30 @@ def cmd_workflow_status(args) -> int:
 
 
 def _parallel(args, project) -> int:
-    """--parallel, else the project's setting (at least 1)."""
+    """--parallel, else the project's setting: the most scripts at once (0: no limit)."""
     if getattr(args, "parallel", None) is not None:
-        if args.parallel < 1:
-            raise ValueError("--parallel must be at least 1")
+        if args.parallel < 0:
+            raise ValueError("--parallel must be 0 (no limit) or more")
         return args.parallel
-    return max(1, int(project.workflow.parallel or 1))
+    return max(0, int(project.workflow.parallel))
+
+
+def _budget(args, project):
+    """The CPU cores and GPUs the scripts may use together: --cores / --gpus, else the project's settings."""
+    from .workflows.budget import Budget
+    cores, gpus = getattr(args, "cores", None), getattr(args, "gpus", None)
+    if cores is not None and cores < 0:
+        raise ValueError("--cores must be 0 (half the cores) or more")
+    if gpus is not None and gpus < -1:
+        raise ValueError("--gpus must be -1 (the GPUs found), 0 or more")
+    return Budget.of(project.workflow, cores, gpus)
 
 
 def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
-                      include_separate: bool = False) -> int:
+                      include_separate: bool = False, budget=None) -> int:
     """Run the main scripts of ``ids`` (all steps when None), with ``include_separate`` also the scripts
-    marked 'run separately'; 0 when every script succeeded, WAITING_STATUS when a step waits for a
+    marked 'run separately', at most ``parallel`` at once (0: no limit) within ``budget`` (CPU cores and
+    GPUs; None: no limit); 0 when every script succeeded, WAITING_STATUS when a step waits for a
     separately run script (its dependents were not started), 1 when a script failed."""
     from .workflows.base import WAITING_STATUS
     from .workflows.runner import ScriptFailed, adopted_steps, plan_jobs, run_jobs
@@ -906,8 +920,11 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
             sys.stdout.write(line + "\n")
             sys.stdout.flush()
 
+    if budget is not None and len(jobs) > 1:
+        cap = f", at most {parallel} at once" if parallel else ""
+        show(f"running {len(jobs)} script(s) with {budget.text()}{cap}")
     try:
-        results = run_jobs(jobs, project_path, on_line=show, parallel=parallel)
+        results = run_jobs(jobs, project_path, on_line=show, parallel=parallel, budget=budget)
     except ScriptFailed as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1270,6 +1287,15 @@ def build_parser() -> argparse.ArgumentParser:
         w.add_argument("--no-stamp", action="store_true", help="names without a time stamp")
         w.add_argument("--quiet", "-q", action="store_true", help="only print errors")
 
+    def budget_args(w, prefix=""):
+        w.add_argument("--cores", type=int, metavar="N",
+                       help=prefix + "CPU cores the scripts may use together; a step starts when the cores "
+                       "it uses are free (0: half the cores; default: the project's setting)")
+        w.add_argument("--gpus", type=int, metavar="N",
+                       help=prefix + "GPUs they may use; a step that uses one gets a free GPU in "
+                       "CUDA_VISIBLE_DEVICES unless it names its own (-1: the GPUs found, 0: none; default: "
+                       "the project's setting)")
+
     w = wsub.add_parser("check", help="resolve the project's plan and list its problems")
     naming(w)
     w.set_defaults(func=cmd_workflow_check)
@@ -1285,7 +1311,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "
-                                                            "time (default: the project's setting, 1)")
+                                                            "time (0: no limit; default: the project's "
+                                                            "setting)")
+    budget_args(w, "with --run: ")
     w.add_argument("--include-separate", action="store_true",
                    help="with --run: also run the scripts marked 'run separately' (e.g. production), each "
                         "after its step's main script")
@@ -1296,8 +1324,9 @@ def build_parser() -> argparse.ArgumentParser:
                                     "(exit status 75) and the steps after it are not started")
     naming(w)
     w.add_argument("--step", type=int, help="only this step number")
-    w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (default: "
-                                                            "the project's setting, 1)")
+    w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (0: no "
+                                                            "limit; default: the project's setting)")
+    budget_args(w)
     w.add_argument("--include-separate", action="store_true",
                    help="also run the scripts marked 'run separately' (e.g. production runs meant for a "
                         "cluster), each after its step's main script and before the steps that read from it")

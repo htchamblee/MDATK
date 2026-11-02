@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .. import PROJECT_ABBREV, __version__
+from .budget import Resources
 from .naming import file_name, sanitize_project, step_folder
 from .schema import GeneratedFile, Issue, Option, Port, Section
 
@@ -252,6 +253,11 @@ class Tool:
     def resources(self, s: Dict[str, Any]) -> List[str]:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
+
+    def run_resources(self, s: Dict[str, Any]) -> Resources:
+        """CPU cores, GPUs and named GPU ids one run of the step's scripts uses (see mdatk.workflows.budget);
+        MDATK starts the script when they are free.  Default: one core."""
+        return Resources()
 
     def finish_marks(self, s: Dict[str, Any], ctx: StepContext) -> List[Tuple[str, str]]:
         """(plan-relative path, regular expression) pairs: a run of this step is complete only when each

@@ -28,6 +28,7 @@ from ..selections import SelectionError, parse_residue_ranges
 from . import rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_flags, fortran_float, require_file,
                    script_header, shell_quote)
+from .budget import Resources
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 
@@ -763,6 +764,9 @@ class PhenixRSRTool(Tool):
     # ------------------------------------------------------------- planner
     def resources(self, s):
         return _guarded(["phenix", "phenix_rsr"])
+
+    def run_resources(self, s):
+        return Resources(int(s["nproc"]))
 
     def describe(self, s):
         res = f"{s['resolution']:g} Å" if s["resolution"] is not None else "resolution?"
