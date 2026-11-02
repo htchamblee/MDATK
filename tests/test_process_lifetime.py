@@ -5,7 +5,8 @@ pipe (inherited without close-on-exec; the runtime keeps the FUSE mount, and its
 any process holds it) and an fd 1023 on the mount.  RNAdo, the scripts RNAdo runs and the desktop
 applications MDATK opens must not inherit them (mdatk.gui.launch, mdatk.workflows.runner,
 mdatk.gui.desktop).  And a window attached to the application but hidden must not keep either program
-running once its main window has closed (the GTK tests run under xvfb-run -a)."""
+running once its main window has closed (the GTK tests run under xvfb-run -a).  RNAdo, a child of the
+analysis window that started it, is reaped when it ends, so it does not stay a defunct process."""
 
 import importlib
 import os
@@ -13,6 +14,7 @@ import resource
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import time
 
@@ -100,6 +102,42 @@ def test_rnado_inherits_no_appimage_descriptors(appimage_fds, tmp_path, monkeypa
     proc = launch.launch_rnado(str(tmp_path / "plan.mdatk.toml"))
     assert proc.wait(timeout=60) == 0
     assert not {str(KEEPALIVE), str(MOUNT)} & _fds(out)
+
+
+def _state(pid):
+    """The state letter of process ``pid`` (Z: defunct), None when there is no such process."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return None
+
+
+@NEEDS_PROC
+@NEEDS_GIO
+def test_rnado_is_reaped_when_it_ends():
+    """RNAdo is a child of the analysis window that started it.  Closed while that window stays open, it
+    stayed a defunct process ("[mdatk] <defunct>" from the AppImage) until the analysis window ended: the
+    watch of its start (mdatk.gui.launch.watch_start) stopped looking at it after the start time."""
+    _Gio, GLib = _gio()
+    from mdatk.gui import launch
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.0)"])
+    got = []
+    launch.watch_start(proc, lambda: got.append("started"), got.append, seconds=0.2, every_ms=20)
+    ctx, end = GLib.MainContext.default(), time.monotonic() + 10
+    try:
+        while proc.returncode is None and time.monotonic() < end:  # the analysis window runs on
+            ctx.iteration(False)
+            time.sleep(0.01)
+        state = _state(proc.pid)
+        assert got == ["started"]
+        assert proc.returncode == 0, f"RNAdo ended but was not reaped (process state {state})"
+        assert state is None
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            proc.wait()
 
 
 @NEEDS_PROC
