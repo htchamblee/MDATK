@@ -233,6 +233,7 @@ FILE_KINDS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "trafl": ("SimRNA trajectory", (".trafl",)),
     "image": ("Image / movie", (".tga", ".png", ".mp4")),
     "text": ("Text file", (".txt", ".dat")),
+    "table": ("Table (TSV / CSV)", (".tsv", ".csv")),
 }
 
 
