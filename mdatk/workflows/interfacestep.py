@@ -164,7 +164,7 @@ class DecoyInterfaceTool(Tool):
             Option("rebuilt", "Rebuilt residues", "text", "", "", placeholder="A:7-12,B:21-38,C:58-63",
                    requires={"support": True, "rebuilt_from": "rebuilt"}),
             Option("sep", "Sequence separation", "int", 3,
-                   "Contacts to residues of the same chain at most this far in sequence are ignored (the "
+                   "Contacts to residues of the same strand at most this far in sequence are ignored (the "
                    "backbone holds those).", minimum=0, maximum=50, requires={"support": True}),
             Option("support_cutoff", "Contact distance", "float", 4.5, "", minimum=1.0, maximum=15.0,
                    step=0.1, digits=2, unit="Å", requires={"support": True}),
@@ -338,9 +338,16 @@ class DecoyInterfaceTool(Tool):
             out.append(Issue("error", "flag runs of: a whole number of residues, or 'auto'", ("run",)))
         mode = s["rebuilt_from"]
         if mode == "upstream":
-            if self._upstream_fixed(ctx) is None:
+            fixed = self._upstream_fixed(ctx)
+            if fixed is None:
                 out.append(Issue("error", "the connected models do not say which residues FARFAR2 kept "
                                           "fixed; type the fixed or the rebuilt residues", ("rebuilt_from",)))
+            elif fixed.strip():
+                try:
+                    ifc.parse_side(fixed)  # as the script gets it (_rebuilt_options)
+                except ifc.InterfaceError as exc:
+                    out.append(Issue("error", f"FARFAR2's fixed residues (-input_res): {exc}",
+                                     ("rebuilt_from",)))
         else:
             key = "fixed" if mode == "fixed" else "rebuilt"
             if not s[key].strip():

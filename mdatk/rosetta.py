@@ -42,7 +42,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .workflows.naming import parse_name
+from .workflows.naming import SUPERSEDED, parse_name
 from .workflows.scripts import silent_scores
 
 # ---------------------------------------------------------------------------
@@ -767,13 +767,19 @@ def _is_log(name: str) -> bool:
     return name.endswith(".log") or (name.startswith("log_") and name.endswith(".txt"))
 
 
+def _searched(dirs: Iterable[str]) -> List[str]:
+    """The subfolders searched for runs, sorted: never the completed runs MDATK moved aside into a step
+    folder's superseded/ (they are not runs of the step's current condition)."""
+    return sorted(d for d in dirs if d != SUPERSEDED)
+
+
 def find_logs(folder: str, recursive: bool = True) -> List[str]:
     if not recursive:
         return sorted(os.path.join(folder, f) for f in os.listdir(folder)
                       if _is_log(f) and os.path.isfile(os.path.join(folder, f)))
     out = []
     for root, dirs, files in os.walk(folder):
-        dirs.sort()
+        dirs[:] = _searched(dirs)
         out += [os.path.join(root, f) for f in files if _is_log(f)]
     return sorted(out)
 
@@ -798,7 +804,7 @@ def run_folders(log: str, condition: str, silent: str = "") -> List[str]:
     subs: List[str] = []
     with_output: List[str] = []
     for root, dirs, files in os.walk(condition):
-        dirs.sort()
+        dirs[:] = _searched(dirs)
         rel = os.path.relpath(root, condition)
         depth = 0 if rel == "." else rel.count(os.sep) + 1
         if depth:
@@ -980,8 +986,9 @@ def collect(folder: str, label: str = "", controlled=None, full_hash: bool = Tru
 def find_conditions(roots: Sequence[str], recursive: bool = True,
                     exe_pattern: str = "rna_denovo") -> List[Tuple[str, str]]:
     """(label, folder) of every condition: a root whose own folder holds rna_denovo logs is one condition,
-    otherwise each of its subfolders is.  Labels are paths relative to the root (the root's name for the root
-    itself), with the root's name in front when two roots give the same label."""
+    otherwise each of its subfolders is (never ``superseded/``, see :func:`_searched`).  Labels are paths
+    relative to the root (the root's name for the root itself), with the root's name in front when two roots
+    give the same label."""
     out: List[Tuple[str, str, str]] = []
     for root in roots:
         if not os.path.isdir(root):
@@ -991,7 +998,7 @@ def find_conditions(roots: Sequence[str], recursive: bool = True,
         if any(command_lines(f, exe_pattern) for f in find_logs(root, recursive=False)):
             out.append((name, root, name))
             continue
-        subs = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+        subs = _searched(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
         out += [(d, os.path.join(root, d), name) for d in subs] or [(name, root, name)]
     labels = [lab for lab, _p, _r in out]
     return [(f"{r}/{lab}" if labels.count(lab) > 1 and lab != r else lab, p) for lab, p, r in out]

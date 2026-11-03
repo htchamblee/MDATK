@@ -18,6 +18,7 @@ from typing import Callable, Dict, List, Optional
 
 TOOLS = ("wizard", "pdb", "builder")  # what ``rnado --open`` opens next to the planner
 START_S = 3.0  # RNAdo ending with an error status within this time did not start
+REAP_S = 1  # afterwards RNAdo is checked this often (seconds), so that it is reaped once it ends
 MODES = ("source", "bundle", "appimage", "appimage-extracted")
 
 
@@ -132,7 +133,10 @@ def watch_start(proc: subprocess.Popen, on_started: Callable[[], None], on_faile
                 seconds: Optional[float] = None, every_ms: int = 200) -> int:
     """Watch ``proc`` (from :func:`launch_rnado`) on the GLib main loop: ``on_failed(why)`` when it ends
     with an error status within ``seconds`` (default :data:`START_S`; an AppImage that cannot mount, a
-    broken installation), ``on_started()`` otherwise.  Returns the GLib source id."""
+    broken installation), ``on_started()`` otherwise.  Returns the GLib source id of that watch.  A ``proc``
+    still running then is reaped when it ends (checked every :data:`REAP_S` seconds while the main loop
+    runs): RNAdo is a child of this program and would otherwise stay a defunct process (``mdatk`` from the
+    AppImage) after its window closed, for as long as this program runs."""
     from gi.repository import GLib
 
     end = time.monotonic() + (START_S if seconds is None else seconds)
@@ -147,6 +151,8 @@ def watch_start(proc: subprocess.Popen, on_started: Callable[[], None], on_faile
                       f"Command: {shlex.join(str(a) for a in proc.args)}")
         else:
             on_started()
+        if code is None:
+            GLib.timeout_add_seconds(REAP_S, lambda: proc.poll() is None)
         return False
 
     return GLib.timeout_add(every_ms, check)

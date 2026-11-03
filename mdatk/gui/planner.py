@@ -1423,7 +1423,9 @@ class PlannerPanel(Gtk.Box):
             return
         try:
             with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
-                report = plan.write(node_ids, project_path=self.host.project_path)
+                # only the runs listed above move: one that completed while the question was open (the
+                # runner works on) was neither listed nor checked for readers, so its step is not written
+                report = plan.write(node_ids, project_path=self.host.project_path, confirmed=set(moving))
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
                 if report.superseded:
@@ -1445,6 +1447,14 @@ class PlannerPanel(Gtk.Box):
         self.set_status(msg)
         self.host.append_log("Planner: " + msg)
         self.log_superseded(report)
+        if report.late:
+            late = [plan.steps[n].label for n in report.late]
+            for label in late:
+                self.host.append_log(f"Planner: {label} not written: its run completed after the question "
+                                     "which runs move aside")
+            self._message(f"{len(late)} step(s) not written", "The run of " + ", ".join(late) + " completed "
+                          "while you were asked which runs move aside, so it was neither moved nor written. "
+                          "Write again once no script reads it.", Gtk.MessageType.WARNING)
         if report.master:
             self.host.append_log(f"Master script: {report.master}")
         if run:

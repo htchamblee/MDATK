@@ -1003,8 +1003,9 @@ def test_builder_and_cryoem_templates_write_valid_plans(tmp_path):
 
 def test_decoy_validation_template_follows_the_users_order(tmp_path):
     """FARFAR2 -> models (closure filter before clustering) -> model check -> decoy interfaces (support) ->
-    map-model score (Q-score, dQ); notes for the validity filters, the rule and the kink test still to come.
-    Given its input files and the residues only the user knows, the plan has no errors and writes scripts."""
+    map-model score (Q-score, dQ) -> model check (kinks); notes for the validity filters, the rule and the
+    kink test. Given its input files and the residues only the user knows, the plan has no errors and writes
+    scripts."""
     from mdatk.workflows.plan import TEMPLATES
     label, steps, edges = TEMPLATES["decoy-validation"]
     assert label.startswith("Decoy validation (FARFAR2)")
@@ -1012,6 +1013,11 @@ def test_decoy_validation_template_follows_the_users_order(tmp_path):
     nodes = apply_template(wf, "decoy-validation")
     by_key = dict(zip([k for k, *_rest in steps], nodes))
     assert len(nodes) == len(steps) and len(wf.edges) == len(edges)  # every step made, every edge connected
+    # the models step's decoy table lists each decoy by its extracted file (models/rNN/<tag>.pdb), not the
+    # cluster centres (model-NN) the quality steps get: a step that took it would find no row for any of
+    # its models (empty score columns; score limits failing every model), so none takes it
+    from_models = {(e.output, e.target, e.input) for e in wf.edges if e.source == by_key["models"].id}
+    assert from_models == {("models", by_key["check"].id, "models")}  # only the ranked cluster centres
     tools = [n.tool for n in sorted(nodes, key=lambda n: (n.x, n.y)) if n.tool not in ("note", "input-file")]
     assert tools == ["farfar2", "farfar2-models", "model-check", "decoy-interface", "map-model-score",
                      "model-check"]

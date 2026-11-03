@@ -282,3 +282,48 @@ def test_farfar2_decoys_feed_a_model_check(tmp_path):
     proc = subprocess.run(["bash", str(check / f"apt1_02_model-check_{STAMP}.sh")], capture_output=True,
                           text=True, env=env)
     assert proc.returncode == 1 and "is missing: run the step that lists the set first" in proc.stderr
+
+
+def test_without_step_folders_every_step_extracts_into_a_folder_of_its_own(tmp_path):
+    # in a plan without step folders every FARFAR2 step (and FARFAR2 models step) extracted into models/ of
+    # the plan folder: each removed the other's decoys, and both decoy lists named models/r01/... (whichever
+    # step extracted last owned them)
+    template = tmp_path / "helix.pdb"
+    template.write_text(builder.build_helix("GGCGCC"))
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP, step_folders=False)
+    fold = {"sequence": "GGGCAC", "runs": 2, "nstruct": 3, "fixed_stems": False, "extract_decoys": True}
+    a, b = add_node(wf, "farfar2", settings=dict(fold)), add_node(wf, "farfar2", settings=dict(fold))
+    m = add_node(wf, "farfar2-models", settings={"extract_all": True, "valid_closure": True, "dssr": False})
+    connect(wf, b.id, "silent", m.id, "silent")
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    assert any("PDB files in apt1_01_models/" in i.message for i in plan.steps[a.id].issues)
+    files = {f.name: f.content for nid in (a.id, b.id, m.id) for f in generate_step(plan.steps[nid])}
+    for step in ("01", "02"):
+        sh = files[f"apt1_{step}_decoys_{STAMP}.sh"]
+        assert f'rm -rf "apt1_{step}_models/$run"' in sh and f"check-extracted apt1_{step}_models" in sh
+        assert f"--extracted apt1_{step}_models --term score" in sh and '"models/' not in sh
+    sh = files[f"apt1_03_farfar2-models_{STAMP}.sh"]
+    assert 'rm -rf "apt1_03_models/$run"' in sh and "--extracted apt1_03_models" in sh
+    assert "EXTRACTED = 'apt1_03_models'" in files[f"apt1_03_validity_{STAMP}.py"]
+    assert TOOLS["farfar2"].run_folders(plan.steps[a.id].settings, plan.steps[a.id].ctx) == [
+        "runs", "apt1_01_models"]
+    # step folders keep models/
+    wf.step_folders = True
+    st = Plan(wf, str(tmp_path / "folders")).steps[a.id]
+    assert TOOLS["farfar2"].run_folders(st.settings, st.ctx) == ["01_farfar2/runs", "01_farfar2/models"]
+    # both FARFAR2 steps run: each list names its own decoys
+    plan.write()
+    env = _fake_tools(tmp_path, {"rna_denovo": FAKE_DENOVO, "extract_pdbs": FAKE_EXTRACT},
+                      TEMPLATE=str(template))
+    for step in ("01", "02"):
+        proc = subprocess.run(["bash", str(tmp_path / f"apt1_{step}_farfar2_{STAMP}.sh")],
+                              capture_output=True, text=True, env=env)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+    for step in ("01", "02"):
+        listed = (tmp_path / f"apt1_{step}_decoys_{STAMP}.txt").read_text().split()
+        assert listed[0] == f"apt1_{step}_models/r01/S_000001.pdb" and len(listed) == 6
+        assert all((tmp_path / p).is_file() for p in listed)
+        table = rosetta.read_decoy_table(str(tmp_path / f"apt1_{step}_scores_{STAMP}.tsv"))
+        assert [r.pdb for r in table.rows] == listed
+    assert not (tmp_path / "models").exists()

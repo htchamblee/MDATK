@@ -112,6 +112,37 @@ def test_a_desktop_launch_passes_paths_with_spaces_as_one_argument(tmp_path):
     assert record.read_text().splitlines() == ["gui", str(project)]
 
 
+@pytest.mark.parametrize("folder", ["pct 100%", "a%b", "50%off=x"])
+def test_a_program_path_with_a_percent_sign_still_makes_an_entry(tmp_path, monkeypatch, folder):
+    """GLib looks the program up before it turns %% back into %: an AppImage in 'pct 100%' made entries
+    that GLib dropped (no menu entry, no message).  They start through env (sh for a path with '=')."""
+    pytest.importorskip("gi")
+    from gi.repository import Gio, GLib
+
+    record = tmp_path / "argv.txt"
+    program = make_exe(tmp_path / folder / "MDATK.AppImage",
+                       f'#!/bin/sh\nprintf "%s\\n" "$0" "$@" > "{record}"\n')
+    appimage_mode(monkeypatch, program)
+    cmds = launchers.commands()
+    project = tmp_path / "p.mdatk.toml"
+    project.write_text("")
+    entry = tmp_path / "test-rnado.desktop"
+    entry.write_text(launchers.entry_text("rnado", cmds), encoding="utf-8")
+    try:
+        info = Gio.DesktopAppInfo.new_from_filename(str(entry))
+    except TypeError:  # "constructor returned NULL": GLib refused the entry
+        info = None
+    assert info is not None, launchers.exec_value(cmds["rnado"])
+    assert cmds["rnado"][-2:] == [program, "rnado"] and cmds["rnado"][0] in ("env", "sh")
+    assert info.launch([Gio.File.new_for_path(str(project))], None)
+    end = time.time() + 10
+    while time.time() < end and not record.exists():
+        GLib.MainContext.default().iteration(False)
+        time.sleep(0.05)
+    time.sleep(0.1)
+    assert record.read_text().splitlines() == [program, "rnado", str(project)]
+
+
 def test_commands_from_the_appimage(monkeypatch):
     monkeypatch.setenv("APPIMAGE", APPIMAGE)
     assert launchers.commands("appimage") == {"mdatk": [APPIMAGE, "gui"], "rnado": [APPIMAGE, "rnado"]}

@@ -439,25 +439,177 @@ the notes below.
 
 ### Both programs end with their windows
 
-- **The analysis window and RNAdo quit when their main window closes**, so a window attached to the
-  application but hidden (a dialog, a file chooser, a tool window) can never keep the process running with
-  nothing on screen. Reported for the AppImage started from the applications menu: after *Open in RNAdo…*,
-  closing the analysis window and then RNAdo left an MDATK process running. The cause is not confirmed (it
-  did not happen from source), so both programs are guarded. RNAdo's tool windows are not attached to the
-  application and still close with its window.
-- **The programs MDATK starts inherit no AppImage descriptors.** The AppImage runtime keeps its FUSE mount,
-  and its own process, alive while any process holds the read end of its keepalive pipe, which it leaves to
-  the program without close-on-exec, and it also leaves an fd 1023 open on the mount. RNAdo (*Open in
-  RNAdo…*), the scripts RNAdo runs and `xdg-open` are started with `close_fds` (Python's default on POSIX,
-  now stated), and desktop applications opened through Gio are spawned by GLib, which closes every other
-  descriptor in the child too (checked with GLib 2.80). Tests start each of them while holding stand-ins
-  of both descriptors.
+- **A closed RNAdo no longer stays behind as a defunct process.** RNAdo started with *Open in RNAdo…* is
+  a child of the analysis window, which looked at it only for its first seconds (to tell whether it
+  started): closed while the analysis window stayed open, RNAdo stayed a defunct `mdatk` process (as the
+  AppImage names it) until the analysis window ended. The analysis window now reaps it when it ends
+  (`mdatk.gui.launch.watch_start` checks it every second).
+- **Reported for the AppImage started from the applications menu:** after *Open in RNAdo…*, closing the
+  analysis window and then RNAdo left an MDATK process running. Its cause is not confirmed. Reproduced
+  with the 0.0.11 code built as an AppImage-like bundle (the PyInstaller bundle and AppRun, a stand-in for
+  the AppImage runtime with its FUSE daemon, keepalive pipe and fd 1023, started from a desktop entry),
+  that order left no process: both programs and both FUSE daemons ended. The released AppImage itself was
+  not run in that test. Two guards are added, neither of which changes what happened in that test:
+  - the analysis window and RNAdo quit when their main window closes, so a window attached to the
+    application but hidden could never keep the process running (neither program attaches such a window
+    today);
+  - the programs MDATK starts (RNAdo, the scripts RNAdo runs, `xdg-open`) are started with `close_fds`,
+    stated explicitly (it is Python's default on POSIX, so this was already the case), so none inherits
+    the AppImage runtime's keepalive pipe or its fd 1023 on the mount; desktop applications opened through
+    Gio are spawned by GLib, which closes them too (checked with GLib 2.80). Tests start each of them while
+    holding stand-ins of both descriptors.
 
 ### Fixes
 
 - **NAMD MDFF**: the fitted PDB's first line is `REMARK 951 MDFF result (NAMD), …` instead of an unnumbered
   `REMARK   MDFF result …`, which ChimeraX ignores as a bad PDB record (example regenerated).
 - **Planner file kind *table*** (`.tsv`, `.csv`) for the decoy tables and reports the new steps pass on.
+
+### Fixes from the release review
+
+The 0.0.12 changes were reviewed before the release; what the review found, fixed (each with a
+regression test):
+
+**Model checks and Amber builds**
+
+- **Model check: as many passed models as planned, in every mode.** With *Models that fail: report* or
+  *stop* the step wrote one passed file per readable model, while the plan names one per connected model
+  (counting the empty slots of an earlier filter and the most a FARFAR2 *Every decoy* set can list): with
+  a short decoy set or empty slots among its inputs it exited 0 without the last `passed-NN`, the next
+  step stopped on "cannot be read" and the check never read as done. The step now passes `--slots N`
+  (`mdatk pdb qc --slots N`, report and stop) and writes the slots no model fills as empty slots that say
+  why (`empty slot 6 of 6: only 5 models were given`, `only 1 of 3 inputs were models (2 empty slots)`;
+  `pdbtools.empty_slot_text` takes the reason, so the Amber build's copy of the PDB tools changes, as
+  `tests/test_golden.py` allows); more models than slots is an error. The passed models of a check fed a
+  decoy set carry the empty-slot mark.
+- **Model check: a filter below its minimum names no files.** It printed `passed on 1 in 3 slot(s),
+  slots 2-3 written empty` before `ERROR: 1 of 3 models pass the gates; at least 2 needed`, and wrote
+  nothing; the slots are named only when they are written.
+- **Empty slots: the help says which steps skip them.** The *Passed models* tooltip, *Models passed on
+  (up to)* and the module documentation said that every MDATK step skips an empty slot; they now name
+  the readers that do (model check, decoy interfaces, register census, ensemble comparison, frame check,
+  map-model score), the Amber build that stops on one, and that a step reading one model takes the first
+  slot, which is empty only when a filter with minimum 0 passed none.
+- **Amber build: the O3′–P link check quotes its PDB path.** Without *Prepare the PDB* and *Name
+  L-nucleotides* a structure path with spaces was split into several arguments: a clean model stopped a
+  *stop* build as a break, and a *warn* build skipped the check. Builds without the check are unchanged.
+- **Amber build: the shortest O3′–P link must be below the longest unstrained one** (link check on), as
+  in the model check: the helper refused the pair at run time, so the script stopped with a false break
+  (stop) or built without a check (warn).
+
+**FARFAR2, run audit and frames**
+
+- **Run audit ignores superseded runs**: `mdatk rosetta audit` (and the step *Rosetta · run audit*) no
+  longer reads the runs moved aside into a step folder's `superseded/`. A FARFAR2 step run again under
+  constant seeds was reported as *DUPLICATE SEEDS* (failing a strict audit), and the old run's flags were
+  mixed into the condition's. A superseded run's own folder given as a root is still audited.
+- **FARFAR2's extracted decoys move with their run**: with *Extract every decoy after the runs*, writing
+  the step again moves `models/` (every decoy and the extraction logs) into `superseded/<stamp>_<time>/`
+  together with the decoy list and table that name them, also when the option has been turned off since
+  and, in a plan without step folders, the step's own `<project>_<NN>_models/`. It stayed behind, and the next extraction
+  deleted it, so the moved list and table named the new run's models.
+- **One extraction folder per step without step folders**: in a plan without step folders, FARFAR2
+  (*Extract every decoy*) and FARFAR2 models (*Extract every model*, validity filters) extract into
+  `<project>_<NN>_models/` instead of a shared `models/`, where two steps removed each other's decoys and
+  their decoy lists named the other step's models. Plans with step folders keep `models/`.
+- **Base identity numbered by an existing FASTA**: with an empty *Sequence*, the validity filter of the
+  FARFAR2 models step reads the FARFAR2 step's *Existing FASTA* with its chain:range tags (`A:1-6`,
+  `B:20-25`). The planner renumbered the chains from 1, so every decoy failed and nothing was clustered.
+- **FARFAR2's CPU budget counts its extractions**: with *Extract every decoy* the step books the larger
+  of its parallel runs and its *Parallel extractions* (at most one per run), which its decoys script runs
+  after the runs; it booked only the runs.
+- **Frame check reads each decoy once**: with the FARFAR2 set and its decoy table both connected, every
+  decoy was measured (and moved) twice and *Decoys of the table* cut only the table's copies. A model
+  given that is also a decoy of the table is now that decoy (its run and tag; the cut leaves it out),
+  every file is read once, and folders given are never searched inside `superseded/`.
+- **Frame check writes every moved model it promises**: `mdatk frame reframe --slots N` writes exactly N
+  numbered models, those no model fills as empty slots (no atoms). The step passes the count its output
+  *Moved models* lists, so a set with fewer decoys than runs × models per run (or a cut of the table) no
+  longer leaves the step *partial*, waiting for files that never appear.
+- **Frame check's moved decoys move with their run**: writing the step again moves its folder of moved
+  decoys, `<project>_<NN>_reframed_<stamp>/`, into `superseded/` with the manifest and decoy table that
+  point into it (with or without step folders). It stayed, and the next run overwrote it.
+
+**Ensembles and map-model scores**
+
+- **Register census: build conditions from rna_denovo logs only.** The `extract_pdbs` logs MDATK writes
+  beside extracted decoys (`models/extract-rNN.log`) were read as build logs, so a register the secondary
+  structure imposed was reported UNFORCED, or the group UNKNOWN, and 60 of them filled the cap on the
+  logs read; the cap now counts rna_denovo logs only.
+- **Register census counts each decoy once** when the decoys are connected and *Also count the decoys the
+  decoy table lists* is ticked (a relative and an absolute path of one file were counted twice).
+- **Ensemble comparison (pilot): seeds as Rosetta used them.** The seed check compared the `-jran` text;
+  it now reads seeds as the run audit does (the logged `real_seed`, `-constant_seed`, `-seed_offset`), so
+  a run without `-constant_seed` (Rosetta then ignores `-jran`) is reported as random, not matched, and
+  another `-seed_offset` as another seed.
+- **Matched runs need the decoy table.** `--matched-runs` without the table's `run` column, or with no
+  run in both arms, stops with an error instead of comparing 0 decoys, and the planner asks for the decoy
+  table.
+- **A reference typed as FASTA** in the census and comparison steps is written beside the script and
+  passed with `--fasta` (run together into one shell word, it failed with "the reference sequence is
+  empty").
+- **A matched-groups suffix starting with `-`** (`pres` / `pres-free`) works: the census script passes
+  `--pair-suffix=-free`, which argparse no longer takes for an option.
+- **Map-model score and body hybrids: `qscore/` moves with a superseded run** (also after the method was
+  changed), so the ChimeraX logs its report names stay those of that run; in a plan without step folders
+  each step writes them into its own `<project>_<NN>_qscore/` instead of one `qscore/` all steps shared.
+- **Model searches skip `superseded/`**: `mdatk ensemble census -r` and the folders given to `mdatk
+  decoys` no longer count the decoys of runs RNAdo moved aside with the current ones.
+- **The ChimeraX time limit ends ChimeraX behind a launcher**: ChimeraX runs in a process group of its
+  own, which the time limit (`--timeout`) ends whole (`xvfb-run -a chimerax` with the ChimeraX it
+  started); a SIGTERM or SIGHUP to MDATK (RNAdo's *Stop*) ends that group too.
+- **`mdatk ensemble regions` leaves out tables ChimeraX stopped inside** (no `Overall mean Q-Score` line:
+  the log of a failed model, which `map score` keeps): they are listed as not ranked and the command ends
+  with status 1, so a failed model no longer ranks on its truncated table.
+- **`mdatk map score` of empty slots only** says that every input is an empty slot of a model check (it
+  failed with a blank reason).
+
+**Decoy interfaces and DSSR**
+
+- **DSSR engine: stacking inside stems.** DSSR's `stacks` list leaves out stacking within stems, so
+  `mdatk pdb annotate --engine dssr` wrote no STACK record for any stem (and the refinement's *Stacking
+  from the annotation* restrained loops and junctions only). The stacking inside each stem is now read
+  from its consecutive pairs (`stems[*].pairs`, neighbours along each strand); checked on DSSR 2.9.4 JSON.
+  Cross-strand stacking inside a stem (only in DSSR's `--non-pair` list) is still not reported.
+- **DSSR engine: a relative executable path works.** `--dssr-exe bin/x3dna-dssr` or `./x3dna-dssr` (and a
+  planner step's path relative to its folder) failed with 'not found' because DSSR runs in a temporary
+  folder; the path is now made absolute first.
+- **Decoy interfaces: unreadable FARFAR2 fixed residues are a step error.** With *Rebuilt residues: not
+  fixed in the FARFAR2 step*, an `-input_res` MDATK cannot read (`A1-6 B:7-8`) passed every check and then
+  aborted the whole `workflow write`; the step now reports it and is skipped.
+- **Decoy interfaces: score filters keep the typed threshold.** `--filter` and the census log rounded it
+  to 6 digits (`score <= -1500.125` ran as `<=-1500.12`); the exact value is written now.
+- **`mdatk pdb interface`: models with the same file name stay apart.** Decoys of different runs
+  (`r1/S_1.pdb`, `r2/S_1.pdb`) got the same `model` value and overwrote each other's `--keep` files; they
+  are named by path where file names repeat, as in the census, and kept as `r1_S_1_dssr.pdb` and so on.
+- **Decoy clusters: exact cut and medoid ties.** Fingerprints exactly at the Jaccard cut (e.g. 9 of 10
+  shared at 0.1) were split into two clusters, and exact medoid ties could pick a later member instead of
+  the seed (float32 rounding); distances are computed in float64 now.
+- **Segment support: strands without chain ids.** In files with blank chain ids (Amber / cpptraj frames)
+  consecutive residue numbers across a strand break counted as backbone neighbours, so real contacts were
+  dropped and segments ran across strands. A strand now ends at a chain change, a TER record, a 5' end
+  without its phosphate or an O3'-P gap over 4 Å; such a file gives the same support as with chain ids.
+
+**RNAdo, GROMACS and menu entries**
+
+- **GROMACS steps that name their GPU** with `-gpu_id` or `-gputasks` among the extra mdrun flags get no
+  `CUDA_VISIBLE_DEVICES` from RNAdo or `workflow run` any more: the ids count as the step's own GPU
+  (among the GPUs its Environment leaves visible, as NAMD's `+devices`), so `-gpu_id 1` on a two-GPU
+  workstation runs on GPU 1 as in 0.0.11 instead of stopping mdrun on an invalid device id.
+- **A run that completes while RNAdo asks which completed runs move aside** is no longer moved: only the
+  runs the question listed move, and a step whose run completed while the question was open is not
+  written (the output log and a message say so; write it again), so a step that reads that run keeps its
+  inputs.
+- **The Commands tab** no longer lists the case patterns of the set-reading loop (`/*) MODELS+=("$f")`,
+  `*) MODELS+=("../$f")`) as commands of the steps that take a set of models; it shows their program
+  only.
+- **Decoy validation template:** the FARFAR2 models step's decoy table is no longer connected to the
+  model check and the decoy-interface step. It lists every decoy by its extracted file, not the cluster
+  centres those steps check, so their score columns stayed empty and score limits failed every model.
+- **Menu entries of a program whose path holds a `%`** (an AppImage in a folder such as `pct 100%`) now
+  appear in GNOME-family menus: the program starts through `env` (`sh` when the path also holds a `=`).
+  Before, `mdatk desktop install` reported success and GLib dropped both entries.
+- **`mdatk --help`** names ChimeraX's Q-score for the `map` command, not Phenix's.
 
 ## 0.0.11 (2026-10-31)
 

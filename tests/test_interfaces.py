@@ -487,3 +487,73 @@ def test_cli_census_clusters_and_support(tmp_path, capsys):
     assert [e["step"] for e in log] == ["decoys census", "decoys clusters"]
     assert main(["decoys", "census", *paths, "--side-a", "A", "--side-b", "A:1-3"]) == 1  # overlap
     assert "the sides overlap" in capsys.readouterr().err
+
+
+# --- 0.0.12 review fixes ----------------------------------------------------------------------------------
+
+def test_score_filters_are_written_with_the_threshold_as_typed():
+    """format_filter used '{:g}' (6 significant digits): 'score <= -1500.125' ran as '<=-1500.12'."""
+    for text, written in (("score <= -1500.125", "score<=-1500.125"),
+                          ("score < -215.4375", "score<-215.4375"),
+                          ("atom_pair_constraint <= 1234567", "atom_pair_constraint<=1234567"),
+                          ("linear_chainbreak <= 5", "linear_chainbreak<=5"),
+                          ("rms >= 1.5e-07", "rms>=1.5e-07"),
+                          ("score <= -1234.567", "score<=-1234.567"), ("x != 0.1", "x!=0.1")):
+        f = I.parse_filters(text)[0]
+        assert I.format_filter(f) == written
+        assert I.parse_filters(I.format_filter(f)) == [f]  # what the census reads back runs
+
+
+@pytest.mark.parametrize("cut, shared, total", [(0.1, 9, 10), (0.35, 13, 20), (0.05, 19, 20)])
+def test_fingerprints_exactly_at_the_cut_join_the_cluster(cut, shared, total):
+    """The float32 matrix gave 1 - 9/10 = 0.100000024, past the 1e-9 tolerance: two clusters."""
+    big = frozenset(f"a|A:{k}" for k in range(total))
+    small = frozenset(f"a|A:{k}" for k in range(shared))
+    assert I.jaccard(big, small) <= cut + 1e-9
+    assert I.leader_clusters([big, small], ["m1", "m2"], cut) == [[0, 1]]
+
+
+def test_medoid_ties_go_to_the_seed():
+    """Members 0, 1 and 2 all sum to 5/3; float32 rounding picked member 2."""
+    feats = [frozenset({"2"}), frozenset({"2"}), frozenset({"0", "2", "3"}), frozenset({"0", "3"})]
+    assert I.medoid(feats, [0, 1, 2, 3]) == 0
+    assert I.medoid(feats, [2, 0, 1, 3]) == 2  # the earliest member, whichever it is
+
+
+def test_support_keeps_the_strands_of_a_file_without_chain_ids_apart():
+    """With blank chain ids and numbering continuous across strands (an Amber / cpptraj frame), residues
+    8 and 9 of different strands counted as backbone neighbours: their contacts were dropped and one
+    segment ran across the strand break."""
+    duplex = helix("GCAUGCAU", start=(1, 9))  # A:1-8 paired with B:9-16; B:9 starts without its P
+    blank = copy.deepcopy(duplex)
+    for res in blank.residues():
+        res.chain = ""
+    blank.segments = [[r for seg in blank.segments for r in seg]]  # one segment, no TER
+    with_ids = I.segment_support(duplex, side("A"), side("B"), side("A:6-8,B:9-11"))
+    without = I.segment_support(blank, side(":1-8"), side(":9-16"), side(":6-11"))
+
+    def counts(res):
+        return [(r.partner, r.scaffold, r.pair, r.self_) for r in res.residues]
+    assert counts(without) == counts(with_ids) and without.residues[2].partner > 0  # :8 pairs with :9
+    assert without.segments == with_ids.segments == [[0, 1, 2], [3, 4, 5]]
+    assert [n.strand for n in I.nucleotides(blank)] == [0] * 8 + [1] * 8
+    origin = np.zeros(3)
+    assert not I._strand_break({"O3'": origin}, {"P": np.array([1.6, 0.0, 0.0])})
+    assert I._strand_break({"O3'": origin}, {"P": np.array([4.5, 0.0, 0.0])})  # a gap
+    assert I._strand_break({"O3'": origin}, {"O5'": np.array([2.6, 0.0, 0.0])})  # a 5' end
+    assert not I._strand_break({}, {"C1'": origin})  # nothing to tell: joined, as before
+
+
+def test_model_folders_are_searched_outside_superseded_regression(tmp_path):
+    """regression: a folder given to the decoy census was searched inside superseded/, so the decoys of runs
+    RNAdo moved aside were counted with the current ones."""
+    def put(rel):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("END\n")
+        return str(path)
+    keep = [put("models/r01/S_1.pdb"), put("models/r02/S_1.pdb"), put("top.pdb")]
+    put("models/superseded/a_b/models/r01/S_1.pdb")
+    put("superseded/a_b/S_9.pdb")
+    put(".hidden/S_3.pdb")
+    assert I._model_files([str(tmp_path)]) == sorted(keep)

@@ -23,11 +23,20 @@ both instead of parsing around them:
   and a number MDATK wrote itself.
 
 JSON keys read: ``nts`` (``nt_id``, ``chain_name``, ``nt_resnum``), ``pairs`` (``nt1``, ``nt2``,
-``LW``, ``name``), ``stacks`` (``nts_long``) and ``hbonds`` (``atom1_id``, ``atom2_id``,
-``distance``), as written by DSSR 1.x with ``--json``.  The same keys are expected from DSSR 2.x; that
-could not be checked against a DSSR 2.x file here, so the reader also accepts ``hbonds_all`` /
-``hBonds``, atom ids in either order (``N1@A.G1`` or ``A.G1@N1``) and ids without an ``nts`` table,
-and it reports a hydrogen-bond list it could not read instead of counting it as empty.
+``LW``, ``name``), ``stacks`` (``nts_long``), ``stems`` (``pairs``: ``nt1``, ``nt2``) and ``hbonds``
+(``atom1_id``, ``atom2_id``, ``distance``), as written by DSSR 1.x and 2.x (checked on 2.9.4) with
+``--json``.  The reader also accepts ``hbonds_all`` / ``hBonds``, atom ids in either order
+(``N1@A.G1`` or ``A.G1@N1``) and ids without an ``nts`` table, and it reports a hydrogen-bond list it
+could not read instead of counting it as empty.
+
+Stacking: DSSR's ``stacks`` leave out the stacking inside stems (its text output says so: "Stacking
+interactions within a stem are *not* included").  A stem is a run of canonical pairs with a continuous
+backbone on both strands, listed 5'->3' along its first strand, so the stacking inside it is read from
+its consecutive pairs ``k``, ``k+1``: ``nt1`` on ``nt1`` and ``nt2`` on ``nt2``.  Cross-strand stacking
+inside a stem appears only in DSSR's non-pair list (``--non-pair``), which is not run: it is not
+reported.  ``helices`` are not used: consecutive pairs of a helix that are not in one stem (a coaxial
+junction, non-canonical pairs) need not stack strand on strand, and DSSR lists those stacks in
+``stacks``.
 
 DSSR's classification does not depend on sugar chirality: it annotates a D-L pair like a D-D pair.
 Use it for what the contacts are, not as evidence that a heterochiral pair is plausible.
@@ -64,7 +73,7 @@ class DssrError(RuntimeError):
 class DssrResult:
     """DSSR's annotation in terms of the residue indices given to :class:`DssrRunner`."""
     pairs: List[Tuple[int, int, str, str]] = field(default_factory=list)  # (i, j, LW e.g. 'cWW', name)
-    stacks: List[Tuple[int, int]] = field(default_factory=list)  # neighbours within DSSR's stacks
+    stacks: List[Tuple[int, int]] = field(default_factory=list)  # DSSR's stacks and stem steps
     hbonds: List[Tuple[int, str, int, str, Optional[float]]] = field(default_factory=list)
     hbonds_seen: int = 0  # entries of the hydrogen-bond list in the JSON
     hbonds_read: int = 0  # ... whose two atom ids could be mapped back
@@ -75,6 +84,16 @@ class DssrResult:
 
 def available(exe: str = DEFAULT_EXE) -> bool:
     return bool(shutil.which(exe) or (os.path.isfile(exe) and os.access(exe, os.X_OK)))
+
+
+def resolve_exe(exe: str = DEFAULT_EXE) -> str:
+    """The executable as an absolute path when it is a path (``bin/x3dna-dssr``, ``./x3dna-dssr``) or found
+    on PATH: DSSR runs in a temporary folder, where a relative path would not lead to it."""
+    exe = (exe or DEFAULT_EXE).strip()
+    if os.sep in exe or (os.altsep and os.altsep in exe):
+        return os.path.abspath(exe)
+    found = shutil.which(exe)
+    return os.path.abspath(found) if found else exe
 
 
 def lw_code(lw: str, name: str = "") -> str:
@@ -124,7 +143,7 @@ class DssrRunner:
 
     def __init__(self, resnames: Sequence[str], atoms: Sequence[Sequence[Tuple[str, Sequence[float]]]],
                  exe: str = DEFAULT_EXE, timeout: float = TIMEOUT):
-        self.exe = (exe or DEFAULT_EXE).strip()
+        self.exe = resolve_exe(exe)
         self.timeout = timeout
         self.residues = [(k, name, list(a)) for k, (name, a) in enumerate(zip(resnames, atoms)) if name and a]
         if len(self.residues) > BLOCK * len(CHAIN_IDS):
@@ -228,17 +247,24 @@ def parse_json(doc: Dict[str, Any], original: Optional[Dict[int, int]] = None) -
             continue
         res.pairs.append((min(i, j), max(i, j), str(p.get("LW") or p.get("lw") or ""),
                           str(p.get("name") or "")))
+    steps: List[Tuple[Optional[int], Optional[int]]] = []
     for s in doc.get("stacks") or []:
         if not isinstance(s, dict):
             continue
         members = s.get("nts_long") or s.get("nts") or ""
         members = members.split(",") if isinstance(members, str) else list(members)
         rows = [index(m) for m in members if str(m).strip()]
-        for a, b in zip(rows, rows[1:]):
-            if a is None or b is None or a == b:
-                unread += 1
-                continue
-            res.stacks.append((min(a, b), max(a, b)))
+        steps += zip(rows, rows[1:])
+    for stem in doc.get("stems") or []:  # the stacking inside stems, which 'stacks' leaves out
+        listed = stem.get("pairs") if isinstance(stem, dict) else None
+        rows = [p for p in listed or [] if isinstance(p, dict)]
+        for p, q in zip(rows, rows[1:]):
+            steps += [(index(p.get(key)), index(q.get(key))) for key in ("nt1", "nt2")]
+    for a, b in steps:
+        if a is None or b is None or a == b:
+            unread += 1
+            continue
+        res.stacks.append((min(a, b), max(a, b)))
     if unread:
         res.notes.append(f"{unread} DSSR pair / stacking entries named residues that could not be mapped "
                          "back")

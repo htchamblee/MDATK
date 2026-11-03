@@ -1087,3 +1087,171 @@ def test_model_readers_skip_empty_slots(tmp_path, capsys):
     assert "empty slot 2 of 5: only 1 models passed" in capsys.readouterr().err
     models, notes, _t = frames.gather_models([str(tmp_path)])
     assert [m.path for m in models] == [str(good)] and any("empty slot 2 of 5" in n for n in notes)
+
+
+# --- review fixes of 0.0.12 ---------------------------------------------------------------------------------
+
+def _script(plan, nid):
+    st = plan.steps[nid]
+    return os.path.join(plan.root, st.ctx.folder, st.ctx.name(st.tool.tag, "sh"))
+
+
+@pytest.mark.parametrize("mode", ["report", "stop"])
+def test_report_and_stop_write_every_planned_slot(tmp_path, mode):
+    """A check fed a filter's slots (one model, two empty slots) plans three passed files in every mode, and
+    writes all three: the two inputs that were empty slots become empty slots that say so, and the next
+    check reads them (report and stop wrote one file and exited 0, so the next step stopped on 'cannot be
+    read' and the step never read as done)."""
+    from mdatk.workflows import runstate
+    models = _models(tmp_path)
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    wf.nodes = [PlanNode(id="q", tool="model-check", step=1, settings=TOOLS["model-check"].normalise(
+                    {"on_fail": "filter", "n_pass": 3, "hands": "ranges", "expect_d": "A,B"}),
+                    files={"models": ";".join(models)}),
+                PlanNode(id="r", tool="model-check", step=2,
+                         settings=TOOLS["model-check"].normalise({"on_fail": mode, "hands": "none"})),
+                PlanNode(id="m", tool="model-check", step=3,
+                         settings=TOOLS["model-check"].normalise({"hands": "none"}))]
+    wf.edges = [PlanEdge("q", "passed", "r", "models"), PlanEdge("r", "passed", "m", "models")]
+    plan = Plan(wf, str(tmp_path / "p"))
+    assert not plan.has_errors(), plan.all_issues()
+    assert len(plan.steps["r"].outputs["passed"].paths) == 3
+    assert plan.steps["r"].outputs["passed"].data.get("empty_slots")  # inherited: slots may be empty
+    plan.write(["q", "r", "m"])
+    assert "--slots 3" in open(_script(plan, "r")).read()
+    out = {}
+    for nid in ("q", "r", "m"):
+        proc = subprocess.run(["bash", _script(plan, nid)], capture_output=True, text=True)
+        assert proc.returncode == 0, (nid, proc.stdout + proc.stderr)
+        out[nid] = proc.stdout + proc.stderr
+    assert ("1 of 1 models passed the gates (2 empty slot(s) among the inputs skipped); passed on 1 in 3 "
+            "slot(s), slots 2-3 written empty") in out["r"]
+    folder = os.path.join(plan.root, plan.steps["r"].ctx.folder)
+    passed = [os.path.join(folder, f"apt1_02_passed-{k:02d}_{STAMP}.pdb") for k in (1, 2, 3)]
+    assert open(passed[0]).read() == open(models[0]).read()
+    for k in (2, 3):
+        assert pt.empty_slot(passed[k - 1]) == (f"empty slot {k} of 3: only 1 of 3 inputs were models "
+                                                "(2 empty slots)")
+    assert "cannot be read" not in out["m"] and "2 empty slot(s) among the inputs skipped" in out["m"]
+    plan = Plan(wf, str(tmp_path / "p"))
+    assert runstate.run_status(plan, "r", STAMP).state == "done"
+
+
+def test_a_set_listing_fewer_decoys_fills_its_planned_slots(tmp_path):
+    """FARFAR2 2 x 3 'Every decoy' -> model check (report) -> model check: one run yields two decoys (normal:
+    -autofilter, closure filters, a failed run).  The check writes passed-06 as an empty slot; it used to
+    write five files, the next check stopped on the sixth and the first never read as done."""
+    from mdatk.workflows import runstate
+    from mdatk.workflows.plan import add_node, connect
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    fold = add_node(wf, "farfar2", settings={"sequence": "GGGCAC", "runs": 2, "nstruct": 3,
+                                             "fixed_stems": False})
+    check = add_node(wf, "model-check", settings={"hands": "none"})
+    after = add_node(wf, "model-check", settings={"hands": "none"})
+    connect(wf, fold.id, "decoys", check.id, "models")
+    connect(wf, check.id, "passed", after.id, "models")
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    passed = plan.steps[check.id].outputs["passed"]
+    assert len(passed.paths) == 6 and passed.data.get("empty_slots")
+    plan.write([check.id, after.id])
+    listing = next(iter(plan.steps[fold.id].outputs["decoys"].lists))
+    names = [f"01_farfar2/models/{run}/S_{k:06d}.pdb" for run, n in (("r01", 3), ("r02", 2))
+             for k in range(1, n + 1)]
+    for name in names:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(builder.build_helix("GGCGCC"))
+    (tmp_path / listing).write_text("\n".join(names) + "\n")
+    out = {}
+    for nid in (check.id, after.id):
+        proc = subprocess.run(["bash", _script(plan, nid)], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        out[nid] = proc.stdout + proc.stderr
+    assert "5 of 5 models passed the gates; passed on 5 in 6 slot(s), slot 6 written empty" in out[check.id]
+    assert "1 empty slot(s) among the inputs skipped" in out[after.id]
+    sixth = tmp_path / passed.paths[-1]
+    assert pt.empty_slot(str(sixth)) == "empty slot 6 of 6: only 5 models were given"
+    assert open(tmp_path / passed.paths[4]).read() == builder.build_helix("GGCGCC")
+    plan = Plan(wf, str(tmp_path))
+    assert runstate.run_status(plan, check.id, STAMP).state == "done"
+
+
+def test_qc_cli_slots_and_a_failed_filter_claim_no_files(tmp_path, capsys):
+    """--slots N (report, stop): N files, the slots no model fills written empty, more models than N an
+    error.  A filter below --min-pass writes nothing, so its tally names no slots written empty (it said
+    'slots 2-3 written empty' before the error)."""
+    from mdatk.cli import main
+    models = _models(tmp_path)
+    out = str(tmp_path / "o-{n}.pdb")
+    assert main(["pdb", "qc", *models, "--expect-d", "A,B", "--on-fail", "filter", "--pass", "3",
+                 "--min-pass", "2", "--passed-out", out, "--best-out", str(tmp_path / "ob.pdb")]) == 1
+    io_ = capsys.readouterr()
+    assert "1 of 3 models passed the gates\n" in io_.out and "at least 2 needed" in io_.err
+    assert "written empty" not in io_.out + io_.err and "passed on" not in io_.out + io_.err
+    assert not list(tmp_path.glob("o-*.pdb")) and not (tmp_path / "ob.pdb").exists()
+    assert main(["pdb", "qc", models[0], models[2], "--slots", "4", "--passed-out", out]) == 0
+    io_ = capsys.readouterr()
+    assert "1 of 2 models passed the gates; passed on 2 in 4 slot(s), slots 3-4 written empty" in io_.out
+    assert open(tmp_path / "o-2.pdb").read() == open(models[2]).read()
+    assert pt.empty_slot(str(tmp_path / "o-4.pdb")) == "empty slot 4 of 4: only 2 models were given"
+    assert main(["pdb", "qc", *models, "--slots", "2", "--passed-out", str(tmp_path / "x-{n}.pdb")]) == 1
+    assert "3 models to pass on in 2 slot(s)" in capsys.readouterr().err
+    assert not list(tmp_path.glob("x-*.pdb"))
+    assert main(["pdb", "qc", models[0], "--on-fail", "filter", "--slots", "2"]) == 1
+    assert "--slots is for --on-fail report or stop" in capsys.readouterr().err
+
+
+def test_amber_link_check_reads_a_structure_path_with_spaces(tmp_path):
+    """Without preparation and L names the check reads the structure as chosen: its path is quoted (a clean
+    model in 'my models/model 1.pdb' stopped the build as a break, or skipped the check in warn mode)."""
+    pdb = tmp_path / "my models" / "model 1.pdb"
+    pdb.parent.mkdir()
+    pdb.write_text(builder.build_helix(SEQ))
+    home = _fake_amber(tmp_path / "amber")
+    for mode in ("stop", "warn"):
+        _p, st, files = _amber(tmp_path, {"link_check": mode, "prep": False, "lrna": False}, str(pdb))
+        assert not _issues(st, "error"), st.issues
+        line = next(ln for ln in files[f"apt1_03_amber-build_{STAMP}.sh"].content.splitlines()
+                    if ln.startswith(f"python3 apt1_03_links_{STAMP}.py"))
+        assert f"python3 apt1_03_links_{STAMP}.py '{pdb}' --checks links" in line
+        work = tmp_path / f"run-{mode}"
+        work.mkdir()
+        (work / f"apt1_03_links_{STAMP}.py").write_text(files[f"apt1_03_links_{STAMP}.py"].content)
+        (work / f"apt1_03_tleap_{STAMP}.leap").write_text("source leaprc.RNA.OL3\n")
+        proc = subprocess.run(["bash", "-c", line], capture_output=True, text=True, cwd=work,
+                              env=dict(os.environ, AMBERHOME=str(home)))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "cannot be read" not in proc.stderr and "could not read" not in proc.stderr
+        assert "status: PASS" in proc.stdout
+
+
+def test_amber_link_check_needs_the_shortest_link_below_the_longest(tmp_path):
+    """The helper refuses link_min >= link_max at run time; the planner says so (the script used to stop
+    with a false 'links longer than 3 A (a break)', or skip the check in warn mode)."""
+    def issues(settings):
+        node = PlanNode(id="x", tool="amber-build", step=3, settings=TOOLS["amber-build"].normalise(settings),
+                        files={"structure": "/golden/inputs/structure.pdb"})
+        plan = single_step_plan(WorkflowParams(project_name="apt1", stamp=STAMP), node, str(tmp_path / "e"))
+        return [i for i in plan.steps["x"].issues if i.level == "error"]
+
+    for mode in ("stop", "warn"):
+        errors = issues({"link_check": mode, "link_min": 2.2})
+        assert any("shortest O3′–P link must be below the longest unstrained link" in i.message
+                   and set(i.keys) == {"link_min", "link_max"} for i in errors), errors
+        assert issues({"link_check": mode, "link_min": 1.9}) == []
+    assert issues({"link_check": "off", "link_min": 2.2}) == []  # the limits are not used
+
+
+def test_empty_slot_claims_name_the_readers_that_skip_them():
+    """Only MDATK's readers of model sets skip an empty slot (and an Amber build stops on one); steps that
+    read one model do not check, so the help texts name the readers instead of 'MDATK's steps skip them'."""
+    tool = TOOLS["model-check"]
+    tip = next(p for p in tool.outputs if p.name == "passed").tooltip
+    assert "MDATK's steps skip" not in tip
+    for reader in ("model check", "decoy interfaces", "register census", "ensemble comparison",
+                   "frame check", "map-model score", "Amber build"):
+        assert reader in tip
+    helps = " ".join(o.tooltip for sec in tool.sections for o in sec.options)
+    assert "that the next steps skip" not in helps
+    assert "every MDATK reader of models skips" not in " ".join(mc.__doc__.split())
+    assert "Amber build stops on one" in " ".join(mc.__doc__.split())

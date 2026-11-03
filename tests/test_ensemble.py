@@ -340,7 +340,8 @@ def test_condition_from_a_rosetta_log_with_flags_files(tmp_path):
     write(step / "x-r02.log", "core.init: command: rna_denovo -fasta x.fasta -secstruct_file y.secstruct\n")
     c = ensemble.detect_condition(str(models), [str(models)], REGS, None, [str(step)])
     assert not c.known and "disagree" in c.detail
-    assert ensemble.run_seeds([str(step)]) == {"r01": "3001"}
+    seed = ensemble.run_seeds([str(step)])["r01"]  # -jran without -constant_seed: Rosetta ignores it
+    assert (seed.jran, seed.constant, seed.value) == ("3001", False, None)
 
 
 def test_condition_details_from_the_command_line(tmp_path):
@@ -365,6 +366,73 @@ def test_condition_without_a_source_is_unknown(tmp_path):
     ref = ensemble.parse_reference(REFERENCE)
     c = ensemble.detect_condition(str(d), [str(d)], REGS, ref, secstructs=[ss])
     assert c.verdicts["stem"] == "FORCED" and c.source == "given"
+
+
+def _farfar2_layout(tmp_path, extract_logs=1):
+    """MDATK's FARFAR2 step folder: the rna_denovo log beside @flags, FASTA and secstruct (which imposes the
+    stem), the run in runs/r01, the decoys extracted into models/r01 with the extract_pdbs log(s) in
+    models/."""
+    ff = tmp_path / "plan" / "04_farfar2"
+    write(ff / "x.fasta", REFERENCE)
+    write(ff / "x.secstruct", "(((.... ....)))\n")
+    write(ff / "x.flags", "-fasta ../../x.fasta\n-secstruct_file ../../x.secstruct\n")
+    write(ff / f"x_04_farfar2-r01_{STAMP}.log", "core.init: Rosetta version x\ncore.init: command: "
+          "rna_denovo.default.linuxgccrelease @../../x.flags -out:file:silent ../../x-r01.out\n")
+    os.makedirs(ff / "runs" / "r01")
+    for k in range(1, extract_logs + 1):
+        write(ff / "models" / f"extract-r{k:02d}.log", "core.init: Rosetta version x\ncore.init: command: "
+              f"extract_pdbs.default.linuxgccrelease -in:file:silent ../../x-r{k:02d}.out\n")
+    for k in range(3):
+        write(ff / "models" / "r01" / f"S_{k}.pdb", DUPLEX)
+    return ff
+
+
+def test_condition_only_from_rna_denovo_logs_regression(tmp_path):
+    """regression: an extract_pdbs log beside the extracted decoys (models/extract-rNN.log) was read as the
+    build's: no secondary structure on its command line made the imposed stem UNFORCED, or the group
+    UNKNOWN when the rna_denovo log was found too; 60 extract logs filled the cap on the logs read."""
+    ff = _farfar2_layout(tmp_path)
+    assert ensemble.command_line(str(ff / "models" / "extract-r01.log")) is None
+    group = str(ff / "models" / "r01")
+    c = ensemble.detect_condition(group, [group], REGS[:1])
+    assert not c.known and "UNFORCED" not in c.detail  # no build log near the decoys: unknown, not UNFORCED
+    c = ensemble.detect_condition(group, [group], REGS[:1], secstructs=[str(ff / "x.secstruct")])
+    assert c.label() == "stem FORCED" and c.source == "given"
+    c = ensemble.detect_condition(group, [group], REGS[:1], log_dirs=[str(ff)])
+    assert c.label() == "stem FORCED" and c.source == "log" and f"x_04_farfar2-r01_{STAMP}.log" in c.detail
+    ff = _farfar2_layout(tmp_path / "many", extract_logs=61)
+    group = str(ff / "models" / "r01")
+    c = ensemble.detect_condition(group, [group], REGS[:1], log_dirs=[str(ff)])
+    assert c.label() == "stem FORCED" and c.source == "log"
+
+
+def test_seeds_compared_as_rosetta_used_them_regression(tmp_path):
+    """regression: the pilot's seed check compared the -jran text, so runs without -constant_seed (Rosetta
+    then ignores -jran) or with another -seed_offset 'shared their seed'."""
+    logs = {
+        "r01": ("-run:jran 3001", "'RNG device' seed mode, using '/dev/urandom', seed={} seed_offset=0 "
+                                  "real_seed={}", (-1093216543, 771122334)),
+        "r02": ("-constant_seed -jran 5000 -seed_offset {}", "Constant seed mode, seed=5000 seed_offset={} "
+                                                             "real_seed={}", ((0, 5000), (7, 5007))),
+        "r03": ("-run:constant_seed -run:jran 7000", "", (None, None)),  # no seed line: from the flags
+    }
+    for k, arm in enumerate("ab"):
+        for run, (flags, line, values) in logs.items():
+            v = values[k]
+            if run == "r02":
+                flags, line = flags.format(v[0]), line.format(*v)
+            elif run == "r01":
+                line = line.format(v, v)
+            write(tmp_path / arm / f"x-{run}.log", f"core.init: command: rna_denovo {flags}\n"
+                  + (f"core.init: {line}\n" if line else ""))
+        write(tmp_path / arm / "extract-r04.log", "core.init: command: extract_pdbs -constant_seed\n")
+    seeds = ensemble.run_seeds([str(tmp_path / "a")])
+    assert sorted(seeds) == ["r01", "r02", "r03"]  # the extract_pdbs log is not a run's
+    assert (seeds["r01"].constant, seeds["r02"].value, seeds["r03"].value) == (False, 5000, 7000)
+    note = ensemble.seed_note([str(tmp_path / "a")], [str(tmp_path / "b")], ["r01", "r02", "r03", "r09"])
+    assert note.startswith("seeds: 1 runs share their seed, 1 do NOT (r02)"), note
+    assert "1 have a random seed (no -constant_seed" in note and "(r01)" in note
+    assert "1 not found in the logs" in note
 
 
 # --- census ----------------------------------------------------------------------------------------------
@@ -489,6 +557,24 @@ def test_census_takes_the_decoys_from_the_table_and_logs_beside_the_runs(tmp_pat
     assert "Register census of 3 decoys" in text and "stem FORCED" in text and "x-r01.log" in text
 
 
+def test_census_counts_a_decoy_listed_twice_once_regression(tmp_path, monkeypatch):
+    """regression: with the decoys connected (relative paths) and 'Also count the decoys the decoy table
+    lists' (absolute paths), every decoy was counted twice."""
+    from mdatk.cli import main
+    plan = tmp_path / "plan"
+    for k in range(3):
+        write(plan / "01_farfar2" / "models" / "r01" / f"S_{k}.pdb", DUPLEX)
+    table = write(plan / "01_farfar2" / "scores.tsv", "run\ttag\tpdb\tscore\n" + "".join(
+        f"r01\tS_{k}\t01_farfar2/models/r01/S_{k}.pdb\t{-k}\n" for k in range(3)))
+    os.makedirs(plan / "02_census")
+    monkeypatch.chdir(plan / "02_census")
+    rep = str(tmp_path / "rep.txt")
+    assert main(["ensemble", "census", "../01_farfar2/models/r01", "--register", STEM, "--scores", table,
+                 "--root", "..", "--models-from-scores", "--report", rep]) == 0
+    text = open(rep).read()
+    assert "Register census of 3 decoys" in text and "3 decoys counted in 1 group(s)" in text
+
+
 # --- comparison ------------------------------------------------------------------------------------------
 
 def _arms(tmp_path, n_a=6, n_b=6):
@@ -563,6 +649,33 @@ def test_compare_cli_pilot_matched_runs_geometry(tmp_path):
     with pytest.raises(ensemble.EnsembleError, match="no column 'chainbreak'"):
         ensemble.run(_parsed(["ensemble", "compare", "--register", STEM, "--arm-a", *a, "--arm-b", *b,
                               "--scores", table, "--term", "chainbreak"]))
+
+
+def test_matched_runs_without_runs_fail_regression(tmp_path):
+    """regression: --matched-runs without the decoy table (the only source of a decoy's run) emptied both
+    arms and the comparison of 0 decoys 'succeeded'; the planner accepted the step without the table."""
+    a, b, table = _arms(tmp_path, 3, 3)
+    with pytest.raises(ensemble.EnsembleError, match="needs the run of every decoy"):
+        ensemble.run(_parsed(["ensemble", "compare", "--mode", "pilot", "--register", STEM, "--arm-a", *a,
+                              "--arm-b", *b, "--closure", "geometry", "--matched-runs"]))
+    rows = open(table).read().splitlines()  # arm B's decoys in runs arm A does not have
+    write(table, "\n".join(ln.replace("r0", "r1", 1) if "\tb" in ln else ln for ln in rows) + "\n")
+    with pytest.raises(ensemble.EnsembleError, match="no run is in both arms"):
+        ensemble.run(_parsed(["ensemble", "compare", "--mode", "pilot", "--register", STEM, "--arm-a", *a,
+                              "--arm-b", str(tmp_path / "plan" / "b"), "--scores", table, "--root",
+                              str(tmp_path / "plan"), "--closure", "geometry", "--matched-runs"]))
+    from mdatk.workflows import TOOLS
+    from mdatk.workflows.base import PortValue, StepContext
+    t = TOOLS["ensemble-compare"]
+    arms = {"arm_a": PortValue(a, "pdb"), "arm_b": PortValue(b, "pdb")}
+    settings = t.normalise({"register_a": STEM, "closure": "geometry", "mode": "pilot", "matched_runs": True})
+    errs = [i.message for i in t.check(settings, StepContext("p", 1, STAMP, t.tag, arms))
+            if i.level == "error"]
+    assert any("matched runs need the decoy table" in m for m in errs)
+    with_table = dict(arms, scores=PortValue([table], "table"))
+    errs = [i.message for i in t.check(settings, StepContext("p", 1, STAMP, t.tag, with_table))
+            if i.level == "error"]
+    assert errs == []
 
 
 def _parsed(argv):
@@ -671,6 +784,18 @@ def test_map_score_skips_the_empty_slots_of_a_model_check(tmp_path, capsys):
     text = capsys.readouterr().out
     assert "skipped passed-02.pdb: empty slot 2 of 2: only 1 models passed" in text
     assert len(open(res).read().splitlines()) == 15  # the one model (14 residues), nothing for the slot
+
+
+def test_map_score_of_empty_slots_only_says_why_regression(tmp_path, capsys):
+    """regression: when every input was an empty slot of a model check the command failed with a blank
+    reason ('no model was scored: ')."""
+    from mdatk.cli import main
+    mapf = _map_of(DUPLEX, tmp_path)
+    slot = write(tmp_path / "slot" / "best-1.pdb", pdbtools.empty_slot_text(1, 1, 0))
+    assert main(["map", "score", slot, "--map", mapf, "--method", "cc", "--resolution", "4"]) == 1
+    err = capsys.readouterr().err
+    assert "every input is an empty slot of a model check" in err
+    assert "best-1.pdb: empty slot 1 of 1: only 0 models passed" in err
 
 
 # --- hybrids -----------------------------------------------------------------------------------------------
@@ -881,3 +1006,120 @@ def test_plan_writes_scripts_that_pass_bash_and_run(tmp_path):
     assert "stem FORCED" in report_text and "3  60.00%" in report_text
     mode = os.stat(scripts[0]).st_mode
     assert mode & stat.S_IXUSR
+
+
+def _census_step(tmp_path, settings, folders=("g",)):
+    """A plan with a register census of decoys in ``folders`` (connected one by one), written; its script
+    run with bash.  Returns (the script's text, the completed process, the plan folder)."""
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows.plan import Plan, add_node, connect
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    cen = add_node(wf, "register-census", settings=dict({"registers": [{"name": "stem", "pairs": STEM[5:]}],
+                                                         "python": sys.executable}, **settings))
+    for name in folders:
+        for k in range(2):
+            node = _file(wf, write(tmp_path / "in" / name / f"d{k}.pdb", DUPLEX), "pdb")
+            connect(wf, node.id, "file", cen.id, "models")
+    plan = Plan(wf, str(tmp_path / "plan"))
+    assert [i.message for _n, i in plan.all_issues() if i.level == "error"] == []
+    script = next(p for p in plan.write().written if p.endswith(f"_census_{STAMP}.sh"))
+    proc = subprocess.run(["bash", script], capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=ROOT))
+    return open(script).read(), proc, tmp_path / "plan"
+
+
+def test_census_step_with_a_typed_fasta_reference_regression(tmp_path):
+    """regression: a FASTA typed as the reference sequence (as its help allows) was run together into one
+    shell word, which reads as a header without a sequence: 'the reference sequence is empty'."""
+    text, proc, root = _census_step(tmp_path, {"reference": REFERENCE.replace(">c B", "\n>c B")})
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    fasta = root / "01_census" / f"apt1_01_reference_{STAMP}.fasta"
+    assert f"--fasta apt1_01_reference_{STAMP}.fasta" in text and "--reference" not in text
+    assert ensemble.read_reference(str(fasta)).describe() == "14 nt, A:1-7 B:8-14"
+    report = open(root / "01_census" / f"apt1_01_census-report_{STAMP}.txt").read()
+    assert "reference: 14 nt, A:1-7 B:8-14" in report and "stem                   2 100.00%" in report
+    text, proc, _root = _census_step(tmp_path / "plain", {"reference": "A:GGGAAAA\nB:UUUUCCC"})
+    assert "--reference 'A:GGGAAAA B:UUUUCCC'" in text and proc.returncode == 0  # plain text as before
+
+
+def test_census_step_with_a_dashed_pair_suffix_regression(tmp_path):
+    """regression: a matched-groups suffix starting with '-' (groups pres / pres-free) was read by argparse
+    as an option: 'argument --pair-suffix: expected one argument'."""
+    text, proc, root = _census_step(tmp_path, {"pair_suffix": "-free"}, folders=("pres", "pres-free"))
+    assert "--pair-suffix=-free" in text
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    report = open(root / "01_census" / f"apt1_01_census-report_{STAMP}.txt").read()
+    assert "matched groups on '-free'" in report
+
+
+def test_qscore_work_folder_moves_with_a_superseded_run_regression(tmp_path):
+    """regression: map-model score and body hybrids keep ChimeraX's logs in the step's qscore/ folder, which
+    did not move with a superseded run: its report named logs that the next run overwrote."""
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows import runstate, supersede
+    from mdatk.workflows.plan import Plan, add_node, connect
+    mapf = _map_of(DUPLEX, tmp_path)
+    model = write(tmp_path / "in" / "m1.pdb", DUPLEX)
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    m, f = _file(wf, mapf, "map"), _file(wf, model, "pdb")
+    ms = add_node(wf, "map-model-score", settings={"method": "qscore"})
+    bh = add_node(wf, "body-hybrids", settings={"method": "qscore", "bodies": [{"name": "a", "ranges": "A"}]})
+    cc = add_node(wf, "map-model-score", settings={"method": "cc", "resolution": 4.0})
+    for node in (ms, cc):
+        connect(wf, f.id, "file", node.id, "model")
+        connect(wf, m.id, "file", node.id, "map")
+    connect(wf, f.id, "file", bh.id, "old")
+    connect(wf, f.id, "file", bh.id, "new")
+    connect(wf, m.id, "file", bh.id, "map")
+    root = tmp_path / "plan"
+    plan = Plan(wf, str(root))
+    folders = {n: plan.steps[n].tool.run_folders(plan.steps[n].settings, plan.steps[n].ctx)
+               for n in (ms.id, bh.id, cc.id)}
+    # listed whatever the method: a Q-score run superseded after the step was switched to CC keeps its logs
+    assert folders == {ms.id: ["01_mapscore/qscore"], bh.id: ["02_hybrids/qscore"],
+                       cc.id: ["03_mapscore/qscore"]}
+    plan.write()
+    for path in runstate.expected(plan, ms.id, STAMP):  # a completed run, with ChimeraX's log of m1
+        write(root / path, "x\n")
+    write(root / "01_mapscore" / "qscore" / "m1_chimerax.log", "the log of this run\n")
+    item = supersede.pending(plan)[ms.id]
+    assert item.folders == ["01_mapscore/qscore"]
+    moved = Plan(wf, str(root)).write().superseded[ms.id]
+    log = root / moved.target / "qscore" / "m1_chimerax.log"
+    assert open(log).read() == "the log of this run\n"
+    assert not os.path.exists(root / "01_mapscore" / "qscore")
+
+
+def test_qscore_work_folder_is_the_steps_own_without_step_folders_regression(tmp_path):
+    """regression: in a plan without step folders every map-model score and body hybrids step wrote ChimeraX's
+    logs into one <plan>/qscore/, so one step's logs replaced another's."""
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows.plan import Plan, add_node, connect
+    mapf = _map_of(DUPLEX, tmp_path)
+    model = write(tmp_path / "in" / "m1.pdb", DUPLEX)
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP, step_folders=False)
+    m, f = _file(wf, mapf, "map"), _file(wf, model, "pdb")
+    a = add_node(wf, "map-model-score", settings={"method": "qscore"})
+    b = add_node(wf, "map-model-score", settings={"method": "qscore"})
+    for node in (a, b):
+        connect(wf, f.id, "file", node.id, "model")
+        connect(wf, m.id, "file", node.id, "map")
+    plan = Plan(wf, str(tmp_path / "plan"))
+    texts = {}
+    for node in (a, b):
+        step = plan.steps[node.id]
+        assert step.ok, step.issues
+        sh = [g for g in step.tool.generate(step.settings, step.ctx) if g.name.endswith(".sh")]
+        texts[node.id] = sh[0].content
+    na, nb = plan.steps[a.id].node.step, plan.steps[b.id].node.step
+    assert f"--work apt1_{na:02d}_qscore" in texts[a.id] and f"--work apt1_{nb:02d}_qscore" in texts[b.id]
+    assert plan.steps[a.id].tool.run_folders(plan.steps[a.id].settings, plan.steps[a.id].ctx) == \
+        [f"apt1_{na:02d}_qscore"]
+
+
+def test_census_never_reads_superseded_runs_regression(tmp_path):
+    """regression: a run moved aside into a step's superseded/ (its models/ included) was counted again by
+    the recursive model search of the census."""
+    live = write(tmp_path / "01_farfar2" / "models" / "r01" / "S_1.pdb", DUPLEX)
+    write(tmp_path / "01_farfar2" / "superseded" / "x_y" / "models" / "r01" / "S_1.pdb", DUPLEX)
+    assert ensemble.expand_models([str(tmp_path / "01_farfar2")], recursive=True) == [str(live)]

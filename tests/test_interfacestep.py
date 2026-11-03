@@ -140,6 +140,23 @@ def test_rebuilt_residues_from_the_fixed_residues_of_the_models_upstream():
         assert expected in sh
 
 
+def test_unreadable_fixed_residues_upstream_are_an_error_of_the_step_not_a_crash_of_the_write(tmp_path):
+    """FARFAR2 takes -input_res as free text; 'A1-6 B:7-8' passed every check and then the decoy
+    interfaces' generate() raised InterfaceError, so 'workflow write' wrote no step at all."""
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    ff = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                           "input_res": "A1-6 B:7-8"})
+    ff.files["structure"] = "/data/helices.pdb"
+    iface = add_node(wf, "decoy-interface", settings={"side_a": "A", "side_b": "B", "support": True})
+    connect(wf, ff.id, "decoys", iface.id, "models")
+    plan = Plan(wf, str(tmp_path))
+    assert plan.steps[iface.id].settings["rebuilt_from"] == "upstream"
+    assert any(m.startswith("FARFAR2's fixed residues (-input_res): cannot read residue range 'A1-6'")
+               for m in errors(plan.steps[iface.id]))
+    report = plan.write([iface.id])
+    assert iface.id in report.skipped and not report.written
+
+
 def test_scores_table_from_a_plan_step_and_every_decoy(tmp_path):
     tool = TOOLS["decoy-interface"]
     s = tool.normalise({"side_a": "A", "models_from": "scores", "drop_unscored": True,

@@ -6,9 +6,10 @@ segments, sugar hands against expected ones and sharp kinks, for every connected
 hydrogen contacts on MolProbity's conventions, reported only (:mod:`mdatk.modelcheck`).  The step writes a
 report table and passes the models on: all of them (report), up to N of those that pass the gates in N
 slots, the unfilled ones written as empty-slot files, failing only when fewer than the minimum pass (filter),
-or none when one fails (stop).  The script runs a copy of MDATK's PDB tools and model checks that the step
-writes into its folder (standard library only), so the machine that runs it needs ``python3`` and nothing
-else.
+or none when one fails (stop).  It writes as many passed files as it plans, in every mode: a slot no model
+fills (an input that is an empty slot, a decoy a set did not list) is an empty-slot file.  The script runs
+a copy of MDATK's PDB tools and model checks that the step writes into its folder (standard library only),
+so the machine that runs it needs ``python3`` and nothing else.
 """
 
 from __future__ import annotations
@@ -102,8 +103,12 @@ class ModelCheckTool(Tool):
                     tooltip="One row per model: status, clashes, links and strain, compaction, hands, kinks, "
                             "score terms."),
                Port("passed", "Passed models (PDB)", ("pdb",), multiple=True,
-                    tooltip="Filter: up to N slots; the slots no passing model fills are empty-slot files "
-                            "(REMARK 951, no atoms), which MDATK's steps skip."),
+                    tooltip="One file per connected model (filter: up to N). A slot no model fills (a "
+                            "filter's, an input that is an empty slot, a decoy the set did not list) is an "
+                            "empty-slot file (REMARK 951, no atoms), which the model check, decoy "
+                            "interfaces, register census, ensemble comparison, frame check and map-model "
+                            "score skip and an Amber build stops on; a step that reads one model takes the "
+                            "first, empty only when a filter with minimum 0 passed none."),
                Port("best", "Best model (PDB)", ("pdb",))]
     sections = [
         Section("clashes", "Clashes", [
@@ -200,7 +205,9 @@ class ModelCheckTool(Tool):
                    "Report: every model is passed on and the report says which fail. Filter: only models "
                    "that pass are passed on, up to the number below; slots no passing model fills are "
                    "written as empty-slot files, and the step fails only when fewer than the minimum pass. "
-                   "Stop: the step fails when any model fails.", choices=ON_FAIL_CHOICES),
+                   "Stop: the step fails when any model fails. In report and stop the slots of inputs that "
+                   "are empty slots, and of decoys a set did not list, are empty-slot files too.",
+                   choices=ON_FAIL_CHOICES),
             Option("max_clashes", "Most clashes", "int", None,
                    "Models with more clashes fail (empty: any number).", minimum=0, maximum=100000,
                    optional=True),
@@ -219,8 +226,9 @@ class ModelCheckTool(Tool):
                    "decoy table).", placeholder="linear_chainbreak<=1"),
             Option("n_pass", "Models passed on (up to)", "int", 5,
                    "Slots for the passing models (at most the number connected): filled in order, those left "
-                   "over written as empty-slot files that the next steps skip. The report says how many "
-                   "passed of how many.", minimum=1, maximum=100000, requires={"on_fail": "filter"}),
+                   "over written as empty-slot files, which MDATK's readers of model sets skip and an Amber "
+                   "build stops on. The report says how many passed of how many.", minimum=1, maximum=100000,
+                   requires={"on_fail": "filter"}),
             Option("min_pass", "Fewest passing models", "int", 1,
                    "The step fails when fewer models pass (1: only when none does; 0: never, the best model "
                    "then being an empty slot when none passes).", minimum=0, maximum=100000,
@@ -254,9 +262,10 @@ class ModelCheckTool(Tool):
         data = dict(ctx.data("models"))
         passed = [ctx.own(f"passed-{k:02d}", "pdb") for k in range(1, self._n_passed(s, ctx) + 1)]
         filtering = s["on_fail"] == "filter"
-        # a filter fills its slots in order and writes the rest as empty slots: steps that read one model
-        # (an Amber build, say) then stop before doing anything with an empty one
-        slots = dict(data, empty_slots=True) if filtering else dict(data)
+        # the check fills its slots in order and writes the rest as empty slots (a filter's unfilled ones; in
+        # every mode those of inputs that are empty slots, whose data say so, or of decoys a set did not
+        # list): an Amber build fed one stops before doing anything with it
+        slots = dict(data, empty_slots=True) if filtering or ctx.lists("models") else dict(data)
         best = dict(data, empty_slots=True) if filtering and s["min_pass"] == 0 else dict(data)
         return {"report": PortValue([ctx.own("report", "tsv")], "table"),
                 "passed": PortValue(passed, "pdb", slots),
@@ -448,6 +457,9 @@ class ModelCheckTool(Tool):
         if s["on_fail"] == "filter":
             opt("--pass", str(self._n_passed(s, ctx)))
             opt("--min-pass", str(s["min_pass"]))
+        else:  # as many passed files as planned: the slots of inputs that are empty slots and of decoys a set
+            # did not list are written as empty slots
+            opt("--slots", str(self._n_passed(s, ctx)))
         opt("--order", s["order"])
         if s["order"] == "score":
             opt("--rank-term", q(s["rank_term"].strip()))

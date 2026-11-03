@@ -198,3 +198,45 @@ def test_run_step_asks_before_it_writes(win, monkeypatch):
     [run] = runs_aside(folder)
     assert open(os.path.join(folder, "superseded", run, f"apt1_01_t_{stamp}.txt")).read() == "a\n"
     assert open(os.path.join(folder, f"apt1_01_t_{stamp}.txt")).read() == "a\n"  # the new run's
+
+
+def test_a_run_that_completes_during_the_question_is_neither_moved_nor_written(win, monkeypatch):
+    # step 01 done, step 02 running, step 03 (reads 02) queued: the question lists only 01; while it is
+    # open (the runner works on) 02 completes and 03 starts reading it.  02's run must stay in place.
+    pl = win.planner
+    x = pl.add_step("user-script", 40, 40)
+    x.settings.update(script='echo x > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    a = pl.add_step("user-script", 300, 40)
+    a.settings.update(script='echo a > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    b = pl.add_step("user-script", 300, 300)
+    b.settings.update(script="true\n", inputs=[{"name": "t", "kind": "text"}])
+    connect(win.project.workflow, a.id, "t", b.id, "t")
+    pl.changed()
+    assert win.save_project()
+    answering(monkeypatch, Gtk.ResponseType.OK)
+    pl.write(None)
+    stamp = win.project.workflow.stamp
+    fake_run(pl.resolve(), x.id)
+    pl.run_state.update({a.id: "running", b.id: "queued"})
+    folder_x = os.path.join(win.project.workflow_dir, "01_custom")
+    folder_a = os.path.join(win.project.workflow_dir, "02_custom")
+    asked = []
+
+    def run(dlg):
+        asked.append((dlg.props.text, dlg.props.secondary_text or ""))
+        if len(asked) == 1:  # the question is open: step 02 finishes, step 03 starts reading its output
+            fake_run(pl.resolve(), a.id)
+            pl.run_state.update({a.id: "done", b.id: "running"})
+        return Gtk.ResponseType.OK
+
+    monkeypatch.setattr(Gtk.MessageDialog, "run", run)
+    pl.write(None)
+    assert asked[0][0] == "Move the completed run(s) of 1 step(s) aside and write them?"
+    assert "01 · Custom script" in asked[0][1] and "02 · Custom script" not in asked[0][1]
+    assert len(runs_aside(folder_x)) == 1  # the run that was listed moved
+    assert runs_aside(folder_a) == []  # the one that completed during the question did not
+    assert os.path.exists(os.path.join(folder_a, f"apt1_02_t_{stamp}.txt"))
+    assert runstate.run_status(pl.resolve(), a.id, stamp).state == "done"
+    assert asked[1][0] == "1 step(s) not written" and "02 · Custom script" in asked[1][1]
+    assert "Planner: 02 · Custom script not written: its run completed after the question" in win.log.text()
+    pl.run_state.clear()

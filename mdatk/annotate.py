@@ -28,7 +28,9 @@ still get a '&' between strands.
 
 The dssr engine runs x3dna-dssr (external, licensed separately, never bundled; :mod:`mdatk.dssr`) on a
 copy with canonical residue names and synthetic residue ids; its Leontis-Westhof classes are written in
-barnaba's form ('cWW' Watson-Crick -> WCc, wobble -> GUc, 'tHS' -> HSt).
+barnaba's form ('cWW' Watson-Crick -> WCc, wobble -> GUc, 'tHS' -> HSt).  Its STACK records are DSSR's
+stacks plus the stacking inside its stems (consecutive pairs, strand on strand), which DSSR's list of
+stacks leaves out; cross-strand stacking inside a stem is not among them.
 """
 
 from __future__ import annotations

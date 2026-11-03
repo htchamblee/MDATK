@@ -284,8 +284,10 @@ class Tool:
 
     def run_folders(self, s: Dict[str, Any], ctx: StepContext) -> List[str]:
         """Plan-relative folders inside the step folder that a run fills and whose names carry no time stamp
-        (e.g. one working folder per parallel run).  They move with a completed run when the step is written
-        again (mdatk.workflows.supersede); a plan without step folders leaves them where they are."""
+        (e.g. one working folder per parallel run), whatever the current settings (only folders that exist
+        move).  They move with a completed run when the step is written again (mdatk.workflows.supersede); in
+        a plan without step folders only those named as the step's own (``<project>_<NN>_...``) move, and only
+        while no other step has the step's number."""
         return []
 
 

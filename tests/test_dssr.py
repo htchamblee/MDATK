@@ -3,7 +3,8 @@ JSON in several id grammars, the annotate engine and 'mdatk pdb interface --engi
 
 x3dna-dssr itself is licensed separately and is not installed here: a stand-in program (FAKE_DSSR) reads
 the copy MDATK writes and answers with JSON in the layout of DSSR 1.x ('nts', 'pairs', 'stacks',
-'hbonds'), with nucleotide ids in the grammar a test chooses."""
+'hbonds'), with nucleotide ids in the grammar a test chooses; style 'stems' answers as DSSR 2.x does, with
+the stacking inside stems left out of 'stacks' and given by 'stems'."""
 
 import json
 import os
@@ -48,7 +49,7 @@ def dist(p, q):
     return math.dist(p, q)
 
 WC = {{"G": "N1", "A": "N1", "C": "N3", "U": "N3"}}
-pairs, hbonds = [], []
+pairs, hbonds, pair_keys = [], [], []
 for i, a in enumerate(order):
     for b in order[i + 1:]:
         x, y = res[a], res[b]
@@ -59,6 +60,7 @@ for i, a in enumerate(order):
             name = "WC" if kind in ("GC", "CG", "AU", "UA") else "Wobble" if kind in ("GU", "UG") else "~rWC"
             pairs.append({{"index": len(pairs) + 1, "nt1": ntid(a), "nt2": ntid(b),
                           "bp": f"{{x['name']}}-{{y['name']}}", "name": name, "LW": "cWW", "DSSR": "cW-W"}})
+            pair_keys.append((a, b))
         for an, p in x["atoms"].items():
             for bn, q in y["atoms"].items():
                 if an[0] in "NO" and bn[0] in "NO" and dist(p, q) < 3.3:
@@ -73,12 +75,40 @@ for k in order:
         runs[-1].append(k)
     else:
         runs.append([k])
+stems, inside = [], set()
+if style == "stems":  # DSSR 2.x: the stacking inside a stem is given by 'stems' and left out of 'stacks'
+    where = {{k: (n, i) for n, ks in enumerate(runs) for i, k in enumerate(ks)}}
+
+    def step(k, d):
+        n, i = where[k]
+        return runs[n][i + d] if 0 <= i + d < len(runs[n]) else None
+    for a, b in pair_keys:
+        if stems and step(stems[-1][-1][0], 1) == a and step(stems[-1][-1][1], -1) == b:
+            stems[-1].append((a, b))
+        else:
+            stems.append([(a, b)])
+    stems = [st for st in stems if len(st) > 1]
+    for st in stems:
+        for (a, b), (c, d) in zip(st, st[1:]):
+            inside |= {{(a, c), (d, b)}}
+pieces = []
+for ks in runs:
+    pieces.append(ks[:1])
+    for x, y in zip(ks, ks[1:]):
+        if (x, y) in inside:
+            pieces.append([y])
+        else:
+            pieces[-1].append(y)
 stacks = [{{"index": n + 1, "nts_long": ",".join(ntid(k) for k in ks)}}
-          for n, ks in enumerate(runs) if len(ks) > 1]
+          for n, ks in enumerate(ks for ks in pieces if len(ks) > 1)]
 doc = {{"num_pairs": len(pairs), "pairs": pairs, "stacks": stacks,
        "metadata": {{"version": "fake-dssr 9.9"}}}}
 if style != "nohb":
     doc["hbonds"] = hbonds
+if stems:
+    doc["stems"] = [{{"index": n + 1, "num_pairs": len(st),
+                     "pairs": [{{"nt1": ntid(a), "nt2": ntid(b), "LW": "cWW", "name": "WC"}} for a, b in st]}}
+                    for n, st in enumerate(stems)]
 if style not in ("nonts",):
     doc["nts"] = [{{"index": n + 1, "chain_name": k[0], "nt_resnum": k[1], "nt_name": res[k]["name"],
                    "nt_id": ntid(k)}} for n, k in enumerate(order)]
@@ -278,3 +308,68 @@ def test_dssr_2_9_json_of_a_file_without_chain_ids():
     assert res.stacks == [(0, 1)]
     assert (res.hbonds_seen, res.hbonds_read) == (1, 1) and res.hbonds[0][:4] == (0, "O6", 3, "N4")
     assert res.notes == []
+
+
+# --- 0.0.12 review fixes ----------------------------------------------------------------------------------
+
+def test_dssr_2_9_stacking_inside_stems_comes_from_the_stems():
+    """DSSR's 'stacks' leave out the stacking inside stems ("Stacking interactions within a stem are *not*
+    included"): the user's 2.9.4 file had none of stem 1 (G1-A6 / U39-C44), so annotate wrote no STACK
+    record for G1/G2 ... and the refinement's 'Stacking from the annotation' restrained loops only.  The
+    stem's consecutive pairs give it (hairpin G1-C3 / G6-C8 here, layout of DSSR 2.9.4, built by hand)."""
+    nts = [{"index": k, "chain_name": " ", "nt_resnum": k, "nt_name": b, "nt_id": f"{b}{k}"}
+           for k, b in enumerate("GGCAAGCC", start=1)]
+    stem_pairs = [{"index": 1, "nt1": "G1", "nt2": "C8", "LW": "cWW", "name": "WC"},
+                  {"index": 2, "nt1": "G2", "nt2": "C7", "LW": "cWW", "name": "WC"},
+                  {"index": 3, "nt1": "C3", "nt2": "G6", "LW": "cWW", "name": "WC"}]
+    doc = {"metadata": {"version": "DSSR v2.9.4-2026sep18"}, "nts": nts, "pairs": stem_pairs,
+           "num_helices": 1, "helices": [{"index": 1, "num_stems": 1, "pairs": stem_pairs}],
+           "num_stems": 1, "stems": [{"index": 1, "helix_index": 1, "num_pairs": 3, "pairs": stem_pairs}],
+           "num_stacks": 1, "stacks": [{"index": 1, "num_nts": 2, "nts_short": "CA", "nts_long": "C3,A4"}],
+           "nonStack": {"num_nts": 1, "nts_short": "A", "nts_long": "A5"}, "hbonds": []}
+    res = dssr.parse_json(doc)
+    assert res.stacks == [(0, 1), (1, 2), (2, 3), (5, 6), (6, 7)] and res.notes == []
+    mapped = dssr.parse_json(doc, {k: 10 + k for k in range(8)})  # slots back to the caller's indices
+    assert mapped.stacks == [(10, 11), (11, 12), (12, 13), (15, 16), (16, 17)]
+
+
+def test_annotate_dssr_writes_the_stacking_inside_stems(tmp_path, monkeypatch):
+    exe = fake_dssr(tmp_path)
+    monkeypatch.setenv("FAKE_DSSR_STYLE", "stems")  # every step of this duplex is inside its one stem
+    res = annotate(builder.build_helix("GGCAUC", chirality="D"), engine="dssr", dssr_exe=exe)
+    stacks = [r[17:36] for r in res.records if r.startswith("REMARK 950 STACK")]
+    assert stacks[:2] == ["A   1 G   A   2 G  ", "A   2 G   A   3 C  "] and len(stacks) == 10
+    assert "Annotated 6 base pair(s) and 10 stacking(s) with the dssr engine" in res.notes
+
+
+@pytest.mark.parametrize("given", ["bin/x3dna-dssr", "./bin/x3dna-dssr"])
+def test_a_relative_executable_runs_although_dssr_runs_in_a_temporary_folder(tmp_path, monkeypatch, given):
+    """A relative --dssr-exe was resolved against the temporary folder DSSR runs in: 'not found'."""
+    (tmp_path / "bin").mkdir()
+    os.replace(fake_dssr(tmp_path), tmp_path / "bin" / "x3dna-dssr")
+    monkeypatch.chdir(tmp_path)
+    assert dssr.available(given)
+    res = annotate(builder.build_helix("GCAUGC"), engine="dssr", dssr_exe=given)
+    assert res.engine == "dssr" and "REMARK 950 PAIRS 6 (WATSON-CRICK 6, WOBBLE 0, OTHER 0)" in res.records
+    assert dssr.DssrRunner(["G"], [[]], exe=given).exe == str(tmp_path / "bin" / "x3dna-dssr")
+
+
+def test_pdb_interface_keeps_models_with_the_same_file_name_apart(tmp_path, monkeypatch):
+    """Decoys of different FARFAR2 runs share file names: every row was 'model.pdb' and --keep held one
+    model's DSSR files, the last one's."""
+    exe = fake_dssr(tmp_path)
+    monkeypatch.setenv("FAKE_DSSR_STYLE", "v1")
+    monkeypatch.chdir(tmp_path)
+    for run, seq in (("r1", "GCAUGC"), ("r2", "GGGGGG")):
+        (tmp_path / run).mkdir()
+        (tmp_path / run / "model.pdb").write_text(builder.build_helix(seq))
+    (tmp_path / "other.pdb").write_text(builder.build_helix("GAUC"))
+    assert main(["pdb", "interface", "r1/model.pdb", "r2/model.pdb", "other.pdb", "--side-a", "A",
+                 "--side-b", "B", "--engine", "dssr", "--dssr-exe", exe, "--keep", "keep",
+                 "-o", "two.tsv"]) == 0
+    rows = interfaces.read_table("two.tsv")
+    assert sorted({r["model"] for r in rows}) == ["other.pdb", "r1/model.pdb", "r2/model.pdb"]
+    assert {r["name_a"] for r in rows if r["model"] == "r2/model.pdb" and r["kind"] == "pair"} == {"G"}
+    assert sorted(os.listdir(tmp_path / "keep")) == ["other.json", "other_dssr.pdb", "r1_model.json",
+                                                     "r1_model_dssr.pdb", "r2_model.json",
+                                                     "r2_model_dssr.pdb"]

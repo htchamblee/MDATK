@@ -1263,7 +1263,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .mapscore import add_commands as map_commands
-    p = sub.add_parser("map", help="map-model scores per residue (MDATK correlation or Phenix Q-score) and "
+    p = sub.add_parser("map", help="map-model scores per residue (MDATK correlation or ChimeraX Q-score) and "
                                    "the regions ranked by them")
     msub = p.add_subparsers(dest="map_command", metavar="action")
     for c in map_commands(msub):

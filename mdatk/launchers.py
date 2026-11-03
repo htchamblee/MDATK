@@ -162,9 +162,24 @@ def _apprun(folder: str) -> Optional[str]:
     return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
 
 
+def _found_by_glib(argv: List[str]) -> List[str]:
+    """``argv`` as an Exec line can start it: GLib looks up the program before it turns the ``%%`` of a
+    literal % back into %, finds no such file and drops the entry, so a program whose path holds a %
+    starts through ``env`` (or ``sh``, which takes a path with '=' that env would read as a variable)."""
+    if not argv or "%" not in argv[0]:
+        return argv
+    if "=" not in argv[0]:
+        return ["env"] + argv
+    return ["sh", "-c", 'exec "$0" "$@"'] + argv
+
+
 def commands(mode: Optional[str] = None) -> Dict[str, List[str]]:
     """The commands the entries start, before the file argument (``%f``): ``{"mdatk": [...], "rnado":
     [...]}``.  ``mode``: :func:`mdatk.gui.launch.launch_mode` unless given."""
+    return {program: _found_by_glib(argv) for program, argv in _commands(mode).items()}
+
+
+def _commands(mode: Optional[str]) -> Dict[str, List[str]]:
     from .gui.launch import launch_mode
 
     mode = mode or launch_mode()

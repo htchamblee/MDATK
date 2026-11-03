@@ -19,6 +19,7 @@ from . import rna
 from .base import (PortValue, StepContext, Tool, env_section, extra_flags, fortran_float,
                    require_file, script_header, shell_quote)
 from .budget import Resources
+from .naming import file_name
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import decoy_validity as _validity
@@ -27,6 +28,12 @@ from .scripts import silent_scores as _silent_scores
 
 RUN_DIR = "runs"
 MODELS_DIR = "models"  # farfar2-models: every model of every run, models/<run>/<tag>.pdb
+
+
+def models_dir(ctx: StepContext) -> str:
+    """The folder every model of every run is extracted into, relative to the step folder: models/, or in a
+    plan without step folders <project>_<NN>_models/, so that two steps never extract into one folder."""
+    return MODELS_DIR if ctx.folder else file_name(ctx.project, ctx.step, MODELS_DIR)
 
 
 def _flag_bool(value: bool) -> str:
@@ -46,12 +53,13 @@ def _module_body(module) -> str:
     return "\n".join(ln for ln in lines[k:] if not ln.startswith("from __future__")).strip("\n")
 
 
-def extract_every_model(exe: str, parallel: int, runs: List[List[str]], db: str, helper: str) -> List[str]:
-    """Shell lines that extract every model of every run into models/<run>/<tag>.pdb and check that each run
-    has one PDB per SCORE line (``runs``: [label, silent file relative to the step folder, ...]; ``helper``:
-    the step's copy of :mod:`silent_scores`)."""
+def extract_every_model(exe: str, parallel: int, runs: List[List[str]], db: str, helper: str,
+                        models: str = MODELS_DIR) -> List[str]:
+    """Shell lines that extract every model of every run into <models>/<run>/<tag>.pdb (:func:`models_dir`)
+    and check that each run has one PDB per SCORE line (``runs``: [label, silent file relative to the step
+    folder, ...]; ``helper``: the step's copy of :mod:`silent_scores`)."""
     exe = exe.strip() or "extract_pdbs"
-    m = MODELS_DIR
+    m = models
     lines = [f"# Extract every model of every run into {m}/<run>/<tag>.pdb. extract_pdbs writes",
              "# <tag>.pdb into the folder it runs in, and every run reuses the same tags, so each run is",
              "# extracted in a scratch folder of its own; the run's earlier models are removed first.",
@@ -310,7 +318,7 @@ class FarfarTool(Tool):
                 out.append(Issue("warning", f"extra flag {name} repeats a generated flag", ("extra",)))
         if s["extract_decoys"]:
             out.append(Issue("info", f"every decoy is extracted after the runs: up to "
-                                     f"{s['runs'] * s['nstruct']} PDB files in {MODELS_DIR}/",
+                                     f"{s['runs'] * s['nstruct']} PDB files in {models_dir(ctx)}/",
                              ("extract_decoys",)))
         return out
 
@@ -320,10 +328,25 @@ class FarfarTool(Tool):
             return ctx.name(self.tag, "fasta"), ctx.name(self.tag, "secstruct")
         return s["fasta_file"].strip(), s["secstruct_file"].strip()
 
+    @staticmethod
+    def existing_fasta(s) -> str:
+        """The text of the existing FASTA file the step uses ('' when it writes its own, or cannot read it)."""
+        path = s["fasta_file"].strip()
+        if s["make_inputs"] or not path:
+            return ""
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
     def output_values(self, s, ctx):
         fasta, ss = self._inputs(s, ctx)
         model, _ = self.model(s)
         data = {"rna_model": model} if model is not None else {}
+        text = self.existing_fasta(s)
+        if text:  # its chain:range tags number the decoys; the model numbers the chains on from 1
+            data["fasta_text"] = text
         # the weight of the fit to the map while sampling (models drawn towards one placement in the map)
         dens = {"density_weight": float(s["w_density"]) if ctx.has("map") else 0.0}
         out = {"silent": PortValue([ctx.own(f"{self.tag}-r{k:02d}", "out") for k in range(1, s["runs"] + 1)],
@@ -355,10 +378,14 @@ class FarfarTool(Tool):
         return ["rosetta", "farfar2"]
 
     def run_folders(self, s, ctx):
-        return [ctx.from_own(RUN_DIR)]  # rna_denovo's working folders runs/rNN
+        # rna_denovo's working folders runs/rNN, and every decoy of every run with its extraction logs (whatever
+        # the current settings: a run extracted before the option was turned off keeps its decoys)
+        return [ctx.from_own(RUN_DIR), ctx.from_own(models_dir(ctx))]
 
     def run_resources(self, s):
-        return Resources(max(1, min(s["parallel"], s["runs"])))  # xargs -P: one rna_denovo per core
+        # xargs -P: one rna_denovo per core; then the decoys, extract_pdbs side by side: the larger of the two
+        return Resources(max(1, min(s["parallel"], s["runs"]),
+                             min(s["extract_parallel"], s["runs"]) if s["extract_decoys"] else 1))
 
     def describe(self, s):
         model, _ = self.model(s)
@@ -491,18 +518,19 @@ class FarfarTool(Tool):
         silents = [n(f"{self.tag}-r{k:02d}", "out") for k in range(1, s["runs"] + 1)]
         runs = [[label, path] for label, path in zip(_silent_scores.unique_labels(silents), silents)]
         db = f" -database {s['database'].strip()}" if s["database"].strip() else ""
+        models = models_dir(ctx)
         sh = script_header(f"FARFAR2: every decoy of the {s['runs']} runs as a PDB file, the decoy table and "
                            "the list of the decoys", ctx, s, script,
                            ["The step's script runs this after the rna_denovo runs; run it alone to extract "
                             "again (the runs are not repeated)."])
         sh += ["# Outputs of an earlier extraction go first: a failed one leaves nothing that looks finished",
                f"rm -f {listing} {table}", ""]
-        sh += extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper)
+        sh += extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper, models)
         sh += ["# The decoy table (run, tag, pdb and every SCORE term by name) and the list of the",
                "# decoys' PDB files (from the plan folder) in its order, which the steps taking the set read",
-               f"python3 {helper} table {table} --extracted {MODELS_DIR} --term score --list {listing}",
+               f"python3 {helper} table {table} --extracted {models} --term score --list {listing}",
                require_file(table, "the decoy table"), require_file(listing, "the list of the decoys"),
-               f'echo "Decoys: $(wc -l < {listing}) PDB files in {MODELS_DIR}/, listed in {listing}; '
+               f'echo "Decoys: $(wc -l < {listing}) PDB files in {models}/, listed in {listing}; '
                f'decoy table: {table}"', ""]
         return [GeneratedFile(script, "\n".join(sh), "helper", "extracts every decoy, writes the decoy table "
                               "and the list of the decoys"),
@@ -654,8 +682,9 @@ class FarfarModelsTool(Tool):
         return ["rosetta", "farfar2"] + (["dssr"] if s["dssr"] else [])
 
     def run_folders(self, s, ctx):
-        # every model of every run, models/<run>/<tag>.pdb, with the extraction logs
-        return [ctx.from_own(MODELS_DIR)] if s["extract_all"] or self.validity_on(s) else []
+        # every model of every run, models/<run>/<tag>.pdb, with the extraction logs (whatever the current
+        # settings: only a folder that exists moves)
+        return [ctx.from_own(models_dir(ctx))]
 
     def run_resources(self, s):
         # extract_pdbs runs side by side only when every model is extracted
@@ -735,6 +764,8 @@ class FarfarModelsTool(Tool):
             try:
                 if s["valid_sequence"].strip():
                     ref = ensemble.parse_reference(s["valid_sequence"])
+                elif ctx.data("silent").get("fasta_text"):  # the FARFAR2 step's own FASTA file, as typed
+                    ref = ensemble.parse_reference(ctx.data("silent")["fasta_text"])
                 else:
                     ref = ensemble.reference_from_model(ctx.data("silent").get("rna_model"))
             except ensemble.EnsembleError as exc:
@@ -839,14 +870,14 @@ class FarfarModelsTool(Tool):
                               ("MDATK's silent-file scores (silent_scores)", _silent_scores)):
             bodies += [f"# --- {title} ---", _module_body(module), "", ""]
         bodies.append("# --- validity of the decoys (decoy_validity) ---")
-        constants = {"RUNS": [tuple(r[:2]) for r in runs], "SETTINGS": settings, "EXTRACTED": MODELS_DIR}
+        constants = {"RUNS": [tuple(r[:2]) for r in runs], "SETTINGS": settings, "EXTRACTED": models_dir(ctx)}
         return GeneratedFile(ctx.name("validity", "py"), embed(
             _validity, constants, "validity_main(sys.argv[1:], RUNS, SETTINGS, EXTRACTED)", doc,
             imports=bodies), "helper", "validity of every decoy before clustering: hands, bases, closure, "
             "required pairs")
 
-    def _extract_all(self, s, runs, db: str, helper: str) -> List[str]:
-        return extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper)
+    def _extract_all(self, s, ctx, runs, db: str, helper: str) -> List[str]:
+        return extract_every_model(s["extract_exe"], s["extract_parallel"], runs, db, helper, models_dir(ctx))
 
     def generate(self, s, ctx):
         n = ctx.name
@@ -866,7 +897,7 @@ class FarfarModelsTool(Tool):
         settings = self.validity_settings(s, ctx)[0] if valid else {}
         validity_tsv = n("validity", "tsv")
         if s["extract_all"] or valid:  # the validity filters judge every decoy as a PDB
-            sh += self._extract_all(s, runs, db, helper)
+            sh += self._extract_all(s, ctx, runs, db, helper)
         if valid:
             sh += [f"# Validity filters (before clustering), in this order: {', '.join(valid)}. Every decoy",
                    "# is judged; only the valid ones are clustered (the populations of the valid set)",
@@ -931,7 +962,7 @@ class FarfarModelsTool(Tool):
             sh += ["# The decoy table: run, tag, pdb and every SCORE term of every model, by column name"
                    + (", and the validity columns" if valid else ""),
                    f"python3 {helper} table {n('scores', 'tsv')}"
-                   + (f" --extracted {MODELS_DIR}" if s["extract_all"] or valid else "")
+                   + (f" --extracted {models_dir(ctx)}" if s["extract_all"] or valid else "")
                    + f" --models {n('models', 'txt')}"
                    + (f" --validity {validity_tsv}" if valid else "")
                    + "".join(f" --term {shell_quote(t)}" for t in dict.fromkeys(terms) if t),
