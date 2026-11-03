@@ -1281,11 +1281,14 @@ def _unique_files(paths: Sequence[str]) -> List[str]:
 def expand_models(items: Sequence[str], recursive: bool = False, exclude: Sequence[str] = ()) -> List[str]:
     """PDB files from files, folders (``*.pdb``, ``recursive``: the whole tree) and glob patterns, without
     the names matching an ``exclude`` pattern (e.g. a run folder's own input helices)."""
+    from .workflows.naming import SUPERSEDED  # not at import time (the planner's steps import this module)
+
     files: List[str] = []
     for p in items:
         if os.path.isdir(p):
-            if recursive:
-                for root, _dirs, fs in os.walk(p):
+            if recursive:  # never the runs moved aside into a step's superseded/ (RNAdo's earlier runs)
+                for root, dirs, fs in os.walk(p):
+                    dirs[:] = [d for d in dirs if d != SUPERSEDED]
                     files += [os.path.join(root, f) for f in fs if f.lower().endswith(".pdb")]
             else:
                 files += glob.glob(os.path.join(glob.escape(p), "*.pdb"))

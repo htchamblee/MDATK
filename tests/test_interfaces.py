@@ -542,3 +542,18 @@ def test_support_keeps_the_strands_of_a_file_without_chain_ids_apart():
     assert I._strand_break({"O3'": origin}, {"P": np.array([4.5, 0.0, 0.0])})  # a gap
     assert I._strand_break({"O3'": origin}, {"O5'": np.array([2.6, 0.0, 0.0])})  # a 5' end
     assert not I._strand_break({}, {"C1'": origin})  # nothing to tell: joined, as before
+
+
+def test_model_folders_are_searched_outside_superseded_regression(tmp_path):
+    """regression: a folder given to the decoy census was searched inside superseded/, so the decoys of runs
+    RNAdo moved aside were counted with the current ones."""
+    def put(rel):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("END\n")
+        return str(path)
+    keep = [put("models/r01/S_1.pdb"), put("models/r02/S_1.pdb"), put("top.pdb")]
+    put("models/superseded/a_b/models/r01/S_1.pdb")
+    put("superseded/a_b/S_9.pdb")
+    put(".hidden/S_3.pdb")
+    assert I._model_files([str(tmp_path)]) == sorted(keep)

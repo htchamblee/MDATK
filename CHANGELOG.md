@@ -505,7 +505,8 @@ regression test):
   mixed into the condition's. A superseded run's own folder given as a root is still audited.
 - **FARFAR2's extracted decoys move with their run**: with *Extract every decoy after the runs*, writing
   the step again moves `models/` (every decoy and the extraction logs) into `superseded/<stamp>_<time>/`
-  together with the decoy list and table that name them. It stayed behind, and the next extraction
+  together with the decoy list and table that name them, also when the option has been turned off since
+  and, in a plan without step folders, the step's own `<project>_<NN>_models/`. It stayed behind, and the next extraction
   deleted it, so the moved list and table named the new run's models.
 - **One extraction folder per step without step folders**: in a plan without step folders, FARFAR2
   (*Extract every decoy*) and FARFAR2 models (*Extract every model*, validity filters) extract into
@@ -527,7 +528,7 @@ regression test):
   longer leaves the step *partial*, waiting for files that never appear.
 - **Frame check's moved decoys move with their run**: writing the step again moves its folder of moved
   decoys, `<project>_<NN>_reframed_<stamp>/`, into `superseded/` with the manifest and decoy table that
-  point into it. It stayed, and the next run overwrote it.
+  point into it (with or without step folders). It stayed, and the next run overwrote it.
 
 **Ensembles and map-model scores**
 
@@ -549,8 +550,11 @@ regression test):
   empty").
 - **A matched-groups suffix starting with `-`** (`pres` / `pres-free`) works: the census script passes
   `--pair-suffix=-free`, which argparse no longer takes for an option.
-- **Map-model score and body hybrids: `qscore/` moves with a superseded run**, so the ChimeraX logs its
-  report names stay those of that run.
+- **Map-model score and body hybrids: `qscore/` moves with a superseded run** (also after the method was
+  changed), so the ChimeraX logs its report names stay those of that run; in a plan without step folders
+  each step writes them into its own `<project>_<NN>_qscore/` instead of one `qscore/` all steps shared.
+- **Model searches skip `superseded/`**: `mdatk ensemble census -r` and the folders given to `mdatk
+  decoys` no longer count the decoys of runs RNAdo moved aside with the current ones.
 - **The ChimeraX time limit ends ChimeraX behind a launcher**: ChimeraX runs in a process group of its
   own, which the time limit (`--timeout`) ends whole (`xvfb-run -a chimerax` with the ChimeraX it
   started); a SIGTERM or SIGHUP to MDATK (RNAdo's *Stop*) ends that group too.

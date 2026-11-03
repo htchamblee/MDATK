@@ -971,18 +971,20 @@ from the step's own folder and only of that stamp:
   `<project>_<NN>_*_<stamp>.*` in the folder;
 - outputs whose names carry no stamp (a custom script's fixed file names, plans without time stamps,
   which use `superseded/no-stamp_<time>/`) with the completion marker that ties them to the run;
-- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of FARFAR2 (with *Extract
-  every decoy after the runs*) and of the FARFAR2 models step (with *Extract every model* or validity
-  filters), moved whole so `models/r01/S_000001.pdb` keeps its place; likewise the frame check's folder of
-  moved decoys, `<project>_<NN>_reframed_<stamp>/`.
+- the stamp-free folders a run fills: `runs/` of FARFAR2 and SimRNA, `models/` of FARFAR2 (*Extract every
+  decoy after the runs*) and of the FARFAR2 models step (*Extract every model* or validity filters), the
+  `qscore/` of the map-model score and body hybrids, moved whole so `models/r01/S_000001.pdb` keeps its
+  place (also when the option that fills them has been turned off since); likewise the frame check's folder
+  of moved decoys, `<project>_<NN>_reframed_<stamp>/`.
 
 A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
 run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
 them), steps that use an earlier run are never written, files of other stamps and your own files stay, and
 nothing in `superseded/` is ever replaced (a second move in the same second gets `…-2`). In a plan without
 step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder, the `<project>_<NN>_*` rule
-applies only when no other step has the number, and `runs/` (steps share it) and the extracted models
-(`<project>_<NN>_models/`) are left alone.
+applies only when no other step has the number, the step's own folders (`<project>_<NN>_models/`,
+`<project>_<NN>_qscore/`, `<project>_<NN>_reframed_<stamp>/`) move with it on the same terms, and `runs/`
+(steps share it) is left alone.
 A step's move is all or nothing: if a file cannot be moved, the files moved so far go back, the step is not
 written and the write reports it. *Check previous runs* never looks inside `superseded/`. Steps that skip
 finished stages when run again (Amber MD *Skip finished stages*, NAMD MDFF *Skip finished runs*) reuse
@@ -2326,8 +2328,9 @@ by name; extra columns are ignored, comma-separated files are read too.
   `Overall mean Q-Score` line closes the table and is reported per model (a mean over atoms, termini
   included). The per-residue output has all four Q columns plus `score`, the one the regions use: Qavg by
   default, or Qbb (backbone) / Qsc (side chain, i.e. the base) as ChimeraX classifies the atoms. ChimeraX's
-  log of every run stays in the step's `qscore/` folder, which moves with a completed run when the step is
-  written again (see [Previous runs](#previous-runs)). ChimeraX runs in a process group of its own: the time
+  log of every run stays in the step's `qscore/` folder (`<project>_<NN>_qscore/` in a plan without step
+  folders), which moves with a completed run when the step is written again (see [Previous
+  runs](#previous-runs)). ChimeraX runs in a process group of its own: the time
   limit per model (`--timeout`) ends it whole, a launcher such as `xvfb-run -a chimerax` with the ChimeraX it
   started, and so does stopping MDATK (RNAdo's *Stop*). A model ChimeraX cannot score is listed in the
   report (with the reason and its log) and not ranked; the others are written and the command ends with

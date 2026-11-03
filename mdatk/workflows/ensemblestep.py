@@ -25,6 +25,7 @@ from .. import ensemble, mapscore
 from .base import (PortValue, StepContext, Tool, env_section, listed_files, require_file, script_header,
                    shell_quote)
 from .budget import Resources
+from .naming import file_name
 from .buildstep import StructureBuilderTool
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -626,7 +627,13 @@ def _score_options(default: str, optional: bool = False) -> List[Option]:
     ]
 
 
-def _score_words(s: Dict[str, Any]) -> List[str]:
+def _qscore_work(ctx: StepContext) -> str:
+    """The Q-score work folder, relative to the step folder: qscore/, or in a plan without step folders
+    <project>_<NN>_qscore/, so that two steps never write their ChimeraX logs into one folder."""
+    return QSCORE_WORK if ctx.folder else file_name(ctx.project, ctx.step, QSCORE_WORK)
+
+
+def _score_words(s: Dict[str, Any], ctx: StepContext) -> List[str]:
     q = shell_quote
     words = ["--method", s["method"]]
     if s["method"] == "qscore":
@@ -635,7 +642,7 @@ def _score_words(s: Dict[str, Any]) -> List[str]:
             words += ["--qscore-options", q(" ".join(s["qscore_options"].split()))]
         if s["batch"] > 1:
             words += ["--batch", str(s["batch"])]
-        words += ["--work", QSCORE_WORK]
+        words += ["--work", q(_qscore_work(ctx))]
         if s["timeout"] is not None:
             words += ["--timeout", f"{s['timeout']:g}"]
     else:
@@ -668,8 +675,9 @@ def _score_notes(s: Dict[str, Any]) -> List[str]:
 
 def _score_folders(s: Dict[str, Any], ctx: StepContext) -> List[str]:
     """The work folder of a Q-score run (``--work qscore``: ChimeraX's log of every model), which moves with
-    the run when it is superseded, so its report's log references stay true."""
-    return [ctx.from_own(QSCORE_WORK)] if s.get("method") == "qscore" else []
+    the run when it is superseded, so its report's log references stay true (whatever the current method:
+    only a folder that exists moves)."""
+    return [ctx.from_own(_qscore_work(ctx))]
 
 
 def _score_resources(s: Dict[str, Any]) -> List[str]:
@@ -753,7 +761,7 @@ class MapModelScoreTool(Tool):
         script = ctx.name(self.tag, "sh")
         res, regs = ctx.name("residues", "tsv"), ctx.name("regions", "tsv")
         report = ctx.name("regions-report", "txt")
-        words = _mdatk(s) + ["map", "score", "--map", q(ctx.inp("map"))] + _score_words(s)
+        words = _mdatk(s) + ["map", "score", "--map", q(ctx.inp("map"))] + _score_words(s, ctx)
         for rec in s["regions"]:
             words += ["--region", q(f"{rec['name'].strip()}={_ranges(rec['ranges'], ctx)}")]
         if s["reference"].strip():
@@ -891,7 +899,7 @@ class BodyHybridsTool(Tool):
         outs = [template.replace("CODE", c) for c in codes]
         if s["method"] != "none":
             scores, effects = ctx.name("hybrid-scores", "tsv"), ctx.name("body-effects", "tsv")
-            words += ["--map", q(ctx.inp("map"))] + _score_words(s)
+            words += ["--map", q(ctx.inp("map"))] + _score_words(s, ctx)
             words += ["--scores-out", scores, "--effects-out", effects]
             outs += [scores, effects]
         words += ["--report", report]

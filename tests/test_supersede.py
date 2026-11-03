@@ -482,3 +482,70 @@ def test_cli_generate_moves_the_steps_completed_run(tmp_path, capsys):
     assert sup["to"].startswith(f"04_custom/superseded/{OLD}_") and "r.txt" in sup["files"]
     assert not (folder / "r.txt").exists()
     assert (tmp_path / "gen" / sup["to"] / "r.txt").read_text() == "hi\n"
+
+
+def test_flat_plans_move_the_steps_own_decoy_folders(tmp_path):
+    # without step folders, run_folders were not read at all: FARFAR2's <project>_<NN>_models/ and the frame
+    # check's <project>_<NN>_reframed_<stamp>/ stayed in the plan folder while the decoy list, table and
+    # manifest naming their files moved, and the next run replaced the decoys
+    wf = WorkflowParams(project_name="apt1", stamp=OLD, step_folders=False)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "runs": 2, "extract_decoys": True})
+    fc = add_node(wf, "frame-check", settings={"reframe": True, "fit": "A:1-3", "measure": "B=A:4-6"})
+    fc.files = {"reference": str(tmp_path / "ref.pdb"), "new_reference": str(tmp_path / "new.pdb")}
+    connect(wf, f.id, "decoy_table", fc.id, "scores")
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    for nid in (f.id, fc.id):
+        fake_run(plan, nid, OLD)
+    for run in ("r01", "r02"):
+        touch(os.path.join(root, "runs", run, "default.out"))
+        touch(os.path.join(root, "apt1_01_models", run, "S_000001.pdb"), f"first {run}\n")
+    touch(os.path.join(root, f"apt1_02_reframed_{OLD}", "r01", "S_000001.pdb"))
+    pending = supersede.pending(plan)
+    assert pending[f.id].folders == ["apt1_01_models"]  # runs/ is shared by the steps: it stays
+    assert pending[fc.id].folders == [f"apt1_02_reframed_{OLD}"]
+    report = plan.write()
+    moved = tree(os.path.join(root, report.superseded[f.id].target))
+    assert {"apt1_01_models/r01/S_000001.pdb", f"apt1_01_decoys_{OLD}.txt"} <= moved
+    reframed = tree(os.path.join(root, report.superseded[fc.id].target))
+    assert f"apt1_02_reframed_{OLD}/r01/S_000001.pdb" in reframed
+    assert not os.path.exists(os.path.join(root, "apt1_01_models"))
+    assert os.path.isdir(os.path.join(root, "runs"))
+
+
+def test_a_flat_folder_of_a_shared_step_number_stays(tmp_path):
+    # two steps with one number share <project>_<NN>_ in the plan folder: neither moves a folder by that name
+    wf = WorkflowParams(project_name="apt1", stamp=OLD, step_folders=False)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "extract_decoys": True})
+    g = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))"})
+    g.step = f.step
+    plan = Plan(wf, str(tmp_path / "plan"))
+    step = plan.steps[f.id]
+    touch(plan.node_path("apt1_01_models/r01/S_000001.pdb"))
+    _files, folders = supersede.run_files(plan, f.id, OLD)
+    assert folders == []
+    assert step.tool.run_folders(step.settings, step.ctx) == ["runs", "apt1_01_models"]
+
+
+def test_a_decoy_folder_moves_after_its_option_was_turned_off(tmp_path):
+    # supersede reads the current settings: with 'Extract every decoy' turned off before the step was written
+    # again, models/ of the completed run stayed, and turning it back on later deleted those decoys
+    wf = WorkflowParams(project_name="apt1", stamp=OLD)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "runs": 2, "extract_decoys": True})
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, f.id, OLD)
+    fd = os.path.join(root, "01_farfar2")
+    touch(os.path.join(fd, "models", "r01", "S_000001.pdb"))
+    f.settings["extract_decoys"] = False
+    plan = Plan(wf, root)
+    (item,) = supersede.pending(plan).values()
+    assert "01_farfar2/models" in item.folders
+    item = plan.write().superseded[f.id]
+    assert "models/r01/S_000001.pdb" in tree(os.path.join(root, item.target))
+    assert not os.path.exists(os.path.join(fd, "models"))

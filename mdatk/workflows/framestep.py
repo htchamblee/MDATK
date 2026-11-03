@@ -252,8 +252,9 @@ class FrameCheckTool(Tool):
         return Resources(int(s["jobs"]))  # models read at the same time
 
     def run_folders(self, s, ctx):
-        # the moved decoys of a decoy table, <reframed folder>/<run>/<tag>.pdb (--decoy-pattern)
-        return [ctx.from_own(ctx.name("reframed"))] if s["reframe"] else []
+        # the moved decoys of a decoy table, <reframed folder>/<run>/<tag>.pdb (--decoy-pattern), whatever the
+        # current settings (only a folder that exists moves)
+        return [ctx.from_own(ctx.name("reframed"))]
 
     def _pattern(self, ctx) -> str:
         return ctx.name("reframed-MODELNUM", "pdb").replace("MODELNUM", "{n}")

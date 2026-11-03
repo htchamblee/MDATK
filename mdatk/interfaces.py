@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import math
 import os
 import re
@@ -1302,10 +1301,18 @@ def interface_records(structure: Structure, side_a: Sequence[Range], side_b: Opt
 # --- command line ------------------------------------------------------------------------------------
 
 def _model_files(paths: Sequence[str]) -> List[str]:
+    """PDB files of ``paths``: files as given, folders searched through (as ``**/*.pdb``: hidden names
+    skipped), never inside the runs moved aside into a step's ``superseded/`` (RNAdo's earlier runs)."""
+    from .workflows.naming import SUPERSEDED  # not at import time (the planner's steps import this module)
+
     files: List[str] = []
     for p in paths:
         if os.path.isdir(p):
-            files += sorted(glob.glob(os.path.join(p, "**", "*.pdb"), recursive=True))
+            found = []
+            for root, dirs, fs in os.walk(p, followlinks=True):
+                dirs[:] = [d for d in dirs if d != SUPERSEDED and not d.startswith(".")]
+                found += [os.path.join(root, f) for f in fs if f.endswith(".pdb") and not f.startswith(".")]
+            files += sorted(found)
         else:
             files.append(p)
     return files

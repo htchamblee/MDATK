@@ -378,8 +378,9 @@ class FarfarTool(Tool):
         return ["rosetta", "farfar2"]
 
     def run_folders(self, s, ctx):
-        # rna_denovo's working folders runs/rNN, and every decoy of every run with its extraction logs
-        return [ctx.from_own(RUN_DIR)] + ([ctx.from_own(models_dir(ctx))] if s["extract_decoys"] else [])
+        # rna_denovo's working folders runs/rNN, and every decoy of every run with its extraction logs (whatever
+        # the current settings: a run extracted before the option was turned off keeps its decoys)
+        return [ctx.from_own(RUN_DIR), ctx.from_own(models_dir(ctx))]
 
     def run_resources(self, s):
         # xargs -P: one rna_denovo per core; then the decoys, extract_pdbs side by side: the larger of the two
@@ -681,8 +682,9 @@ class FarfarModelsTool(Tool):
         return ["rosetta", "farfar2"] + (["dssr"] if s["dssr"] else [])
 
     def run_folders(self, s, ctx):
-        # every model of every run, models/<run>/<tag>.pdb, with the extraction logs
-        return [ctx.from_own(models_dir(ctx))] if s["extract_all"] or self.validity_on(s) else []
+        # every model of every run, models/<run>/<tag>.pdb, with the extraction logs (whatever the current
+        # settings: only a folder that exists moves)
+        return [ctx.from_own(models_dir(ctx))]
 
     def run_resources(self, s):
         # extract_pdbs runs side by side only when every model is extracted

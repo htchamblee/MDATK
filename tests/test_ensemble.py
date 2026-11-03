@@ -1075,7 +1075,9 @@ def test_qscore_work_folder_moves_with_a_superseded_run_regression(tmp_path):
     plan = Plan(wf, str(root))
     folders = {n: plan.steps[n].tool.run_folders(plan.steps[n].settings, plan.steps[n].ctx)
                for n in (ms.id, bh.id, cc.id)}
-    assert folders == {ms.id: ["01_mapscore/qscore"], bh.id: ["02_hybrids/qscore"], cc.id: []}
+    # listed whatever the method: a Q-score run superseded after the step was switched to CC keeps its logs
+    assert folders == {ms.id: ["01_mapscore/qscore"], bh.id: ["02_hybrids/qscore"],
+                       cc.id: ["03_mapscore/qscore"]}
     plan.write()
     for path in runstate.expected(plan, ms.id, STAMP):  # a completed run, with ChimeraX's log of m1
         write(root / path, "x\n")
@@ -1086,3 +1088,38 @@ def test_qscore_work_folder_moves_with_a_superseded_run_regression(tmp_path):
     log = root / moved.target / "qscore" / "m1_chimerax.log"
     assert open(log).read() == "the log of this run\n"
     assert not os.path.exists(root / "01_mapscore" / "qscore")
+
+
+def test_qscore_work_folder_is_the_steps_own_without_step_folders_regression(tmp_path):
+    """regression: in a plan without step folders every map-model score and body hybrids step wrote ChimeraX's
+    logs into one <plan>/qscore/, so one step's logs replaced another's."""
+    from mdatk.config import WorkflowParams
+    from mdatk.workflows.plan import Plan, add_node, connect
+    mapf = _map_of(DUPLEX, tmp_path)
+    model = write(tmp_path / "in" / "m1.pdb", DUPLEX)
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP, step_folders=False)
+    m, f = _file(wf, mapf, "map"), _file(wf, model, "pdb")
+    a = add_node(wf, "map-model-score", settings={"method": "qscore"})
+    b = add_node(wf, "map-model-score", settings={"method": "qscore"})
+    for node in (a, b):
+        connect(wf, f.id, "file", node.id, "model")
+        connect(wf, m.id, "file", node.id, "map")
+    plan = Plan(wf, str(tmp_path / "plan"))
+    texts = {}
+    for node in (a, b):
+        step = plan.steps[node.id]
+        assert step.ok, step.issues
+        sh = [g for g in step.tool.generate(step.settings, step.ctx) if g.name.endswith(".sh")]
+        texts[node.id] = sh[0].content
+    na, nb = plan.steps[a.id].node.step, plan.steps[b.id].node.step
+    assert f"--work apt1_{na:02d}_qscore" in texts[a.id] and f"--work apt1_{nb:02d}_qscore" in texts[b.id]
+    assert plan.steps[a.id].tool.run_folders(plan.steps[a.id].settings, plan.steps[a.id].ctx) == \
+        [f"apt1_{na:02d}_qscore"]
+
+
+def test_census_never_reads_superseded_runs_regression(tmp_path):
+    """regression: a run moved aside into a step's superseded/ (its models/ included) was counted again by
+    the recursive model search of the census."""
+    live = write(tmp_path / "01_farfar2" / "models" / "r01" / "S_1.pdb", DUPLEX)
+    write(tmp_path / "01_farfar2" / "superseded" / "x_y" / "models" / "r01" / "S_1.pdb", DUPLEX)
+    assert ensemble.expand_models([str(tmp_path / "01_farfar2")], recursive=True) == [str(live)]

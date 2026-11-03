@@ -17,8 +17,9 @@ What moves (:func:`run_files`), only from inside the step's own folder and only 
   the number, so another step's files never move);
 - for names without a stamp (a custom script's fixed output names, plans without time stamps) the declared
   outputs and their completion markers, which tie them to the run;
-- the folders a run fills whose names carry no stamp (``Tool.run_folders``: FARFAR2's and SimRNA's
-  ``runs/``, the FARFAR2 models step's ``models/``), with step folders only.
+- the folders a run fills (``Tool.run_folders``: FARFAR2's and SimRNA's ``runs/``, the extracted
+  ``models/``, ``qscore/``, the frame check's moved decoys); without step folders only those named as the
+  step's own (``<project>_<NN>_...``), and only when no other step has the step's number.
 
 Relative paths are kept (``models/r01/S_000001.pdb`` stays ``models/r01/S_000001.pdb`` inside the run's
 folder) and a manifest (``manifest.toml``) records what moved, from which step and stamp, when and why.  A
@@ -208,11 +209,14 @@ def run_files(plan, node_id: str, stamp: str) -> Tuple[List[str], List[str]]:
             if _belongs(name, plan.project, step.node.step, stamp) and not os.path.isdir(full):
                 candidates.append(rel)
     dirs: List[str] = []
-    if folder:  # stamp-free folders only where nothing but this step writes
-        try:
-            dirs = [_norm(d) for d in tool.run_folders(settings, ctx)]
-        except Exception:  # noqa: BLE001
-            log.debug("run folders of %s failed", node_id, exc_info=True)
+    try:
+        dirs = [_norm(d) for d in tool.run_folders(settings, ctx)]
+    except Exception:  # noqa: BLE001
+        log.debug("run folders of %s failed", node_id, exc_info=True)
+    if not folder:  # without step folders only a folder named as the step's own (<project>_<NN>_...), and
+        # only when no other step has its number: the steps share runs/ and the plan folder
+        own = f"{plan.project}_{step_label(step.node.step)}_"
+        dirs = [d for d in dirs if not shared and "/" not in d and d.startswith(own)]
     folders: List[str] = []
     for d in dirs:
         if _inside(d, folder) and os.path.isdir(plan.node_path(d)) and not os.path.islink(plan.node_path(d)) \
