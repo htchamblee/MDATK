@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from .. import PROJECT_ABBREV, __version__
-from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
+from .base import (SEPARATE_CONDA, PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
                    script_header, separate_check, skip_when_done)
 from .budget import ALL_CORES, Resources, env_gpus, gpu_step
 from .registry import register
@@ -143,7 +143,7 @@ class GromacsTool(Tool):
             Option("separate_production", "Separate production script", "bool", True,
                    "Production stages go into their own script."),
         ]),
-        env_section("module load GROMACS/2023.3-CUDA-11.8.0"),
+        env_section("module load GROMACS/2023.3-CUDA-11.8.0", [SEPARATE_CONDA]),
     ]
 
     def output_ports(self, s):
@@ -389,8 +389,8 @@ class GromacsTool(Tool):
         prod_script = n("gromacs-prod", "sh")
         notes = [f"GROMACS {'2024+' if s['gmx_version'] == '2024' else '2023.3'}."]
 
-        def preamble(title: str, name: str) -> List[str]:
-            lines = script_header(title, ctx, s, name, notes)
+        def preamble(title: str, name: str, separate: bool = False) -> List[str]:
+            lines = script_header(title, ctx, s, name, notes, separate=separate)
             if s["gmx_version"] == "2023" and s["module"].strip():
                 lines += [f"module load {s['module'].strip()}", ""]
             return lines + [f'GMX="{s["gmx"].strip() or "gmx"}"', ""]
@@ -433,7 +433,7 @@ class GromacsTool(Tool):
             main += ["# Position restraints for the RNA (used by stages with define = -DPOSRES)",
                      f"python3 {posre} {top}", ""]
         prod_split = self._prod_split(s)
-        prod = preamble("GROMACS production", prod_script) if prod_split else main
+        prod = preamble("GROMACS production", prod_script, separate=True) if prod_split else main
         mdrun_flags = []
         if s["gpu"]:
             mdrun_flags.append("-nb gpu -pme gpu -bonded gpu")

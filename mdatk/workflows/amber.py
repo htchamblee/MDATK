@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
-from .base import (PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
+from .base import (SEPARATE_CONDA, PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
                    require_file, script_header, separate_check, shell_quote, skip_when_done)
 from .budget import Resources, gpu_ids, gpu_step
 from .registry import register
@@ -1790,7 +1790,7 @@ class AmberMDTool(Tool):
             Option("dry_mask", "Strip mask (trajectory)", "text", DEFAULT_STRIP,
                    "cpptraj mask removed from the dry trajectory.", requires={"dry_traj": True}),
         ]),
-        env_section("source /opt/amber26/amber.sh   or   module load Amber/24"),
+        env_section("source /opt/amber26/amber.sh   or   module load Amber/24", [SEPARATE_CONDA]),
     ]
 
     # ----------------------------------------------------------- helpers
@@ -2105,9 +2105,9 @@ class AmberMDTool(Tool):
         min_pmemd = "pmemd" if s["min_engine"] == "pmemd" else "$PMEMD"
         prod_split = s["separate_production"] and any(r["stage"]["production"] for r in runs)
 
-        def preamble(title, script):
+        def preamble(title, script, separate=False):
             lines = script_header(title, ctx, s, script, [
-                f"Amber {s['amber_version']}; engine {engine}."])
+                f"Amber {s['amber_version']}; engine {engine}."], separate=separate)
             if engine == "pmemd.cuda" and s["gpu"].strip():
                 lines += [f"export CUDA_VISIBLE_DEVICES={s['gpu'].strip()}", ""]
             lines += [f'PMEMD="{pmemd}"', f'TOP="{top}"', ""]
@@ -2118,7 +2118,7 @@ class AmberMDTool(Tool):
         main_name = ctx.name(self.tag, "sh")
         prod_name = ctx.name("amber-prod", "sh")
         main = preamble("Amber MD stages", main_name)
-        prod = preamble("Amber production", prod_name) if prod_split else main
+        prod = preamble("Amber production", prod_name, separate=True) if prod_split else main
         waiting: List[str] = []
         # split production: the main script's stages before it (production starts from them) and after it
         before: List[str] = []

@@ -310,10 +310,28 @@ def env_section(placeholder: str, extra: Sequence[Option] = ()) -> Section:
     ], tooltip="How the generated scripts find the programs.")
 
 
-def env_lines(s: Dict[str, Any]) -> List[str]:
+# Set by MDATK for every script it runs itself (RNAdo, mdatk workflow run); a cluster job has not got it
+LOCAL_VAR = "MDATK_LOCAL"
+
+SEPARATE_CONDA = Option(
+    "conda_separate", "Conda in the separate script on a cluster too", "bool", False,
+    "The separately run script (production, e.g. on a cluster) activates the conda environment only when "
+    f"MDATK runs it on this computer (RNAdo's 'Also run the scripts marked run separately here', or "
+    f"{LOCAL_VAR}=1 bash <script>); a cluster job skips it, as clusters set up their own programs (the "
+    "Setup commands run everywhere). Tick to activate it on the cluster too.")
+
+
+def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
+    """The Environment lines of a script: conda activation, then the setup commands.  In a separately run
+    script (``separate``) the conda lines run only when MDATK runs it here (``$MDATK_LOCAL``), unless the
+    step's ``conda_separate`` is set."""
     lines: List[str] = []
     if s.get("conda_env", "").strip():
-        lines += ['eval "$(conda shell.bash hook)"', f"conda activate {s['conda_env'].strip()}"]
+        conda = ['eval "$(conda shell.bash hook)"', f"conda activate {s['conda_env'].strip()}"]
+        if separate and not s.get("conda_separate"):
+            conda = ["# conda only when MDATK runs this script on this computer; a cluster job skips it",
+                     f'if [ -n "${{{LOCAL_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
+        lines += conda
     for line in (s.get("env_setup") or "").splitlines():
         if line.strip():
             lines.append(line.rstrip())
@@ -321,7 +339,7 @@ def env_lines(s: Dict[str, Any]) -> List[str]:
 
 
 def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
-                  notes: Sequence[str] = ()) -> List[str]:
+                  notes: Sequence[str] = (), separate: bool = False) -> List[str]:
     today = _dt.date.today().isoformat()
     lines = ["#!/bin/bash",
              f"# {title}",
@@ -330,7 +348,7 @@ def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
              f"# {PROJECT_ABBREV} only writes this script; review it, then run it with: bash {script}"]
     lines += [f"# {n}" for n in notes]
     lines += ["", "set -eo pipefail", 'cd "$(dirname "$0")"', ""]
-    env = env_lines(s)
+    env = env_lines(s, separate)
     if env:
         lines += ["# Environment"] + env + [""]
     return lines

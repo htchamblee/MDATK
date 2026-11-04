@@ -37,7 +37,7 @@ from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
-from .base import WAITING_STATUS
+from .base import LOCAL_VAR, WAITING_STATUS
 from .budget import Budget, Grant, Resources, Slots, budget_notes, schedule
 from .runstate import stop_mark
 
@@ -281,8 +281,8 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
     environ = child_env()
-    if env:
-        environ = {**(os.environ if environ is None else environ), **env}
+    # run here by MDATK: a separately run script activates its conda environment (base.LOCAL_VAR)
+    environ = {**(os.environ if environ is None else environ), LOCAL_VAR: "1", **(env or {})}
     environ = conda_on_path(environ, path, on_line)
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
     # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive

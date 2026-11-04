@@ -14,6 +14,17 @@ the notes below.
 
 ## Unreleased
 
+### Separately run (cluster) scripts without conda
+
+- **The production script run separately activates conda only on this computer.** The *Separate
+  production script* of the Amber MD and GROMACS steps (meant for a cluster queue) wraps the step's
+  *Conda environment* lines in `if [ -n "${MDATK_LOCAL:-}" ]`: they run when MDATK runs the script here
+  (RNAdo, `mdatk workflow run --include-separate`; MDATK sets `MDATK_LOCAL=1` for every script it runs),
+  and a cluster job skips them, where `conda` is often not available. *Setup commands* (`module load …`)
+  still run everywhere, and the main script is unchanged. New option *Conda in the separate script on a
+  cluster too* (Environment) for clusters that have conda. Only production scripts of steps with a conda
+  environment change (listed as intended in `tests/test_golden.py`).
+
 ### Previous runs: delete instead of moving aside
 
 - **Delete them and write.** The question before a step with a completed run is written again (*Write all

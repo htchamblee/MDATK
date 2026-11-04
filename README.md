@@ -907,8 +907,12 @@ uses are free; otherwise steps go in plan order.
 Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
 script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
 'run separately'* in the confirmation (or give `--include-separate`); they then run right after their
-step's main script. Such a step is complete only when its separate script has finished, and its main
-script checks that:
+step's main script. A separate script activates the step's *Conda environment* only when MDATK runs it
+on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand: `MDATK_LOCAL=1 bash
+<script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
+the *Setup commands* (`module load …`) run everywhere. *Conda in the separate script on a cluster too*
+(Environment) activates it there as well. Such a step is complete only when its separate script has
+finished, and its main script checks that:
 
 - it runs its own stages before production (equilibration; for GROMACS also the conversion) only while
   the separate script has not finished - once it has, they are not redone, as production started from
