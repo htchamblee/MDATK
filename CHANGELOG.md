@@ -12,6 +12,18 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Custom scripts
+
+- **Placeholders with real names in the help.** The help of a custom script's *Arguments*, input and output
+  *Name* and *Script text* wrote `{in:<name>}` / `$MDATK_IN_<NAME>`, which read as text to type; it now
+  shows them with example names (`{in:structure}`, `$MDATK_IN_STRUCTURE`, `{out:result}`).
+- **A placeholder that names nothing declared says what to write.** `{in:<name>}` as it stood in the help
+  gives "replace '<name>' in {in:<name>} with the input's name: write {in:structure}" (every declared input
+  offered), a name in other case "names are case-sensitive: write {in:structure}", and with nothing declared
+  yet "declare the input under Input files first"; the README's *Custom scripts* gives an example.
+
 ## 0.0.12 (2026-11-02)
 
 ### Model checks

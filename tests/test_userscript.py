@@ -212,6 +212,21 @@ def test_interpreters_custom_command_and_script_file(tmp_path):
      "arguments", "{out:reslt} names no declared output (declared: result)"),
     ({"script": "true", "arguments": "{input:model}", "inputs": [{"name": "model", "kind": "pdb"}]},
      "arguments", "unknown placeholder {input:model}; write {in:model}"),
+    # the template of the help text typed as it stands: say what to write instead
+    ({"script": "true", "arguments": "{in:<name>} C1,29 > {out:<name>}",
+      "inputs": [{"name": "structure", "kind": "pdb"}], "outputs": [{"name": "structure", "kind": "pdb"}]},
+     "arguments", "replace '<name>' in {in:<name>} with the input's name: write {in:structure}"),
+    ({"script": "true", "arguments": "{in:<name>} > {out:<name>}",
+      "inputs": [{"name": "structure", "kind": "pdb"}], "outputs": [{"name": "structure", "kind": "pdb"}]},
+     "arguments", "replace '<name>' in {out:<name>} with the output's name: write {out:structure}"),
+    ({"script": "true", "arguments": "{in:name}", "inputs": [{"name": "a", "kind": "pdb"},
+                                                           {"name": "b", "kind": "pdb"}]},
+     "arguments", "with the input's name: write {in:a} or {in:b}"),
+    ({"script": "true", "arguments": "{in:Structure}", "inputs": [{"name": "structure", "kind": "pdb"}]},
+     "arguments", "names no declared input (declared: structure); names are case-sensitive: write "
+                  "{in:structure}"),
+    ({"script": "true", "arguments": "{out:<name>}"}, "arguments",
+     "names no declared output (declared: none); declare the output under Output files first"),
     ({"script": "true", "interpreter": "custom", "command": "vmd -e {script} -args {in:map}"}, "command",
      "{in:map} names no declared input"),
     ({"script": "true", "inputs": [{"name": "model", "kind": "pdb"}, {"name": "Model", "kind": "any"}]},
@@ -676,3 +691,13 @@ def test_cli_generate_and_run(tmp_path):
                  "--project-name", "apt1", "--set", "script=echo made > \"$MDATK_OUT_R\"",
                  "--set", 'outputs=[{"name": "r", "kind": "text", "file": "r.txt"}]', "-q", "--run"]) == 0
     assert (tmp_path / "gen" / "01_custom" / "r.txt").read_text() == "made\n"
+
+
+def test_help_texts_show_placeholders_with_real_names():
+    """The help of the names and arguments shows {in:structure}-style examples, not a {in:<name>} template
+    that reads as text to type (users typed it as it stood)."""
+    tool = TOOLS["user-script"]
+    helps = [o.tooltip for sec in tool.sections for o in sec.options]
+    assert not any("{in:<name>}" in h or "{out:<name>}" in h for h in helps)
+    args = next(o for sec in tool.sections for o in sec.options if o.key == "arguments")
+    assert "{in:structure}" in args.tooltip and "{out:result}" in args.tooltip

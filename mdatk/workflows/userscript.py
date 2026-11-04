@@ -45,17 +45,18 @@ _MISSPELT = re.compile(r"(?<!\$)\{((?i:in|out|input|output|inp|outp?)):([^{}]*)\
 
 INPUT_OPTIONS = [
     Option("name", "Name", "text", "input",
-           "Name of the input: letters, digits, '_' and '-'. The script finds the file in $MDATK_IN_<NAME> "
-           "(upper case, '-' as '_') and the arguments as {in:<name>}."),
+           "Name of the input: letters, digits, '_' and '-'. For an input named structure, the script finds "
+           "the file's path in $MDATK_IN_STRUCTURE (the name in upper case, '-' as '_') and the arguments "
+           "write it as {in:structure}."),
     Option("kind", "File type", "choice", "any",
            "Which outputs of other steps can connect to it ('any file': every type).",
            choices=[("any", "any file")] + [(k, v[0]) for k, v in FILE_KINDS.items()]),
     Option("optional", "Optional", "bool", False,
-           "The step also runs without this file; $MDATK_IN_<NAME> is then empty and {in:<name>} an empty "
-           "word ('', no word at all with several connections)."),
+           "The step also runs without this file; its $MDATK_IN_ variable is then empty and its {in:…} "
+           "an empty word ('', no word at all with several connections)."),
     Option("multiple", "Several connections", "bool", False,
-           "Several steps may feed this input. $MDATK_IN_<NAME> holds one path per line and "
-           "{in:<name>} becomes one word per file."),
+           "Several steps may feed this input. Its $MDATK_IN_ variable holds one path per line and its "
+           "{in:…} becomes one word per file."),
 ]
 INPUT_TEMPLATES = [
     ("any", "Any file", {"name": "input", "kind": "any"}),
@@ -68,8 +69,9 @@ INPUT_TEMPLATES = [
 ]
 OUTPUT_OPTIONS = [
     Option("name", "Name", "text", "result",
-           "Name of the output: letters, digits, '_' and '-'. The script finds the file name to write in "
-           "$MDATK_OUT_<NAME> (upper case, '-' as '_') and the arguments as {out:<name>}."),
+           "Name of the output: letters, digits, '_' and '-'. For an output named result, the script finds "
+           "the file name to write in $MDATK_OUT_RESULT (the name in upper case, '-' as '_') and the "
+           "arguments write it as {out:result}."),
     Option("kind", "File type", "choice", "pdb", "What the file contains; decides which inputs of later "
            "steps it can feed.", choices=[(k, v[0]) for k, v in FILE_KINDS.items()]),
     Option("file", "File name", "text", "",
@@ -83,6 +85,23 @@ OUTPUT_TEMPLATES = [
     ("map", "Density map", {"name": "map", "kind": "map"}),
     ("image", "Image / movie", {"name": "image", "kind": "image"}),
 ]
+
+
+def _undeclared(what: str, found: str, side: str, name: str, kind: str, declared: Set[str]) -> str:
+    """The error for ``{in:NAME}`` / ``{out:NAME}`` naming no declared input / output, with the placeholders
+    that would work: a template name copied from the help (``{in:<name>}``) is to be replaced, a name in other
+    case is to be written as declared."""
+    usable = " or ".join(f"{{{side}:{n}}}" for n in sorted(declared))
+    where = "Input files" if side == "in" else "Output files"
+    if not declared:
+        hint = f"declare the {kind} under {where} first"
+    elif "<" in name or ">" in name or name.strip().lower() in ("", "name"):
+        return f"{what}: replace '{name}' in {found} with the {kind}'s name: write {usable}"
+    else:
+        same = [n for n in sorted(declared) if n.lower() == name.strip().lower()]
+        hint = (f"names are case-sensitive: write {{{side}:{same[0]}}}" if same else f"write {usable}")
+    listed = ", ".join(sorted(declared)) or "none"
+    return f"{what}: {found} names no declared {kind} (declared: {listed}); {hint}"
 
 
 def env_name(name: str) -> str:
@@ -133,9 +152,10 @@ class UserScriptTool(Tool):
                    "the step folder each time the step's files are written (edit the original, then write "
                    "the step again).", choices=[("inline", "typed here"), ("file", "from a file")]),
             Option("script", "Script text", "multiline", "",
-                   "The script. It runs in the step folder; $MDATK_IN_<NAME> holds each input's path "
-                   "(relative to the step folder, one per line for several files) and $MDATK_OUT_<NAME> each "
-                   "output's file name.",
+                   "The script. It runs in the step folder; for an input named structure, "
+                   "$MDATK_IN_STRUCTURE holds its path (relative to the step folder, one per line for "
+                   "several files), and for an output named result, $MDATK_OUT_RESULT the file name to "
+                   "write.",
                    placeholder='cp "$MDATK_IN_STRUCTURE" "$MDATK_OUT_RESULT"', requires={"source": "inline"},
                    rows=14),
             Option("script_file", "Script file", "file", "", "The script to copy into the step folder. "
@@ -153,9 +173,11 @@ class UserScriptTool(Tool):
                    "name goes where {script} is, otherwise at the end; the arguments follow.",
                    placeholder="vmd -dispdev text -e {script} -args", requires={"interpreter": "custom"}),
             Option("arguments", "Arguments", "text", "",
-                   "Command-line arguments (shell syntax). {in:<name>} becomes the input's path (one word "
-                   "per file), {out:<name>} the output's file name and {script} the script's name; do not "
-                   "put quotes around them.", placeholder="--model {in:structure} -o {out:result}"),
+                   "Command-line arguments (shell syntax). Put the names given under Input files and "
+                   "Output files in the braces: {in:structure} becomes the path of the input named "
+                   "structure (one word per file), {out:result} the file name of the output named result, "
+                   "and {script} the script's name; do not put quotes around them.",
+                   placeholder="--model {in:structure} -o {out:result}"),
         ], tooltip="What runs. The step's run script exports the file names, removes the outputs of an "
                    "earlier run, runs this script in the step folder and checks that every declared output "
                    "exists and is not empty."),
@@ -372,8 +394,8 @@ class UserScriptTool(Tool):
                     declared = names["inputs" if side == "in" else "outputs"]
                     if name not in declared:
                         kind = "input" if side == "in" else "output"
-                        out.append(Issue("error", f"{what}: {m.group(0)} names no declared {kind} (declared: "
-                                                  f"{', '.join(sorted(declared)) or 'none'})", (key,)))
+                        out.append(Issue("error", _undeclared(what, m.group(0), side, name, kind, declared),
+                                         (key,)))
                 else:
                     right = f"{{{'in' if side.lower().startswith('in') else 'out'}:{name}}}"
                     out.append(Issue("error", f"{what}: unknown placeholder {m.group(0)}; write {right}",

@@ -1487,7 +1487,10 @@ step folder and exports these variables (`<NAME>` is the declared name in upper 
 | `MDATK_PROJECT`, `MDATK_STEP`, `MDATK_STAMP` | the parts of the plan's file names |
 
 It then replaces `{in:<name>}`, `{out:<name>}` and `{script}` in the arguments with the names, quoted
-for the shell (one word per file; do not put quotes around them). An optional input without a file
+for the shell (one word per file; do not put quotes around them). `<name>` stands for a declared name:
+for an input named `structure` and an output named `result`, write `{in:structure}` and
+`{out:result}`, e.g. `{in:structure} C1,29 > {out:result}`; the planner names the placeholders that
+would work when one names nothing declared. An optional input without a file
 becomes `''`, an empty word that keeps the place of a positional argument, or no word at all with
 *Several connections*. The run script removes the declared outputs of an earlier run, runs the script,
 checks that every declared output exists and is not empty, and only then writes the marker
