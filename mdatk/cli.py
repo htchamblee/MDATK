@@ -739,7 +739,8 @@ def _print_superseded(items, quiet: bool = False, dry_run: bool = False) -> int:
         failed += bool(item.error)
         if quiet and not item.error and not dry_run:
             continue
-        head = "ERROR" if item.error else ("would move" if dry_run else "moved")
+        done = "deleted" if item.deleted else "moved"
+        head = "ERROR" if item.error else ("would move" if dry_run else done)
         lines = item.lines(limit=10 if dry_run else 20)
         print(f"{head:8s} {lines[0]}", file=sys.stderr)
         for line in lines[1:]:
@@ -778,12 +779,13 @@ def cmd_workflow_write(args) -> int:
     stamp_was = project.workflow.stamp
     from .projectfile import logged
     with logged(_project_file(args), "workflow write", "Generated the plan's files") as entry:
-        report = plan.write(ids, project_path=_project_file(args))
+        report = plan.write(ids, project_path=_project_file(args), discard=args.delete_old_runs)
         entry.folder = report.root
         entry.files = list(report.written)
         entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
         if report.superseded:
-            entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+            entry.summary += f", {len(report.superseded)} completed run(s) " + (
+                "deleted" if args.delete_old_runs else "moved aside")
     failed = _print_superseded(report.superseded.values(), args.quiet)
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
@@ -1308,6 +1310,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--dry-run", action="store_true",
                    help="write and move nothing: list the files that would be written and the completed runs "
                         "that would move into their step's superseded/ folder first")
+    w.add_argument("--delete-old-runs", action="store_true",
+                   help="delete the completed runs that would move into superseded/ instead (trial runs not "
+                        "worth the disk space; cannot be undone)")
     w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "

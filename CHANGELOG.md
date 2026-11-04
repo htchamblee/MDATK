@@ -14,6 +14,16 @@ the notes below.
 
 ## Unreleased
 
+### Previous runs: delete instead of moving aside
+
+- **Delete them and write.** The question before a step with a completed run is written again (*Write all
+  files*, *Write step*, the *Run* actions, the wizard) has a third answer beside *Cancel* and *Move aside
+  and write*: it deletes the run - the same files and folders that would move into `superseded/` - so
+  broken or trial runs do not fill the disk. A link is removed, never what it points to; a step whose run
+  could not be deleted completely is not written. The deletion is in the output log and the project's step
+  log ("Deleted the completed run of …"). `mdatk workflow write --delete-old-runs` does the same
+  (`mdatk.workflows.supersede.delete`, `Plan.write(discard=True)`; the JSON says `"deleted": true`).
+
 ### Running scripts
 
 - **Steps with a conda environment run from RNAdo started from the applications menu.** `conda init`

@@ -1002,12 +1002,14 @@ class WizardWindow(Gtk.Window):
                         "scripts run that may read it. Wait for them to finish, or cancel them, then write "
                         "again.")
             return
-        if moving and not confirm_supersede(self, list(moving.values()), run):
+        choice = confirm_supersede(self, list(moving.values()), run) if moving else "move"
+        if choice is None:
             return
         try:
             with logged(self.host.project_path, "workflow write",
                         f"Script wizard: {step.tool.label}") as entry:
-                report = plan.write([self.node.id], master=False, project_path=self.host.project_path)
+                report = plan.write([self.node.id], master=False, project_path=self.host.project_path,
+                                    discard=choice == "delete")
                 entry.files = list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written"
         except OSError as exc:

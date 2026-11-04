@@ -428,7 +428,7 @@ class Plan:
 
     def write(self, node_ids: Optional[Sequence[str]] = None, master: bool = True,
               project_path: Optional[str] = None, supersede: Optional[bool] = None,
-              confirmed: Optional[Collection[str]] = None) -> WriteReport:
+              confirmed: Optional[Collection[str]] = None, discard: bool = False) -> WriteReport:
         """Write the files of every step without errors (all steps by default).
 
         Before a step's files are written, its complete run of the plan's stamp moves into
@@ -437,7 +437,8 @@ class Plan:
         Moves are recorded in the step log of ``project_path``.  ``confirmed``: the steps whose runs the
         caller listed (:func:`mdatk.workflows.supersede.pending`) before asking; another step whose run has
         completed since is neither moved nor written (``late``), since nobody was asked about it and a
-        running step may be reading it (None: every run may move)."""
+        running step may be reading it (None: every run may move).  ``discard``: delete those runs instead
+        of moving them aside (:func:`mdatk.workflows.supersede.delete`; cannot be undone)."""
         from .supersede import candidate, move_aside
 
         if not self.root:
@@ -468,9 +469,13 @@ class Plan:
                 report.skipped[nid] = ("its run completed after the question which runs move aside, so it "
                                        "was neither moved nor written; write the step again")
                 continue
-            moved = move_aside(self, nid, when, project_path) if move else None
+            moved = move_aside(self, nid, when, project_path, discard=discard) if move else None
             if moved is not None:
                 report.superseded[nid] = moved
+                if moved.error and moved.deleted:  # part of the run is left: writing would mix runs
+                    report.skipped[nid] = (f"its completed run could not be deleted completely, so the step "
+                                           f"was not written: {moved.error}")
+                    continue
                 if moved.error:  # nothing of the run was moved (or what could not go back is kept)
                     report.skipped[nid] = (f"its completed run could not be moved aside, so the step was not "
                                            f"written: {moved.error}")

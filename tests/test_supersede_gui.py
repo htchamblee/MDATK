@@ -240,3 +240,36 @@ def test_a_run_that_completes_during_the_question_is_neither_moved_nor_written(w
     assert asked[1][0] == "1 step(s) not written" and "02 · Custom script" in asked[1][1]
     assert "Planner: 02 · Custom script not written: its run completed after the question" in win.log.text()
     pl.run_state.clear()
+
+
+def test_the_question_can_delete_the_run_instead(win, monkeypatch):
+    from mdatk.gui.dialogtext import _buttons
+    from mdatk.gui.jobs import DELETE_RESPONSE
+
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings.update(script='echo a > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    pl.changed()
+    assert win.save_project()
+    pl.write(None)
+    stamp = win.project.workflow.stamp
+    folder = os.path.join(win.project.workflow_dir, "01_custom")
+    fake_run(pl.resolve(), a.id)
+    assert os.path.exists(os.path.join(folder, f"apt1_01_t_{stamp}.txt"))
+    buttons = []
+
+    def run(dlg):
+        found = []
+        _buttons(dlg, found)
+        buttons.extend(b.get_label() for b in found)
+        return DELETE_RESPONSE
+
+    monkeypatch.setattr(Gtk.MessageDialog, "run", run)
+    pl.write(None)
+    assert "Delete them and write" in buttons and "Move aside and write" in buttons
+    assert runs_aside(folder) == [] and not os.path.exists(os.path.join(folder, f"apt1_01_t_{stamp}.txt"))
+    assert os.path.exists(os.path.join(folder, f"apt1_01_custom_{stamp}.sh"))  # written again
+    assert f"Planner: 01 · Custom script: deleted its completed run {stamp} (4 files)" in win.log.text()
+    assert "1 completed runs deleted" in pl.status.get_text()
+    [entry] = [e for e in read_log(win.project_path) if e["step"] == supersede.LOG_STEP]
+    assert entry["title"] == "Deleted the completed run of 01 · Custom script"

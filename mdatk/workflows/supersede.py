@@ -36,6 +36,7 @@ import logging
 import os
 import posixpath
 import re
+import shutil
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -72,6 +73,7 @@ class Supersede:
     target: str = ""  # plan-relative folder the run moved into ("": not moved yet)
     moved: List[str] = field(default_factory=list)  # paths that moved (plan-relative, where they were)
     error: str = ""  # why the run could not be moved ("" when it moved, or has not been tried)
+    deleted: bool = False  # the run was deleted instead of moved (``moved``: the paths deleted)
 
     @property
     def paths(self) -> List[str]:
@@ -93,6 +95,10 @@ class Supersede:
 
     def summary(self) -> str:
         run = f"run {self.stamp}" if self.stamp else "run without time stamp"
+        if self.deleted:
+            if self.error:
+                return f"{self.label}: its completed {run} could not be deleted completely: {self.error}"
+            return f"{self.label}: deleted its completed {run} ({self.count()})"
         if self.error:
             return f"{self.label}: its completed {run} could not be moved aside: {self.error}"
         if self.target:
@@ -103,9 +109,9 @@ class Supersede:
 
     def lines(self, limit: int = 20) -> List[str]:
         """:meth:`summary` and the paths that moved (or would move), relative to the step folder."""
-        paths = self.moved if self.target else self.paths  # with an error: those that could not go back
+        paths = self.moved if (self.target or self.deleted) else self.paths  # moved / deleted, else planned
         out = [self.summary()]
-        if self.error and not self.target:
+        if self.error and not self.target and not self.deleted:
             return out
         shown = [self.inner(p) + ("/" if p in self.folders else "") for p in paths]
         out += [f"  {p}" for p in shown[:limit]]
@@ -118,7 +124,8 @@ class Supersede:
         """For JSON output (``mdatk workflow write``)."""
         return {"step": self.step, "title": self.label, "stamp": self.stamp, "from": self.folder or ".",
                 "to": self.destination(), "files": [self.inner(p) for p in self.files],
-                "folders": [self.inner(p) for p in self.folders], "error": self.error}
+                "folders": [self.inner(p) for p in self.folders], "error": self.error,
+                "deleted": self.deleted}
 
 
 # ---------------------------------------------------------------------------
@@ -397,14 +404,47 @@ def move(plan, item: Supersede, when: Optional[_dt.datetime] = None) -> Supersed
     return item
 
 
+def delete(plan, item: Supersede) -> Supersede:
+    """Delete ``item``'s run instead of moving it aside: the same files and folders :func:`move` would move
+    (folders whole, a link as the link, never what it points to), for trial runs that are not worth the
+    disk space.  Cannot be undone; on an error the rest is still tried, ``item.moved`` lists what was
+    deleted and ``item.error`` what was not.  Returns ``item``."""
+    item.deleted = True
+    step_dir = plan.node_path(item.folder) if item.folder else plan.root
+    failed: List[str] = []
+    for rel in item.paths:
+        path = plan.node_path(rel)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            item.moved.append(rel)
+        except FileNotFoundError:
+            item.moved.append(rel)
+        except OSError as exc:
+            failed.append(f"{item.inner(rel)} ({exc.strerror or exc})")
+    for rel in item.moved:  # folders the run's files were in, emptied by the deletion
+        _prune(os.path.dirname(plan.node_path(rel)), step_dir)
+    if failed:
+        item.error = f"{len(failed)} path(s) could not be deleted: " + ", ".join(failed[:5]) + \
+            (" ..." if len(failed) > 5 else "")
+        log.warning("%s", item.summary())
+    return item
+
+
 def move_aside(plan, node_id: str, when: Optional[_dt.datetime] = None,
-               project_path: Optional[str] = None) -> Optional[Supersede]:
-    """Move the step's complete run of the plan's stamp aside (:func:`candidate`, :func:`move`) and record
-    it in the step log of ``project_path``; None when there is nothing to move."""
+               project_path: Optional[str] = None, discard: bool = False) -> Optional[Supersede]:
+    """Move the step's complete run of the plan's stamp aside (:func:`candidate`, :func:`move`), or with
+    ``discard`` delete it (:func:`delete`), and record it in the step log of ``project_path``; None when
+    there is nothing to move."""
     item = candidate(plan, node_id)
     if item is None:
         return None
-    move(plan, item, when)
+    if discard:
+        delete(plan, item)
+    else:
+        move(plan, item, when)
     log_move(project_path, item, plan.root)
     return item
 
@@ -417,13 +457,17 @@ def log_move(project_path: Optional[str], item: Supersede, root: str = "") -> No
     if not project_path or not os.path.isfile(project_path) or is_params_log(project_path):
         return
     where = item.target or item.folder
-    entry = LogEntry(step=LOG_STEP, status="failed" if item.error else "ok",
-                     title=(f"Could not move the completed run of {item.label} aside" if item.error
-                            else f"Moved the completed run of {item.label} aside"),
+    if item.deleted:
+        title = (f"Could not delete all of the completed run of {item.label}" if item.error
+                 else f"Deleted the completed run of {item.label}")
+    else:
+        title = (f"Could not move the completed run of {item.label} aside" if item.error
+                 else f"Moved the completed run of {item.label} aside")
+    entry = LogEntry(step=LOG_STEP, status="failed" if item.error else "ok", title=title,
                      folder=os.path.join(root, where) if root else where,
                      files=[os.path.join(root, item.target, item.inner(p)) if root else item.inner(p)
                             for p in item.moved] if item.target else [],
-                     summary=item.summary() + ("" if item.error else f". Reason: {REASON}."))
+                     summary=item.summary() + ("" if item.error or item.deleted else f". Reason: {REASON}."))
     try:
         append_log(project_path, entry)
     except (OSError, ValueError) as exc:

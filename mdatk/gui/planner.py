@@ -1612,17 +1612,20 @@ class PlannerPanel(Gtk.Box):
                           + ", ".join(readers) + " may read them. Wait for the scripts to finish, or cancel "
                           "them, then write again.", Gtk.MessageType.ERROR)
             return
-        if moving and not confirm_supersede(self.toplevel(), list(moving.values()), run):
+        choice = confirm_supersede(self.toplevel(), list(moving.values()), run) if moving else "move"
+        if choice is None:
             return
         try:
             with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
                 # only the runs listed above move: one that completed while the question was open (the
                 # runner works on) was neither listed nor checked for readers, so its step is not written
-                report = plan.write(node_ids, project_path=self.host.project_path, confirmed=set(moving))
+                report = plan.write(node_ids, project_path=self.host.project_path, confirmed=set(moving),
+                                    discard=choice == "delete")
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
                 if report.superseded:
-                    entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+                    entry.summary += f", {len(report.superseded)} completed run(s) " + (
+                        "deleted" if choice == "delete" else "moved aside")
         except OSError as exc:
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
@@ -1636,7 +1639,7 @@ class PlannerPanel(Gtk.Box):
             msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
         moved = [i for i in report.superseded.values() if not i.error]
         if moved:
-            msg += f" ({len(moved)} completed runs moved aside)"
+            msg += f" ({len(moved)} completed runs {'deleted' if moved[0].deleted else 'moved aside'})"
         self.set_status(msg)
         self.host.append_log("Planner: " + msg)
         self.log_superseded(report)

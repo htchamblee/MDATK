@@ -162,10 +162,10 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
 SUPERSEDE_LIMIT = 12  # steps listed in the question (each with a few of its files)
 
 
-def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> bool:
+def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> Optional[str]:
     """Ask before writing steps whose folders hold a completed run of the plan's stamp: that run moves
-    into the step's superseded/ folder first (mdatk.workflows.supersede; ``items`` are its
-    :class:`~mdatk.workflows.supersede.Supersede` records).  True to go on."""
+    into the step's superseded/ folder first, or is deleted (mdatk.workflows.supersede; ``items`` are its
+    :class:`~mdatk.workflows.supersede.Supersede` records).  "move" or "delete" to go on, None to cancel."""
     lines: List[str] = []
     for item in list(items)[:SUPERSEDE_LIMIT]:
         lines += item.lines(limit=4)
@@ -175,18 +175,29 @@ def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool =
               "scripts and inputs that made them, and its logs - into the step's superseded/ folder "
               "(<time> is the time of writing), with a manifest, so the run stays repeatable. Steps that "
               "read these outputs need the steps to run again. Partial runs stay where they are. To keep a "
-              "run in place, cancel and let the step use it (Check previous runs, then Use this run).")
+              "run in place, cancel and let the step use it (Check previous runs, then Use this run).\n\n"
+              "A trial run not worth keeping can be deleted instead: the same files and folders are removed "
+              "for good, without a copy in superseded/.")
     verb = "write and run" if run else "write"
     dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.WARNING,
                             buttons=Gtk.ButtonsType.NONE,
                             text=f"Move the completed run(s) of {len(items)} step(s) aside and {verb} them?")
     dlg.format_secondary_text(detail)
-    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Move aside and " + verb, Gtk.ResponseType.OK)
+    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Delete them and " + verb, DELETE_RESPONSE,
+                    "Move aside and " + verb, Gtk.ResponseType.OK)
+    delete = dlg.get_widget_for_response(DELETE_RESPONSE)
+    if delete is not None:
+        delete.get_style_context().add_class("destructive-action")
+        delete.set_tooltip_text("Delete the completed run(s) listed above instead of keeping them in "
+                                "superseded/ (cannot be undone)")
     dlg.set_default_response(Gtk.ResponseType.CANCEL)
     selectable_text(dlg)
-    ok = dlg.run() == Gtk.ResponseType.OK
+    response = dlg.run()
     dlg.destroy()
-    return ok
+    return {Gtk.ResponseType.OK: "move", DELETE_RESPONSE: "delete"}.get(response)
+
+
+DELETE_RESPONSE = 2  # the confirmation's "Delete them and write" button
 
 
 def waiting_text(results: Sequence) -> str:
