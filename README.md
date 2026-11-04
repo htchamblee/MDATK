@@ -2686,7 +2686,12 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   selected steps*, *Run step…*, *Write and run…*). Generated scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH. Scripts get
-  your own `PYTHONPATH`, also when the analysis window started RNAdo.
+  your own `PYTHONPATH`, also when the analysis window started RNAdo. `conda init` puts conda on PATH
+  for interactive shells only, so RNAdo started from the applications menu has none: when a script it
+  runs uses conda (a step's *Conda environment*) and conda is not on PATH, RNAdo and `mdatk workflow
+  run` find it as MDATK finds cpptraj (`$CONDA_EXE`, `~/miniforge3`, `~/miniconda3`, `~/anaconda3`, …,
+  `~/.conda/environments.txt`) and put its `condabin` folder first on the script's PATH, saying so in
+  the log; when none is found the log says how to point MDATK at it (`CONDA_EXE`).
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame

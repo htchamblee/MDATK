@@ -8,7 +8,7 @@ import time
 import pytest
 
 from mdatk.progress import Cancelled
-from mdatk.workflows.runner import ScriptFailed, ScriptJob, run_jobs
+from mdatk.workflows.runner import ScriptFailed, ScriptJob, run_jobs, run_script
 
 pytestmark = pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="needs bash")
 
@@ -329,3 +329,59 @@ def test_a_stopped_run_counts_as_partial(tmp_path):
     os.utime(jobs[0].stop_mark, (later - 60, later - 60))
     found = runstate.check_runs(Plan(wf, plan.root))[node.id]
     assert found.state == "done" and not found.stopped
+
+
+# ---------------------------------------------------------------------------
+# conda in scripts run from RNAdo (conda init sets PATH for interactive shells only)
+# ---------------------------------------------------------------------------
+
+CONDA_STAND_IN = """#!/bin/bash
+if [ "$1" = shell.bash ] && [ "$2" = hook ]; then
+  echo 'conda() { if [ "$1" = activate ]; then echo "activated $2"; fi; }'
+fi
+"""
+
+
+def _conda_script(tmp_path):
+    script = tmp_path / "s.sh"
+    script.write_text('set -e\neval "$(conda shell.bash hook)"\nconda activate AmberTools26\necho done\n')
+    return str(script)
+
+
+def test_a_script_finds_conda_that_is_not_on_path(tmp_path, monkeypatch):
+    # RNAdo started from the applications menu has no conda on PATH; a step with a conda environment
+    # failed with "conda: command not found" (exit status 127)
+    home = tmp_path / "home"
+    conda = home / "miniforge3" / "condabin" / "conda"
+    conda.parent.mkdir(parents=True)
+    conda.write_text(CONDA_STAND_IN)
+    conda.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "MAMBA_ROOT_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    lines = []
+    code, out = run_script(_conda_script(tmp_path), lines.append)
+    assert code == 0, out
+    assert "activated AmberTools26" in lines and "done" in lines
+    assert any("using " + str(conda) in line for line in lines)
+
+
+def test_without_conda_the_script_fails_with_a_hint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "MAMBA_ROOT_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    import mdatk.cleaning.conda as cc
+    monkeypatch.setattr(cc, "COMMON_ROOTS", ())
+    lines = []
+    code, _out = run_script(_conda_script(tmp_path), lines.append)
+    assert code != 0
+    assert any(line.startswith("WARNING: the script uses conda") for line in lines)
+
+
+def test_scripts_without_conda_keep_their_environment(tmp_path):
+    from mdatk.workflows.runner import conda_on_path
+    script = tmp_path / "s.sh"
+    script.write_text("# conda activate is only mentioned here\necho hi\n")
+    assert conda_on_path(None, str(script)) is None

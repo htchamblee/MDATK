@@ -24,6 +24,7 @@ the run leaves a note that marks it partial (:func:`mdatk.workflows.runstate.sto
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -214,6 +215,58 @@ def adopted_steps(plan, node_ids: Optional[Sequence[str]] = None) -> List[str]:
     return [nid for nid in plan.order if (node_ids is None or nid in node_ids) and plan.steps[nid].adopted]
 
 
+def conda_on_path(environ: Optional[Dict[str, str]], script: str,
+                  on_line: Optional[LineFn] = None) -> Optional[Dict[str, str]]:
+    """``environ`` with conda on its PATH when the script at ``script`` uses conda (``conda activate``, as
+    the steps' *Conda environment* writes) and conda is not on it.
+
+    ``conda init`` puts conda on PATH in ~/.bashrc, i.e. for interactive shells only: a script run by RNAdo
+    started from the applications menu (or any non-interactive bash) does not have it and fails with
+    "conda: command not found".  conda is found as MDATK finds it for cpptraj (``$CONDA_EXE``, the usual
+    install folders, ~/.conda/environments.txt); its ``condabin`` folder (only the conda command) is put
+    first on PATH, else the folder of ``bin/conda``.  Unchanged (None stays None) when the script does not
+    use conda, conda is already on PATH, or no conda is found (then ``on_line`` gets a hint)."""
+    try:
+        with open(script, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return environ
+    if not re.search(r"(?m)^[^#\n]*\bconda\s+(?:activate|shell\.bash|run)\b", text):
+        return environ
+    env = dict(os.environ if environ is None else environ)
+    path = env.get("PATH") or os.defpath
+    if shutil.which("conda", path=path):
+        return environ
+    from ..cleaning.conda import _registered_prefixes, candidate_roots
+
+    found = ""
+    exe = env.get("CONDA_EXE", "")
+    registered = []  # the installations of the environments conda lists in ~/.conda/environments.txt
+    for prefix in _registered_prefixes():
+        parent = os.path.dirname(prefix)
+        registered.append(os.path.dirname(parent) if os.path.basename(parent) == "envs" else prefix)
+    roots = ([os.path.dirname(os.path.dirname(exe))] if exe else []) + candidate_roots() + registered
+    for root in roots:
+        for rel in ("condabin/conda", "bin/conda"):
+            cand = os.path.join(root, rel)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                found = cand
+                break
+        if found:
+            break
+    if not found:
+        if on_line is not None:
+            on_line("WARNING: the script uses conda, but conda is not on PATH here (conda init sets it up "
+                    "for interactive shells only) and was not found in the usual places; set CONDA_EXE to "
+                    "the conda program, or start RNAdo from a terminal where conda works")
+        return environ
+    env["PATH"] = os.path.dirname(found) + os.pathsep + path
+    if on_line is not None:
+        on_line("conda is not on PATH here (conda init sets it up for interactive shells only): "
+                f"using {found}")
+    return env
+
+
 def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
                on_stderr: Optional[LineFn] = None, env: Optional[Dict[str, str]] = None) -> "tuple[int, str]":
     """Run ``bash path`` in the script's folder; returns (exit status, captured output).
@@ -230,6 +283,7 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     environ = child_env()
     if env:
         environ = {**(os.environ if environ is None else environ), **env}
+    environ = conda_on_path(environ, path, on_line)
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
     # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive
     # pipe or its fd 1023 on the mount, which would keep the AppImage mounted for as long as the script (or

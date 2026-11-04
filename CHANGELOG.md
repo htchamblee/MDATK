@@ -14,6 +14,18 @@ the notes below.
 
 ## Unreleased
 
+### Running scripts
+
+- **Steps with a conda environment run from RNAdo started from the applications menu.** `conda init`
+  puts conda on PATH in `~/.bashrc`, i.e. for interactive shells only; RNAdo started from the menu (and
+  every script it runs, a non-interactive bash) had no conda, so a step with a *Conda environment* failed
+  at once with "conda: command not found" (exit status 127), although the same script ran in a terminal.
+  When a script uses conda and conda is not on PATH, RNAdo and `mdatk workflow run` now find it as MDATK
+  finds cpptraj (`$CONDA_EXE`, the usual installation folders, `~/.conda/environments.txt`) and put its
+  `condabin` folder first on the script's PATH, with a line in the log
+  (`mdatk.workflows.runner.conda_on_path`); found nowhere, the log says so and how to set `CONDA_EXE`.
+  The generated scripts are unchanged.
+
 ### Planner and dialogs
 
 - **Moving a connection.** Dragging the end of a connection off its input and dropping it on another
