@@ -25,6 +25,7 @@ from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 from ..config import Project, ResidueGroup, WorkflowParams, _from_plain, _to_plain  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 
 PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
 RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
@@ -256,6 +257,7 @@ def ask(parent: Optional[Gtk.Window], text: str, detail: str, buttons: Sequence[
     for label, response in buttons:
         dlg.add_button(label, response)
     dlg.set_default_response(default)
+    selectable_text(dlg)
     response = dlg.run()
     dlg.destroy()
     return response

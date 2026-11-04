@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import math
 import os
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import gi
 
@@ -38,6 +38,7 @@ from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .host import Host  # noqa: E402
 from .jobs import confirm_supersede  # noqa: E402
 from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
@@ -53,6 +54,9 @@ PORT_H = 18
 PORT_R = 5.0
 SET_R = 9.0  # a collection port (the full set of N files of one kind, e.g. every decoy): a large, stacked dot
 GRID = 10
+EDGE_ZONE = 36  # px from the edge of the visible canvas where dragging scrolls it
+EDGE_SPEED = 24.0  # px per tick at the very edge (more beyond it)
+EDGE_TICK_MS = 30
 
 CATEGORY_COLORS = {
     "Planning": (0.45, 0.45, 0.47),
@@ -96,6 +100,9 @@ class PlannerCanvas(Gtk.DrawingArea):
         self.selected: Optional[str] = None  # node id
         self.selected_edge: Optional[int] = None
         self.drag: Optional[dict] = None
+        self._edge_scroll: Tuple[float, float] = (0.0, 0.0)  # px per tick while a drag is at the edge
+        self._edge_view: Tuple[float, float] = (0.0, 0.0)  # the pointer, in visible-area coordinates
+        self._edge_id: Optional[int] = None
         self.hover_port: Optional[Tuple[str, str, bool]] = None
         self.hover_stop = False  # the pointer is on a running step's stop button
         self.spin_phase = 0.0  # angle of the running-script spinner
@@ -290,11 +297,13 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.move_to(40, 84)
             cr.show_text("Drag from an output (right edge) to an input (left edge) to connect steps.")
             return False
+        moving = self.drag.get("edge") if self.drag else None
         for k, e in enumerate(self.workflow.edges):
-            self._draw_edge(cr, e, k == self.selected_edge)
+            if e is not moving:
+                self._draw_edge(cr, e, k == self.selected_edge)
         for n in self.workflow.nodes:
             self._draw_node(cr, n)
-        if self.drag and self.drag.get("mode") == "connect":
+        if self.drag and self.drag.get("mode") in ("connect", "rewire"):
             x0, y0 = self.drag["start"]
             x1, y1 = self.drag["pos"]
             cr.set_source_rgb(0.2, 0.2, 0.2)
@@ -615,6 +624,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             start = self.port_pos(n, p.name, output)
             self.drag = {"mode": "connect", "node": n.id, "port": p.name, "output": output,
                          "start": start, "pos": (x, y), "kind": p.kind}
+            edge = None if output else self.edge_into(n.id, p.name)
+            source = self.win.node(edge.source) if edge is not None else None
+            spos = self.port_pos(source, edge.output, True) if source is not None else None
+            if spos is not None:  # pick up the end of its connection: drop it on another input or step
+                self.drag.update(mode="rewire", edge=edge, start=spos, output=True)
             return True
         n = self.node_at(x, y)
         if n is not None:
@@ -660,20 +674,74 @@ class PlannerCanvas(Gtk.DrawingArea):
         if d["mode"] == "pan":
             self.win.scroller.get_hadjustment().set_value(d["h"] - (ev.x_root - d["ex"]))
             self.win.scroller.get_vadjustment().set_value(d["v"] - (ev.y_root - d["ey"]))
-        elif d["mode"] == "move":
+            return True
+        self._drag_to(x, y)
+        self._edge_check(ev.x, ev.y)
+        return True
+
+    def _drag_to(self, x: float, y: float) -> None:
+        """Move what is being dragged (a step, or the loose end of a connection) to model point (x, y)."""
+        d = self.drag
+        if d is None:
+            return
+        if d["mode"] == "move":
             n = self.win.node(d["node"])
             if n is not None:
                 n.x = max(0.0, round((x - d["dx"]) / GRID) * GRID)
                 n.y = max(0.0, round((y - d["dy"]) / GRID) * GRID)
                 d["moved"] = True
                 self.queue_draw()
-        elif d["mode"] == "connect":
+        elif d["mode"] in ("connect", "rewire"):
             d["pos"] = (x, y)
             self.queue_draw()
+
+    # ------------------------------------------------- scrolling at the edge
+    def _edge_check(self, ex: float, ey: float) -> None:
+        """While a step or a connection is dragged within EDGE_ZONE of the visible area's edge (or beyond
+        it), scroll that way, faster nearer and beyond the edge, until the pointer moves back or the drag
+        ends.  ``ex``, ``ey``: the pointer in canvas pixels."""
+        h, v = self.win.scroller.get_hadjustment(), self.win.scroller.get_vadjustment()
+        vx, vy = ex - h.get_value(), ey - v.get_value()
+
+        def speed(pos: float, size: float) -> float:
+            if size <= 3 * EDGE_ZONE:
+                return 0.0
+            if pos < EDGE_ZONE:
+                return -EDGE_SPEED * min(2.0, (EDGE_ZONE - pos) / EDGE_ZONE)
+            if pos > size - EDGE_ZONE:
+                return EDGE_SPEED * min(2.0, (pos - (size - EDGE_ZONE)) / EDGE_ZONE)
+            return 0.0
+
+        self._edge_view = (vx, vy)
+        self._edge_scroll = (speed(vx, h.get_page_size()), speed(vy, v.get_page_size()))
+        if self._edge_scroll != (0.0, 0.0) and self._edge_id is None:
+            self._edge_id = GLib.timeout_add(EDGE_TICK_MS, self._edge_tick)
+
+    def _edge_stop(self) -> None:
+        self._edge_scroll = (0.0, 0.0)
+        if self._edge_id is not None:
+            GLib.source_remove(self._edge_id)
+            self._edge_id = None
+
+    def _edge_tick(self) -> bool:
+        if self.drag is None or self.drag.get("mode") not in ("move", "connect", "rewire") \
+                or self._edge_scroll == (0.0, 0.0):
+            self._edge_id = None
+            return False
+        if self.drag.get("mode") == "move":
+            self.update_size()  # room beyond the step being moved, so the view can keep going
+        h, v = self.win.scroller.get_hadjustment(), self.win.scroller.get_vadjustment()
+        for adj, step in ((h, self._edge_scroll[0]), (v, self._edge_scroll[1])):
+            if step:
+                top = max(adj.get_lower(), adj.get_upper() - adj.get_page_size())
+                adj.set_value(min(top, max(adj.get_lower(), adj.get_value() + step)))
+        x, y = self.to_model(self._edge_view[0] + h.get_value(), self._edge_view[1] + v.get_value())
+        self._drag_to(x, y)
         return True
 
     def _on_release(self, _w, ev) -> bool:
         d, self.drag = self.drag, None
+        self._edge_stop()
         if d is None:
             return False
         x, y = self.to_model(ev.x, ev.y)
@@ -681,26 +749,111 @@ class PlannerCanvas(Gtk.DrawingArea):
             self.update_size()
             self.win.changed(resolve=False)
         elif d["mode"] == "connect":
-            hit = self.port_at(x, y)
-            if hit is not None and hit[2] != d["output"]:
-                n, p, _out = hit
-                if d["output"]:
-                    args = (d["node"], d["port"], n.id, p.name)
-                else:
-                    args = (n.id, p.name, d["node"], d["port"])
-                source = self.win.node(args[0])
-                before = dict(source.settings) if source is not None else {}
-                try:
-                    edge = connect(self.workflow, *args)
-                    self.win.set_status(f"Connected {edge.output} → {edge.input}")
-                    wizard = self.win.wizards.get(edge.source)
-                    if wizard is not None and source is not None and source.settings != before:
-                        wizard.reload()  # the connection switched on an option the output needs
-                    self.win.changed()
-                except (KeyError, ValueError) as exc:
-                    self.win.set_status(f"Cannot connect: {exc}", error=True)
+            self._drop_connection(d, x, y)
+            self.queue_draw()
+        elif d["mode"] == "rewire":
+            self._drop_moved_end(d, x, y)
             self.queue_draw()
         return True
+
+    def edge_into(self, node_id: str, port: str) -> Optional[PlanEdge]:
+        """The connection into input ``port`` of ``node_id`` (the last one made, for several)."""
+        found = [e for e in self.workflow.edges if e.target == node_id and e.input == port]
+        return found[-1] if found else None
+
+    def _free_inputs(self, n: PlanNode) -> List[str]:
+        """The inputs of ``n`` a dropped connection may take: those without a connection, and those that
+        take several."""
+        ins, _outs = self.ports(n)
+        return [p.name for p in ins if p.multiple or self.edge_into(n.id, p.name) is None]
+
+    def _connect(self, source: str, output: str, target: str, inputs: Sequence[str],
+                 drop: Optional[PlanEdge] = None) -> Optional[PlanEdge]:
+        """Connect ``source.output`` to the first of ``inputs`` of ``target`` that takes it, then remove
+        ``drop`` (the connection being moved).  Reports the result in the status line."""
+        node = self.win.node(source)
+        before = dict(node.settings) if node is not None else {}
+        error: Optional[Exception] = None
+        for name in inputs:
+            try:
+                edge = connect(self.workflow, source, output, target, name)
+            except (KeyError, ValueError) as exc:
+                error = error or exc
+                continue
+            if drop is not None and drop is not edge and drop in self.workflow.edges:
+                self.workflow.edges.remove(drop)
+            self.selected_edge = None
+            wizard = self.win.wizards.get(edge.source)
+            if wizard is not None and node is not None and node.settings != before:
+                wizard.reload()  # the connection switched on an option the output needs
+            self.win.changed()
+            self.win.set_status(("Moved the connection: " if drop is not None else "Connected ")
+                                + f"{edge.output} → {edge.input}")
+            return edge
+        target_node = self.win.node(target)
+        what = target_node.title if target_node is not None and target_node.title else "that step"
+        why = str(error) if error is not None and len(inputs) == 1 else (
+            f"{what} has no free input that takes it" + (f" ({error})" if error is not None else "")
+            + "; drop it on an input that has a connection to replace that one")
+        self.win.set_status(f"Cannot connect: {why}", error=True)
+        return None
+
+    def _drop_connection(self, d: dict, x: float, y: float) -> None:
+        """A new connection dropped at (x, y): on a port of the other side, or on a step (its first free
+        port that fits)."""
+        hit = self.port_at(x, y)
+        if hit is not None:
+            n, p, output = hit
+            if output == d["output"]:
+                return
+            if d["output"]:
+                self._connect(d["node"], d["port"], n.id, [p.name])
+            else:
+                self._connect(n.id, p.name, d["node"], [d["port"]])
+            return
+        n = self.node_at(x, y)
+        if n is None or n.id == d["node"]:
+            return
+        if d["output"]:
+            self._connect(d["node"], d["port"], n.id, self._free_inputs(n))
+            return
+        _ins, outs = self.ports(n)
+        for p in outs:  # the first output of the step that this input takes
+            try:
+                if self._connect_quiet(n.id, p.name, d["node"], d["port"]):
+                    return
+            except (KeyError, ValueError):
+                continue
+        self.win.set_status("Cannot connect: no output of that step fits this input", error=True)
+
+    def _connect_quiet(self, source: str, output: str, target: str, input: str) -> bool:
+        """Connect when the input takes the output (checked without changing the plan first)."""
+        src, dst = self.win.node(source), self.win.node(target)
+        if src is None or dst is None:
+            return False
+        outs = {p.name: p for p in self.ports(src)[1]}
+        ins = {p.name: p for p in self.ports(dst)[0]}
+        if output not in outs or input not in ins or not ins[input].accepts(outs[output].kind):
+            return False
+        return self._connect(source, output, target, [input]) is not None
+
+    def _drop_moved_end(self, d: dict, x: float, y: float) -> None:
+        """The end of an existing connection, picked up at its input, dropped at (x, y): onto another input
+        or a step (its first free input that fits) it moves there; onto an output that output feeds the
+        input instead (as a new connection would); anywhere else, or back where it was, nothing changes."""
+        e: PlanEdge = d["edge"]
+        hit = self.port_at(x, y)
+        if hit is not None:
+            n, p, output = hit
+            if output:
+                self._connect(n.id, p.name, e.target, [e.input])
+            elif (n.id, p.name) != (e.target, e.input):
+                self._connect(e.source, e.output, n.id, [p.name], drop=e)
+            return
+        n = self.node_at(x, y)
+        if n is None or n.id in (e.target, e.source):
+            return
+        self._connect(e.source, e.output, n.id, self._free_inputs(n), drop=e)
 
     def _on_scroll(self, _w, ev) -> bool:
         if not ev.state & Gdk.ModifierType.CONTROL_MASK:
@@ -766,8 +919,12 @@ class PlannerCanvas(Gtk.DrawingArea):
         else:
             k = self.edge_at(x, y)
             if k is not None:
+                # the connection alone is selected: a step selected before must not be deleted with it
+                self.selected = None
                 self.selected_edge = k
-                self._menu_item(menu, "Delete connection", self.win.delete_selected)
+                self.win.show_details(None, edge=k)
+                edge = self.workflow.edges[k]
+                self._menu_item(menu, "Delete connection", lambda: self.win.delete_edge(edge))
             else:
                 self._menu_item(menu, "Tick all steps", lambda: self.win.set_checked(
                     [m.id for m in self.workflow.nodes if checkable(m)]))
@@ -1273,9 +1430,37 @@ class PlannerPanel(Gtk.Box):
                 y = max(y, n.y + h + 30)
         return 40.0, round(y / GRID) * GRID
 
+    def _visible_spot(self, height: float = 140.0) -> Tuple[float, float]:
+        """A place for a new step in the visible part of the canvas: the first free one, row by row from
+        its top-left corner, else that corner (the plan's free spot below the left column while the canvas
+        has no size yet)."""
+        h, v = self.scroller.get_hadjustment(), self.scroller.get_vadjustment()
+        zoom = self.canvas.zoom
+        width, tall = h.get_page_size() / zoom, v.get_page_size() / zoom
+        if width < NODE_W or tall < 60:
+            return self._free_spot()
+        left, top = h.get_value() / zoom, v.get_value() / zoom
+        boxes = [(n.x, n.y) + self.canvas.node_size(n) for n in self.workflow.nodes]
+
+        def free(x: float, y: float) -> bool:
+            return all(x + NODE_W + 20 <= bx or bx + bw + 20 <= x
+                       or y + height + 20 <= by or by + bh + 20 <= y
+                       for bx, by, bw, bh in boxes)
+
+        snap = lambda value: round(value / GRID) * GRID  # noqa: E731
+        y = top + 30
+        while y + min(height, tall - 60) <= top + tall:
+            x = left + 30
+            while x + NODE_W <= left + width:
+                if free(snap(x), snap(y)):
+                    return float(snap(x)), float(snap(y))
+                x += 40
+            y += 40
+        return float(snap(left + 30)), float(snap(top + 30))
+
     def add_step(self, tool: str, x: Optional[float] = None, y: Optional[float] = None) -> PlanNode:
         if x is None or y is None:
-            x, y = self._free_spot()
+            x, y = self._visible_spot()
         settings = {}
         if tool in ("amber-build", "amber-md", "amber-restraints") and self.host.project.cleaning.conda_env:
             settings["conda_env"] = self.host.project.cleaning.conda_env
@@ -1285,7 +1470,7 @@ class PlannerPanel(Gtk.Box):
         return node
 
     def add_template(self, name: str) -> None:
-        x, y = self._free_spot()
+        x, y = self._visible_spot()
         nodes = apply_template(self.workflow, name, x, y)
         if self.host.project.cleaning.conda_env:
             for n in nodes:
@@ -1329,6 +1514,14 @@ class PlannerPanel(Gtk.Box):
             del self.workflow.edges[c.selected_edge]
             c.selected_edge = None
             self.show_details(None)
+        self.changed()
+
+    def delete_edge(self, edge: PlanEdge) -> None:
+        """Delete one connection (and nothing else)."""
+        if edge in self.workflow.edges:
+            self.workflow.edges.remove(edge)
+        self.canvas.selected_edge = None
+        self.show_details(None)
         self.changed()
 
     def arrange(self) -> None:
@@ -1611,6 +1804,7 @@ class PlannerPanel(Gtk.Box):
         dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Run them again", Gtk.ResponseType.REJECT,
                         "Skip them", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
+        selectable_text(dlg)
         response = dlg.run()
         dlg.destroy()
         return {Gtk.ResponseType.OK: "skip", Gtk.ResponseType.REJECT: "rerun"}.get(response, "cancel")
@@ -1737,6 +1931,7 @@ class PlannerPanel(Gtk.Box):
                                 message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.YES_NO,
                                 text=text)
         dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         ok = dlg.run() == Gtk.ResponseType.YES
         dlg.destroy()
         return ok
@@ -1746,6 +1941,7 @@ class PlannerPanel(Gtk.Box):
                                 buttons=Gtk.ButtonsType.CLOSE, text=text)
         if detail:
             dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 

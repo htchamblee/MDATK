@@ -14,6 +14,26 @@ the notes below.
 
 ## Unreleased
 
+### Planner and dialogs
+
+- **Moving a connection.** Dragging the end of a connection off its input and dropping it on another
+  step's input, or on a step's box, moves the connection there (onto a box: its first free input that
+  takes the file). Before, the drag started a new connection, which an input could not take, and nothing
+  happened. A new connection dropped on a box also connects to its first free input that fits.
+- **Delete connection deletes only the connection.** The right-click menu of a connection left the step
+  selected before it selected too (as after a failed attempt to move the connection), and *Delete
+  connection* deleted that step, with its connections.
+- **Scrolling while dragging.** Dragging a step (or a connection) to the edge of the visible canvas scrolls
+  the canvas that way, so a step can be moved a long way in one drag.
+- **New steps in view.** *Add step* and *Templates* place the new steps in the visible part of the canvas,
+  at the first free spot, instead of below the left-most column of the plan.
+- **Close project.** RNAdo (header bar and main menu) and the analysis window (main menu) can close the
+  project and return to an empty, unsaved plan / the default settings; RNAdo asks first about unsaved
+  changes.
+- **Selectable text in dialogs.** The text of every error, question and message dialog of both programs
+  can be selected and copied (`mdatk.gui.dialogtext.selectable_text`); the keyboard focus stays on the
+  dialog's button, so Enter still answers it.
+
 ### Custom scripts
 
 - **Placeholders with real names in the help.** The help of a custom script's *Arguments*, input and output

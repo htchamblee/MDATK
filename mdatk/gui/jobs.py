@@ -12,6 +12,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk  # noqa: E402
 
 from ..progress import Cancelled  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .worker import Worker  # noqa: E402
 
 
@@ -151,6 +152,7 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
                                  "cluster queue; finished ones are not run again")
         dlg.get_message_area().pack_start(include, False, False, 0)
         include.show()
+    selectable_text(dlg)
     ok = dlg.run() == Gtk.ResponseType.OK
     chosen = list(with_separate) if ok and include is not None and include.get_active() else list(jobs)
     dlg.destroy()
@@ -181,6 +183,7 @@ def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool =
     dlg.format_secondary_text(detail)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Move aside and " + verb, Gtk.ResponseType.OK)
     dlg.set_default_response(Gtk.ResponseType.CANCEL)
+    selectable_text(dlg)
     ok = dlg.run() == Gtk.ResponseType.OK
     dlg.destroy()
     return ok

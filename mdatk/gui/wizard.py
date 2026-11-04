@@ -35,6 +35,7 @@ from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
 from .jobs import confirm_supersede  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 
 LEVEL_COLORS = {"error": "#c01c28", "warning": "#b56a00", "info": "#1a5fb4"}
 TYPE_KEYS = ("kind", "integrator")  # record options that switch whole groups of fields
@@ -1054,6 +1055,7 @@ class WizardWindow(Gtk.Window):
                                 buttons=Gtk.ButtonsType.CLOSE, text=text)
         if detail:
             dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 

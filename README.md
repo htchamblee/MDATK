@@ -352,7 +352,8 @@ The bottom bar holds **Render** (Ctrl+R), **Cancel**, the progress bar, **Open o
 in your file manager) and **Open video** (the most recent video); the log of the pipeline and of
 cpptraj is in the expander above it. The header bar has *Open project* (Ctrl+O; its drop-down lists the
 recent projects, the demo project and *Browse…*), *Save* (Ctrl+S) and *Save as…* (Ctrl+Shift+S). The
-main menu has *New project (defaults)*, *Create demo system…*, *Project log…* (the steps that ran),
+main menu has *New project (defaults)*, *Close project* (back to the defaults, tied to no file), *Create
+demo system…*, *Project log…* (the steps that ran),
 *Export citations (BibTeX)…*, *Add MDATK and RNAdo to the applications menu…* (see [Applications menu
 (Linux)](#applications-menu-linux)) and *About and citations*. The **RNAdo** menu next to them starts
 RNAdo on the project:
@@ -373,8 +374,9 @@ seconds is reported in the analysis window.
 
 - **Header bar:** *Open* (Ctrl+O; its drop-down lists the recent projects and *Browse…*), *Save* (Ctrl+S;
   it saves the plan into the project file), the tools *Script wizard* (Ctrl+Shift+W), *PDB clean-up* and
-  *Structure builder*, and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…*
-  (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
+  *Structure builder*, *Close* (the project: back to an empty, unsaved plan, after asking about unsaved
+  changes), and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…* (Ctrl+Shift+S),
+  *Close project*, the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
   the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
@@ -785,9 +787,14 @@ line](#command-line)).
 
 ### The plan
 
-Place boxes (steps) with *Add step* or the canvas's right-click menu, and connect them by dragging from
-an output port (right edge) to an input port (left edge); only compatible files connect, and loops are
-refused. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
+Place boxes (steps) with *Add step* (in the visible part of the canvas, where there is room) or the
+canvas's right-click menu (where you clicked), and connect them by dragging from an output port (right
+edge) to an input port (left edge), or onto the box itself: its first free input that takes the file;
+only compatible files connect, and loops are refused. To move a connection, drag its end off the input
+it goes into and drop it on another input or another box; dropped anywhere else, or back on its input, it
+stays. Dragging a box or a connection to the edge of the visible canvas scrolls it that way (faster
+nearer the edge), so a box can be moved a long way in one drag. *Delete connection* (right-click on a
+connection) deletes only that connection. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
 the right of a FARFAR2 box, whose files are known only once that step has run (see [Every decoy from the
 FARFAR2 step](#farfar2-decoys-scores-run-audit-and-frames)). A set connects only to inputs drawn as large
 dots, on the left of the steps that take many models (the models of *Model check*, *Decoy interfaces*,

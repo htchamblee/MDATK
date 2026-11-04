@@ -43,6 +43,7 @@ from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, ask_unsaved, c
                         choose_project, choose_save_path, fill_open_menu, group_renames, rename_groups_in,
                         renamed_data, workflow_data)
 from .worker import call_soon  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +158,9 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         self.open_menu_button.connect("toggled", lambda b: b.get_active() and self._fill_open_menu())
         open_box.pack_start(self.open_menu_button, False, False, 0)
         hb.pack_start(open_box)
+        hb.pack_start(W.button("Close", self.close_project, "Close the project and return to an empty, "
+                               "unsaved plan (asks first when the plan has unsaved changes)",
+                               "window-close-symbolic"))
         hb.pack_start(W.button("Save", self.save_project, "Save the plan into the project file (Ctrl+S); the "
                                "analysis settings in the file stay as they are", "document-save-symbolic"))
         menu = Gtk.Menu()
@@ -164,6 +168,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                          ("Open project…", self.open_project),
                          ("Save", self.save_project),
                          ("Save as…", lambda: self.save_project(True)),
+                         ("Close project", self.close_project),
                          (None, None),
                          ("Script wizard…", self.open_wizard),
                          ("PDB clean-up…", self.open_pdb_tools),
@@ -305,6 +310,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                                 text=text)
         if detail:
             dlg.format_secondary_text(detail[:3000])
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 
@@ -381,6 +387,16 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             return
         self._adopt(Project(), None)
         self.append_log("New project (unsaved).")
+
+    def close_project(self) -> None:
+        """Back to a blank state: an empty, unsaved plan tied to no project file (asks first about unsaved
+        changes, as opening another project does)."""
+        if not self._confirm_discard():
+            return
+        name = os.path.basename(self.project_path) if self.project_path else ""
+        self._adopt(Project(), None)
+        self.append_log(f"Closed {name}: empty plan (unsaved)." if name else "Closed the plan: empty plan "
+                        "(unsaved).")
 
     def open_project(self) -> None:
         path = choose_project(self)
@@ -774,6 +790,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         sw.set_shadow_type(Gtk.ShadowType.IN)
         sw.add(view)
         box.pack_start(sw, True, True, 0)
+        selectable_text(dlg)
         dlg.show_all()
         response = dlg.run()
         dlg.destroy()
