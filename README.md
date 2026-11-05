@@ -899,7 +899,10 @@ uses are free; otherwise steps go in plan order.
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
   bars (waiting for a separately run script, see below), a square (stopped) or a dash (cancelled / not
-  started) until the next run.
+  started) until that step runs again (running other steps leaves it). A step whose folder holds a
+  complete run of the plan's current stamp (or that uses an earlier run) shows the tick too, also after
+  RNAdo is restarted: RNAdo looks for finished runs when a project is opened and after each run (see
+  [Previous runs](#previous-runs)). Writing a step again, which moves its run aside, removes it.
 - **Windows:** the generated scripts are bash scripts for Linux; RNAdo on Windows writes them but does
   not run them (*Run* says so), see [Installation](#installation).
 - **Writing again:** *Run all…*, *Run selected steps* and *Run step…* write the steps first, so a step
@@ -943,8 +946,11 @@ anywhere. Each script's header cites what that step uses (see [Citations](#citat
 ### Previous runs
 
 Each iteration of a project may get a new time stamp (*New stamp*), and the stamp is part of every file
-name, so after an update the plan no longer sees the outputs of its earlier runs. *Check previous runs*
-(planner toolbar; for one box or the ticked boxes in the right-click menu and the details pane) looks
+name, so after an update the plan no longer sees the outputs of its earlier runs. RNAdo looks for them
+by itself, quietly, when a project is opened and after each run: steps with a complete or partial run get
+the footer below (a complete run of the current stamp also the tick), steps without outputs nothing.
+*Check previous runs* (planner toolbar; for one box or the ticked boxes in the right-click menu and the
+details pane) does the same for every step, lists the result in the output log and looks
 in each step's folder for the files the step's outputs name: under the plan's stamp first, otherwise
 under the newest earlier stamp with all of them. Only the files the step's scripts make count; for
 Amber MD every stage's output must also end with pmemd's closing lines, so a run still in progress is

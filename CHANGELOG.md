@@ -49,6 +49,12 @@ the notes below.
 
 ### Planner and dialogs
 
+- **Check marks stay.** A finished step's tick (and a failed step's cross) stays until that step runs
+  again; a new run of other steps used to clear every box's mark. RNAdo also looks for finished runs
+  quietly when a project is opened and after each run (what *Check previous runs* does, without its
+  question): a step with a complete run of the current stamp shows the tick after a restart too, and the
+  boxes of complete and partial runs their footer. Writing a step again (its run moves aside) removes
+  its tick.
 - **Write selected steps.** A toolbar button beside *Write all files* writes the ticked steps' files
   without running them (*Write selected steps (N)*; greyed out while no step is ticked).
 - **Long dialogs scroll.** The question before running many steps (*Run ## generated script(s)?*) grew

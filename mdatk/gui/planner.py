@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import math
+import logging
 import os
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -78,6 +79,8 @@ STATUS_COLORS = {"error": (0.75, 0.11, 0.16), "warning": (0.90, 0.60, 0.05), "in
                  "ok": (0.20, 0.65, 0.35)}
 RUN_COLORS = {"done": (0.20, 0.65, 0.35), "partial": (0.90, 0.60, 0.05), "missing": (0.60, 0.60, 0.60),
               "none": (0.60, 0.60, 0.60)}
+
+log = logging.getLogger(__name__)
 
 
 def _rgb_hex(rgb) -> str:
@@ -415,7 +418,7 @@ class PlannerCanvas(Gtk.DrawingArea):
                 cr.set_line_width(2.2)
                 cr.stroke()
             title_x = bx + bw + 7
-        run = self.win.run_state.get(n.id)
+        run = self.win.mark_of(n.id)
         if run:
             self._draw_run_state(cr, run, n.x + w - 31, n.y + HEAD_H / 2, rgb)
         if run == "running":
@@ -967,6 +970,7 @@ class PlannerPanel(Gtk.Box):
         self.checked: Set[str] = set()  # steps ticked for "Run selected" (not saved with the project)
         # node id -> queued | running | ok | failed | cancelled | skipped | waiting
         self.run_state: Dict[str, str] = {}
+        self._this_run: Set[str] = set()  # the steps of the latest run (their marks were reset)
         self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
         self._spin_id = 0
         self._closed = False
@@ -1037,6 +1041,43 @@ class PlannerPanel(Gtk.Box):
         self._tokens += 1
         self._run_token = self._tokens
         self.changed()
+        GLib.idle_add(self._scan_after_load, self._run_token)
+
+    def _scan_after_load(self, token: int) -> bool:
+        if not self._closed and token == self._run_token:
+            self.scan_runs()
+        return False
+
+    def mark_of(self, node_id: str) -> Optional[str]:
+        """The state shown in a box's title bar: its script's state in this session's runs, else "ok" for a
+        complete run of the plan's current stamp found in its folder (or the run it uses), so a finished
+        step keeps its check mark after other runs and after RNAdo is restarted."""
+        state = self.run_state.get(node_id)
+        if state:
+            return state
+        run = self.prev_runs.get(node_id)
+        if run is not None and run.state == "done" and (run.current or run.adopted):
+            return "ok"
+        return None
+
+    def scan_runs(self, node_ids: Optional[Sequence[str]] = None) -> Dict[str, runstate.RunStatus]:
+        """Look in the step folders for complete and partial runs, quietly (no log lines, no question):
+        when a project is opened and after a run.  Steps without outputs keep no footer."""
+        try:
+            plan = self.resolve()
+            if not plan.root or not os.path.isdir(plan.root):
+                return {}
+            runs = runstate.check_runs(plan, node_ids)
+        except Exception:  # noqa: BLE001 - a scan never breaks the planner
+            log.debug("scanning for previous runs failed", exc_info=True)
+            return {}
+        for nid, run in runs.items():
+            if run.state in ("done", "partial"):
+                self.prev_runs[nid] = run
+            elif node_ids is not None:
+                self.prev_runs.pop(nid, None)
+        self.changed(resolve=False)
+        return runs
 
     def changed(self, resolve: bool = True) -> None:
         self.checked &= {n.id for n in self.workflow.nodes if checkable(n)}  # deleted steps
@@ -1635,7 +1676,8 @@ class PlannerPanel(Gtk.Box):
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
         for nid in report.superseded:
-            self.prev_runs.pop(nid, None)  # that run is in superseded/ now
+            self.prev_runs.pop(nid, None)  # that run is in superseded/ now (or deleted)
+            self.run_state.pop(nid, None)
         self.changed()
         msg = f"Wrote {len(report.written)} files to {report.root}"
         if report.skipped:
@@ -1859,7 +1901,10 @@ class PlannerPanel(Gtk.Box):
         if not job.node_id or self.node(job.node_id) is None:
             return
         if state == "queued" and not any(v in ("queued", "running") for v in self.run_state.values()):
-            self.run_state.clear()
+            self._this_run = set()  # a new run: it resets the marks of its own steps only
+        if state == "queued" and job.node_id not in self._this_run:
+            self._this_run.add(job.node_id)
+            self.run_state.pop(job.node_id, None)
         prev = self.run_state.get(job.node_id)
         # a step with several scripts: keep 'failed' / 'stopped', do not fall back from running/ok to queued
         if prev in ("failed", "stopped") or (state == "queued" and prev is not None):
@@ -1875,6 +1920,8 @@ class PlannerPanel(Gtk.Box):
         for nid, st in list(self.run_state.items()):
             if st in ("queued", "running"):  # never started, or the run stopped
                 self.run_state[nid] = "cancelled"
+        if self._this_run:  # what the run left in the step folders (footers: done / partial)
+            self.scan_runs(sorted(self._this_run))
         self.canvas.queue_draw()
 
     def _spin_tick(self) -> bool:

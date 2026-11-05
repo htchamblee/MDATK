@@ -273,3 +273,46 @@ def test_the_question_can_delete_the_run_instead(win, monkeypatch):
     assert "1 completed runs deleted" in pl.status.get_text()
     [entry] = [e for e in read_log(win.project_path) if e["step"] == supersede.LOG_STEP]
     assert entry["title"] == "Deleted the completed run of 01 · Custom script"
+
+
+def test_check_marks_stay_after_other_runs_and_come_back_after_reopening(win, monkeypatch):
+    from mdatk.workflows.runner import ScriptJob
+
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings.update(script='echo a > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    b = pl.add_step("user-script", 40, 300)
+    b.settings.update(script="true\n")
+    pl.changed()
+    assert win.save_project()
+    pl.write(None)
+    token = pl._run_token
+    ja, jb = ScriptJob(1, "a", "/x/a.sh", node_id=a.id), ScriptJob(2, "b", "/x/b.sh", node_id=b.id)
+    # a run of step 1 ...
+    for state in ("queued", "running", "ok"):
+        pl._on_run_state(ja, state, token)
+    pl._on_run_finished(token)
+    assert pl.mark_of(a.id) == "ok"
+    # ... then a run of step 2: step 1 keeps its check mark (it was cleared by every new run)
+    for state in ("queued", "running", "failed"):
+        pl._on_run_state(jb, state, token)
+    pl._on_run_finished(token)
+    assert pl.mark_of(a.id) == "ok" and pl.mark_of(b.id) == "failed"
+    # running step 1 again resets only its own mark
+    pl._on_run_state(ja, "queued", token)
+    assert pl.mark_of(a.id) == "queued" and pl.mark_of(b.id) == "failed"
+    pl._on_run_finished(token)
+    # a completed run on disk shows the check mark after the project is opened again (scan, no question)
+    fake_run(pl.resolve(), a.id)
+    asked = answering(monkeypatch, Gtk.ResponseType.CANCEL)
+    monkeypatch.setattr(win, "_confirm_discard", lambda: True)
+    assert win.open_path(win.project_path)
+    pump(0.3)
+    a2, b2 = sorted(win.project.workflow.nodes, key=lambda n: n.step)
+    assert pl.mark_of(a2.id) == "ok" and pl.prev_runs[a2.id].state == "done"
+    assert pl.mark_of(b2.id) is None and b2.id not in pl.prev_runs  # nothing there: no footer
+    assert asked == []  # the scan asks nothing
+    # writing the step again moves that run aside: the mark goes with it
+    asked = answering(monkeypatch, Gtk.ResponseType.OK)
+    pl.write([a2.id])
+    assert pl.mark_of(a2.id) is None
