@@ -267,6 +267,71 @@ def conda_on_path(environ: Optional[Dict[str, str]], script: str,
     return env
 
 
+STEP_LOG_EXT = ".log"  # <script>.sh.log beside the script: the output of its last run
+DONE_FLAG = "Step completed successfully"
+
+
+def step_log_path(script: str) -> str:
+    """The output log of a run of ``script``: ``<script>.log`` beside it (``…_amber-md_<stamp>.sh.log``),
+    so it carries the run's name and stamp and moves aside with the run (mdatk.workflows.supersede)."""
+    return script + STEP_LOG_EXT
+
+
+class StepLog:
+    """The per-step output log of one script run: a header with the start time, every line the script
+    prints (standard output and error) as it comes, and a closing line with the end time and the outcome
+    (:data:`DONE_FLAG` when the step completed).  Never fails a run: a log that cannot be written is
+    skipped with a note in the output."""
+
+    def __init__(self, script: str, command: str, on_line: Optional[LineFn] = None):
+        self.path = step_log_path(script)
+        self._lock = threading.Lock()
+        self._fh = None
+        try:
+            self._fh = open(self.path, "w", encoding="utf-8", errors="replace", newline="\n")
+            self._fh.write(f"==== {os.path.basename(script)} - started {_now()} by {PROJECT_ABBREV} "
+                           f"({command}, in {os.path.dirname(script) or '.'})\n")
+            self._fh.flush()
+        except OSError as exc:
+            self._fh = None
+            if on_line is not None:
+                on_line(f"WARNING: could not write the step's output log {self.path}: {exc.strerror or exc}")
+
+    def write(self, line: str) -> None:
+        if self._fh is None:
+            return
+        with self._lock:
+            try:
+                self._fh.write(line + "\n")
+                self._fh.flush()  # readable while the script runs (tail -f)
+            except (OSError, ValueError):
+                pass
+
+    def close(self, outcome: str, code: Optional[int], message: str = "", waits_next: bool = False) -> None:
+        if self._fh is None:
+            return
+        when = _now()
+        status = f" (exit status {code})" if code is not None else ""
+        text = {"ok": f"{DONE_FLAG} - {when}{status}",
+                "failed": f"Step failed - {when}{status}" + (f": {message}" if message else ""),
+                "stopped": f"Step stopped by the user - {when}",
+                "waiting": f"Step waiting - {when}{status}" + (f": {message}" if message else ""),
+                "cancelled": f"Run cancelled - {when}"}.get(outcome, f"Step ended ({outcome}) - {when}")
+        if outcome == "ok" and waits_next:
+            text = f"Main script finished - {when}{status}; its separately run script runs next"
+        self.write(f"==== {text}")
+        with self._lock:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
                on_stderr: Optional[LineFn] = None, env: Optional[Dict[str, str]] = None) -> "tuple[int, str]":
     """Run ``bash path`` in the script's folder; returns (exit status, captured output).
@@ -461,12 +526,24 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
         command = (f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']} " if env else "") + f"bash {rel}"
         t0 = time.monotonic()
         outcome, code, message = "failed", None, ""
+        steplog: Optional[StepLog] = None
         try:
             if job.role == "run-separate" and job.node_id in with_main and job.node_id not in waited:
                 line_fn(f"{rel} has already finished (its step's main script says so) - not run again")
                 outcome = "ok"
                 return
             _drop_stop_mark(job)
+            steplog = StepLog(job.path, command, line_fn)
+            shown, shown_err = line_fn, err_fn
+
+            def line_fn(line: str, _show=shown) -> None:  # noqa: F811 - the output log gets every line too
+                steplog.write(line)
+                _show(line)
+
+            if shown_err is not None:
+                def err_fn(line: str, _show=shown_err) -> None:  # noqa: F811
+                    steplog.write(line)
+                    _show(line)
             with logged(project_path, f"{job.step:02d}", job.title, job.citations) as entry:
                 entry.command = command
                 entry.folder = os.path.dirname(job.path)
@@ -518,6 +595,9 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
             fatal.append(exc)
             stop.set()
         finally:
+            if steplog is not None:
+                steplog.close(outcome, code, message,
+                              waits_next=job.role == "run" and job.node_id in waited)
             with cond:  # always leave "running", or the scheduler would wait forever
                 status[i] = outcome
                 slots.give_back(grant)

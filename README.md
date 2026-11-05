@@ -896,6 +896,14 @@ uses are free; otherwise steps go in plan order.
   on. The step log records the run as *stopped*, and the run leaves a note beside the step's files
   (`<project>_<step>_stopped_<time>.txt`), so *Check previous runs* calls it **partial** until the step
   runs again (or a file of the run is written after the note).
+- **Output log of each step:** every script RNAdo or `mdatk workflow run` runs writes what it prints
+  (standard output and error, line by line as it comes, readable with `tail -f` while it runs) to
+  `<script>.log` beside it, e.g. `03_amber-md/apt1_03_amber-md_<stamp>.sh.log`. It starts with a line
+  giving the start time and the command, and ends with one giving the end time and the outcome:
+  `==== Step completed successfully - 2026-11-05 14:03:12 (exit status 0)`, or *Step failed* (with the
+  exit status), *Step stopped by the user*, *Step waiting* (for its separately run script) or *Run
+  cancelled*. Each run starts a new log; it carries the run's name and stamp, so it moves aside with the
+  run (see [Previous runs](#previous-runs)).
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
   bars (waiting for a separately run script, see below), a square (stopped) or a dash (cancelled / not

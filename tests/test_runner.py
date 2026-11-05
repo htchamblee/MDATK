@@ -385,3 +385,51 @@ def test_scripts_without_conda_keep_their_environment(tmp_path):
     script = tmp_path / "s.sh"
     script.write_text("# conda activate is only mentioned here\necho hi\n")
     assert conda_on_path(None, str(script)) is None
+
+
+# ---------------------------------------------------------------------------
+# the per-step output log (<script>.log)
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+STAMPED = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+
+
+def test_each_run_leaves_an_output_log_with_a_timestamped_end(tmp_path):
+    from mdatk.workflows.runner import DONE_FLAG, step_log_path
+    ok = tmp_path / "ok.sh"
+    ok.write_text('echo "stage 1"\necho "a warning" >&2\necho "stage 2"\n')
+    bad = tmp_path / "bad.sh"
+    bad.write_text('echo "starting"\nexit 3\n')
+    run_jobs([ScriptJob(1, "one", str(ok), node_id="a")], None, on_line=lambda _l: None,
+             on_stderr=lambda _l: None)
+    text = open(step_log_path(str(ok))).read().splitlines()
+    assert re.fullmatch(rf"==== ok\.sh - started {STAMPED} by MDATK \(bash ok\.sh, in .*\)", text[0])
+    body = text[1:-1]  # every line; each stream's in order (standard error is read alongside)
+    assert sorted(body) == ["a warning", "stage 1", "stage 2"]
+    assert body.index("stage 1") < body.index("stage 2")
+    assert re.fullmatch(rf"==== {DONE_FLAG} - {STAMPED} \(exit status 0\)", text[-1])
+    with pytest.raises(ScriptFailed):
+        run_jobs([ScriptJob(2, "two", str(bad), node_id="b")], None, on_line=lambda _l: None)
+    text = open(step_log_path(str(bad))).read().splitlines()
+    assert "starting" in text and DONE_FLAG not in "\n".join(text)
+    assert re.fullmatch(rf"==== Step failed - {STAMPED} \(exit status 3\): exit status 3", text[-1])
+    # the next run starts a new log
+    run_jobs([ScriptJob(1, "one", str(ok), node_id="a")], None, on_line=lambda _l: None)
+    assert open(step_log_path(str(ok))).read().count("started") == 1
+
+
+def test_a_stopped_step_says_so_in_its_output_log(tmp_path):
+    import threading as _th
+
+    from mdatk.workflows.runner import StepStops, step_log_path
+    script = tmp_path / "slow.sh"
+    script.write_text('echo "begun"\nsleep 20\n')
+    stops = StepStops()
+    _th.Timer(0.8, lambda: stops.stop("n")).start()
+    results = run_jobs([ScriptJob(1, "slow", str(script), node_id="n")], None, on_line=lambda _l: None,
+                       stops=stops)
+    assert results[0].status == "stopped"
+    last = open(step_log_path(str(script))).read().splitlines()[-1]
+    assert re.fullmatch(rf"==== Step stopped by the user - {STAMPED}", last)

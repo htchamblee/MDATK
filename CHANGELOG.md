@@ -14,6 +14,15 @@ the notes below.
 
 ## Unreleased
 
+### Output log of each step
+
+- **Every script run leaves `<script>.log` beside it** (`mdatk.workflows.runner.StepLog`): what it
+  printed (standard output and error, written as it comes), between a start line with the date and time
+  and the command, and a closing line with the date and time and the outcome - `==== Step completed
+  successfully - <date> <time> (exit status 0)` when the step completed, else *Step failed*, *Step
+  stopped by the user*, *Step waiting* or *Run cancelled*. For RNAdo's runs and `mdatk workflow run`;
+  a new run starts a new log, and the log moves aside with its run.
+
 ### Separately run (cluster) scripts without conda
 
 - **The production script run separately activates conda only on this computer.** The *Separate

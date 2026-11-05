@@ -614,3 +614,17 @@ def test_cli_write_delete_old_runs(tmp_path, capsys):
     assert entry["title"] == "Deleted the completed run of 01 · Custom script" and entry["status"] == "ok"
     write = [e for e in read_log(proj) if e["step"] == "workflow write"][-1]
     assert write["summary"].endswith("1 completed run(s) deleted")
+
+
+def test_the_output_log_of_a_run_moves_aside_with_it(tmp_path):
+    from mdatk.workflows.runner import step_log_path
+    wf, build, _r, _md = amber_plan(tmp_path)
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, build.id, OLD)
+    script = os.path.join(root, "01_amber-build", f"apt1_01_amber-build_{OLD}.sh")
+    touch(step_log_path(script), "==== Step completed successfully - 2026-11-05 10:00:00 (exit status 0)\n")
+    item = Plan(wf, root).write().superseded[build.id]
+    assert f"apt1_01_amber-build_{OLD}.sh.log" in tree(os.path.join(root, item.target))
+    assert not os.path.exists(step_log_path(script))
