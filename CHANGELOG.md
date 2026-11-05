@@ -49,6 +49,10 @@ the notes below.
 
 ### Planner and dialogs
 
+- **Long dialogs scroll.** The question before running many steps (*Run ## generated script(s)?*) grew
+  past the bottom of the screen; a message dialog's long detail text now scrolls in a box at most half
+  the screen tall, so its buttons stay on screen, and the run question lists every script instead of
+  the first 20.
 - **Moving a connection.** Dragging the end of a connection off its input and dropping it on another
   step's input, or on a step's box, moves the connection there (onto a box: its first free input that
   takes the file). Before, the drag started a new connection, which an input could not take, and nothing

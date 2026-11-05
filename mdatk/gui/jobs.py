@@ -114,7 +114,7 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
     scripts at once (0: no limit); ``budget``: the CPU cores and GPUs they share (None: not counted)."""
     lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}"
              + (f" - {j.resources.text()}" if budget is not None else "") for j in jobs]
-    detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
+    detail = "\n".join(lines)  # every script: a long list scrolls (mdatk.gui.dialogtext)
     if budget is not None and parallel != 1 and len(jobs) > 1:
         cap = f", at most {parallel} at a time" if parallel else ""
         detail += (f"\n\nScripts run side by side on this computer as long as they fit in {budget.text()}"

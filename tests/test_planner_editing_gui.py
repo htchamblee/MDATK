@@ -223,3 +223,52 @@ def test_every_dialog_of_the_gui_has_selectable_text():
             if makes and not any(getattr(c.func, "id", "") == "selectable_text" for c in calls):
                 missing.append(f"{os.path.basename(path)}:{fn.name}")
     assert not missing, missing
+
+
+def _monitor_height():
+    display = Gdk.Display.get_default()
+    monitor = display.get_primary_monitor() or display.get_monitor(0)
+    return monitor.get_workarea().height
+
+
+def test_long_dialog_text_scrolls_and_the_dialog_fits_the_screen():
+    from mdatk.gui.dialogtext import scroll_long_text
+
+    text = "\n".join(f"• step {k:02d} (Amber MD stages): apt1_{k:02d}_amber-md.sh - 1 core"
+                     for k in range(90))
+    dlg = Gtk.MessageDialog(modal=True, message_type=Gtk.MessageType.QUESTION,
+                            buttons=Gtk.ButtonsType.OK_CANCEL, text="Run 90 generated script(s)?")
+    dlg.format_secondary_text(text)
+    labels = selectable_text(dlg)
+    dlg.show_all()
+    pump(0.4)
+    boxes = [w for w in dlg.get_message_area().get_children() if isinstance(w, Gtk.ScrolledWindow)]
+    assert len(boxes) == 1 and boxes[0].get_child() is not None
+    assert dlg.props.secondary_text == text  # what the dialog says is unchanged ...
+    assert any(lb.get_text() == text and lb.get_selectable() for lb in labels)  # ... and still selectable
+    assert dlg.get_allocated_height() <= _monitor_height()
+    dlg.destroy()
+    short = Gtk.MessageDialog(modal=True, buttons=Gtk.ButtonsType.OK, text="Done")
+    short.format_secondary_text("one line")
+    assert not scroll_long_text(short)
+    short.destroy()
+
+
+def test_the_run_question_for_many_steps_fits_the_screen(tmp_path, monkeypatch):
+    from mdatk.gui import jobs as J
+    from mdatk.workflows.runner import ScriptJob
+
+    many = [ScriptJob(k, f"{k:02d} · Amber MD stages", str(tmp_path / f"s{k}.sh"), node_id=f"n{k}")
+            for k in range(1, 61)]
+    heights = []
+
+    def run(dlg):
+        dlg.show_all()
+        pump(0.3)
+        heights.append(dlg.get_allocated_height())
+        assert any(isinstance(w, Gtk.ScrolledWindow) for w in dlg.get_message_area().get_children())
+        return Gtk.ResponseType.CANCEL
+
+    monkeypatch.setattr(Gtk.MessageDialog, "run", run)
+    assert J.confirm_run(None, many, parallel=4) is None
+    assert heights and heights[0] <= _monitor_height()
