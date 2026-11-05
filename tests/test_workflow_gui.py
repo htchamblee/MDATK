@@ -347,6 +347,8 @@ def test_planner_run_selected_steps(main, tmp_path):
     pump(0.2)
     canvas, btn = pl.canvas, pl.run_selected_btn
     assert not btn.get_sensitive() and btn.get_label() == "Run selected steps"
+    wbtn = pl.write_selected_btn
+    assert not wbtn.get_sensitive() and wbtn.get_label() == "Write selected steps"
     runs = []
     main.run_scripts = lambda jobs, separate=(), parent=None, **_kw: runs.append((jobs, list(separate)))
 
@@ -362,6 +364,15 @@ def test_planner_run_selected_steps(main, tmp_path):
     click_box(nodes["amber-build"])
     assert pl.checked == {nodes["amber-md"].id, nodes["amber-build"].id}
     assert btn.get_sensitive() and btn.get_label() == "Run selected steps (2)"
+    assert wbtn.get_sensitive() and wbtn.get_label() == "Write selected steps (2)"
+    # Write selected steps: the ticked steps' files, nothing run, the others not written
+    pl.write_selected()
+    pump(0.2)
+    root = main.project.workflow_dir
+    assert runs == []
+    assert os.path.isdir(os.path.join(root, "01_amber-build"))
+    assert os.path.isdir(os.path.join(root, "03_amber-md"))
+    assert not os.path.isdir(os.path.join(root, "02_amber-restraints"))
     assert canvas.check_at(note.x + 14, note.y + 13) is None  # notes have no box
     assert canvas.selected != nodes["amber-build"].id  # ticking does not select or move the box
     click_box(nodes["amber-md"])  # untick
@@ -384,7 +395,7 @@ def test_planner_run_selected_steps(main, tmp_path):
     pump(0.1)
     assert nodes["amber-md"].id not in pl.checked and btn.get_label() == "Run selected steps (2)"
     pl.set_checked([])
-    assert not btn.get_sensitive()
+    assert not btn.get_sensitive() and not wbtn.get_sensitive()
 
 
 def test_planner_running_marks_and_parallel_setting(main, tmp_path):

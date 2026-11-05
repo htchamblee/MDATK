@@ -1134,6 +1134,11 @@ class PlannerPanel(Gtk.Box):
                               "computer (scripts marked 'run separately', e.g. production runs, are not "
                               "started); each run is logged in the project file", "media-playback-start-symbolic"),
                      False, False, 0)
+        self.write_selected_btn = W.button("Write selected steps", self.write_selected,
+                                           "Write the ticked steps' files without running them (tick a step "
+                                           "with the box in its title bar, Space, or the right-click menu)",
+                                           "document-save-symbolic")
+        bar.pack_end(self.write_selected_btn, False, False, 0)
         write = W.button("Write all files", lambda: self.write(None),
                          "Write every step's files, a master script and a plan summary",
                          "document-save-symbolic")
@@ -1897,12 +1902,20 @@ class PlannerPanel(Gtk.Box):
         return [n for n in plan.order if n in self.checked]
 
     def _update_run_selected(self) -> None:
-        btn = getattr(self, "run_selected_btn", None)
-        if btn is None:
-            return
         n = len(self.checked)
-        btn.set_label(f"Run selected steps ({n})" if n else "Run selected steps")
-        btn.set_sensitive(bool(n))
+        for attr, text in (("run_selected_btn", "Run selected steps"), ("write_selected_btn",
+                                                                       "Write selected steps")):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.set_label(f"{text} ({n})" if n else text)
+                btn.set_sensitive(bool(n))
+
+    def write_selected(self) -> None:
+        """Write the ticked steps' files (in plan order) without running them."""
+        self.resolve()
+        ids = self.selected_in_order()
+        if ids:
+            self.write(ids)
 
     def run_selected(self) -> None:
         self.resolve()

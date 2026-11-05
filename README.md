@@ -380,8 +380,8 @@ seconds is reported in the analysis window.
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
   the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
-  previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Stop scripts*, *Open folder*),
-  the naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, *Move completed runs aside*,
+  previous runs*, *Write all files*, *Write selected steps*, *Run all…*, *Run selected steps*, *Stop
+  scripts*, *Open folder*), the naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, *Move completed runs aside*,
   the plan folder and *Change…*, then *CPU cores*, *GPUs* and *At once* for running steps), the canvas
   and the details pane of the selected box (see [The plan](#the-plan) and [Running steps](#running-steps)).
 - **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
@@ -817,8 +817,9 @@ centres the later steps check, goes to none of them). *Write all files* writes e
 that runs the steps in order, and a Markdown summary of the plan.
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click
-menu; *Tick all steps* / *Untick all steps* on the canvas): *Run selected steps (N)* writes the ticked
-steps' files and runs their main scripts in plan order, whatever order you ticked them in. Steps they
+menu; *Tick all steps* / *Untick all steps* on the canvas): *Write selected steps (N)* writes only the
+ticked steps' files, and *Run selected steps (N)* writes them and runs their main scripts in plan order,
+whatever order you ticked them in. Steps they
 read from are not written or run again, so their outputs must exist already. The ticks are not saved
 with the project.
 

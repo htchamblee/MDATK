@@ -49,6 +49,8 @@ the notes below.
 
 ### Planner and dialogs
 
+- **Write selected steps.** A toolbar button beside *Write all files* writes the ticked steps' files
+  without running them (*Write selected steps (N)*; greyed out while no step is ticked).
 - **Long dialogs scroll.** The question before running many steps (*Run ## generated script(s)?*) grew
   past the bottom of the screen; a message dialog's long detail text now scrolls in a box at most half
   the screen tall, so its buttons stay on screen, and the run question lists every script instead of
