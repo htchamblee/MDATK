@@ -22,14 +22,15 @@ Ideal helices (:func:`build_helix`)
     36.0 degrees, rise 3.38 A, 10 residues per turn): C3'-exo sugars (pseudorotation phase about 192
     degrees, S-type), chi about -98 degrees, Watson-Crick pairs with C1'-C1' 10.9 A and O3'-P links of
     1.60 A.  As published, its backbone (epsilon 155, zeta -95 degrees) puts OP2 2.69 A from C2' of the
-    previous nucleotide and 1.91 A from its H2', clashes of a model check; so the phosphate (P, OP1, OP2)
-    is turned 10 degrees about the line O3'(i-1)-O5'(i) (``DNA_PHOSPHATE_TURN``), a crankshaft that keeps
-    both bridge bonds, the O3'-P-O5' angle and the PO2 group: C2'(i)-OP2(i+1) 3.00 A (H2' 2.24 A),
-    C3'-O3'-P 125.8 and P-O5'-C5' 113.8 degrees (published 119.4 / 118.8), epsilon 155, zeta -87, alpha
-    -57, beta -142.  The model check then finds no heavy-atom clash in Watson-Crick and G-T helices; its
-    hydrogen contacts (reported only) keep the fiber model's own H1'(i)-H5'(i+1) of 1.84 A and, before a
-    thymine, the methyl 1.94 A from H2' and 2.47-2.48 A from C6 / C8 of the 5' neighbour (no turn of the
-    phosphate or of the methyl clears them).  The 2'-deoxyribose carries the methylene H2' / H2'' (H2' cis
+    previous nucleotide (and 1.91 A from its H2'), a heavy-atom clash of a model check; so the phosphate (P,
+    OP1, OP2) is turned 6 degrees about the line O3'(i-1)-O5'(i) (``DNA_PHOSPHATE_TURN``), a crankshaft
+    that keeps both bridge bonds, the O3'-P-O5' angle and the PO2 group: C2'(i)-OP2(i+1) 2.88 A, C3'-O3'-P
+    123.2 and P-O5'-C5' 115.9 degrees (published 119.4 / 118.8; 2.9 and 3.1 standard deviations from the
+    targets of Parkinson et al. 1996, where the 10 degrees that would also clear H2' make both validation
+    outliers), epsilon 155, zeta -91, alpha -53, beta -143.  The model check then finds no heavy-atom
+    clash in Watson-Crick and G-T helices; its hydrogen contacts (reported only, as for the A-form RNA)
+    list H2'(i)-OP2(i+1) at 2.11 A, the fiber model's own H1'(i)-H5'(i+1) of 1.84 A and, before a thymine,
+    the methyl 1.94 A from H2' and 2.47-2.48 A from C6 / C8 of the 5' neighbour.  The 2'-deoxyribose carries the methylene H2' / H2'' (H2' cis
     to O3', as the wwPDB CCD names them) and thymine the methyl H71-H73, staggered on C5-C7.  G-T pairs of
     an explicit partner get the wobble turns ``DNA_WOBBLE_TURN`` (fitted as ``WOBBLE_TURN``, kept clear of
     the sugars).  DNA is built as Watson-Crick B-form duplexes and single strands only (no other pairings,
@@ -187,11 +188,14 @@ DNA_BASE_NAMES = {b: tuple(n for n, *_ in atoms) for b, atoms in _DNA_BASES.item
 # The phosphate (P, OP1, OP2) of the B-DNA monomer is turned by this many degrees about the line O3'(i-1)-O5'(i), a
 # crankshaft (see _dna_phosphate): O3'-P, P-O5', the angle O3'-P-O5' and the PO2 group stay as published, only
 # C3'-O3'-P, P-O5'-C5' and epsilon, zeta, alpha, beta change.  As published (epsilon 155, zeta -95) OP2 is 2.69 Å
-# from C2' of the previous nucleotide and 1.91 Å from its H2' (cis to O3'), clashes of the model check, heavy atoms
-# and hydrogen contacts.  10 is the smallest whole turn that keeps both 0.05 Å outside the clash distance (C2'-OP2
-# 3.00 Å, H2'-OP2 2.24 Å; 9 leaves H2'-OP2 at 2.21 Å, 0.04 Å outside), with C3'-O3'-P 125.8 and P-O5'-C5' 113.8
-# degrees (published 119.4 / 118.8); OP1 comes no closer than 3.0 Å to C5', its 1-4 neighbour
-DNA_PHOSPHATE_TURN = 10.0
+# from C2' of the previous nucleotide (and 1.91 Å from its H2', cis to O3'), a heavy-atom clash of the model check.
+# 6 is the smallest whole turn that keeps every heavy-atom contact of the phosphate 0.05 Å outside the clash
+# distance (C2'-OP2 2.88 Å), with C3'-O3'-P 123.2 and P-O5'-C5' 115.9 degrees (published 119.4 / 118.8; Parkinson
+# et al. 1996: 119.7 +- 1.2 and 120.9 +- 1.6, so 2.9 and 3.1 standard deviations).  Clearing H2'-OP2 for the
+# hydrogen check as well (2.24 Å) would take 10, which makes both angles validation outliers (5.1 and 4.4
+# standard deviations, beyond the usual 4); the hydrogen check lists H2'-OP2 (2.11 Å) with the fiber model's
+# other hydrogen contacts instead
+DNA_PHOSPHATE_TURN = 6.0
 # hydrogens of a 2'-deoxynucleotide: the C2' methylene instead of H2' / O2' / HO2' (H2' is the hydrogen cis to
 # O3', the wwPDB CCD's name: a negative volume C2'(C1', C3', H2') in a D sugar; Amber's DNA.OL15.lib swaps the
 # two names, which have the same type and charge there), thymine's imino H3, H6 and methyl
