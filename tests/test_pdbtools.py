@@ -596,3 +596,22 @@ def test_strip_5p_keeps_internal_phosphates_and_drops_lone_phosphates():
     res = list(r.structure.residues())
     assert [x.resseq for x in res] == [2] and not any(a.name == "P" for a in res[0].atoms)
     assert any("held only a phosphate" in n for n in r.notes)
+
+
+def test_link_line_columns_and_round_trip():
+    a, b = pt.LinkAtom("O3'", "DA", "A", 6), pt.LinkAtom("P", "PO2", "A", 7)
+    line = pt.link_line(a, b, 1.6)
+    assert line[:6] == "LINK  " and line[12:16] == " O3'" and line[17:20] == " DA" and line[21] == "A"
+    assert line[22:26] == "   6" and line[42:46] == " P  " and line[47:50] == "PO2" and line[51] == "A"
+    assert line[52:56] == "   7" and line[59:65] == "  1555" and line[66:72] == "  1555" and line[73:78] == " 1.60"
+    four = pt.link_line(pt.LinkAtom("OP1", "LDA5", "B", 12, "A"), pt.LinkAtom("C4'", "A", "C", -3))
+    s = pt.Structure(header=["REMARK 951 x", line, four, "LINK  garbage"])
+    assert pt.link_records(s) == [
+        pt.LinkRecord(a, b, 1.6),
+        pt.LinkRecord(pt.LinkAtom("OP1", "LDA5", "B", 12, "A"), pt.LinkAtom("C4'", "A", "C", -3), None)]
+    # LINK records stay in the header through a read / write
+    text = "\n".join([line, "ATOM      1  O3'  DA A   6       0.000   0.000   0.000  1.00  0.00           O",
+                      "END"]) + "\n"
+    again = pt.read_pdb(pt.write_pdb(pt.read_pdb(text)))
+    assert pt.link_records(again) == [pt.LinkRecord(a, b, 1.6)]
+    assert a.matches(next(again.residues()))

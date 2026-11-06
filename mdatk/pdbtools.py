@@ -595,6 +595,72 @@ def _remap_conect(lines: Sequence[str], serial_map: Dict[int, List[int]]) -> Lis
     return out
 
 
+# --- LINK records -------------------------------------------------------------------------------------
+
+class LinkAtom(NamedTuple):
+    """One end of a LINK record."""
+    name: str  # atom name
+    resname: str
+    chain: str
+    resseq: int
+    icode: str = ""
+
+    def matches(self, res: Residue) -> bool:
+        return (res.chain == self.chain and res.resseq == self.resseq and (res.icode or "") == self.icode
+                and res.name.strip() == self.resname)
+
+
+class LinkRecord(NamedTuple):
+    """A covalent bond between residues that the polymer order does not imply (e.g. a 3'-3' phosphate)."""
+    first: LinkAtom
+    second: LinkAtom
+    length: Optional[float] = None
+
+
+def link_line(first: LinkAtom, second: LinkAtom, length: Optional[float] = None) -> str:
+    """A LINK record in the PDB 3.3 columns: atom names aligned as in ATOM records (13-16 / 43-46), residue
+    names in 18-20 / 48-50 (four-character names reach 21 / 51), symmetry 1555 and the length (74-78)."""
+    def part(a: LinkAtom) -> str:
+        element = _element(Atom("ATOM", a.name, "", ""), a.resname)
+        resseq = a.resseq % 10000 if a.resseq > 9999 else a.resseq
+        return (f"{_atom_name_field(a.name, element)} {_residue_field(a.resname)}{(a.chain or ' ')[:1]}"
+                f"{resseq:>4}{(a.icode or ' ')[:1]}")
+    tail = f"  {'1555':>6} {'1555':>6} {length:5.2f}" if length is not None else ""
+    return f"LINK        {part(first)}{' ' * 15}{part(second)}{tail}".rstrip()
+
+
+def _link_atom(line: str, start: int) -> Optional[LinkAtom]:
+    """The atom of a LINK record whose name field starts at column ``start`` + 1 (12 or 42)."""
+    name = line[start:start + 4].strip()
+    resname = line[start + 5:start + 9].strip()
+    chain = line[start + 9:start + 10].strip()
+    try:
+        resseq = int(line[start + 10:start + 14])
+    except ValueError:
+        return None
+    if not name or not resname:
+        return None
+    return LinkAtom(name.replace("*", "'"), resname, chain, resseq, line[start + 14:start + 15].strip())
+
+
+def link_records(structure: Structure) -> List[LinkRecord]:
+    """The LINK records of the header (malformed ones skipped)."""
+    out = []
+    for line in structure.header:
+        if line[:6].strip().upper() != "LINK":
+            continue
+        line = line.ljust(80)
+        first, second = _link_atom(line, 12), _link_atom(line, 42)
+        if first is None or second is None:
+            continue
+        try:
+            length: Optional[float] = float(line[73:78])
+        except ValueError:
+            length = None
+        out.append(LinkRecord(first, second, length))
+    return out
+
+
 # --- chirality ----------------------------------------------------------------------------------------
 
 def chiral_volume(centre, a, b, c) -> float:
