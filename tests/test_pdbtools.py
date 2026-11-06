@@ -1,10 +1,11 @@
 """Tests for mdatk.pdbtools (PDB hygiene: L-RNA detection, name schemes, ChimeraX repair, chains ...)."""
 
+import hashlib
 import math
 
 import pytest
 
-from mdatk import pdbtools as pt
+from mdatk import builder, modelcheck as mc, pdbtools as pt
 
 # Nucleotide geometry: the A/C/G/U units of AmberTools' RNA.lib (heavy atoms plus H5'' and HO2', rounded
 # to PDB precision; the sugar-phosphate backbone is identical in the four units).  L residues are made by
@@ -735,3 +736,425 @@ def test_link_line_columns_and_round_trip():
     again = pt.read_pdb(pt.write_pdb(pt.read_pdb(text)))
     assert pt.link_records(again) == [pt.LinkRecord(a, b, 1.6)]
     assert a.matches(next(again.residues()))
+
+
+# --- LINK records follow the residues -------------------------------------------------------------------
+
+def _digest(text, notes=(), fasta=None):
+    return hashlib.sha256("\0".join([text, "\n".join(notes), fasta or ""]).encode()).hexdigest()[:16]
+
+
+def _operations_in_turn(text):
+    """Every operation that renames, renumbers, re-chains or drops residues, called on its own in turn."""
+    s = pt.read_pdb(text)
+    notes = pt.assign_chirality(s) + pt.convert_names(s, "amber", dna=True) + pt.strip_hydrogens(s)
+    notes += pt.strip_5prime_phosphates(s) + pt.drop_virtual_residues(s) + pt.split_chains(s, "A:2")
+    notes += pt.combine_chains(s, ["B", "C"], "Q") + pt.order_chains(s) + pt.renumber_residues(s, 3, per_chain=True)
+    notes += pt.restore_chains(s) + pt.split_chains(s)
+    return _digest(pt.write_pdb(s, seqres=True), notes)
+
+
+def _link_free_runs():
+    """name -> digest of the text, notes and FASTA of PDB-tool runs on models without LINK records."""
+    hybrid, dna = make_pdb(HYBRID), make_pdb(DNA_HYBRID)
+    vrt = [atom_line(900 + k, n, "VRT", "Z", 1, (k, 0.0, 0.0)) for k, n in enumerate(("ORIG", "X", "Y"))]
+    decoy = make_pdb(HYBRID[:2], extra=vrt + ["TER"], header=["REMARK 950 G1-C2 pair", "CRYST1   10.000"])
+    solvated = make_pdb(CPPTRAJ, extra=IONS + ["CONECT  500  501", "CONECT  501  500"],
+                        header=["CRYST1  105.626  105.626  105.626 109.47 109.47 109.47"])
+    lone = "\n".join(ln for ln in make_pdb([("A", [("G", 1, "G", False), ("C", 2, "C", False)])]).splitlines()
+                     if not (ln.startswith("ATOM") and ln[22:26].strip() == "1"
+                             and ln[12:16].strip() not in ("P", "OP1", "OP2"))) + "\n"
+    runs = {f"{name} {scheme}": (lambda t=text, sc=scheme: pt.clean(t, scheme=sc))
+            for name, text in (("hybrid", hybrid), ("dna", dna)) for scheme in pt.SCHEMES}
+    runs.update({
+        "decoy for tleap": lambda: pt.clean(decoy, scheme="amber", strip_5p=True, strip_h=True, drop_virtual=True),
+        "standard copy": lambda: pt.clean(decoy, scheme="standard", strip_h=True),
+        "chains from a reference": lambda: pt.clean(solvated, chain_reference=make_pdb(REFERENCE), copy_numbers=True,
+                                                    scheme="ccd", seqres=True, make_fasta=True, strip_conect=False),
+        "chains assigned, split, sorted": lambda: pt.clean(solvated, assign_chains=True, split_at="A:2",
+                                                           sort_chains=True, renumber=True, per_chain=True),
+        "chain list, combined": lambda: pt.clean(solvated, chain_ids=["X", "Y"], combine=["X", "Y"],
+                                                 combine_into="Z", l_ranges="Y", scheme="rosetta"),
+        "segments split, ordered": lambda: pt.clean(make_pdb(HYBRID[:1] * 2 + HYBRID[2:4]), split_segments=True,
+                                                    sort_chains=["C", "A"], renumber=True, start=7),
+        "gaps kept": lambda: pt.clean(numbered(GAPPED), renumber=True, keep_gaps=True, start=10),
+        "lone phosphate": lambda: pt.clean(lone, strip_5p=True, scheme="amber"),
+        "to-lrna": lambda: pt.to_lrna(hybrid, "A:3-4, D"),
+        "to-lrna ccd": lambda: pt.to_lrna(hybrid, [("B", 5, 8)], scheme="ccd", terminals=False),
+    })
+    out = {name: _digest(r.text, r.notes, r.fasta) for name, run in runs.items() for r in [run()]}
+    out["operations in turn"] = _operations_in_turn(hybrid)
+    out["operations in turn, decoy"] = _operations_in_turn(decoy)
+    return out
+
+
+# recorded at d07a5ef, before LINK records followed the residues
+LINK_FREE_D07A5EF = {
+    "hybrid amber": "03f7589cabdaac9f", "hybrid ccd": "59073daf87d78b1a", "hybrid rosetta": "2ebb9c0a56d3cd1a",
+    "hybrid pdb": "c7b9038737181096", "hybrid standard": "25f9c8192b6998d0", "dna amber": "ed4bbe0a34da2096",
+    "dna ccd": "50c0d91d28b574d2", "dna rosetta": "945cbb9dafb03b8e", "dna pdb": "2fe4081b30b15cf6",
+    "dna standard": "c6432fadfcf7f038", "decoy for tleap": "87bfeb0cd803d26a", "standard copy": "3048c24ee1b4231f",
+    "chains from a reference": "8f3dbea8a58cfe5c", "chains assigned, split, sorted": "b2b2e4858e35d9da",
+    "chain list, combined": "79a0bedefebae9dd", "segments split, ordered": "e5e7485a629abea8",
+    "gaps kept": "57773d327c46120a", "lone phosphate": "dcaebfe3cfc99b46", "to-lrna": "09483c3997e10797",
+    "to-lrna ccd": "9eac0008a3bc413d", "operations in turn": "9e937bd003ad1cb4",
+    "operations in turn, decoy": "c97bebb24865781d"}
+
+
+def test_models_without_link_records_are_written_as_before():
+    """Following LINK records changes nothing for a model without them: text, notes and FASTA of every name
+    scheme, chain and numbering operation, hydrogen / phosphate / virtual-residue removal and to-lrna are those
+    of d07a5ef, byte for byte (an intended change of that output records the digests again from
+    _link_free_runs())."""
+    assert _link_free_runs() == LINK_FREE_D07A5EF
+
+
+def _unit(v):
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v]
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def _place(atom, xyz):
+    atom.tail = f"   {xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}" + atom.tail[27:]
+
+
+def bridged(end="3", hydrogens=False, phosphate5=False):
+    """PDB text of a chimera junction of the structure builder: single strands A:1-3 and B:1-3 (build_helix)
+    joined 3'-3' (``end`` '3') or 5'-5' ('5') by a PO2 residue, A:4 / A:0, bonded to the O3' / O5' of both,
+    with LINK records for the two bonds.  The geometry of tests/test_modelcheck.py's LINK tests: P
+    where strand A's next phosphate is in the A-form, strand B the image of strand A under the two-fold axis
+    through P that bisects O-P-O (the O-P-O plane turned 100 / 20 degrees from the helix's own), OP1 / OP2
+    1.48 Å from P.  ``phosphate5``: the 3'-3' strands start with a 5'-phosphate."""
+    three = end == "3"
+    k, oname, at = (3, "O3'", 4) if three else (1, "O5'", 1)
+    strands = [pt.read_pdb(builder.build_helix("AAAA" if three else "AAA", partner="none", chains=chain,
+                                               hydrogens=hydrogens, phosphate5=phosphate5 or not three))
+               for chain in "AB"]
+    xyz = {r.resseq: {a.name: a.xyz for a in r.atoms} for r in strands[0].residues()}
+    p = xyz[at]["P"]
+    d1 = _unit([xyz[k][oname][x] - p[x] for x in range(3)])
+    d2 = _unit([xyz[at]["O5'" if three else "OP3"][x] - p[x] for x in range(3)])  # the helix's own other O
+    t = math.radians(100.0 if three else 20.0)  # d2 turned about d1 (Rodrigues)
+    c1, dot = _cross(d1, d2), sum(d1[x] * d2[x] for x in range(3))
+    d2 = [d2[x] * math.cos(t) + c1[x] * math.sin(t) + d1[x] * dot * (1 - math.cos(t)) for x in range(3)]
+    n, m = _unit([d1[x] + d2[x] for x in range(3)]), _unit(_cross(d1, d2))
+    cos, sin = math.cos(math.radians(57.7)), math.sin(math.radians(57.7))
+    po2 = pt.Residue("PO2", "A", 4 if three else 0)
+    for name, sign in (("P", 0), ("OP1", 1), ("OP2", -1)):
+        po2.atoms.append(pt.Atom("HETATM", name, "", "   " + "0" * 24 + "  1.00  0.00", name[0]))
+        _place(po2.atoms[-1], [p[x] + (1.48 * (sign * sin * m[x] - cos * n[x]) if sign else 0.0) for x in range(3)])
+    drop = {"HO3'"} if three else {"P", "OP1", "OP2", "OP3", "HO5'"}
+    for strand in strands:
+        strand.segments[0] = strand.segments[0][:3]
+        for res in strand.segments[0]:
+            if res.resseq == k:
+                res.atoms = [a for a in res.atoms if a.name not in drop]
+    for res in strands[1].residues():  # the two-fold rotation about n through P
+        for a in res.atoms:
+            v = [a.xyz[x] - p[x] for x in range(3)]
+            along = sum(v[x] * n[x] for x in range(3))
+            _place(a, [p[x] + 2 * along * n[x] - v[x] for x in range(3)])
+    s = strands[0]
+    s.segments[0].insert(3 if three else 0, po2)
+    s.segments += strands[1].segments
+    s.header += [pt.link_line(pt.LinkAtom(oname, "A", chain, k), pt.LinkAtom("P", "PO2", "A", po2.resseq), 1.6)
+                 for chain in "AB"]
+    return pt.write_pdb(s)
+
+
+def junction(end):
+    """The atom pairs the LINK records of :func:`bridged` bond, as the clash check labels them."""
+    k, oname, po2 = (3, "O3'", "A:4") if end == "3" else (1, "O5'", "A:0")
+    return [(f"A:{k}:{oname}", f"{po2}:P"), (f"B:{k}:{oname}", f"{po2}:P")]
+
+
+def link_bonds(text):
+    """The LINK bonds and the clashes the model check finds in PDB text."""
+    r = mc.check_clashes(pt.read_pdb(text))
+    return [(b.first, b.second) for b in r.links], [(c.first, c.second) for c in r.clashes], r.links_unused
+
+
+def link_lines(text):
+    return [ln for ln in text.splitlines() if ln.startswith("LINK")]
+
+
+@pytest.mark.parametrize("end", ["3", "5"])
+@pytest.mark.parametrize("scheme", pt.SCHEMES)
+def test_link_records_follow_the_names_of_every_scheme(end, scheme):
+    """The structure builder's chimeras bond a PO2 phosphate to two strands and say so in LINK records; the
+    model check bonds them by chain, number, insertion code and residue name.  Names that a scheme gives the
+    junction residues (amber: the 3' / 5' ends) are written into the records, which keep everything else."""
+    text = bridged(end)
+    k, po2 = (3, 4) if end == "3" else (1, 0)
+    r = pt.clean(text, scheme=scheme, l_ranges="B")  # strand B as L: every scheme but standard renames it
+    names = {"amber": (f"A{end}", f"LA{end}"), "ccd": ("A", f"0A{end}"), "rosetta": ("A", "0A"), "pdb": ("A", "0A"),
+             "standard": ("A", "A")}[scheme]
+    assert [(res.chain, res.resseq, res.name) for res in r.structure.residues() if res.resseq == k] == [
+        ("A", k, names[0]), ("B", k, names[1])]
+    oname = "O3'" if end == "3" else "O5'"
+    assert pt.link_records(r.structure) == [
+        pt.LinkRecord(pt.LinkAtom(oname, name, chain, k), pt.LinkAtom("P", "PO2", "A", po2), 1.6)
+        for chain, name in zip("AB", names)]
+    assert pt.link_records(pt.read_pdb(r.text)) == pt.link_records(r.structure)
+    changed = [n for n in names if n != "A"]
+    assert [n for n in r.notes if "LINK" in n] == ([
+        f"Rewrote {len(changed)} LINK record(s) for the new residue names, numbers or chain ids: "
+        + ", ".join(f"{c}:{k} {n} {oname} - A:{po2} PO2 P" for c, n in zip("AB", names) if n != "A")]
+        if changed else [])
+    # the model check bonds the junction as before the clean-up: no clash, both LINK bonds
+    assert link_bonds(r.text) == link_bonds(text) == (junction(end), [], 0)
+    stale = "\n".join(link_lines(text) + [ln for ln in r.text.splitlines() if not ln.startswith("LINK")])
+    if changed:  # the records as they were name residues that are no longer there: the junction clashes
+        assert link_bonds(stale)[1] and link_bonds(stale)[2] == len(changed)
+
+
+@pytest.mark.parametrize("end", ["3", "5"])
+def test_link_records_follow_numbers_and_chain_ids(end):
+    """Renumbered, split, combined, reordered, chain ids restored: the records name the residues they named in
+    the input, and the model check still bonds the junction."""
+    k, po2, oname = (3, 4, "O3'") if end == "3" else (1, 0, "O5'")
+    text = bridged(end)
+
+    def ends(result):
+        """(chain, number, name) of both ends of each record, as written."""
+        recs = pt.link_records(pt.read_pdb(result.text))
+        assert recs == pt.link_records(result.structure)
+        return [((a.chain, a.resseq, a.name), (b.chain, b.resseq, b.name)) for a, b, _ in recs]
+
+    def bonded(result):
+        """The model check finds both LINK bonds and no clash."""
+        bonds, clashes, unused = link_bonds(result.text)
+        return len(bonds) == 2 and clashes == [] and unused == 0
+
+    # renumbered on through both chains (A:1-4, B:5-7 / A:1-4 PO2 first, B:5-7), or per chain
+    r = pt.clean(text, renumber=True, start=10)
+    a_end, b_end, bridge = (12, 16, 13) if end == "3" else (11, 14, 10)
+    assert ends(r) == [(("A", a_end, oname), ("A", bridge, "P")), (("B", b_end, oname), ("A", bridge, "P"))]
+    assert bonded(r)
+    r = pt.clean(text, renumber=True, per_chain=True)
+    assert ends(r)[1][0] == ("B", k, oname) and bonded(r)
+    # split before the bridge (3'-3': the PO2 is chain C) or after it (5'-5': strand A is chain C)
+    r = pt.clean(text, split_at="A:4" if end == "3" else "A:1")
+    if end == "3":
+        assert ends(r) == [(("A", 3, oname), ("C", 4, "P")), (("B", 3, oname), ("C", 4, "P"))]
+    else:
+        assert ends(r) == [(("C", 1, oname), ("A", 0, "P")), (("B", 1, oname), ("A", 0, "P"))]
+    assert bonded(r) and any(n.startswith(f"Rewrote {2 if end == '3' else 1} LINK record(s)") for n in r.notes)
+    # combined into one chain: renumbered, the records follow the residues they named, not the first A:3
+    r = pt.clean(text, combine=["A", "B"], combine_into="Z", renumber=True)
+    assert [x[0] for x in ends(r)] == [("Z", a_end - 9, oname), ("Z", b_end - 9, oname)] and bonded(r)
+    r = pt.clean(text, combine=["A", "B"])  # not renumbered: two residues A:3 (A:1)
+    assert any(n.startswith("WARNING: chain A now has duplicate residue numbers") for n in r.notes)
+    assert any(n.startswith("WARNING: 1 LINK record end(s) now name two residues") and f"A:{k} A {oname}" in n
+               for n in r.notes)
+    # chains in another order: the records stay as they were, no note
+    r = pt.clean(text, sort_chains=["B", "A"])
+    assert r.structure.chain_ids() == ["B", "A"] and link_lines(r.text) == link_lines(text) and bonded(r)
+    assert not any("LINK" in n for n in r.notes)
+    # cpptraj-style input (no chain ids, numbered on), its chain ids restored from a list, as A B C ... or from a
+    # reference; residues edited by hand follow inside follow_links
+    s = pt.clean(text, renumber=True, start=10).structure
+    with pt.follow_links(s) as notes:
+        for res in s.residues():
+            res.chain = ""
+    assert notes == [f"Rewrote 2 LINK record(s) for the new residue names, numbers or chain ids: _:{a_end} A "
+                     f"{oname} - _:{bridge} PO2 P, _:{b_end} A {oname} - _:{bridge} PO2 P"]
+    cpptraj = pt.write_pdb(s)
+    assert link_bonds(cpptraj)[0] == [(f"_:{a_end}:{oname}", f"_:{bridge}:P"), (f"_:{b_end}:{oname}", f"_:{bridge}:P")]
+    for options in ({"chain_ids": ["A", "B"]}, {"assign_chains": True}, {"chain_reference": text}):
+        r = pt.clean(cpptraj, **options)
+        assert [res.chain for res in r.structure.residues()] == ["A"] * 4 + ["B"] * 3
+        assert {x[1][0] for x in ends(r)} == {"A"} and [x[0][0] for x in ends(r)] == ["A", "B"]
+        assert bonded(r)
+
+
+@pytest.mark.parametrize("end", ["3", "5"])
+def test_link_records_through_hydrogen_and_phosphate_removal(end):
+    """A clean-up for tleap (hydrogens and 5'-phosphates removed, amber names, renumbered): the records follow,
+    the strands' own 5'-phosphates go (3'-3'), and the 5'-5' bridge, no 5' end, stays.  The model check passes
+    the result with both LINK bonds.  A record that names a removed atom (a hydrogen) is dropped."""
+    k, po2, oname = (3, 4, "O3'") if end == "3" else (1, 0, "O5'")
+    text = bridged(end, hydrogens=True, phosphate5=True)
+    lines = text.splitlines()
+    lines.insert(2, pt.link_line(pt.LinkAtom("H1'", "A", "A", 2), pt.LinkAtom("OP1", "PO2", "A", po2)))
+    r = pt.clean("\n".join(lines) + "\n", scheme="amber", strip_h=True, strip_5p=True, renumber=True, start=5)
+    a_end, b_end, bridge = (7, 11, 8) if end == "3" else (6, 9, 5)
+    term = "A3" if end == "3" else "A5"
+    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom(oname, term, chain, n), pt.LinkAtom("P", "PO2", "A", bridge),
+                                               1.6) for chain, n in (("A", a_end), ("B", b_end))]
+    assert f"Dropped 1 LINK record(s) whose residue or atom was removed: A:2 A H1' - A:{po2} PO2 OP1" in r.notes
+    if end == "3":
+        assert "Removed the 5'-terminal phosphate of 2 residue(s): A:1 A, B:1 A" in r.notes
+    else:
+        assert ("Phosphates kept where LINK records bond them to another residue (a link such as the 5'-5' "
+                "phosphate of a chimera, not a 5' end): A:0 PO2") in r.notes
+        assert not any(n.startswith("Removed") and "phosphate" in n for n in r.notes)
+    assert [a.name for a in next(res for res in r.structure.residues() if res.name == "PO2").atoms] == [
+        "P", "OP1", "OP2"]
+    assert link_bonds(r.text) == ([(f"A:{a_end}:{oname}", f"A:{bridge}:P"), (f"B:{b_end}:{oname}", f"A:{bridge}:P")],
+                                  [], 0)
+    report = mc.check_model(pt.read_pdb(r.text), mc.QCSettings(max_clashes=0), path="amber.pdb")
+    assert (report.status, report.failed, report.warnings) == ("pass", [], [])
+
+
+def test_a_phosphate_residue_is_a_5prime_phosphate_unless_bonded_to_another_strand():
+    """strip_5p removes a 5'-phosphate modelled as a residue of its own whose LINK record bonds it to its
+    strand's first O5' (the record goes with it); a phosphate that a record bonds to another strand is a link -
+    here a strand's own 5'-phosphate bonded to the O3' of the strand before it - and stays."""
+    s = pt.read_pdb(bridged("3", phosphate5=True))
+    first = s.segments[0][0]
+    cap = pt.Residue("PHO", "A", 0, atoms=[a for a in first.atoms if a.name in ("P", "OP1", "OP2", "OP3")])
+    first.atoms = [a for a in first.atoms if a not in cap.atoms]
+    s.segments[0].insert(0, cap)
+    s.header.append(pt.link_line(pt.LinkAtom("O5'", "A", "A", 1), pt.LinkAtom("P", "PHO", "A", 0)))
+    r = pt.clean(pt.write_pdb(s), strip_5p=True)
+    assert "Removed 1 5'-terminal residue(s) that held only a phosphate: A:0 PHO" in r.notes
+    assert "Dropped 1 LINK record(s) whose residue or atom was removed: A:1 A O5' - A:0 PHO P" in r.notes
+    assert "Removed the 5'-terminal phosphate of 1 residue(s): B:1 A" in r.notes
+    assert link_lines(r.text) == link_lines(bridged("3"))
+    # one strand of six split in two, its link A:3 O3' - B:4 P given as a LINK record: B:4 keeps its phosphate
+    s = pt.read_pdb(builder.build_helix("GGCAUC", partner="none", phosphate5=True))
+    pt.split_chains(s, "A:4")
+    s.header.append(pt.link_line(pt.LinkAtom("O3'", "C", "A", 3), pt.LinkAtom("P", "A", "B", 4), 1.6))
+    r = pt.clean(pt.write_pdb(s), strip_5p=True, scheme="amber")
+    assert "Removed the 5'-terminal phosphate of 1 residue(s): A:1 G" in r.notes
+    assert any(n.startswith("Phosphates kept where LINK records bond them") and n.endswith(": B:4 A") for n in r.notes)
+    assert [a.name for a in r.structure.segments[1][0].atoms][:3] == ["P", "OP1", "OP2"]
+    assert link_bonds(r.text) == ([("A:3:O3'", "B:4:P")], [], 0)
+    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom("O3'", "C3", "A", 3), pt.LinkAtom("P", "A5", "B", 4), 1.6)]
+
+
+def test_a_metal_on_a_5prime_phosphate_oxygen_does_not_keep_the_phosphate():
+    """LINK records of deposited structures give metal coordination: an Mg2+ on the OP1 of a 5'-phosphate is no
+    link of the strand, so strip_5p removes the phosphate as without the record, which goes with its oxygen."""
+    s = pt.read_pdb(builder.build_helix("GGC", partner="none", phosphate5=True))
+    op1 = next(a for a in s.segments[0][0].atoms if a.name == "OP1")
+    mg = pt.Residue("MG", "M", 1, atoms=[pt.Atom("HETATM", "MG", "", op1.tail, "MG")])
+    _place(mg.atoms[0], [op1.xyz[0] + 2.1, op1.xyz[1], op1.xyz[2]])
+    s.segments.append([mg])
+    without = pt.write_pdb(s)
+    s.header.append(pt.link_line(pt.LinkAtom("OP1", "G", "A", 1), pt.LinkAtom("MG", "MG", "M", 1), 2.1))
+    r, plain = pt.clean(pt.write_pdb(s), strip_5p=True), pt.clean(without, strip_5p=True)
+    assert "Removed the 5'-terminal phosphate of 1 residue(s): A:1 G" in plain.notes
+    assert r.text == plain.text
+    assert r.notes == plain.notes + [
+        "Dropped 1 LINK record(s) whose residue or atom was removed: A:1 G OP1 - M:1 MG MG"]
+
+
+def test_link_records_that_name_no_atom_stay_as_they_were():
+    """A record that names no atom of the model (another chain, residue name or atom) cannot follow: it stays as
+    it was, with a note, and so does a LINK line that is no record; the others follow."""
+    text = bridged("3")
+    odd = [pt.link_line(pt.LinkAtom("O3'", "A", "Z", 9), pt.LinkAtom("P", "PO2", "A", 4)),
+           pt.link_line(pt.LinkAtom("O2'", "G", "A", 3), pt.LinkAtom("P", "PO2", "A", 4)),
+           pt.link_line(pt.LinkAtom("N9", "A", "A", 3), pt.LinkAtom("XX", "PO2", "A", 4)),
+           "LINK        unreadable"]
+    links, rest = link_lines(text), [ln for ln in text.splitlines() if not ln.startswith("LINK")]
+    r = pt.clean("\n".join(links[:1] + odd + links[1:] + rest) + "\n", scheme="amber", renumber=True, start=2)
+    assert link_lines(r.text)[1:5] == odd
+    assert [ln[17:26] for ln in link_lines(r.text)[::5]] == [" A3 A   4", " A3 B   8"]
+    assert ("Kept 3 LINK record(s) as they were: they name no atom of the model (by chain, residue number, insertion "
+            "code, residue name and atom name), so they cannot follow the residues: Z:9 A O3' - A:4 PO2 P, A:3 G O2' "
+            "- A:4 PO2 P, A:3 A N9 - A:4 PO2 XX") in r.notes
+    assert link_bonds(r.text)[1:] == ([], 3)
+
+
+def test_link_records_after_the_coordinates_are_read_and_follow():
+    """read_pdb keeps a LINK line that comes after the first atom record in the trailer: link_records reads it
+    after the header's, the model check bonds it, and the PDB tools rewrite it where it is."""
+    text = bridged("3")
+    links = link_lines(text)
+    body = [ln for ln in text.splitlines() if not ln.startswith(("LINK", "REMARK"))]
+    moved = "\n".join(links[:1] + body[:-1] + links[1:] + ["END"]) + "\n"  # the second record after the atoms
+    s = pt.read_pdb(moved)
+    assert (s.header, s.trailer) == (links[:1], links[1:])
+    assert pt.link_records(s) == pt.link_records(pt.read_pdb(text))
+    assert link_bonds(moved) == (junction("3"), [], 0)
+    r = pt.clean(moved, scheme="amber", renumber=True, start=3)
+    out = r.text.splitlines()
+    assert out[0][17:26] == " A3 A   5" and out[-2][17:26] == " A3 B   9" and out[-1] == "END"
+    assert r.structure.trailer == [out[-2]] and link_bonds(r.text)[1:] == ([], 0)
+
+
+def test_link_lines_are_rewritten_in_place():
+    """Only the residue columns of an end whose residue changed are written: the atom names, alternate
+    locations, symmetry operators and the length stay, and so does the line's place among the header records."""
+    text = bridged("3")
+    plain = link_lines(text)
+    odd = pt.link_line(pt.LinkAtom("O3'", "A", "B", 3), pt.LinkAtom("P", "PO2", "A", 4), 2.1)
+    odd = odd[:16] + "A" + odd[17:46] + "B" + odd[47:66] + "  2555" + odd[72:]  # altLocs, symmetry 2555
+    body = [ln for ln in text.splitlines() if not ln.startswith(("LINK", "REMARK"))]
+    head = ["HEADER    CHIMERA", plain[0], "REMARK   1 two LINK records", odd, "CRYST1   60.000   60.000   60.000"]
+    r = pt.clean("\n".join(head + body) + "\n", scheme="amber", l_ranges="B")
+    assert r.structure.header == [head[0], plain[0][:17] + " A3 A   3 " + plain[0][27:], head[2],
+                                  odd[:17] + "LA3 B   3 " + odd[27:], head[4]]
+    assert pt.link_records(r.structure)[1] == pt.LinkRecord(pt.LinkAtom("O3'", "LA3", "B", 3),
+                                                            pt.LinkAtom("P", "PO2", "A", 4), 2.1)
+    assert r.text.splitlines()[:5] == r.structure.header
+    unchanged = pt.clean("\n".join(head + body) + "\n")  # nothing renamed: every line as it was
+    assert unchanged.structure.header == head and not any("LINK" in n for n in unchanged.notes)
+    # an insertion code (column 27) is part of the number: written, cleared by renumbering, kept with the gaps
+    s = pt.read_pdb(text)
+    with pt.follow_links(s):
+        next(res for res in s.residues() if (res.chain, res.resseq) == ("B", 3)).icode = "A"
+    coded = pt.write_pdb(s)
+    assert link_lines(coded)[1][21:27] == "B   3A" and link_bonds(coded)[0][1] == ("B:3A:O3'", "A:4:P")
+    assert link_lines(pt.clean(coded, renumber=True).text)[1][21:27] == "B   7 "
+    assert link_lines(pt.clean(coded, renumber=True, keep_gaps=True).text)[1][21:27] == "B   7A"
+
+
+def test_operations_on_their_own_and_in_one_block():
+    """Each operation that edits residues follows the records by itself (the structure builder names residues
+    with convert_names).  A follow_links block resolves them once for several operations, which matters when one
+    leaves two residues with the same id for a later one to tell apart; a block that raises leaves nothing."""
+    s = pt.read_pdb(bridged("3"))
+    assert pt.convert_names(s, "amber")[-1] == ("Rewrote 2 LINK record(s) for the new residue names, numbers or chain "
+                                               "ids: A:3 A3 O3' - A:4 PO2 P, B:3 A3 O3' - A:4 PO2 P")
+    assert pt.renumber_residues(s, 10)[-1].startswith("Rewrote 2 LINK record(s)")
+    assert [(x.first.resseq, x.second.resseq) for x in pt.link_records(s)] == [(12, 13), (16, 13)]
+    assert link_bonds(pt.write_pdb(s))[1:] == ([], 0)
+    # in turn: combining leaves two residues A:3, and renumbering then takes the record of B:3 for the first
+    s = pt.read_pdb(bridged("3"))
+    assert pt.combine_chains(s, ["A", "B"])[-1].startswith("WARNING: 1 LINK record end(s) now name two residues")
+    pt.renumber_residues(s)
+    assert [x.first.resseq for x in pt.link_records(s)] == [3, 3]
+    # in one block: resolved before combining, so B:3 is followed to A:7
+    s = pt.read_pdb(bridged("3"))
+    with pt.follow_links(s) as notes:
+        assert not any("LINK" in n for n in pt.combine_chains(s, ["A", "B"]) + pt.renumber_residues(s))
+        assert notes == []
+    assert [x.first.resseq for x in pt.link_records(s)] == [3, 7]
+    assert notes == ["Rewrote 1 LINK record(s) for the new residue names, numbers or chain ids: A:7 A O3' - A:4 PO2 P"]
+    with pytest.raises(pt.PDBError):
+        pt.clean(bridged("3"), split_at="A:9")
+    assert pt._FOLLOWERS == {}
+
+
+def test_to_lrna_and_the_command_line_follow_link_records(tmp_path):
+    """to-lrna, 'mdatk pdb clean' and the copy of the PDB tools in generated scripts (standard library only, no
+    __future__ import) write the records for the new names; 'mdatk pdb qc' passes the cleaned chimera."""
+    import subprocess
+    import sys
+
+    from mdatk.cli import main
+    from mdatk.workflows.scripts import embed
+
+    r = pt.to_lrna(bridged("3"), "B")
+    assert [x.first.resname for x in pt.link_records(r.structure)] == ["A", "LA3"]
+    assert link_bonds(r.text) == (junction("3"), [], 0)
+    pdb, out, copy = tmp_path / "chimera.pdb", tmp_path / "amber.pdb", tmp_path / "copy.pdb"
+    pdb.write_text(bridged("5", phosphate5=True))
+    args = ["--scheme", "amber", "--strip-5p", "--renumber"]
+    assert main(["pdb", "clean", str(pdb), "-o", str(out)] + args) == 0
+    assert [x.first.resname for x in pt.link_records(pt.read_pdb(str(out)))] == ["A5", "A5"]
+    assert main(["pdb", "qc", str(out), "--max-clashes", "0"]) == 0
+    script = tmp_path / "pdbtools_copy.py"
+    script.write_text(embed(pt, {}, "main()", "PDB hygiene (embedded copy)"))
+    proc = subprocess.run([sys.executable, "-I", str(script), "clean", str(pdb), "-o", str(copy)] + args,
+                          capture_output=True, text=True, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert copy.read_text() == out.read_text() and "pdbtools: Rewrote 2 LINK record(s)" in proc.stderr
