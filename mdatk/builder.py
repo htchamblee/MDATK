@@ -21,14 +21,20 @@ Ideal helices (:func:`build_helix`)
     BDNA MONOMER UNIT" of the same nucgen.dat) on the same screw and dyad with NAB's B-DNA helix (twist
     36.0 degrees, rise 3.38 A, 10 residues per turn): C3'-exo sugars (pseudorotation phase about 192
     degrees, S-type), chi about -98 degrees, Watson-Crick pairs with C1'-C1' 10.9 A and O3'-P links of
-    1.60 A.  Its backbone (epsilon 155, zeta -95 degrees) brings C2' to 2.69 A of OP2 of the next
-    nucleotide, which a model check lists as a clash (minimise before production).  The 2'-deoxyribose
-    carries the methylene H2' / H2'' (H2' cis to O3', as the wwPDB CCD names them) and thymine the methyl
-    H71-H73, staggered on C5-C7.  G-T pairs of an explicit partner get the wobble turns
-    ``DNA_WOBBLE_TURN`` (fitted as ``WOBBLE_TURN``, kept clear of the sugars).  DNA is built as
-    Watson-Crick B-form duplexes and single strands only (no other pairings, no triplexes); residue names
-    DA DC DG DT, L: the CCD's 0DA 0DC 0DG 0DT (Amber: DA5 / DA3 / DAN, L: MDATK's LDA ...; see
-    :func:`mdatk.pdbtools.scheme_name`).  The L helix is the mirror image, as for RNA.
+    1.60 A.  As published, its backbone (epsilon 155, zeta -95 degrees) puts OP2 2.69 A from C2' of the
+    previous nucleotide and 1.91 A from its H2', clashes of a model check; so the phosphate (P, OP1, OP2)
+    is turned 10 degrees about the line O3'(i-1)-O5'(i) (``DNA_PHOSPHATE_TURN``), a crankshaft that keeps
+    both bridge bonds, the O3'-P-O5' angle and the PO2 group: C2'(i)-OP2(i+1) 3.00 A (H2' 2.24 A),
+    C3'-O3'-P 125.8 and P-O5'-C5' 113.8 degrees (published 119.4 / 118.8), epsilon 155, zeta -87, alpha
+    -57, beta -142.  The model check then finds no heavy-atom clash in Watson-Crick and G-T helices; its
+    hydrogen contacts (reported only) keep the fiber model's own H1'(i)-H5'(i+1) of 1.84 A and, before a
+    thymine, the methyl 1.94 A from H2' and 2.47-2.48 A from C6 / C8 of the 5' neighbour (no turn of the
+    phosphate or of the methyl clears them).  The 2'-deoxyribose carries the methylene H2' / H2'' (H2' cis
+    to O3', as the wwPDB CCD names them) and thymine the methyl H71-H73, staggered on C5-C7.  G-T pairs of
+    an explicit partner get the wobble turns ``DNA_WOBBLE_TURN`` (fitted as ``WOBBLE_TURN``, kept clear of
+    the sugars).  DNA is built as Watson-Crick B-form duplexes and single strands only (no other pairings,
+    no triplexes); residue names DA DC DG DT, L: the CCD's 0DA 0DC 0DG 0DT (Amber: DA5 / DA3 / DAN, L:
+    MDATK's LDA ...; see :func:`mdatk.pdbtools.scheme_name`).  The L helix is the mirror image, as for RNA.
 
 Other pairings and triplexes (``build_helix(pairing=..., triplex=...)``)
     'reverse-wc' (trans WC/WC), 'hoogsteen' (cis WC/Hoogsteen: A·U, G·C+ on the Hoogsteen edge of the
@@ -178,6 +184,14 @@ _DNA_BASES = {
 }
 DNA_BACKBONE_NAMES = tuple(n for n, *_ in _DNA_BACKBONE)
 DNA_BASE_NAMES = {b: tuple(n for n, *_ in atoms) for b, atoms in _DNA_BASES.items()}
+# The phosphate (P, OP1, OP2) of the B-DNA monomer is turned by this many degrees about the line O3'(i-1)-O5'(i), a
+# crankshaft (see _dna_phosphate): O3'-P, P-O5', the angle O3'-P-O5' and the PO2 group stay as published, only
+# C3'-O3'-P, P-O5'-C5' and epsilon, zeta, alpha, beta change.  As published (epsilon 155, zeta -95) OP2 is 2.69 Å
+# from C2' of the previous nucleotide and 1.91 Å from its H2' (cis to O3'), clashes of the model check, heavy atoms
+# and hydrogen contacts.  10 is the smallest whole turn that keeps both 0.05 Å outside the clash distance (C2'-OP2
+# 3.00 Å, H2'-OP2 2.24 Å; 9 leaves H2'-OP2 at 2.21 Å, 0.04 Å outside), with C3'-O3'-P 125.8 and P-O5'-C5' 113.8
+# degrees (published 119.4 / 118.8); OP1 comes no closer than 3.0 Å to C5', its 1-4 neighbour
+DNA_PHOSPHATE_TURN = 10.0
 # hydrogens of a 2'-deoxynucleotide: the C2' methylene instead of H2' / O2' / HO2' (H2' is the hydrogen cis to
 # O3', the wwPDB CCD's name: a negative volume C2'(C1', C3', H2') in a D sugar; Amber's DNA.OL15.lib swaps the
 # two names, which have the same type and charge there), thymine's imino H3, H6 and methyl
@@ -194,8 +208,9 @@ _DNA_H_RULES = {
 # turns about C1').  On its own it gives G -13.5, T 11.5 (2.82 / 3.06 Å), which turns the T onto its own sugar
 # (chi -98: C6-O5' 2.60 Å) and onto C2' of its 5' neighbour (C7 2.67 Å), clashes of a model check.  So the fit
 # also keeps the heavy atoms of both bases 0.05 Å outside the model check's clash distance (van der Waals contact
-# - 0.4 Å) from their own sugar-phosphate, the neighbours on both strands and the partner backbone (the A-form's
-# WOBBLE_TURN is outside it as it is): G O6-T N3 2.73 Å, G N1-T O2 3.14 Å, at most 0.29 Å off
+# - 0.4 Å) from their own sugar-phosphate, the neighbours on both strands and the partner backbone, phosphates as
+# built (DNA_PHOSPHATE_TURN; the A-form's WOBBLE_TURN is outside it as it is): G O6-T N3 2.73 Å, G N1-T O2
+# 3.14 Å, at most 0.29 Å off
 DNA_WOBBLE_TURN = {"G": -10.1, "T": 3.5}
 DNA_COMPLEMENT = {"A": "T", "T": "A", "G": "C", "C": "G"}
 DNA_WATSON_CRICK_PAIRS = frozenset({"AT", "TA", "GC", "CG"})
@@ -267,17 +282,33 @@ def _hydrogens(heavy: Dict[str, np.ndarray], base: str, na: str = "rna") -> Dict
 
 
 @lru_cache(maxsize=None)
+def _dna_phosphate() -> Tuple[Tuple[str, Tuple[float, float, float]], ...]:
+    """P, OP1 and OP2 of the B-DNA monomer (helix frame, cached) turned by ``DNA_PHOSPHATE_TURN`` about the line
+    from O3' of the previous nucleotide (the monomer one step back on the screw, where the builder puts it) to
+    O5': both ends of the axis stay where they are, so the bridge bonds, the O3'-P-O5' angle and the PO2 group
+    keep the published geometry and a 5'-phosphate's OP3 still points at the previous O3'.  The table itself
+    stays as published; a positive turn moves OP2 away from the previous C2'."""
+    xyz = {n: _cartesian(r, p, z) for n, r, p, z in _DNA_BACKBONE}
+    o3 = _screw(xyz["O3'"], -1, DNA_TWIST, DNA_RISE)
+    turn = _turn_matrix(xyz["O5'"] - o3, DNA_PHOSPHATE_TURN)
+    return tuple((n, tuple((xyz[n] - o3) @ turn.T + o3)) for n in ("P", "OP1", "OP2"))
+
+
+@lru_cache(maxsize=None)
 def _template(base: str, na: str = "rna") -> Tuple[Tuple[str, Tuple[float, float, float]], ...]:
-    """The monomer of ``base`` in the helix frame: heavy atoms, then hydrogens (cached, read-only)."""
+    """The monomer of ``base`` in the helix frame: heavy atoms, then hydrogens (cached, read-only); DNA with the
+    turned phosphate of :func:`_dna_phosphate`."""
     backbone, bases = (_DNA_BACKBONE, _DNA_BASES) if na == "dna" else (_BACKBONE, _BASES)
     heavy = {n: _cartesian(r, p, z) for n, r, p, z in backbone + bases[base]}
+    if na == "dna":
+        heavy.update((n, np.array(x)) for n, x in _dna_phosphate())
     hyd = _hydrogens(heavy, base, na)
     return tuple((n, tuple(x)) for n, x in list(heavy.items()) + list(hyd.items()))
 
 
 def template(base: str, hydrogens: bool = True, na: str = "rna") -> Dict[str, np.ndarray]:
     """Atom name -> coordinates of the A-form monomer (helix frame, D sugar, strand 1, level 0); ``na``
-    'dna': of the B-DNA monomer (bases A, C, G, T)."""
+    'dna': of the B-DNA monomer (bases A, C, G, T; the phosphate turned by ``DNA_PHOSPHATE_TURN``)."""
     base = base.upper()
     if check_na(na) == "dna":
         if base not in _DNA_BASES:
@@ -286,6 +317,14 @@ def template(base: str, hydrogens: bool = True, na: str = "rna") -> Dict[str, np
     if base not in _BASES:
         raise BuildError(f"no template for base {base!r} (A, C, G, U)")
     return {n: np.array(x) for n, x in _template(base) if hydrogens or not n.startswith("H")}
+
+
+def _dna_link_geometry() -> Tuple[float, float, float]:
+    """C2'(i)-OP2(i+1) (Å), C3'-O3'-P and P-O5'-C5' (degrees) of the B-DNA helix as built, for its notes."""
+    t = template("A", hydrogens=False, na="dna")
+    prev = {n: _screw(t[n], -1, DNA_TWIST, DNA_RISE) for n in ("C2'", "C3'", "O3'")}
+    return (float(np.linalg.norm(t["OP2"] - prev["C2'"])), float(_angle(prev["C3'"], prev["O3'"], t["P"])),
+            float(_angle(t["P"], t["O5'"], t["C5'"])))
 
 
 def _base_atoms(base: str, hydrogens: bool, na: str = "rna") -> List[str]:
@@ -785,11 +824,17 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     what = f"duplex of {n} base pairs" if other is not None else f"single strand of {n} nucleotides"
     if motif:
         what = f"triplex of {n} base triples"
+    phosphates = dna and (n > 1 or phosphate5)  # the model has B-DNA phosphates (turned: DNA_PHOSPHATE_TURN)
+    if phosphates:
+        c2_op2, c3_o3_p, p_o5_c5 = _dna_link_geometry()
     if dna:
         s.header = [f"REMARK 951 MDATK IDEAL B-FORM DNA ({hand}), {what}",
                     f"REMARK 951 ARNOTT B-DNA FIBER MONOMER, TWIST {DNA_TWIST:.1f} DEG, RISE {DNA_RISE:.2f} A, "
-                    "HELIX AXIS Z",
-                    f"REMARK 951 STRAND {chain1} {seq}"]
+                    "HELIX AXIS Z"]
+        if phosphates:
+            s.header.append(f"REMARK 951 PHOSPHATE TURNED {DNA_PHOSPHATE_TURN:g} DEG ABOUT O3'-O5' "
+                            f"(C2'(I)-OP2(I+1) {c2_op2:.2f} A)")
+        s.header.append(f"REMARK 951 STRAND {chain1} {seq}")
     elif not rebuilt:
         s.header = [f"REMARK 951 MDATK IDEAL A-FORM RNA ({hand}), {what}",
                     f"REMARK 951 ARNOTT A-RNA FIBER MONOMER, TWIST {TWIST:.1f} DEG, RISE {RISE:.2f} A, "
@@ -809,10 +854,10 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
             if kinds.count("wobble"):
                 out_notes.append(f"{kinds.count('wobble')} G·{'T' if dna else 'U'} pair(s) built with an approximate "
                                  "wobble geometry (bases turned in their plane about C1'); minimise before production")
-    if dna and n > 1:  # the fiber model's own geometry (epsilon 155, zeta -95 degrees)
-        out_notes.append(f"The Arnott B-DNA fiber model has C2'(i)-OP2(i+1) at 2.69 Å on each O3'-P step "
-                         f"({(n - 1) * len(s.segments)} here; a model check lists them as clashes): a starting "
-                         "model, minimise before production")
+    if phosphates:
+        out_notes.append(f"Phosphates turned {DNA_PHOSPHATE_TURN:g}° about O3'-O5' from the Arnott B-DNA fiber model "
+                         f"to clear C2'(i)-OP2(i+1): {c2_op2:.2f} Å, C3'-O3'-P {c3_o3_p:.1f}°, P-O5'-C5' "
+                         f"{p_o5_c5:.1f}°")
     if motif:
         s.header.append(f"REMARK 951 STRAND {ids[2]} {third_seq} (THIRD STRAND, "
                         f"{'PARALLEL' if motif == 'hoogsteen' else 'ANTIPARALLEL'} TO STRAND {chain1})")

@@ -79,24 +79,35 @@ def test_b_dna_fiber_geometry(chirality):
     one, two = s.segments
     n = len(SEQ)
     assert [len(seg) for seg in s.segments] == [n, n] and s.chain_ids() == ["A", "B"]
-    # O3'-P links on both strands, with the link angles of the fiber model
+    sign = 1.0 if chirality == "D" else -1.0  # the mirror image: torsions and volumes of the opposite sign
+    # O3'-P links on both strands as the fiber model's (1.595 Å, O3'-P-O5' 101.5°); its phosphate turned 10° about
+    # O3'-O5' opens C3'-O3'-P (published 119.4°) and closes P-O5'-C5' (118.8°), and OP2 is 3.00 Å from the previous
+    # C2' instead of 2.69 Å (epsilon, zeta, alpha, beta: published 155.0, -95.1, -46.9, -146.0)
     d = links(s)
     assert len(d) == 2 * (n - 1) and 1.55 <= min(d) and max(d) <= 1.65
     assert d == pytest.approx([1.595] * len(d), abs=0.002)
     for seg in s.segments:
         for a, b in zip(seg, seg[1:]):
             ca, cb = a.coords(), b.coords()
-            assert angle(ca["C3'"], ca["O3'"], cb["P"]) == pytest.approx(119.4, abs=0.1)
+            assert angle(ca["C3'"], ca["O3'"], cb["P"]) == pytest.approx(125.8, abs=0.1)
             assert angle(ca["O3'"], cb["P"], cb["O5'"]) == pytest.approx(101.5, abs=0.1)
-    # C3'-exo sugars (S-type, phase 192, amplitude 36), chi -98 (the mirror image: the opposite signs)
-    sign = 1.0 if chirality == "D" else -1.0
+            assert angle(cb["P"], cb["O5'"], cb["C5'"]) == pytest.approx(113.8, abs=0.1)
+            assert dist(ca["C2'"], cb["OP2"]) == pytest.approx(3.00, abs=0.01)
+            epsilon = dihedral(ca["C4'"], ca["C3'"], ca["O3'"], cb["P"])
+            zeta = dihedral(ca["C3'"], ca["O3'"], cb["P"], cb["O5'"])
+            alpha = dihedral(ca["O3'"], cb["P"], cb["O5'"], cb["C5'"])
+            beta = dihedral(cb["P"], cb["O5'"], cb["C5'"], cb["C4'"])
+            assert [sign * x for x in (epsilon, zeta, alpha, beta)] == pytest.approx([155.2, -87.5, -56.5, -141.6],
+                                                                                     abs=0.15)
+    # C3'-exo sugars (S-type, phase 192, amplitude 36), chi -98
     for r in s.residues():
         c = r.coords()
         phase, amp = pucker({k: np.multiply(v, [sign, 1, 1]) for k, v in c.items()})
         assert phase == pytest.approx(192.0, abs=1.0) and amp == pytest.approx(36.0, abs=1.0)
         n_, x_ = ("N9", "C4") if base(r) in "AG" else ("N1", "C2")
         assert sign * dihedral(c["O4'"], c["C1'"], c[n_], c[x_]) == pytest.approx(-98.0, abs=1.0)
-        # OA -> OP1: the prochiral phosphate oxygens of a D-nucleotide (as the A-RNA), mirrored for L
+        # OA -> OP1: the prochiral phosphate oxygens of a D-nucleotide (as the A-RNA), mirrored for L; the turn about
+        # an axis through O5' leaves the volume as published
         if "P" in c:
             assert sign * pt.chiral_volume(c["P"], c["OP1"], c["OP2"], c["O5'"]) == pytest.approx(-2.42, abs=0.02)
     # Watson-Crick pairs of the fiber dyad
@@ -121,13 +132,15 @@ def test_b_dna_fiber_geometry(chirality):
     assert p[1][2] - p[0][2] == pytest.approx(-B.DNA_RISE, abs=0.01)
     # header and notes
     hand = "right-handed, D" if chirality == "D" else "left-handed, L: mirror image"
-    assert text.splitlines()[:4] == [
+    assert text.splitlines()[:5] == [
         f"REMARK 951 MDATK IDEAL B-FORM DNA ({hand}), duplex of {n} base pairs",
         "REMARK 951 ARNOTT B-DNA FIBER MONOMER, TWIST 36.0 DEG, RISE 3.38 A, HELIX AXIS Z",
+        "REMARK 951 PHOSPHATE TURNED 10 DEG ABOUT O3'-O5' (C2'(I)-OP2(I+1) 3.00 A)",
         f"REMARK 951 STRAND A {SEQ}", f"REMARK 951 STRAND B {B.complement(SEQ, 'dna')}"]
     assert notes[-1].startswith(f"Built an ideal B-form DNA duplex of {n} base pairs ({hand}):")
-    assert any(m.startswith("The Arnott B-DNA fiber model has C2'(i)-OP2(i+1) at 2.69 Å on each O3'-P step "
-                            f"({2 * (n - 1)} here") for m in notes)
+    assert notes[-2] == ("Phosphates turned 10° about O3'-O5' from the Arnott B-DNA fiber model to clear "
+                         "C2'(i)-OP2(i+1): 3.00 Å, C3'-O3'-P 125.8°, P-O5'-C5' 113.8°")
+    assert not any("2.69" in m for m in notes)
     # the sugar hand of every residue from its geometry
     chir = pt.assign_chirality(s)
     n_l = 2 * n if chirality == "L" else 0
@@ -145,10 +158,28 @@ def test_templates_and_atom_order():
         B.template("U", na="dna")
     with pytest.raises(B.BuildError, match=r"no template for base 'T' \(A, C, G, U\)"):
         B.template("T")
-    # the monomer of nucgen's $ABDNA: cylindrical coordinates as embedded
-    p = B.template("A", False, na="dna")["P"]
-    assert math.hypot(p[0], p[1]) == pytest.approx(8.91) and math.degrees(math.atan2(p[1], p[0])) == pytest.approx(
-        95.2) and p[2] == pytest.approx(2.08)
+    # the monomer of nucgen's $ABDNA: the table as published, every atom of the template at its cylindrical
+    # coordinates but the phosphate, which is the published one turned by DNA_PHOSPHATE_TURN (10°) about the line
+    # from O3' of the previous nucleotide (one step back on the screw) to O5' (Rodrigues' rotation, written here)
+    assert B._DNA_BACKBONE[0] == ("P", 8.91, 95.2, 2.08) and B.DNA_PHOSPHATE_TURN == 10.0
+    cyl = {name: np.array([r * math.cos(math.radians(phi)), r * math.sin(math.radians(phi)), z])
+           for name, r, phi, z in B._DNA_BACKBONE + B._DNA_BASES["A"]}
+    t = B.template("A", False, na="dna")
+    assert [n for n in t if not np.allclose(t[n], cyl[n], atol=1e-9)] == ["P", "OP1", "OP2"]
+    back = math.radians(B.DNA_TWIST)
+    o3 = np.array([[math.cos(back), -math.sin(back), 0.0], [math.sin(back), math.cos(back), 0.0], [0, 0, 1]]
+                  ) @ cyl["O3'"] + [0.0, 0.0, B.DNA_RISE]
+    k = (cyl["O5'"] - o3) / np.linalg.norm(cyl["O5'"] - o3)
+    th = math.radians(10.0)
+    for name in ("P", "OP1", "OP2"):
+        v = cyl[name] - o3
+        turned = o3 + v * math.cos(th) + np.cross(k, v) * math.sin(th) + k * (k @ v) * (1 - math.cos(th))
+        assert t[name] == pytest.approx(turned, abs=1e-9), name
+        assert dist(t[name], cyl[name]) == pytest.approx({"P": 0.176, "OP1": 0.382, "OP2": 0.381}[name], abs=1e-3)
+    # the A-RNA template keeps its table's phosphate
+    p = B.template("A", False)["P"]
+    assert math.hypot(p[0], p[1]) == pytest.approx(8.71) and math.degrees(math.atan2(p[1], p[0])) == pytest.approx(
+        70.5) and p[2] == pytest.approx(-3.75)
 
 
 @pytest.mark.parametrize("chirality", ["D", "L"])
@@ -244,6 +275,11 @@ def test_dna_terminal_names_single_residues_and_phosphate():
     assert [a.name for a in first.atoms][:4] == ["OP3", "P", "OP1", "OP2"]
     c = first.coords()
     assert dist(c["OP3"], c["P"]) == pytest.approx(1.48, abs=0.01)
+    # OP3 points at the O3' the previous nucleotide would have (the end of the axis of the phosphate turn): its angles
+    # at P are those of the next link's O3'
+    nxt = s.segments[0][1].coords()
+    for x in ("O5'", "OP1", "OP2"):
+        assert angle(c["OP3"], c["P"], c[x]) == pytest.approx(angle(c["O3'"], nxt["P"], nxt[x]), abs=0.15), x
     assert any("Amber 5' units have no 5'-phosphate" in n and "DA5/LDA5" in n for n in notes)
     assert not any(n.startswith("WARNING: 5'-terminal") for n in notes)  # the builder's own warning only
     assert "P" not in [a.name for a in dna("GACT")[0].segments[1][0].atoms]  # 5'-OH by default
@@ -386,13 +422,12 @@ def test_g_t_wobble_pairs_of_an_explicit_partner():
     assert ("1 G·T pair(s) built with an approximate wobble geometry (bases turned in their plane about C1'); "
             "minimise before production") in notes
     assert links(s) == pytest.approx([1.595] * 8, abs=0.002)  # the turns leave the backbone alone
-    # T·G with the T on strand 1 and two wobbles in a row, both hands: no heavy-atom contact of the model check
-    # but the fiber model's own C2'(i)-OP2(i+1)
+    # T·G with the T on strand 1 and two wobbles in a row, both hands: no heavy-atom clash of the model check (the
+    # phosphates turned as built)
     for seq, partner in (("GGCAT", "ATGTC"), ("CTGAG", "CTCGG"), ("CAGGAG", "CTTTTG"), ("CATTAG", "CTGGTG")):
         for chirality in "DL":
             r = MC.check_model(B.build_helix(seq, partner, na="dna", chirality=chirality))
-            assert r.failed == [] and r.clashes.clashes
-            assert all(c.first.endswith(":C2'") and c.second.endswith(":OP2") for c in r.clashes.clashes), seq
+            assert r.failed == [] and r.clashes.clashes == [], (seq, chirality)
     assert B.pair_types("CAGGAG", "CTTTTG", na="dna").count("wobble") == 2
 
 
@@ -508,22 +543,75 @@ def test_dna_citation():
 
 @pytest.mark.parametrize("chirality", ["D", "L"])
 @pytest.mark.parametrize("hydrogens", [False, True])
-def test_model_check_of_dna_duplexes(chirality, hydrogens):
-    """No failed gate, no link problem, hands as named; the only heavy-atom contacts are the fiber model's own
-    C2'(i)-OP2(i+1) (2.69 Å, one per O3'-P link; a 1-5 contact the Arnott B-DNA coordinates have)."""
+def test_model_check_of_dna_duplexes(chirality, hydrogens, monkeypatch):
+    """No failed gate, no link problem, hands as named and no heavy-atom clash, every contact 0.05 Å or more outside
+    the clash distance (the fiber model's C2'(i)-OP2(i+1) of 2.69 Å is 3.00 Å with the phosphate turned).  The
+    hydrogen contacts (reported only) have none of the phosphate either (H2'(i)-OP2(i+1) 2.24 Å); what they list is
+    the fiber model's own H1'(i)-H5'(i+1) (1.84 Å) and, before a thymine, the methyl against H2' and C8 / C6 of the
+    5' neighbour (1.94 / 2.48 Å), which no turn of the phosphate changes."""
     from mdatk import modelcheck as MC
 
     s, text, _notes = dna(chirality=chirality, hydrogens=hydrogens)
-    r = MC.check_model(text)
+    r = MC.check_model(text, MC.QCSettings(hydrogen_check=True))
     assert r.failed == [] and r.warnings == [] and r.nucleotides == 20
     assert r.backbone.problems == [] and r.backbone.strained == [] and r.backbone.pp == []
     assert {link.status for link in r.backbone.links} == {"ok"} and len(r.backbone.links) == 18
-    other = [c for c in r.clashes.clashes if not (c.first.endswith(":C2'") and c.second.endswith(":OP2"))]
-    assert other == []
-    steps = {(c.first.rsplit(":", 1)[0], c.second.rsplit(":", 1)[0]) for c in r.clashes.clashes}
-    want = {(f"{seg[0].chain}:{a.resseq}", f"{seg[0].chain}:{b.resseq}") for seg in s.segments
-            for a, b in zip(seg, seg[1:])}
-    assert steps == want and len(r.clashes.clashes) == 18
-    assert all(c.distance == pytest.approx(2.69, abs=0.01) for c in r.clashes.clashes)
+    assert r.clashes.clashes == []
     assert MC.hand_counts(r) == f"A:10{chirality} B:10{chirality}" and r.hand_problems == []
     assert all(h.call == h.name_hand == chirality for h in r.hands)  # 0DA ... read as L-DNA
+    # both clash distances 0.05 Å closer: still no heavy-atom clash, hydrogen contacts of the fiber model only
+    monkeypatch.setattr(MC, "H_CLASH", MC.H_CLASH - 0.05)
+    near = MC.check_model(text, MC.QCSettings(hydrogen_check=True, clash_tol=MC.CLASH_TOL - 0.05))
+    assert near.clashes.clashes == []
+    if not hydrogens:
+        assert r.hydrogens.hydrogens == 0 and near.hydrogens.clashes == []
+        return
+    steps = {(f"{seg[0].chain}:{a.resseq}", f"{seg[0].chain}:{b.resseq}") for seg in s.segments
+             for a, b in zip(seg, seg[1:])}
+    found = {}
+    for c in near.hydrogens.clashes:
+        (first, x), (second, y) = c.first.rsplit(":", 1), c.second.rsplit(":", 1)
+        assert (first, second) in steps, c  # residue i, then i + 1 of the same strand
+        found.setdefault((x, y), []).append(c.distance)
+    # GATCGTACGT / ACGTACGATC: 18 steps, 5 of them from a purine to a thymine
+    assert {k: len(v) for k, v in found.items()} == {("H1'", "H5'"): 18, ("H2'", "H71"): 5, ("C8", "H72"): 5}
+    for k, value in ((("H1'", "H5'"), 1.84), (("H2'", "H71"), 1.94), (("C8", "H72"), 2.48)):
+        assert found[k] == pytest.approx([value] * len(found[k]), abs=0.01), k
+    # as clashes (overlap 0.4 Å): H1'-H5' and the methyl's H71 at the H2' (0.40 Å), C8-H72 just outside (0.39)
+    assert sorted({(c.first.rsplit(":", 1)[1], c.second.rsplit(":", 1)[1]) for c in r.hydrogens.clashes}) == [
+        ("H1'", "H5'"), ("H2'", "H71")] and len(r.hydrogens.clashes) == 23
+
+
+def test_dna_phosphate_turn_is_the_smallest_whole_turn_clear_of_the_clash_distances(monkeypatch):
+    """DNA_PHOSPHATE_TURN: of the whole turns from 5 to 10 degrees, the smallest that keeps every contact of P, OP1
+    and OP2 0.05 Å outside the model check's clash distance, heavy atoms (C2'(i)-OP2(i+1): from 6 degrees) and
+    hydrogen contacts (H2'(i)-OP2(i+1): from 10) both; the contacts of the other atoms do not change with it."""
+    from mdatk import modelcheck as MC
+
+    limits = (MC.CLASH_TOL - 0.05, MC.H_CLASH - 0.05)
+    monkeypatch.setattr(MC, "H_CLASH", 0.0)  # every hydrogen overlap, and with clash_tol 0 every heavy-atom one
+    settings = MC.QCSettings(hydrogen_check=True, clash_tol=0.0, checks=("clashes",))
+
+    def phosphate(c):
+        return any(x.rsplit(":", 1)[1] in ("P", "OP1", "OP2") for x in (c.first, c.second))
+
+    worst, others = {}, {}
+    saved = B.DNA_PHOSPHATE_TURN
+    try:
+        for turn in range(5, 11):
+            B.DNA_PHOSPHATE_TURN = float(turn)
+            B._dna_phosphate.cache_clear()
+            B._template.cache_clear()
+            r = MC.check_model(B.build_helix(SEQ, na="dna", hydrogens=True), settings)
+            lists = (r.clashes.clashes, r.hydrogens.clashes)
+            worst[turn] = [max((c.overlap for c in items if phosphate(c)), default=0.0) for items in lists]
+            others[turn] = [sorted(c for c in items if not phosphate(c)) for items in lists]
+    finally:
+        B.DNA_PHOSPHATE_TURN = saved
+        B._dna_phosphate.cache_clear()
+        B._template.cache_clear()
+    clear = [turn for turn, (heavy, h) in worst.items() if heavy <= limits[0] and h <= limits[1]]
+    assert clear[0] == B.DNA_PHOSPHATE_TURN == 10
+    assert worst[5][0] > limits[0] >= worst[6][0]  # the heavy atoms alone: 6 degrees
+    assert worst[9][1] == pytest.approx(0.360, abs=0.003) and worst[10] == pytest.approx([0.224, 0.328], abs=0.003)
+    assert all(others[turn] == others[10] for turn in others)
