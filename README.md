@@ -1780,7 +1780,11 @@ chain, number and insertion code, and every range is written as for the PDB tool
   from an H-bonded atom, against its partner and no closer than the H-bond itself, is the same contact
   and is not counted either. Atoms up to three bonds apart are left out, along the bonds of the
   nucleotide templates and the O3′–P links of each TER segment, so neighbouring residues (stacking,
-  sugar–base) and all chains are checked. Waters and ions are skipped unless asked for (`--waters`,
+  sugar–base) and all chains are checked. LINK records add the bonds the polymer order does not imply
+  (the PO2 phosphate of the builder's 3′–3′ and 5′–5′ chimeras): they are listed with their lengths,
+  with a warning beyond `--link-fail`, and an oxygen bonded through one (the bridge's O3′ / O5′) is no
+  hydroxyl donor; a record that names an atom the check leaves out, or an ion (its coordination is what
+  `--ions check` measures), is not used. Waters and ions are skipped unless asked for (`--waters`,
   `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is coordination).
   Hydrogens are never part of it: their positions differ between programs, and the builder's ideal
   A-form helix (the Arnott fiber) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
