@@ -422,6 +422,202 @@ def test_hydrogen_check_cli(tmp_path, capsys):
         main(["pdb", "qc", str(pdb), "--hydrogens"])
 
 
+# --- LINK records -------------------------------------------------------------------------------------------
+
+def _turned(v, axis, degrees):
+    """``v`` turned about the unit vector ``axis`` by ``degrees`` (Rodrigues)."""
+    t = math.radians(degrees)
+    cross = [axis[1] * v[2] - axis[2] * v[1], axis[2] * v[0] - axis[0] * v[2], axis[0] * v[1] - axis[1] * v[0]]
+    dot = sum(axis[k] * v[k] for k in range(3))
+    return [v[k] * math.cos(t) + cross[k] * math.sin(t) + axis[k] * dot * (1 - math.cos(t)) for k in range(3)]
+
+
+def _bridged(end="3", hydrogens=False, link=True):
+    """Strands A:1-3 and B:1-3 joined 3'-3' (``end`` '3') or 5'-5' ('5') by a PO2 residue, A:4 / A:0, as in
+    the structure builder's chimeras.  P sits where strand A's next phosphate is in the A-form (that of A:4,
+    or the 5'-phosphate of A:1), so the O-P bond is the helix's own (3'-3': O3'(A:3)-P 1.59 Å, H3'(A:3)...P
+    2.54 Å); strand B is the image of strand A under the two-fold axis through P that bisects O-P-O, the
+    O-P-O plane turned away from strand A (100 / 20 degrees from the helix's own), so both ends are alike;
+    OP1 / OP2 1.48 Å from P, opposite the two ester oxygens, which keep no hydroxyl hydrogen.  ``link``:
+    LINK records for both bonds, as pdbtools.link_line writes them."""
+    three = end == "3"
+    k, oname = (3, "O3'") if three else (1, "O5'")
+    seq = "AAAA" if three else "AAA"  # A:4 gives the 3' bridge its place, then goes
+    s = helix(seq, partner="none", hydrogens=hydrogens, phosphate5=not three)
+    b = helix(seq, partner="none", chains="B", hydrogens=hydrogens, phosphate5=not three)
+    ref = residue(s, "A", 4 if three else 1)
+    p = atom(ref, "P").xyz
+    d1 = _unit([atom(residue(s, "A", k), oname).xyz[x] - p[x] for x in range(3)])
+    second = atom(ref, "O5'" if three else "OP3").xyz  # the helix's own other oxygen on P (O5', or OP3)
+    d2 = _turned(_unit([second[x] - p[x] for x in range(3)]), d1, 100.0 if three else 20.0)
+    n = _unit([d1[x] + d2[x] for x in range(3)])
+    m = _unit([d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0]])
+    c, si = math.cos(math.radians(57.7)), math.sin(math.radians(57.7))
+    po2 = pt.Residue("PO2", "A", 4 if three else 0)
+    for name, sign in (("P", 0), ("OP1", 1), ("OP2", -1)):
+        po2.atoms.append(pt.Atom("HETATM", name, "", "   " + "0" * 24 + "  1.00  0.00", name[0]))
+        place(po2.atoms[-1], [p[x] + (1.48 * (sign * si * m[x] - c * n[x]) if sign else 0.0) for x in range(3)])
+    drop = {"HO3'"} if three else {"P", "OP1", "OP2", "OP3", "HO5'"}
+    for strand in (s, b):
+        strand.segments[0] = strand.segments[0][:3]
+        for res in strand.segments[0]:
+            if res.resseq == k:
+                res.atoms = [a for a in res.atoms if a.name not in drop]
+    for res in b.residues():  # the two-fold rotation about n through P
+        for a in res.atoms:
+            v = [a.xyz[x] - p[x] for x in range(3)]
+            along = sum(v[x] * n[x] for x in range(3))
+            place(a, [p[x] + 2 * along * n[x] - v[x] for x in range(3)])
+    s.segments[0].insert(3 if three else 0, po2)
+    s.segments += b.segments
+    if link:
+        s.header += [pt.link_line(pt.LinkAtom(oname, residue(s, chain, k).name, chain, k),
+                                  pt.LinkAtom("P", "PO2", "A", po2.resseq), 1.6) for chain in "AB"]
+    return reread(s)
+
+
+@pytest.mark.parametrize("end", ["3", "5"])
+def test_link_records_are_bonds_of_the_clash_check(end):
+    """The builder's 3'-3' and 5'-5' chimeras bond a PO2 phosphate to the O3' / O5' of two chains and write
+    LINK records for it: the check took those 1.6 Å bonds for clashes (and the rest of the junction for
+    hydrogen bonds of terminal hydroxyls).  Bonded, the junction is left out like any backbone link."""
+    k, oname, po2 = (3, "O3'", "A:4") if end == "3" else (1, "O5'", "A:0")
+    ends = [f"A:{k}:{oname}", f"B:{k}:{oname}"]
+    plain = mc.check_clashes(_bridged(end, link=False))
+    assert pairs(plain) == {tuple(sorted((e, f"{po2}:P"))) for e in ends}
+    assert all(1.55 < c.distance < 1.65 for c in plain.clashes) and plain.hbond_contacts and plain.links == []
+    linked = mc.check_clashes(_bridged(end))
+    assert linked.clashes == linked.hbond_contacts == linked.shadows == [] and linked.atoms == plain.atoms
+    assert [(b.first, b.second) for b in linked.links] == [(e, f"{po2}:P") for e in ends]
+    assert all(1.55 < b.distance < 1.65 for b in linked.links) and linked.links_unused == 0
+    # a chain end's O3' / O5' is a hydroxyl donor, unless a LINK record bonds it
+    for s, donor in ((_bridged(end, link=False), True), (_bridged(end), False)):
+        model = mc.build_model(s, mc.QCSettings())
+        assert [model.donor[model.atom_index[model.labels.index(e[:3])][oname]] for e in ends] == [donor] * 2
+    # one model: no clash, the bonds listed with their lengths, nothing to warn about or note
+    st = mc.QCSettings(max_clashes=0)
+    assert mc.check_model(_bridged(end, link=False), st, path="plain").status == "fail"
+    r = mc.check_model(_bridged(end), st, path="chimera")
+    assert r.status == "pass" and r.warnings == [] and r.notes == []
+    text = mc.text_report(r, st)
+    assert ("LINK bonds (from the LINK records; atoms up to three bonds apart through them are not "
+            "checked): 2") in text
+    assert f"      {ends[0]:<14s} - {po2 + ':P':<14s} {linked.links[0].distance:.2f} A\n" in text
+    data = mc.report_data(r)["clashes"]
+    assert [(b["first"], b["second"]) for b in data["link_bonds"]] == [(e, f"{po2}:P") for e in ends]
+    assert data["link_records_unused"] == 0 and data["count"] == 0
+
+
+def test_link_records_are_bonds_of_the_hydrogen_check():
+    """H3'(i)...P(i+1) is 2.54 Å in the A-form, three bonds apart through O3'-P: the 3'-3' bridge puts it at
+    both 3' ends, a 0.43 Å overlap unless the LINK records bond O3'-P."""
+    junction = {("A:3:H3'", "A:4:P"), ("A:4:P", "B:3:H3'")}
+    plain = mc.check_hydrogen_contacts(_bridged(hydrogens=True, link=False))
+    linked = mc.check_hydrogen_contacts(_bridged(hydrogens=True))
+    assert junction <= pairs(plain) and not junction & pairs(linked)
+    assert pairs(linked) == pairs(plain) - junction  # the fiber helix's own H2'(i)...H8(i+1) stay
+    assert (linked.atoms, linked.hydrogens) == (plain.atoms, plain.hydrogens) == (197, 68)
+
+
+def test_an_oxygen_bonded_through_a_link_record_is_no_donor():
+    """A phosphate oxygen 2.6 Å from the O3' that the bridge bonds: two acceptors, a clash.  Read as a 3'-OH
+    (no LINK record) it was a hydrogen bond."""
+    def check(link):
+        s = _bridged(link=link)
+        a3 = residue(s, "A", 3)
+        o, c, p = atom(a3, "O3'").xyz, atom(a3, "C3'").xyz, atom(residue(s, "A", 4), "P").xyz
+        u, w = _unit([c[x] - o[x] for x in range(3)]), _unit([p[x] - o[x] for x in range(3)])
+        away = _unit([-u[x] - w[x] for x in range(3)])  # from O3', away from both of its bonds
+        place(atom(residue(s, "B", 2), "OP1"), [o[x] + 2.6 * away[x] for x in range(3)])
+        return mc.check_clashes(reread(s))
+
+    plain, linked = check(False), check(True)
+    assert ("A:3:O3'", "B:2:OP1") in {(k.first, k.second) for k in plain.hbond_contacts}
+    assert ("A:3:O3'", "B:2:OP1") not in pairs(plain)
+    assert [(k.first, k.second, k.kind) for k in linked.clashes] == [("A:3:O3'", "B:2:OP1", "steric")]
+    assert linked.hbond_contacts == []
+
+
+def test_a_link_bond_longer_than_the_break_length_is_a_warning():
+    """No new gate: the model passes as it did, with a warning and the length in the list."""
+    s = _bridged()
+    p, o3 = atom(residue(s, "A", 4), "P").xyz, atom(residue(s, "B", 3), "O3'").xyz
+    u = _unit([o3[x] - p[x] for x in range(3)])
+    for res in [r for r in s.residues() if r.chain == "B"]:
+        shift(res, [(3.5 - math.dist(p, o3)) * x for x in u])
+    s = reread(s)
+    st = mc.QCSettings(max_clashes=0)
+    r = mc.check_model(s, st, path="pulled")
+    assert r.status == "pass" and r.failed == []
+    assert r.warnings == ["1 LINK bond(s) longer than 3 A (B:3:O3'-A:4:P 3.50 A)"]
+    assert "      B:3:O3'        - A:4:P          3.50 A (longer than 3 A)\n" in mc.text_report(r, st)
+    row = dict(zip(mc.report_header(), mc.report_row(r)))
+    assert (row["status"], row["warnings"]) == ("pass", r.warnings[0])
+    assert mc.check_model(s, mc.QCSettings(link_fail=4.0)).warnings == []  # the break length of the settings
+
+
+def test_link_records_of_ions_and_of_atoms_not_checked_change_nothing():
+    """A LINK record that names an atom the check leaves out (a water, an ion) or does not find (a chain or
+    an atom the model lacks, another residue name) is not used, only noted; nor is one that names an ion
+    when ions are checked, so a Mg2+ pressed into its phosphate oxygen stays a clash (LINK records of
+    deposited structures often give metal coordination).  Otherwise the results are those of the model
+    without LINK records, which is reported as before: no LINK line, no LINK keys."""
+    s = helix(SEQ, partner="none")
+
+    def outward(k, name, d):  # d from a phosphate oxygen of A:k, away from its phosphorus
+        o, p = atom(residue(s, "A", k), name).xyz, atom(residue(s, "A", k), "P").xyz
+        return [o[i] + d * (o[i] - p[i]) / math.dist(o, p) for i in range(3)]
+
+    mg = pt.Residue("MG", "M", 1, atoms=[pt.Atom("HETATM", "MG", "", "   " + "0" * 24, "MG")])
+    place(mg.atoms[0], outward(9, "OP1", 1.3))
+    water = pt.Residue("HOH", "W", 1, atoms=[pt.Atom("HETATM", "O", "", "   " + "0" * 24, "O")])
+    place(water.atoms[0], outward(3, "OP2", 2.6))
+    s.segments += [[mg], [water]]
+    plain = reread(s)
+    name = {k: residue(s, "A", k).name for k in (1, 2, 3, 5, 9)}
+    records = [(pt.LinkAtom("MG", "MG", "M", 1), pt.LinkAtom("OP1", name[9], "A", 9)),
+               (pt.LinkAtom("O", "HOH", "W", 1), pt.LinkAtom("OP2", name[3], "A", 3)),
+               (pt.LinkAtom("O3'", name[2], "A", 2), pt.LinkAtom("P", "PO2", "Z", 1)),
+               (pt.LinkAtom("O3'", "U", "A", 2), pt.LinkAtom("P", name[5], "A", 5)),  # A:2 is a G
+               (pt.LinkAtom("P", name[1], "A", 1), pt.LinkAtom("O3'", name[9], "A", 9))]  # A:1 has a 5'-OH
+    s.header += [pt.link_line(a, b) for a, b in records]
+    linked = reread(s)
+    assert len(pt.link_records(linked)) == 5 and name[2] == "G"
+    for st in (mc.QCSettings(), mc.QCSettings(ions="check")):
+        a, b = mc.check_model(plain, st, path="m"), mc.check_model(linked, st, path="m")
+        assert b.clashes.links == [] and b.clashes.links_unused == 5 and a.clashes.links_unused == 0
+        assert ((a.clashes.clashes, a.clashes.hbond_contacts, a.clashes.shadows, a.failed, a.warnings)
+                == (b.clashes.clashes, b.clashes.hbond_contacts, b.clashes.shadows, b.failed, b.warnings))
+        assert b.notes == a.notes + ["5 LINK record(s) not used as bonds: they name an atom the clash check "
+                                     "leaves out (a water or ion unless asked for, a hydrogen) or does not "
+                                     "find, or an ion, whose coordination the ion check measures"]
+        assert mc.text_report(b, st).replace(f"  note: {b.notes[-1]}\n", "") == mc.text_report(a, st)
+        assert mc.report_row(a) == mc.report_row(b)
+        data, before = mc.report_data(b), mc.report_data(a)
+        assert data["clashes"].pop("link_bonds") == [] and data["clashes"].pop("link_records_unused") == 5
+        assert data.pop("notes") == before.pop("notes") + [b.notes[-1]] and data == before
+        assert "LINK" not in mc.text_report(a, st) and "link_bonds" not in mc.report_data(a)["clashes"]
+    assert ("A:9:OP1", "M:1:MG") in pairs(mc.check_clashes(linked, mc.QCSettings(ions="check")))
+
+
+def test_link_records_in_the_command_line_and_the_step_helper(tmp_path, capsys):
+    """'mdatk pdb qc' and the model-check step's standalone helper (the PDB tools and the model checks in one
+    file) read the LINK records alike."""
+    from mdatk.cli import main
+    from mdatk.workflows.modelcheck import helper_source
+    pdb = tmp_path / "chimera.pdb"
+    pdb.write_text(pt.write_pdb(_bridged()))
+    assert main(["pdb", "qc", str(pdb), "--max-clashes", "0", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)[0]
+    assert data["status"] == "pass" and [b["second"] for b in data["clashes"]["link_bonds"]] == ["A:4:P"] * 2
+    script = tmp_path / "helper.py"
+    script.write_text(helper_source("test copy"))
+    proc = subprocess.run([sys.executable, "-I", str(script), str(pdb), "--max-clashes", "0"],
+                          capture_output=True, text=True, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "LINK bonds (from the LINK records" in proc.stdout and "status: PASS" in proc.stdout
+
+
 # --- backbone -----------------------------------------------------------------------------------------------
 
 def test_links_follow_ter_segments_not_numbers():

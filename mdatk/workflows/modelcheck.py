@@ -149,7 +149,8 @@ class ModelCheckTool(Tool):
                    "kcal/mol at 2.0 Å, 180 at 2.5 Å, 440 at 3.0 Å (a warning, not a failure).", minimum=1.0,
                    maximum=10.0, step=0.1, digits=2, unit="Å"),
             Option("link_fail", "Longest O3′–P link before a break", "float", modelcheck.LINK_FAIL,
-                   "Longer is a chain break (usually two pieces), which fails the backbone gate.",
+                   "Longer is a chain break (usually two pieces), which fails the backbone gate. A bond of "
+                   "a LINK record (a chimera's 3′–3′ or 5′–5′ phosphate) longer than this is a warning.",
                    minimum=1.0, maximum=20.0, step=0.1, digits=2, unit="Å"),
             Option("pp_min", "Shortest P–P spacing", "float", modelcheck.PP_RANGE[0],
                    "Consecutive phosphorus atoms closer than this are reported.", minimum=1.0, maximum=10.0,
