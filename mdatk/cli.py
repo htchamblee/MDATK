@@ -631,6 +631,12 @@ def cmd_build(args) -> int:
         na = builder.check_na(getattr(args, "na", "rna"))  # the step-log title says D-DNA / L-DNA
         kind = builder.helix_kind(getattr(args, "pairing", "wc"), getattr(args, "triplex", None), na)
         title = f"Ideal {kind} {args.chirality}-{na.upper()} helix {args.seq.strip()}"
+    elif args.build_command == "chimera":
+        from . import chimera
+        try:  # a design that does not parse fails inside the logged step, with its own message
+            title = f"Chimera {chimera.describe(args.design, getattr(args, 'na', 'rna'))}"
+        except builder.BuildError:
+            title = f"Chimera {args.design.strip()}"
     elif args.build_command == "mutate":
         title = f"Mutation of {os.path.basename(args.input)}: {args.mutations.strip()}"
     else:
@@ -647,6 +653,11 @@ def cmd_build(args) -> int:
             other = getattr(args, "pairing", "wc") != "wc" or getattr(args, "triplex", "none") not in (None, "", "none")
             fiber = "arnott-bdna" if na == "dna" else "arnott-arna"
             entry.citations = keys_for([fiber] + (["pdb-4jrd"] if other else []))  # the template sources
+        elif args.build_command == "chimera":
+            from .citations import keys_for
+            fibers = {"rna": "arnott-arna", "dna": "arnott-bdna"}  # the helices of the segments, in order of use
+            used = chimera.nucleic_acids(args.design, getattr(args, "na", "rna"))
+            entry.citations = keys_for([fibers[n] for n in used])
     if res.cc is not None:
         print(json.dumps({"output": os.path.abspath(args.output), "cc": round(res.cc, 4)}, indent=2))
     return 0
@@ -1222,8 +1233,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands
-    p = sub.add_parser("build", help="starting structures: ideal A-form RNA / B-form DNA helices (D / L), base "
-                                     "mutations, rigid-body fit into a density map")
+    p = sub.add_parser("build", help="starting structures: ideal A-form RNA / B-form DNA helices (D / L), D/L "
+                                     "chimeras, base mutations, rigid-body fit into a density map")
     bsub = p.add_subparsers(dest="build_command", metavar="action")
     for c in build_commands(bsub):
         c.add_argument("--project", "-p", "--params", dest="params",

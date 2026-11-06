@@ -69,6 +69,10 @@ Rigid-body fit (:func:`fit_to_map`)
     The global (rotations x FFT translations, then local refinement) or local search of
     :mod:`mdatk.density` ('mdatk density fit'); only the coordinates of the written file change.
 
+D/L chimeras (:mod:`mdatk.chimera`, 'mdatk build chimera')
+    Helices of this module, of either hand and nucleic acid, joined through strand 1 by 3'-5', 5'-3', 3'-3' or
+    5'-5' links (a bridging phosphate PO2 with LINK records for the last two).
+
 Everything runs locally; nothing here calls an external program.
 """
 
@@ -2478,7 +2482,10 @@ class BuildOutcome:
 
 
 def add_commands(sub) -> list:
-    """Register 'helix', 'mutate' and 'fit' on an argparse sub-parser collection (returns the parsers)."""
+    """Register 'helix', 'chimera', 'mutate' and 'fit' on an argparse sub-parser collection (returns the
+    parsers)."""
+    from .chimera import add_command as chimera_command
+
     h = sub.add_parser("helix", help="ideal helix (D or L), single strand or duplex: A-form RNA (also other "
                                      "pairings and triplexes) or B-form DNA")
     h.add_argument("--seq", "--sequence", dest="seq", required=True, help="strand 1, 5'->3' (e.g. GGCAU)")
@@ -2507,6 +2514,7 @@ def add_commands(sub) -> list:
     h.add_argument("--phosphate5", action="store_true", help="keep a 5'-phosphate (P, OP1, OP2, OP3)")
     h.add_argument("--hydrogens", action="store_true", help="add all hydrogens (default: heavy atoms only)")
     h.add_argument("--output", "-o", required=True, help="output PDB")
+    c = chimera_command(sub)
     m = sub.add_parser("mutate", help="swap bases keeping the glycosidic frame (with compensatory partners)")
     m.add_argument("input", help="PDB file")
     m.add_argument("mutations", help="e.g. 'A:5G, B:20C'")
@@ -2522,11 +2530,11 @@ def add_commands(sub) -> list:
                    "refinement of the model as placed")
     f.add_argument("--step", type=float, default=30.0, help="angular step of the global search (degrees)")
     f.add_argument("--output", "-o", required=True, help="output PDB")
-    return [h, m, f]
+    return [h, c, m, f]
 
 
 def run(args, progress: Optional[Callable[[float, str], None]] = None) -> BuildOutcome:
-    """Execute a parsed 'helix' / 'mutate' / 'fit' command and write its output file."""
+    """Execute a parsed 'helix' / 'chimera' / 'mutate' / 'fit' command and write its output file."""
     cmd = args.build_command
     if cmd == "helix":
         notes: List[str] = []
@@ -2535,6 +2543,10 @@ def run(args, progress: Optional[Callable[[float, str], None]] = None) -> BuildO
                            notes=notes, pairing=getattr(args, "pairing", "wc"),
                            triplex=getattr(args, "triplex", None), third=getattr(args, "third", "auto"),
                            na=getattr(args, "na", "rna"))
+        out = BuildOutcome(text, notes)
+    elif cmd == "chimera":
+        from .chimera import run_command
+        text, notes = run_command(args, progress)
         out = BuildOutcome(text, notes)
     elif cmd == "mutate":
         text, notes = mutate(args.input, args.mutations, compensatory=not args.no_compensatory,
