@@ -201,8 +201,8 @@ class MainWindow(Gtk.ApplicationWindow):
                                "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files, "
                                "in RNAdo"),
                               ("Structure builder: open in RNAdo…", lambda: self.open_in_rnado("builder"),
-                               "Ideal A-form helices (D / L), base mutations and rigid-body fits into a "
-                               "density map, in RNAdo"),
+                               "Ideal helices (A-form RNA, B-form DNA; D / L), D/L chimeras, base mutations "
+                               "and rigid-body fits into a density map, in RNAdo"),
                               (None, None, None),
                               ("Use the plan's files as inputs", self.use_plan_inputs,
                                "Take the topology and trajectories that the plan's MDATK analysis step reads "

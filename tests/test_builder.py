@@ -536,7 +536,7 @@ def test_builder_window_builds_and_writes_a_helix(main_window, tmp_path):
     entry = read_log(main_window.project_path)[-1]
     assert entry["step"] == "build helix" and str(out) in entry["files"]
     # the mutate page on the written helix, with the suggested output name
-    dlg.notebook.set_current_page(1)
+    dlg.set_page("mutate")
     assert dlg.page() == "mutate"
     dlg.mut_input.entry.set_text(str(out))
     assert dlg.mut_out.entry.get_text().endswith("gui_helix_mut.pdb")

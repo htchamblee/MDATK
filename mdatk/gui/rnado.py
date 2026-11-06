@@ -201,8 +201,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                  "(Ctrl+Shift+W)", "document-properties-symbolic"),
                 ("PDB clean-up", self.open_pdb_tools, "Repair, rename (D/L-RNA naming schemes), re-chain "
                  "and renumber PDB files", "edit-clear-all-symbolic"),
-                ("Structure builder", self.open_builder, "Ideal A-form helices (D / L), base mutations and "
-                 "rigid-body fits into a density map", "applications-science-symbolic")):
+                ("Structure builder", self.open_builder, "Ideal helices (A-form RNA, B-form DNA; D / L), D/L "
+                 "chimeras, base mutations and rigid-body fits into a density map", "applications-science-symbolic")):
             tools.pack_start(W.button(text, cb, tip, icon), False, False, 0)
         hb.pack_end(tools)
 
