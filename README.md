@@ -1703,9 +1703,16 @@ keeps coordinates, occupancies and B-factors verbatim:
   name), `--drop-virtual` the VRT / XXX residues Rosetta writes into density-scored models (no atoms of
   the molecule: tleap cannot type them, and a map-model score would read them as atoms).
 - **CONECT** records are stripped by default (until final deposition processing).
+- **LINK records** (bonds the polymer order does not imply, such as the PO2 phosphate of the builder's
+  3′–3′ and 5′–5′ chimeras) follow their residues through every renaming, renumbering, chain change and
+  removal, so that the model check, which finds a record's atoms by chain, number, insertion code and
+  residue name, still bonds them: only the residue columns of a record are rewritten, a record whose residue
+  or atom was removed is dropped, and one that names no atom of the model is kept as it was, each with a
+  note. LINK lines after the coordinates are read and followed where they are.
 - **5′ phosphates**: `--strip-5p` (window: *Remove 5′-terminal phosphates*, ticked automatically for
   the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
-  (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was.
+  (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was. A phosphate that a LINK
+  record bonds to another residue (the 5′–5′ phosphate of a chimera) is a link, not a 5′ end, and stays.
 - **Chains**: restore the chain ids of a cpptraj PDB by copying them residue by residue from a
   reference (e.g. the structure the topology was built from), from a list per TER segment, or as
   A, B, C …; split chains per TER segment or at a residue (new ids); combine chains; sort them.

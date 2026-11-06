@@ -33,6 +33,10 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
 
 * Chains: restore ids of cpptraj output (from a reference PDB, a list per TER segment or A, B, C ...),
   split, combine and order; residue renumbering; SEQRES records and FASTA text.
+* LINK records (bonds the polymer order does not imply, such as the 3'-3' / 5'-5' phosphate of a chimera)
+  follow the residues they name: the operations that rename, renumber, re-chain or remove residues rewrite
+  their residue columns (:func:`follow_links`); a record whose residue or atom is removed is dropped, one that
+  names no atom of the model stays as it was, each with a note.
 * Hydrogens and Rosetta's virtual residues (VRT, XXX) can be removed; :func:`infer_base` tells the base
   from the atom names when a residue name is not recognised.
 * Per-residue sugar hands (:func:`residue_hands`): the three-centre call, the C4' hand alone, epimers and
@@ -46,7 +50,9 @@ chains them for the CLI / GUI / planner.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import functools
 import math
 import os
 import re
@@ -669,22 +675,235 @@ def _link_atom(line: str, start: int) -> Optional[LinkAtom]:
     return LinkAtom(name.replace("*", "'"), resname, chain, resseq, line[start + 14:start + 15].strip())
 
 
+def _is_link(line: str) -> bool:
+    return line[:6].strip().upper() == "LINK"
+
+
+def _link_record(line: str) -> Optional[LinkRecord]:
+    """The record of a LINK line; None when an atom field cannot be read."""
+    line = line.ljust(80)
+    first, second = _link_atom(line, 12), _link_atom(line, 42)
+    if first is None or second is None:
+        return None
+    try:
+        length: Optional[float] = float(line[73:78])
+    except ValueError:
+        length = None
+    return LinkRecord(first, second, length)
+
+
 def link_records(structure: Structure) -> List[LinkRecord]:
-    """The LINK records of the header (malformed ones skipped)."""
-    out = []
-    for line in structure.header:
-        if line[:6].strip().upper() != "LINK":
-            continue
-        line = line.ljust(80)
-        first, second = _link_atom(line, 12), _link_atom(line, 42)
-        if first is None or second is None:
-            continue
-        try:
-            length: Optional[float] = float(line[73:78])
-        except ValueError:
-            length = None
-        out.append(LinkRecord(first, second, length))
-    return out
+    """The LINK records of the header, then those that :func:`read_pdb` kept in the trailer (malformed ones
+    skipped).
+
+    The PDB format puts LINK records in the header, but a record a script appended after the coordinates
+    names the same bond: read where it is, it is a bond of the model check and follows the residues
+    (:func:`follow_links`) like one in the header, instead of going stale unnoticed in the trailer, which the
+    tools write back as it was."""
+    lines = [line for line in structure.header + structure.trailer if _is_link(line)]
+    return [record for record in map(_link_record, lines) if record is not None]
+
+
+# Old spellings of atom names (PDB format 2: O1P ..., the thymine methyl C5M), read as the new ones when a LINK
+# record is matched with the atoms of a model, as the model check matches them
+_LINK_NAME_ALIASES = {"O1P": "OP1", "O2P": "OP2", "O3P": "OP3", "C5M": "C7"}
+
+
+def _link_name(name: str) -> str:
+    name = name.strip().replace("*", "'")
+    return _LINK_NAME_ALIASES.get(name, name)
+
+
+def _link_text(record: LinkRecord) -> str:
+    """'A:3 G O3' - A:4 PO2 P' for notes."""
+    return " - ".join(f"{a.chain or '_'}:{a.resseq}{a.icode} {a.resname} {a.name}"
+                      for a in (record.first, record.second))
+
+
+class _FollowedLink(NamedTuple):
+    """A LINK line as read and the residues and atom names its two ends name (None: an end names no atom)."""
+    line: str
+    record: Optional[LinkRecord]  # None: an atom field cannot be read (no record: left alone)
+    ends: Optional[Tuple[Tuple[Residue, str], Tuple[Residue, str]]]
+
+
+def _residue_index(structure: Structure) -> Dict[Tuple[str, int, str], List[Residue]]:
+    index: Dict[Tuple[str, int, str], List[Residue]] = {}
+    for res in structure.residues():
+        index.setdefault((res.chain, res.resseq, res.icode or ""), []).append(res)
+    return index
+
+
+def _find_link_atom(index: Dict[Tuple[str, int, str], List[Residue]], end: LinkAtom
+                    ) -> Optional[Tuple[Residue, str]]:
+    """The residue and atom name an end of a LINK record names: the first residue in file order with its chain,
+    number, insertion code and name (:meth:`LinkAtom.matches`) that has the atom, as the model check bonds it."""
+    name = _link_name(end.name)
+    for res in index.get((end.chain, end.resseq, end.icode or ""), ()):
+        if end.matches(res) and any(_link_name(a.name) == name for a in res.atoms):
+            return res, name
+    return None
+
+
+def _has_link_atom(present: Dict[int, Residue], end: Tuple[Residue, str]) -> bool:
+    res, name = end
+    return id(res) in present and any(_link_name(a.name) == name for a in res.atoms)
+
+
+def _link_now(link: _FollowedLink) -> LinkRecord:
+    """The record of a followed LINK line for its residues as they are now."""
+    first, second = (LinkAtom(end.name, res.name.strip(), res.chain, res.resseq, res.icode or "")
+                     for end, (res, _name) in zip((link.record.first, link.record.second), link.ends))
+    return LinkRecord(first, second, link.record.length)
+
+
+def _relinked(link: _FollowedLink) -> str:
+    """The LINK line with the residue columns of each end (18-27 / 48-57) written for its residue as it is now.
+    An end whose residue kept its name, chain id, number and insertion code keeps its columns, and so do the
+    atom names, alternate locations, symmetry operators and the length: the line is rewritten in place."""
+    line, changed = link.line, False
+    for start, end, (res, _name) in zip((17, 47), (link.record.first, link.record.second), link.ends):
+        if (res.name.strip(), res.chain, res.resseq, res.icode or "") != (end.resname, end.chain, end.resseq,
+                                                                          end.icode):
+            line = line.ljust(start + 10)
+            line, changed = line[:start] + _id_columns(res) + line[start + 10:], True
+    return line.rstrip() if changed else line
+
+
+class _LinkFollower:
+    """The LINK records of a structure tied to the residues and atoms they name (:func:`follow_links`).
+
+    Every record is resolved once, before the operations run: an operation in between can leave two residues
+    with one chain id, number and name (combining chains before renumbering), and a record resolved again
+    after it would follow the wrong residue."""
+
+    def __init__(self, structure: Structure):
+        index = _residue_index(structure)
+        self.links: List[_FollowedLink] = []
+        for line in structure.header + structure.trailer:
+            if not _is_link(line):
+                continue
+            record = _link_record(line)
+            ends = None
+            if record is not None:
+                first, second = _find_link_atom(index, record.first), _find_link_atom(index, record.second)
+                ends = (first, second) if first and second else None
+            self.links.append(_FollowedLink(line, record, ends))
+
+    def partners(self, structure: Structure, res: Residue, names: Sequence[str]) -> List[Residue]:
+        """The residues that LINK records bond the atoms ``names`` of ``res`` to (both atoms still there)."""
+        wanted = {_link_name(n) for n in names}
+        present = {id(r): r for r in structure.residues()}
+        out = []
+        for link in self.links:
+            if link.ends is None or not all(_has_link_atom(present, end) for end in link.ends):
+                continue
+            (first, first_atom), (second, second_atom) = link.ends
+            if first is res and first_atom in wanted:
+                out.append(second)
+            if second is res and second_atom in wanted:
+                out.append(first)
+        return out
+
+    def rewrite(self, structure: Structure) -> List[str]:
+        """Rewrite the LINK lines of the header and trailer, in place, for the residues as they are now; drop
+        those whose residue or atom is gone.  Returns the notes."""
+        present = {id(r): r for r in structure.residues()}
+        queue: Dict[str, List[_FollowedLink]] = {}
+        for link in self.links:
+            queue.setdefault(link.line, []).append(link)
+        rewritten: List[str] = []
+        dropped: List[str] = []
+        unmatched: List[str] = []
+        followed: List[_FollowedLink] = []
+
+        def follow(lines: List[str]) -> List[str]:
+            out = []
+            for line in lines:
+                todo = queue.get(line)
+                link = todo.pop(0) if todo else None
+                if link is None or link.record is None:  # no LINK line read here, or no record
+                    out.append(line)
+                elif link.ends is None:
+                    unmatched.append(_link_text(link.record))
+                    out.append(line)
+                elif not all(_has_link_atom(present, end) for end in link.ends):
+                    dropped.append(_link_text(link.record))
+                else:
+                    new = _relinked(link)
+                    if new != line:
+                        rewritten.append(_link_text(_link_now(link)))
+                    followed.append(link)
+                    out.append(new)
+            return out
+
+        structure.header[:] = follow(structure.header)
+        structure.trailer[:] = follow(structure.trailer)
+        index = _residue_index(structure)
+        ambiguous = []
+        for link in followed:  # what a reader of the new names finds: the first residue that fits
+            now = _link_now(link)
+            for (res, _name), end in zip(link.ends, (now.first, now.second)):
+                found = _find_link_atom(index, end)
+                if found is None or found[0] is not res:
+                    ambiguous.append(f"{res.label} {end.name}")
+        notes = []
+        if rewritten:
+            notes.append(f"Rewrote {len(rewritten)} LINK record(s) for the new residue names, numbers or chain ids: "
+                         + _listing(rewritten))
+        if dropped:
+            notes.append(f"Dropped {len(dropped)} LINK record(s) whose residue or atom was removed: "
+                         + _listing(dropped))
+        if unmatched:
+            notes.append(f"Kept {len(unmatched)} LINK record(s) as they were: they name no atom of the model (by "
+                         "chain, residue number, insertion code, residue name and atom name), so they cannot follow "
+                         "the residues: " + _listing(unmatched))
+        if ambiguous:
+            notes.append(f"WARNING: {len(ambiguous)} LINK record end(s) now name two residues: an earlier residue "
+                         "has the same chain id, number, insertion code and name, and readers bond that one "
+                         "(renumber the residues): " + _listing(ambiguous))
+        return notes
+
+
+_FOLLOWERS: Dict[int, _LinkFollower] = {}  # id(structure) -> the follower of the operations running on it
+
+
+@contextlib.contextmanager
+def follow_links(structure: Structure) -> Iterator[List[str]]:
+    """Keep the LINK records of ``structure`` on the residues and atoms they name while the block renames,
+    renumbers, re-chains or removes residues; yields the list that receives the notes when the block ends.
+
+    Each record is resolved to its residues and atoms before the block runs (both ends by chain, residue number,
+    insertion code and name, the atom by name; the first residue that has it, as the model check bonds them).
+    Afterwards the residue columns of the records are rewritten, in place, from the residues' names, chain ids,
+    numbers and insertion codes; everything else of a record stays as it was (atom names, symmetry operators,
+    the length), and so does a record whose residues kept their ids.  A record whose residue or atom no longer
+    exists is dropped, one that named no atom of the model stays as it was; each with a note.  Every
+    operation of this module that edits residues follows the records itself; inside a block (:func:`clean`,
+    :func:`to_lrna`) they leave that to the block, which resolved the records before the first of them ran.
+    Nothing happens to a structure without LINK records, or when the block raises."""
+    notes: List[str] = []
+    key = id(structure)
+    if key in _FOLLOWERS or not any(_is_link(line) for line in structure.header + structure.trailer):
+        yield notes  # an outer block follows the records, or there are none
+        return
+    follower = _FOLLOWERS[key] = _LinkFollower(structure)
+    try:
+        yield notes
+    finally:
+        del _FOLLOWERS[key]
+    notes += follower.rewrite(structure)
+
+
+def _follows_links(operation):
+    """Decorator of the operations ``(structure, ...) -> notes`` that edit residues: the LINK records follow
+    (:func:`follow_links`), their notes after the operation's."""
+    @functools.wraps(operation)
+    def run(structure: Structure, *args, **kwargs) -> List[str]:
+        with follow_links(structure) as link_notes:
+            notes = operation(structure, *args, **kwargs)
+        return notes + link_notes
+    return run
 
 
 # --- chirality ----------------------------------------------------------------------------------------
@@ -984,6 +1203,7 @@ def _terminals(seg: Sequence[Residue]) -> Dict[int, str]:
     return out
 
 
+@_follows_links
 def convert_names(structure: Structure, scheme: str, only=None, terminals: bool = True,
                   dna: bool = False) -> List[str]:
     """Rename RNA residues to ``scheme``; ``only`` (ranges) limits the renaming to those residues.
@@ -1062,12 +1282,14 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
 def to_lrna(source, ranges, scheme: str = "amber", strip_conect: bool = True,
             terminals: bool = True) -> "CleanResult":
     """to_lrna.sh replacement: force L for ``ranges`` and rename only those residues (terminals kept unless
-    ``terminals`` is False, which reproduces to_lrna.sh's plain LG/LA/LC/LU)."""
+    ``terminals`` is False, which reproduces to_lrna.sh's plain LG/LA/LC/LU).  LINK records follow the renamed
+    residues (:func:`follow_links`)."""
     s = read_pdb(source)
     notes = list(s.notes)
-    notes += assign_chirality(s, detect=True, l_ranges=ranges)
-    notes += convert_names(s, scheme, only=ranges, terminals=terminals)
-    return CleanResult(write_pdb(s, strip_conect=strip_conect), notes, None, s)
+    with follow_links(s) as link_notes:
+        notes += assign_chirality(s, detect=True, l_ranges=ranges)
+        notes += convert_names(s, scheme, only=ranges, terminals=terminals)
+    return CleanResult(write_pdb(s, strip_conect=strip_conect), notes + link_notes, None, s)
 
 
 def set_records(structure: Structure, policy: str) -> List[str]:
@@ -1116,6 +1338,7 @@ def _polymer_segments(structure: Structure) -> List[List[Residue]]:
     return [seg for seg in structure.segments if not all(_is_solvent(r) for r in seg)]
 
 
+@_follows_links
 def restore_chains(structure: Structure, reference=None, chain_ids: Optional[Sequence[str]] = None,
                    copy_numbers: bool = False) -> List[str]:
     """Restore chain ids (cpptraj output has none).
@@ -1171,6 +1394,7 @@ def _free_ids(structure: Structure) -> Iterator[str]:
     raise PDBError("no unused single-character chain id left")
 
 
+@_follows_links
 def split_chains(structure: Structure, at=None) -> List[str]:
     """Give new unused chain ids to every further TER segment of a chain (``at`` None), or split chains
     at residues (``at``: e.g. ``"C:45"`` - residue 45 and the rest of chain C get a new id and a TER)."""
@@ -1212,6 +1436,7 @@ def split_chains(structure: Structure, at=None) -> List[str]:
     return notes
 
 
+@_follows_links
 def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[str] = None) -> List[str]:
     """Relabel ``chains`` as one chain (``into`` or the first listed); TER segments are kept."""
     chains = [c.strip() for c in chains]
@@ -1236,6 +1461,7 @@ def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[s
     return notes
 
 
+@_follows_links
 def order_chains(structure: Structure, order: Optional[Sequence[str]] = None) -> List[str]:
     """Reorder segments by chain: listed chains first in ``order`` (alphabetical when None); water and
     ion segments stay at the end in their original order."""
@@ -1266,6 +1492,7 @@ def _drop_empty(structure: Structure) -> None:
     structure.segments = [seg for seg in ([r for r in seg if r.atoms] for seg in structure.segments) if seg]
 
 
+@_follows_links
 def strip_hydrogens(structure: Structure) -> List[str]:
     """Remove hydrogens (element H / D, else by name: :func:`is_hydrogen`); tleap and most fitting programs
     rebuild or ignore them."""
@@ -1278,6 +1505,7 @@ def strip_hydrogens(structure: Structure) -> List[str]:
     return [f"Removed {n} hydrogen atoms"] if n else []
 
 
+@_follows_links
 def drop_virtual_residues(structure: Structure) -> List[str]:
     """Remove Rosetta's virtual residues (``VIRTUAL_RESIDUES``: VRT, XXX)."""
     dropped = []
@@ -1293,17 +1521,41 @@ def drop_virtual_residues(structure: Structure) -> List[str]:
             + _listing(dropped)]
 
 
+@_follows_links
 def strip_5prime_phosphates(structure: Structure) -> List[str]:
     """Remove P/OP1/OP2/OP3 from the first nucleotide of every TER segment (Amber's 5'-terminal units
-    have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5')."""
-    changed, skipped, emptied = [], [], []
+    have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5').
+
+    A phosphate whose P a LINK record bonds to a residue other than the nucleotide it belongs to (for a
+    phosphate modelled as its own residue: the nucleotide after it) stays: it is a link, not a 5' end - the
+    5'-5' phosphate of a chimera (a PO2 residue bonded to the O5' of two strands), or the phosphate of a strand
+    whose P a LINK record bonds to the O3' of another.  Records that name a phosphate oxygen do not count: those
+    of deposited structures give a metal ion's coordination."""
+    links = _FOLLOWERS.get(id(structure))  # the LINK records (the decorator follows them through this)
+
+    def junction(seg: List[Residue], res: Residue) -> bool:
+        """Whether LINK records bond the P of ``res`` to a residue other than its own nucleotide."""
+        if links is None:
+            return False
+        own: Optional[Residue] = res
+        if _nucleotide(res) is None:  # a phosphate residue: its nucleotide follows it
+            k = next(k for k, r in enumerate(seg) if r is res)
+            own = next((r for r in seg[k + 1:] if _nucleotide(r)), None)
+        return any(r is not res and r is not own and not _is_solvent(r)
+                   for r in links.partners(structure, res, ("P",)))
+
+    changed, skipped, emptied, linked = [], [], [], []
     for seg in structure.segments:
         res = next((r for r in seg if not _is_solvent(r)), None)
-        while res is not None and res.atoms and all(a.name.replace("*", "'") in PHOSPHATE_5P for a in res.atoms):
+        while (res is not None and res.atoms and all(a.name.replace("*", "'") in PHOSPHATE_5P for a in res.atoms)
+               and not junction(seg, res)):
             emptied.append(res.label)  # a lone 5'-phosphate modelled as its own residue
             seg.remove(res)
             res = next((r for r in seg if not _is_solvent(r)), None)
         if res is None:
+            continue
+        if junction(seg, res):
+            linked.append(res.label)  # the strand's 5' end is bonded on: no 5' end to strip
             continue
         if _nucleotide(res) is None:
             skipped.append(res.label)  # the segment starts with something else: its phosphates stay
@@ -1330,9 +1582,13 @@ def strip_5prime_phosphates(structure: Structure) -> List[str]:
     if skipped:
         notes.append("5' phosphates kept where a segment does not start with a recognised nucleotide: "
                      + _listing(skipped))
+    if linked:
+        notes.append("Phosphates kept where LINK records bond them to another residue (a link such as the 5'-5' "
+                     "phosphate of a chimera, not a 5' end): " + _listing(linked))
     return notes
 
 
+@_follows_links
 def renumber_residues(structure: Structure, start: int = 1, per_chain: bool = False,
                       keep_gaps: bool = False) -> List[str]:
     """Renumber residues in file order, continuously across chains (each chain continues after the last
@@ -1450,7 +1706,8 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
     ``assign_chains``) -> chirality (detection unless ``detect_l`` is False; ``l_ranges`` force L and use
     the input residue numbers with the restored chain ids) -> split / combine / ``sort_chains`` (True =
     alphabetical, or an explicit order) -> 5'-phosphate removal (``strip_5p``) -> residue names (``scheme``) ->
-    renumbering -> record policy
+    renumbering -> LINK records rewritten for the residues they named in the input (:func:`follow_links`) ->
+    record policy
     (``records``; None follows the scheme: 'rosetta' for rosetta, 'pdb' for pdb, 'atom' for standard, else
     'keep') -> writing.
 
@@ -1465,33 +1722,35 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         s.header = [line for line in s.header if not line.startswith("REMARK 950")]
         notes.append(f"Dropped {len(stale)} REMARK 950 base-pair annotation lines (they name the input "
                      "residues); annotate the cleaned file again if needed")
-    if drop_virtual:
-        notes += drop_virtual_residues(s)
-    elif scheme == "standard" and any(r.name.strip().upper() in VIRTUAL_RESIDUES for r in s.residues()):
-        notes.append("WARNING: the copy keeps Rosetta virtual residues (VRT / XXX), which a map-model score "
-                     "reads as atoms; --drop-virtual removes them")
-    if strip_h:  # before the 5'-phosphate removal, which puts an HO5' on residues that have hydrogens
-        notes += strip_hydrogens(s)
-    if not s.segments:
-        raise PDBError("no atoms left after removing hydrogens / virtual residues")
-    if chain_reference is not None or chain_ids is not None or assign_chains:
-        notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
-    if detect_l or l_ranges:
-        notes += assign_chirality(s, detect=detect_l, l_ranges=l_ranges)
-    if split_segments:
-        notes += split_chains(s)
-    if split_at:
-        notes += split_chains(s, split_at)
-    if combine:
-        notes += combine_chains(s, combine, combine_into)
-    if sort_chains:
-        notes += order_chains(s, None if sort_chains is True else list(sort_chains))
-    if strip_5p:
-        notes += strip_5prime_phosphates(s)
-    if scheme:
-        notes += convert_names(s, scheme, terminals=terminal_names)
-    if renumber:
-        notes += renumber_residues(s, start, per_chain, keep_gaps)
+    with follow_links(s) as link_notes:  # every record resolved once, against the residues as read
+        if drop_virtual:
+            notes += drop_virtual_residues(s)
+        elif scheme == "standard" and any(r.name.strip().upper() in VIRTUAL_RESIDUES for r in s.residues()):
+            notes.append("WARNING: the copy keeps Rosetta virtual residues (VRT / XXX), which a map-model score "
+                         "reads as atoms; --drop-virtual removes them")
+        if strip_h:  # before the 5'-phosphate removal, which puts an HO5' on residues that have hydrogens
+            notes += strip_hydrogens(s)
+        if not s.segments:
+            raise PDBError("no atoms left after removing hydrogens / virtual residues")
+        if chain_reference is not None or chain_ids is not None or assign_chains:
+            notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
+        if detect_l or l_ranges:
+            notes += assign_chirality(s, detect=detect_l, l_ranges=l_ranges)
+        if split_segments:
+            notes += split_chains(s)
+        if split_at:
+            notes += split_chains(s, split_at)
+        if combine:
+            notes += combine_chains(s, combine, combine_into)
+        if sort_chains:
+            notes += order_chains(s, None if sort_chains is True else list(sort_chains))
+        if strip_5p:
+            notes += strip_5prime_phosphates(s)
+        if scheme:
+            notes += convert_names(s, scheme, terminals=terminal_names)
+        if renumber:
+            notes += renumber_residues(s, start, per_chain, keep_gaps)
+    notes += link_notes
     policy = records or {"rosetta": "rosetta", "pdb": "pdb", "standard": "atom"}.get(scheme or "", "keep")
     notes += set_records(s, policy)
     if s.conect:
