@@ -632,9 +632,9 @@ class AmberBuildTool(Tool):
 
     @staticmethod
     def _has_l(s, ctx) -> bool:
-        """Whether the structure is known to have L residues: forced ranges, an L helix from the builder,
-        or an existing input PDB with L sugars."""
-        if s["lrna_ranges"].strip() or ctx.data("structure").get("chirality") == "L":
+        """Whether the structure is known to have L residues: forced ranges, a structure from the builder of hand
+        L (an L helix, a chimera of L segments) or mixed (a D/L chimera), or an existing input PDB with L sugars."""
+        if s["lrna_ranges"].strip() or ctx.data("structure").get("chirality") in ("L", "mixed"):
             return True
         path = ctx.existing("structure")
         if not path:

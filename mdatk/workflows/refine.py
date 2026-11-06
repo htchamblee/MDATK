@@ -242,8 +242,10 @@ def model_issues(s: Dict[str, Any], ctx: StepContext, program: str) -> List[Issu
     have_dicts = ctx.has("dictionaries")
     path = ctx.existing("model")
     if not path:
-        if not have_dicts and ctx.data("model").get("chirality") == "L":
-            out.append(Issue("warning", f"the model is L-RNA: {program} needs restraint dictionaries for its 5'/3' "
+        hand = ctx.data("model").get("chirality")  # the builder's: D, L or mixed (a D/L chimera has L residues too)
+        if not have_dicts and hand in ("L", "mixed"):
+            what = "is L-RNA" if hand == "L" else "has L residues (a D/L chimera)"
+            out.append(Issue("warning", f"the model {what}: {program} needs restraint dictionaries for its 5'/3' "
                                         "variants (0A5/0A3 ...) - connect a 'restraint-dicts' step",
                              ("input:dictionaries",)))
         elif ctx.value("model").source:

@@ -309,7 +309,9 @@ class ModelCheckTool(Tool):
 
     def expected_hands(self, s, ctx) -> Tuple[str, str, str]:
         """(expected L, expected D, where they come from) - typed ranges, or (automatic) the hands measured on
-        the first connected model that exists, or the builder's helix hand."""
+        the first connected model that exists, or the builder's hand of every residue (a D or L helix; a chimera
+        of one hand).  A chimera of both hands ('mixed') has no hand for every residue: its hands are measured
+        once the model exists, and reported, not checked, before."""
         if s["hands"] == "none":
             return "", "", ""
         if s["hands"] == "ranges":
@@ -329,7 +331,7 @@ class ModelCheckTool(Tool):
             return "*", "", "the builder's L helix"
         if hand == "D":
             return "", "*", "the builder's D helix"
-        return "", "", ""
+        return "", "", ""  # 'mixed' (a D/L chimera) or not known
 
     def check(self, s, ctx):
         out: List[Issue] = []
