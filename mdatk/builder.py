@@ -1,5 +1,5 @@
-"""In-house starting-structure builder: ideal A-form RNA helices (D and L), base mutations that keep
-the glycosidic frame, and rigid-body fitting of a model into a density map.
+"""In-house starting-structure builder: ideal A-form RNA and B-form DNA helices (D and L), base mutations
+that keep the glycosidic frame, and rigid-body fitting of a model into a density map.
 
 Ideal helices (:func:`build_helix`)
     Every nucleotide is the Arnott A-RNA fiber monomer (Arnott, Hukins & Dover 1972; the ``$ARNA``
@@ -16,6 +16,19 @@ Ideal helices (:func:`build_helix`)
     C1', see ``WOBBLE_TURN``); other mismatches keep the Watson-Crick frame and are reported when
     their bases collide.  An L helix is the mirror image (x -> -x) of the D helix, a left-handed
     duplex of L-nucleotides with L residue names from :mod:`mdatk.pdbtools`.
+
+    DNA (``na='dna'``) is the Arnott B-DNA fiber monomer (Arnott & Hukins 1972; the ``$ABDNA`` "ARNOTT
+    BDNA MONOMER UNIT" of the same nucgen.dat) on the same screw and dyad with NAB's B-DNA helix (twist
+    36.0 degrees, rise 3.38 A, 10 residues per turn): C3'-exo sugars (pseudorotation phase about 192
+    degrees, S-type), chi about -98 degrees, Watson-Crick pairs with C1'-C1' 10.9 A and O3'-P links of
+    1.60 A.  Its backbone (epsilon 155, zeta -95 degrees) brings C2' to 2.69 A of OP2 of the next
+    nucleotide, which a model check lists as a clash (minimise before production).  The 2'-deoxyribose
+    carries the methylene H2' / H2'' (H2' cis to O3', as the wwPDB CCD names them) and thymine the methyl
+    H71-H73, staggered on C5-C7.  G-T pairs of an explicit partner get the wobble turns
+    ``DNA_WOBBLE_TURN`` (fitted as ``WOBBLE_TURN``, kept clear of the sugars).  DNA is built as
+    Watson-Crick B-form duplexes and single strands only (no other pairings, no triplexes); residue names
+    DA DC DG DT, L: the CCD's 0DA 0DC 0DG 0DT (Amber: DA5 / DA3 / DAN, L: MDATK's LDA ...; see
+    :func:`mdatk.pdbtools.scheme_name`).  The L helix is the mirror image, as for RNA.
 
 Other pairings and triplexes (``build_helix(pairing=..., triplex=...)``)
     'reverse-wc' (trans WC/WC), 'hoogsteen' (cis WC/Hoogsteen: A·U, G·C+ on the Hoogsteen edge of the
@@ -39,9 +52,11 @@ Mutations (:func:`mutate`)
     The new base is superposed on the old glycosidic frame (C1', the glycosidic N and the two ring
     atoms bonded to it: purine N9/C4/C8 <-> pyrimidine N1/C2/C6); sugar and backbone atoms are kept
     verbatim, the residue name keeps its scheme, chirality and terminal variant (LG5 -> LC5, 0G -> 0C,
-    G5 -> C5).  Compensatory mutations change the Watson-Crick / G-U partner of every mutated base
-    (found with :class:`mdatk.secstruct.PairDetector`) to the complement unless the partner is
-    mutated explicitly.
+    G5 -> C5; DNA: DA5 -> DT5, 0DA -> 0DT, LDA3 -> LDT3).  A DNA residue gets the base of the B-DNA
+    monomer (A, C, G, T; U is read as T).  Compensatory mutations change the Watson-Crick / G-U (DNA:
+    G-T) partner of every mutated base (found with :class:`mdatk.secstruct.PairDetector`) to the
+    complement unless the partner is mutated explicitly; an RNA base and a DNA partner (or the reverse)
+    are left alone.
 
 Rigid-body fit (:func:`fit_to_map`)
     The global (rotations x FFT translations, then local refinement) or local search of
@@ -55,7 +70,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -66,10 +81,13 @@ from .pdbtools import Atom, PDBError, Residue, Structure
 
 TWIST = 32.7  # degrees per residue: 11-fold Arnott A-RNA
 RISE = 2.81  # Å per residue
+NUCLEIC_ACIDS = ("rna", "dna")  # A-form RNA (every pairing) or B-form DNA (Watson-Crick duplexes, single strands)
+DNA_TWIST = 36.0  # degrees per residue: 10-fold B-DNA (NAB's B-DNA helix)
+DNA_RISE = 3.38  # Å per residue
 SCHEMES = pdbtools.SCHEMES
 PARTNER_MODES = ("auto", "none")  # or an explicit partner sequence
 # names without a chosen scheme: A/C/G/U (D) and the CCD components 0A/0C/0G/0U (L), all ATOM records,
-# no terminal variants
+# no terminal variants; DNA: DA/DC/DG/DT and 0DA/0DC/0DG/0DT
 DEFAULT_SCHEME = "rosetta"
 SEARCHES = ("global", "local")
 
@@ -120,18 +138,68 @@ _H_RULES = {
     "U": (("H3", "N3", "nh", ("C2", "C4")), ("H5", "C5", "sp2", ("C4", "C6")),
           ("H6", "C6", "sp2", ("C5", "N1"))),
 }
-BOND_H = {"ch": 1.09, "ch2": 1.09, "sp2": 1.08, "nh": 1.01, "nh2": 1.01, "oh": 0.96}
+BOND_H = {"ch": 1.09, "ch2": 1.09, "sp2": 1.08, "nh": 1.01, "nh2": 1.01, "oh": 0.96, "ch3": 1.09}
 HO2_TORSION = 180.0  # C3'-C2'-O2'-HO2' (degrees), the hydroxyl hydrogen pointing away from O3'
+METHYL_TORSIONS = {"H71": 180.0, "H72": 60.0, "H73": -60.0}  # C4-C5-C7-H (degrees): staggered thymine methyl
 P_OP3 = 1.48  # Å, P-OP3 of a 5'-phosphate (along the bond to the missing previous O3')
 # G-U wobble in the fiber frame: in-plane turns (degrees, about C1' and the base normal N->C4 x N->C8 /
 # N->C2 x N->C6) giving G O6-U N3 2.8 Å and G N1-U O2 3.1 Å (least squares to 2.85 Å on this template)
 WOBBLE_TURN = {"G": -13.3, "U": 11.4}
 GLYCOSIDIC = {"A": ("N9", "C4", "C8"), "G": ("N9", "C4", "C8"), "C": ("N1", "C2", "C6"),
-              "U": ("N1", "C2", "C6")}
+              "U": ("N1", "C2", "C6"), "T": ("N1", "C2", "C6")}
 COMPLEMENT = {"A": "U", "U": "A", "G": "C", "C": "G"}
 WATSON_CRICK_PAIRS = frozenset({"AU", "UA", "GC", "CG"})
 WOBBLE_PAIRS = frozenset({"GU", "UG"})
 CLASH = 2.5  # Å, closest allowed heavy-atom distance between the bases of a mismatched pair
+
+# Arnott B-DNA monomer unit in cylindrical coordinates (name, r Å, phi degrees, z Å), copied from the $ABDNA
+# block ("ARNOTT BDNA MONOMER UNIT") of AmberTools dat/leap/parm/nucgen.dat; names in PDB v3 form (OA/OB ->
+# OP1/OP2: the same chiral volume at P as $ARNA, -2.42 against -2.46; O1' -> O4').  The table's two
+# placeholder H rows at P and its base hydrogens are not used (see _hydrogens); thymine in the PDB atom order.
+_DNA_BACKBONE = (("P", 8.91, 95.2, 2.08), ("OP1", 10.20, 91.1, 1.86), ("OP2", 8.82, 103.3, 1.29),
+                 ("O5'", 7.73, 88.0, 1.83), ("C5'", 7.70, 79.8, 2.77), ("C4'", 7.59, 69.9, 2.04),
+                 ("O4'", 6.22, 66.0, 1.83), ("C3'", 8.20, 69.9, 0.64), ("O3'", 8.75, 61.4, 0.25),
+                 ("C2'", 7.04, 73.2, -0.24), ("C1'", 5.86, 67.4, 0.47))
+_DNA_BASES = {
+    "A": (("N9", 4.63, 76.6, 0.42), ("C8", 4.84, 93.0, 0.50), ("N7", 3.95, 105.4, 0.43),
+          ("C5", 2.74, 94.0, 0.28), ("C6", 1.41, 107.2, 0.15), ("N6", 1.83, 154.0, 0.14),
+          ("N1", 0.86, 40.1, 0.03), ("C2", 2.17, 30.6, 0.04), ("N3", 3.24, 47.0, 0.16),
+          ("C4", 3.33, 70.5, 0.28)),
+    "G": (("N9", 4.63, 76.6, 0.42), ("C8", 4.82, 93.2, 0.50), ("N7", 3.92, 105.7, 0.42),
+          ("C5", 2.70, 94.0, 0.28), ("C6", 1.39, 109.3, 0.15), ("O6", 1.71, 154.6, 0.13),
+          ("N1", 0.92, 37.9, 0.03), ("C2", 2.28, 28.7, 0.03), ("N2", 3.01, 4.2, -0.10),
+          ("N3", 3.29, 46.7, 0.16), ("C4", 3.33, 70.3, 0.28)),
+    "C": (("N1", 4.63, 76.6, 0.42), ("C2", 3.40, 67.4, 0.27), ("O2", 3.69, 47.9, 0.18),
+          ("N3", 2.31, 83.9, 0.22), ("C4", 2.94, 110.0, 0.32), ("N4", 2.76, 136.6, 0.27),
+          ("C5", 4.35, 107.0, 0.47), ("C6", 4.99, 92.2, 0.52)),
+    "T": (("N1", 4.63, 76.6, 0.42), ("C2", 3.42, 67.3, 0.27), ("O2", 3.64, 47.8, 0.18),
+          ("N3", 2.36, 85.2, 0.23), ("C4", 2.98, 111.9, 0.32), ("O4", 2.82, 136.3, 0.27),
+          ("C5", 4.38, 106.9, 0.47), ("C7", 5.40, 119.8, 0.58), ("C6", 5.01, 92.3, 0.52)),
+}
+DNA_BACKBONE_NAMES = tuple(n for n, *_ in _DNA_BACKBONE)
+DNA_BASE_NAMES = {b: tuple(n for n, *_ in atoms) for b, atoms in _DNA_BASES.items()}
+# hydrogens of a 2'-deoxynucleotide: the C2' methylene instead of H2' / O2' / HO2' (H2' is the hydrogen cis to
+# O3', the wwPDB CCD's name: a negative volume C2'(C1', C3', H2') in a D sugar; Amber's DNA.OL15.lib swaps the
+# two names, which have the same type and charge there), thymine's imino H3, H6 and methyl
+_DNA_H_RULES = {
+    "sugar": (("H5'", "C5'", "ch2", ("O5'", "C4'")), ("H5''", "C5'", "ch2", ("O5'", "C4'")),
+              ("H4'", "C4'", "ch", ("C5'", "O4'", "C3'")), ("H3'", "C3'", "ch", ("C4'", "O3'", "C2'")),
+              ("H2'", "C2'", "ch2", ("C3'", "C1'")), ("H2''", "C2'", "ch2", ("C3'", "C1'")),
+              ("H1'", "C1'", "ch", ("O4'", "C2'", "N"))),
+    "A": _H_RULES["A"], "G": _H_RULES["G"], "C": _H_RULES["C"],
+    "T": (("H3", "N3", "nh", ("C2", "C4")), ("H71", "C7", "ch3", ("C5", "C4")), ("H72", "C7", "ch3", ("C5", "C4")),
+          ("H73", "C7", "ch3", ("C5", "C4")), ("H6", "C6", "sp2", ("C5", "N1"))),
+}
+# G-T wobble on the B-DNA template: the least squares of WOBBLE_TURN (G O6-T N3 and G N1-T O2 to 2.85 Å, in-plane
+# turns about C1').  On its own it gives G -13.5, T 11.5 (2.82 / 3.06 Å), which turns the T onto its own sugar
+# (chi -98: C6-O5' 2.60 Å) and onto C2' of its 5' neighbour (C7 2.67 Å), clashes of a model check.  So the fit
+# also keeps the heavy atoms of both bases 0.05 Å outside the model check's clash distance (van der Waals contact
+# - 0.4 Å) from their own sugar-phosphate, the neighbours on both strands and the partner backbone (the A-form's
+# WOBBLE_TURN is outside it as it is): G O6-T N3 2.73 Å, G N1-T O2 3.14 Å, at most 0.29 Å off
+DNA_WOBBLE_TURN = {"G": -10.1, "T": 3.5}
+DNA_COMPLEMENT = {"A": "T", "T": "A", "G": "C", "C": "G"}
+DNA_WATSON_CRICK_PAIRS = frozenset({"AT", "TA", "GC", "CG"})
+DNA_WOBBLE_PAIRS = frozenset({"GT", "TG"})
 
 
 def _cartesian(r: float, phi: float, z: float) -> np.ndarray:
@@ -161,12 +229,15 @@ def _turn_matrix(axis: np.ndarray, degrees: float) -> np.ndarray:
     return np.eye(3) + math.sin(t) * kx + (1 - math.cos(t)) * (kx @ kx)
 
 
-def _hydrogens(heavy: Dict[str, np.ndarray], base: str) -> Dict[str, np.ndarray]:
+def _hydrogens(heavy: Dict[str, np.ndarray], base: str, na: str = "rna") -> Dict[str, np.ndarray]:
     """Hydrogens of a D-nucleotide from ideal geometry (sp3 C-H along the negative sum of the bond
-    vectors, sp2 C-H / N-H on the external bisector, amino H parallel to the opposite ring bond)."""
+    vectors, sp2 C-H / N-H on the external bisector, amino H parallel to the opposite ring bond, the two
+    hydrogens of a methylene on the tetrahedral positions, a methyl staggered); ``na`` 'dna': of a
+    2'-deoxynucleotide (``_DNA_H_RULES``)."""
     out: Dict[str, np.ndarray] = {}
     glyco = GLYCOSIDIC[base][0]
-    for name, parent, rule, refs in _H_RULES["sugar"] + _H_RULES[base]:
+    rules = _DNA_H_RULES if na == "dna" else _H_RULES
+    for name, parent, rule, refs in rules["sugar"] + rules[base]:
         c = heavy[parent]
         refs = [glyco if r == "N" else r for r in refs]
         d = BOND_H[rule]
@@ -177,39 +248,50 @@ def _hydrogens(heavy: Dict[str, np.ndarray], base: str) -> Dict[str, np.ndarray]
             out[name] = c + d * _unit(x - other)
         elif rule == "oh":
             out[name] = _place(heavy[refs[1]], heavy[refs[0]], c, d, 109.5, HO2_TORSION)
+        elif rule == "ch3":  # C4-C5-C7-H of the thymine methyl
+            out[name] = _place(heavy[refs[1]], heavy[refs[0]], c, d, 109.5, METHYL_TORSIONS[name])
         elif rule == "ch2" and name not in out:
+            # both hydrogens of the methylene at once: this rule's name and the other ch2 rule of the parent
+            twin = next(h for h, p, r, _x in rules["sugar"] + rules[base] if r == "ch2" and p == parent and h != name)
             u1, u2 = _unit(heavy[refs[0]] - c), _unit(heavy[refs[1]] - c)
             bis, perp = -_unit(u1 + u2), _unit(np.cross(u1, u2))
             half = math.radians(109.5 / 2)
             h1 = c + d * (math.cos(half) * bis + math.sin(half) * perp)
             h2 = c + d * (math.cos(half) * bis - math.sin(half) * perp)
-            # PDB v3 names of a D-ribose: H5' gives a positive volume C5'(O5', C4', H5')
+            # PDB v3 names of a D sugar: the first name of the pair gives a positive volume parent(refs, H):
+            # H5' of C5'(O5', C4', H5'), H2' of C2'(C3', C1', H2') (2'-deoxyribose: cis to O3')
             if pdbtools.chiral_volume(c, heavy[refs[0]], heavy[refs[1]], h1) < 0:
                 h1, h2 = h2, h1
-            out["H5'"], out["H5''"] = h1, h2
+            out[name], out[twin] = h1, h2
     return out
 
 
 @lru_cache(maxsize=None)
-def _template(base: str) -> Tuple[Tuple[str, Tuple[float, float, float]], ...]:
+def _template(base: str, na: str = "rna") -> Tuple[Tuple[str, Tuple[float, float, float]], ...]:
     """The monomer of ``base`` in the helix frame: heavy atoms, then hydrogens (cached, read-only)."""
-    heavy = {n: _cartesian(r, p, z) for n, r, p, z in _BACKBONE + _BASES[base]}
-    hyd = _hydrogens(heavy, base)
+    backbone, bases = (_DNA_BACKBONE, _DNA_BASES) if na == "dna" else (_BACKBONE, _BASES)
+    heavy = {n: _cartesian(r, p, z) for n, r, p, z in backbone + bases[base]}
+    hyd = _hydrogens(heavy, base, na)
     return tuple((n, tuple(x)) for n, x in list(heavy.items()) + list(hyd.items()))
 
 
-def template(base: str, hydrogens: bool = True) -> Dict[str, np.ndarray]:
-    """Atom name -> coordinates of the A-form monomer (helix frame, D sugar, strand 1, level 0)."""
+def template(base: str, hydrogens: bool = True, na: str = "rna") -> Dict[str, np.ndarray]:
+    """Atom name -> coordinates of the A-form monomer (helix frame, D sugar, strand 1, level 0); ``na``
+    'dna': of the B-DNA monomer (bases A, C, G, T)."""
     base = base.upper()
+    if check_na(na) == "dna":
+        if base not in _DNA_BASES:
+            raise BuildError(f"no DNA template for base {base!r} (A, C, G, T)")
+        return {n: np.array(x) for n, x in _template(base, "dna") if hydrogens or not n.startswith("H")}
     if base not in _BASES:
         raise BuildError(f"no template for base {base!r} (A, C, G, U)")
     return {n: np.array(x) for n, x in _template(base) if hydrogens or not n.startswith("H")}
 
 
-def _base_atoms(base: str, hydrogens: bool) -> List[str]:
-    names = list(BASE_NAMES[base])
+def _base_atoms(base: str, hydrogens: bool, na: str = "rna") -> List[str]:
+    names = list((DNA_BASE_NAMES if na == "dna" else BASE_NAMES)[base])
     if hydrogens:
-        names += [h for h, *_ in _H_RULES[base]]
+        names += [h for h, *_ in (_DNA_H_RULES if na == "dna" else _H_RULES)[base]]
     return names
 
 
@@ -218,21 +300,22 @@ def _base_normal(coords: Dict[str, np.ndarray], base: str) -> np.ndarray:
     return _unit(np.cross(coords[a] - coords[n], coords[b] - coords[n]))
 
 
-def _turn_base(coords: Dict[str, np.ndarray], base: str, degrees: float, hydrogens: bool) -> None:
+def _turn_base(coords: Dict[str, np.ndarray], base: str, degrees: float, hydrogens: bool, na: str = "rna") -> None:
     """Turn the base (in place) in its plane about C1'."""
     if not degrees:
         return
     r = _turn_matrix(_base_normal(coords, base), degrees)
     c1 = coords["C1'"]
-    for name in _base_atoms(base, hydrogens):
+    for name in _base_atoms(base, hydrogens, na):
         if name in coords:
             coords[name] = (coords[name] - c1) @ r.T + c1
 
 
-def _screw(xyz: np.ndarray, level: float) -> np.ndarray:
-    t = math.radians(-TWIST * level)
+def _screw(xyz: np.ndarray, level: float, twist: float = TWIST, rise: float = RISE) -> np.ndarray:
+    """Residue ``level`` of the helix: turned by -twist * level degrees about z, moved by -rise * level."""
+    t = math.radians(-twist * level)
     rot = np.array([[math.cos(t), -math.sin(t), 0.0], [math.sin(t), math.cos(t), 0.0], [0.0, 0.0, 1.0]])
-    return np.asarray(xyz) @ rot.T + np.array([0.0, 0.0, -RISE * level])
+    return np.asarray(xyz) @ rot.T + np.array([0.0, 0.0, -rise * level])
 
 
 def _dyad(xyz: np.ndarray) -> np.ndarray:
@@ -241,34 +324,58 @@ def _dyad(xyz: np.ndarray) -> np.ndarray:
 
 # --- sequences ----------------------------------------------------------------------------------------
 
-def parse_sequence(text: str, what: str = "sequence") -> Tuple[str, List[str]]:
-    """Clean an RNA sequence: whitespace, '5'-'/'-3'' and '-' are ignored, T is read as U.
+def check_na(na: Optional[str]) -> str:
+    """Normalised nucleic acid (``NUCLEIC_ACIDS``; None / '' -> 'rna'); raises :class:`BuildError` otherwise."""
+    value = (na or "rna").strip().lower()
+    if value not in NUCLEIC_ACIDS:
+        raise BuildError(f"unknown nucleic acid {na!r} (choose from {', '.join(NUCLEIC_ACIDS)})")
+    return value
+
+
+def _dna_only(pairing: str, motif: Optional[str]) -> str:
+    """The error for a DNA build with another pairing or a triplex (B-DNA: Watson-Crick duplexes only)."""
+    what = "triplexes are" if motif and pairing == "wc" else f"the {pairing} pairing is"
+    return f"DNA is built as a Watson-Crick B-form duplex or a single strand: {what} built for RNA only"
+
+
+def parse_sequence(text: str, what: str = "sequence", na: str = "rna") -> Tuple[str, List[str]]:
+    """Clean an RNA sequence: whitespace, '5'-'/'-3'' and '-' are ignored, T is read as U (``na`` 'dna': a
+    DNA sequence, U read as T).
 
     Returns the sequence and notes; raises :class:`BuildError` for anything else."""
+    dna = check_na(na) == "dna"
     raw = (text or "").strip()
     seq = re.sub(r"^5'?-?|-?3'?$", "", raw.upper().replace("’", "'")) if raw else ""
     seq = re.sub(r"[\s\-]", "", seq)
     notes = []
-    if "T" in seq:
+    if dna and "U" in seq:
+        seq = seq.replace("U", "T")
+        notes.append(f"{what}: U read as T (DNA)")
+    elif not dna and "T" in seq:
         seq = seq.replace("T", "U")
         notes.append(f"{what}: T read as U (RNA)")
-    bad = sorted(set(seq) - set("ACGU"))
+    bad = sorted(set(seq) - set("ACGT" if dna else "ACGU"))
     if bad:
-        raise BuildError(f"{what}: invalid letter(s) {', '.join(bad)} (RNA: A, C, G, U)")
+        raise BuildError(f"{what}: invalid letter(s) {', '.join(bad)} "
+                         + ("(DNA: A, C, G, T)" if dna else "(RNA: A, C, G, U)"))
     if not seq:
         raise BuildError(f"{what} is empty")
     return seq, notes
 
 
-def complement(seq: str) -> str:
-    """Watson-Crick complement, 5'->3' (reverse complement)."""
-    return "".join(COMPLEMENT[b] for b in reversed(seq))
+def complement(seq: str, na: str = "rna") -> str:
+    """Watson-Crick complement, 5'->3' (reverse complement); ``na`` 'dna': the DNA complement."""
+    table = DNA_COMPLEMENT if check_na(na) == "dna" else COMPLEMENT
+    return "".join(table[b] for b in reversed(seq))
 
 
-def helix_kind(pairing: Optional[str] = "wc", triplex: Optional[str] = None) -> str:
-    """Short description of a helix build for titles: 'A-form', 'parallel tHH', 'A-form + hoogsteen triplex'."""
+def helix_kind(pairing: Optional[str] = "wc", triplex: Optional[str] = None, na: str = "rna") -> str:
+    """Short description of a helix build for titles: 'A-form', 'parallel tHH', 'A-form + hoogsteen triplex';
+    DNA: 'B-form' (other pairings of DNA are refused by the build: described as for RNA)."""
     pairing = check_pairing(pairing)
     motif = check_triplex(triplex)
+    if check_na(na) == "dna" and pairing == "wc" and not motif:
+        return "B-form"
     if motif:
         return f"{motif} triplex"
     if pairing == "wc":
@@ -294,18 +401,26 @@ def check_triplex(triplex: Optional[str]) -> Optional[str]:
     return value
 
 
-def auto_partner(seq: str, pairing: str = "wc") -> str:
+def auto_partner(seq: str, pairing: str = "wc", na: str = "rna") -> str:
     """The partner strand (5'->3') of 'auto' for ``pairing``: the Watson-Crick complement for wc, the
-    canonical partners (``AUTO_PARTNER``) running with strand 1 for parallel pairings."""
+    canonical partners (``AUTO_PARTNER``) running with strand 1 for parallel pairings (DNA: wc only)."""
+    if check_na(na) == "dna":
+        if pairing != "wc":
+            raise BuildError(_dna_only(pairing, None))
+        return complement(seq, "dna")
     mapped = "".join(AUTO_PARTNER[pairing][b] for b in seq)
     return mapped if PARALLEL[pairing] else mapped[::-1]
 
 
-def resolve_partner(sequence: str, partner: str = "auto", pairing: str = "wc"
+def resolve_partner(sequence: str, partner: str = "auto", pairing: str = "wc", na: str = "rna"
                     ) -> Tuple[str, Optional[str], List[str]]:
-    """(sequence, partner sequence 5'->3' or None, notes) for ``partner`` 'auto', 'none' or a sequence."""
+    """(sequence, partner sequence 5'->3' or None, notes) for ``partner`` 'auto', 'none' or a sequence;
+    ``na`` 'dna': DNA sequences (pairing wc only)."""
     pairing = check_pairing(pairing)
-    seq, notes = parse_sequence(sequence)
+    na = check_na(na)
+    if na == "dna" and pairing != "wc":
+        raise BuildError(_dna_only(pairing, None))
+    seq, notes = parse_sequence(sequence, na=na)
     mode = "auto" if partner is None else partner.strip()
     if not mode:
         raise BuildError("type the partner sequence (5'->3'), or choose the Watson-Crick complement or a "
@@ -314,12 +429,12 @@ def resolve_partner(sequence: str, partner: str = "auto", pairing: str = "wc"
         return seq, None, notes
     if mode.lower() == "auto":
         if pairing == "wc":
-            return seq, complement(seq), notes + ["partner strand: Watson-Crick complement"]
+            return seq, complement(seq, na), notes + ["partner strand: Watson-Crick complement"]
         return seq, auto_partner(seq, pairing), notes + [
             f"partner strand: {PAIRING_LW[pairing]} partners of strand 1 ("
             + ", ".join(f"{a}·{b}" for a, b in AUTO_PARTNER[pairing].items()) + "), "
             + ("parallel" if PARALLEL[pairing] else "antiparallel")]
-    other, more = parse_sequence(mode, "partner")
+    other, more = parse_sequence(mode, "partner", na=na)
     notes += more
     if len(other) != len(seq):
         raise BuildError(f"the partner has {len(other)} nucleotides but the sequence has {len(seq)}; "
@@ -327,12 +442,15 @@ def resolve_partner(sequence: str, partner: str = "auto", pairing: str = "wc"
     return seq, other, notes
 
 
-def pair_types(seq: str, partner: str) -> List[str]:
-    """'wc', 'wobble' or 'mismatch' for the pairs (seq[i], partner[n-1-i])."""
+def pair_types(seq: str, partner: str, na: str = "rna") -> List[str]:
+    """'wc', 'wobble' or 'mismatch' for the pairs (seq[i], partner[n-1-i]); ``na`` 'dna': A·T, G·C and the
+    G·T wobble."""
+    wc, wobble = ((DNA_WATSON_CRICK_PAIRS, DNA_WOBBLE_PAIRS) if check_na(na) == "dna"
+                  else (WATSON_CRICK_PAIRS, WOBBLE_PAIRS))
     out = []
     for a, b in zip(seq, reversed(partner)):
         pair = a + b
-        out.append("wc" if pair in WATSON_CRICK_PAIRS else "wobble" if pair in WOBBLE_PAIRS else "mismatch")
+        out.append("wc" if pair in wc else "wobble" if pair in wobble else "mismatch")
     return out
 
 
@@ -342,16 +460,18 @@ def _canonical(rule: str, a: str, b: str) -> bool:
     return (rule, a, b) in _PAIR_HBONDS and (rule not in ("hoogsteen", "reverse-hoogsteen") or a in "AG")
 
 
-def pairing_kinds(seq: str, other: str, pairing: str = "wc") -> List[Tuple[str, str, str]]:
+def pairing_kinds(seq: str, other: str, pairing: str = "wc", na: str = "rna") -> List[Tuple[str, str, str]]:
     """(strand-1 base, partner base, kind) per level.  wc: kinds of :func:`pair_types`; other pairings:
     'canonical' or 'mismatch' (for the Hoogsteen pairings every strand-1 pyrimidine: the pairs use the
     Hoogsteen edge of a strand-1 purine).  Parallel pairings pair seq[i] with partner[i], antiparallel
-    ones with partner[n-1-i]."""
+    ones with partner[n-1-i].  ``na`` 'dna': wc only."""
     pairing = check_pairing(pairing)
+    if check_na(na) == "dna" and pairing != "wc":
+        raise BuildError(_dna_only(pairing, None))
     n = len(seq)
     partners = other if PARALLEL[pairing] else other[::-1]
     if pairing == "wc":
-        return [(a, b, k) for a, b, k in zip(seq, partners, pair_types(seq, other))]
+        return [(a, b, k) for a, b, k in zip(seq, partners, pair_types(seq, other, na))]
     out = [(a, b, "canonical" if _canonical(pairing, a, b) else "mismatch") for a, b in zip(seq, partners)]
     assert len(out) == n
     return out
@@ -404,12 +524,16 @@ def _pairing_messages(seq: str, other: str, pairing: str) -> List[Tuple[str, str
 
 
 def check_helix(sequence: str, partner: str = "auto", pairing: str = "wc", triplex: Optional[str] = None,
-                third: str = "auto") -> List[Tuple[str, str]]:
-    """Sequence-level messages [(level, text)] (levels 'error', 'warning', 'info')."""
+                third: str = "auto", na: str = "rna") -> List[Tuple[str, str]]:
+    """Sequence-level messages [(level, text)] (levels 'error', 'warning', 'info'); ``na`` 'dna': a B-form
+    DNA helix (Watson-Crick duplex or single strand)."""
     try:
         pairing = check_pairing(pairing)
         motif = check_triplex(triplex)
-        seq, other, notes = resolve_partner(sequence, partner, pairing)
+        dna = check_na(na) == "dna"
+        if dna and (pairing != "wc" or motif):
+            raise BuildError(_dna_only(pairing, motif))
+        seq, other, notes = resolve_partner(sequence, partner, pairing, na=na)
         if other is None and (pairing != "wc" or motif):
             raise BuildError("a single strand has no pairing: choose a partner strand (or pairing wc)"
                              if not motif else "a triplex needs the Watson-Crick duplex: choose a partner strand")
@@ -420,7 +544,8 @@ def check_helix(sequence: str, partner: str = "auto", pairing: str = "wc", tripl
         return [("error", str(exc))]
     out = [("info", n) for n in notes]
     if other is None:
-        out.append(("info", f"single strand of {len(seq)} nucleotides in the A-form helix geometry"))
+        out.append(("info", f"single strand of {len(seq)} nucleotides in the {'B' if dna else 'A'}-form helix "
+                            "geometry"))
         return out
     if pairing != "wc":
         out += _pairing_messages(seq, other, pairing)
@@ -442,12 +567,12 @@ def check_helix(sequence: str, partner: str = "auto", pairing: str = "wc", tripl
         if motif == "hoogsteen" and any(a == "G" and b == "C" for a, b, k in kinds if k == "canonical"):
             out.append(("info", "C+·G-C triples need N3-protonated cytosine (C+) in the third strand; written "
                                 "as plain C (protonate or restrain for the simulation)"))
-    kinds = pair_types(seq, other)
+    kinds = pair_types(seq, other, na)
     n_wc, n_wob = kinds.count("wc"), kinds.count("wobble")
     mism = [f"{k + 1}:{seq[k]}·{other[len(seq) - 1 - k]}" for k, t in enumerate(kinds) if t == "mismatch"]
-    out.append(("info", f"{len(seq)} base pairs: {n_wc} Watson-Crick, {n_wob} G·U wobble, "
+    out.append(("info", f"{len(seq)} base pairs: {n_wc} Watson-Crick, {n_wob} G·{'T' if dna else 'U'} wobble, "
                         f"{len(mism)} mismatched"))
-    if (partner or "auto").strip().lower() not in ("auto", "none") and other == complement(seq):
+    if (partner or "auto").strip().lower() not in ("auto", "none") and other == complement(seq, na):
         out.append(("info", "the explicit partner is the Watson-Crick complement"))
     if mism:
         out.append(("warning", "mismatched pairs keep the Watson-Crick frame (bases may collide; minimise "
@@ -469,16 +594,19 @@ def _element(name: str) -> str:
 
 
 def _strand_residue(base: str, level: int, partner: bool, five: bool, three: bool, phosphate5: bool,
-                    hydrogens: bool, wobble: bool) -> List[Tuple[str, np.ndarray]]:
-    """Atoms of one nucleotide in the helix frame (before mirroring)."""
-    t = template(base, hydrogens)
+                    hydrogens: bool, wobble: bool, na: str = "rna") -> List[Tuple[str, np.ndarray]]:
+    """Atoms of one nucleotide in the helix frame (before mirroring); ``na`` 'dna': the B-DNA monomer on the
+    B-DNA screw."""
+    dna = na == "dna"
+    screw = (DNA_TWIST, DNA_RISE) if dna else (TWIST, RISE)
+    t = template(base, hydrogens, na)
     if wobble:
-        _turn_base(t, base, WOBBLE_TURN[base], hydrogens)
+        _turn_base(t, base, (DNA_WOBBLE_TURN if dna else WOBBLE_TURN)[base], hydrogens, na)
     extra_first: List[Tuple[str, np.ndarray]] = []
     extra_last: List[Tuple[str, np.ndarray]] = []
     if five:
         if phosphate5:  # OP3 towards the O3' the previous residue would have
-            prev_o3 = _screw(t["O3'"], -1)
+            prev_o3 = _screw(t["O3'"], -1, *screw)
             extra_first.append(("OP3", t["P"] + P_OP3 * _unit(prev_o3 - t["P"])))
         else:
             if hydrogens:
@@ -487,15 +615,17 @@ def _strand_residue(base: str, level: int, partner: bool, five: bool, three: boo
                 del t[name]
     if three and hydrogens:
         extra_last.append(("HO3'", _place(t["C4'"], t["C3'"], t["O3'"], BOND_H["oh"], 109.5, 180.0)))
-    atoms = extra_first + [(n, t[n]) for n in BACKBONE_NAMES + BASE_NAMES[base] if n in t]
+    names = DNA_BACKBONE_NAMES + DNA_BASE_NAMES[base] if dna else BACKBONE_NAMES + BASE_NAMES[base]
+    atoms = extra_first + [(n, t[n]) for n in names if n in t]
     if hydrogens:
-        atoms += [(n, t[n]) for n, *_ in _H_RULES["sugar"] + _H_RULES[base]]
+        rules = _DNA_H_RULES if dna else _H_RULES
+        atoms += [(n, t[n]) for n, *_ in rules["sugar"] + rules[base]]
     atoms += extra_last
     out = []
     for name, xyz in atoms:
         if partner:
             xyz = _dyad(xyz)
-        out.append((name, _screw(xyz, level)))
+        out.append((name, _screw(xyz, level, *screw)))
     return out
 
 
@@ -540,7 +670,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
                 start=(1, 1), scheme: Optional[str] = None, terminals: bool = True,
                 hydrogens: bool = False, phosphate5: bool = False, center: bool = True,
                 notes: Optional[List[str]] = None, pairing: str = "wc", triplex: Optional[str] = None,
-                third: str = "auto") -> str:
+                third: str = "auto", na: str = "rna") -> str:
     """PDB text of an ideal RNA helix: one strand (``partner='none'``), a duplex or a triplex.
 
     ``partner``: 'auto' (the partners of ``pairing``: the Watson-Crick complement for wc), 'none' or the
@@ -557,10 +687,16 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     5'-phosphate (P, OP1, OP2, OP3) on each strand; by default chains start with a 5'-OH.
     ``hydrogens`` adds all hydrogens; ``center`` puts the helix centre at the origin (axis along z).
     ``notes`` (a list) receives the build notes.
+    ``na`` 'dna': an ideal B-form DNA helix (the Arnott B-DNA monomer; G·T wobbles, U read as T) with the
+    same options; pairing wc only, no triplex.  Names DA ... / L: 0DA ... (amber: DA5 ..., L: LDA ...).
     """
     pairing = check_pairing(pairing)
     motif = check_triplex(triplex)
-    seq, other, msgs = resolve_partner(sequence, partner, pairing)
+    na = check_na(na)
+    dna = na == "dna"
+    if dna and (pairing != "wc" or motif):
+        raise BuildError(_dna_only(pairing, motif))
+    seq, other, msgs = resolve_partner(sequence, partner, pairing, na=na)
     chirality = (chirality or "D").strip().upper()
     if chirality not in ("D", "L"):
         raise BuildError(f"chirality must be D or L, got {chirality!r}")
@@ -584,7 +720,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     if scheme not in SCHEMES:
         raise BuildError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     n = len(seq)
-    kinds = pair_types(seq, other) if other is not None and pairing == "wc" else ["none"] * n
+    kinds = pair_types(seq, other, na) if other is not None and pairing == "wc" else ["none"] * n
     # per strand: (chain, first residue number, [(base, atoms)]) 5'->3'
     built: List[Tuple[str, int, List[Tuple[str, List[Tuple[str, np.ndarray]]]]]] = []
     rebuilt = pairing != "wc" or motif is not None
@@ -597,7 +733,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
                                               kinds[n - 1 - j] == "wobble") for j, b in enumerate(other)]))
         for chain, first, residues in strands:
             built.append((chain, first, [(b, _strand_residue(b, level, is_partner, five, three, phosphate5,
-                                                             hydrogens, wob))
+                                                             hydrogens, wob, na))
                                          for b, level, is_partner, five, three, wob in residues]))
     else:
         kind = pairing if pairing != "wc" else "triplex-" + motif
@@ -613,7 +749,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     for chain, first, residues in built:
         seg = []
         for k, (b, atoms) in enumerate(residues):
-            res = Residue(b, chain, first + k, chirality=chirality)
+            res = Residue("D" + b if dna else b, chain, first + k, chirality=chirality)  # DNA: named by the scheme
             for name, xyz in atoms:
                 res.atoms.append(Atom("ATOM", name, "", "", _element(name)))
                 coords.append(xyz)
@@ -631,22 +767,30 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
         atom.tail = _tail(x)
     geometry = _model_notes(s, levels, kind) if rebuilt else []
     out_notes = list(msgs)
-    renamed = [n_ for n_ in pdbtools.convert_names(s, scheme, terminals=terminals)
+    renamed = [n_ for n_ in pdbtools.convert_names(s, scheme, terminals=terminals, dna=dna)
                if not n_.startswith("WARNING: 5'-terminal")]
     if chosen is None:
-        renamed = ["Residue names " + ("A, C, G, U" if chirality == "D" else
-                                       "0A, 0C, 0G, 0U (the CCD L-ribonucleotides)") + ", ATOM records"]
+        if dna:
+            names = "DA, DC, DG, DT" if chirality == "D" else "0DA, 0DC, 0DG, 0DT (the CCD L-deoxyribonucleotides)"
+        else:
+            names = "A, C, G, U" if chirality == "D" else "0A, 0C, 0G, 0U (the CCD L-ribonucleotides)"
+        renamed = ["Residue names " + names + ", ATOM records"]
     out_notes += renamed
     if scheme == "pdb":
         out_notes += pdbtools.set_records(s, "pdb")
     if phosphate5 and scheme == "amber":
         out_notes.append("WARNING: the Amber 5' units have no 5'-phosphate (tleap cannot type P/OP1/OP2/OP3 "
-                         "of A5/LA5 ...); build without the 5'-phosphate for tleap")
+                         f"of {'DA5/LDA5' if dna else 'A5/LA5'} ...); build without the 5'-phosphate for tleap")
     hand = "right-handed, D" if chirality == "D" else "left-handed, L: mirror image"
     what = f"duplex of {n} base pairs" if other is not None else f"single strand of {n} nucleotides"
     if motif:
         what = f"triplex of {n} base triples"
-    if not rebuilt:
+    if dna:
+        s.header = [f"REMARK 951 MDATK IDEAL B-FORM DNA ({hand}), {what}",
+                    f"REMARK 951 ARNOTT B-DNA FIBER MONOMER, TWIST {DNA_TWIST:.1f} DEG, RISE {DNA_RISE:.2f} A, "
+                    "HELIX AXIS Z",
+                    f"REMARK 951 STRAND {chain1} {seq}"]
+    elif not rebuilt:
         s.header = [f"REMARK 951 MDATK IDEAL A-FORM RNA ({hand}), {what}",
                     f"REMARK 951 ARNOTT A-RNA FIBER MONOMER, TWIST {TWIST:.1f} DEG, RISE {RISE:.2f} A, "
                     f"HELIX AXIS Z",
@@ -661,10 +805,14 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     if other is not None:
         s.header.append(f"REMARK 951 STRAND {chain2} {other}")
         if not rebuilt:
-            out_notes += _mismatch_notes(s, seq, other, kinds)
+            out_notes += _mismatch_notes(s, seq, other, kinds, na)
             if kinds.count("wobble"):
-                out_notes.append(f"{kinds.count('wobble')} G·U pair(s) built with an approximate wobble geometry "
-                                 "(bases turned in their plane about C1'); minimise before production")
+                out_notes.append(f"{kinds.count('wobble')} G·{'T' if dna else 'U'} pair(s) built with an approximate "
+                                 "wobble geometry (bases turned in their plane about C1'); minimise before production")
+    if dna and n > 1:  # the fiber model's own geometry (epsilon 155, zeta -95 degrees)
+        out_notes.append(f"The Arnott B-DNA fiber model has C2'(i)-OP2(i+1) at 2.69 Å on each O3'-P step "
+                         f"({(n - 1) * len(s.segments)} here; a model check lists them as clashes): a starting "
+                         "model, minimise before production")
     if motif:
         s.header.append(f"REMARK 951 STRAND {ids[2]} {third_seq} (THIRD STRAND, "
                         f"{'PARALLEL' if motif == 'hoogsteen' else 'ANTIPARALLEL'} TO STRAND {chain1})")
@@ -680,7 +828,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
     atoms_note = f"{sum(len(r.atoms) for r in s.residues())} atoms" + (
         ", hydrogens included" if hydrogens else ", heavy atoms only")
     if not rebuilt:
-        out_notes.append(f"Built an ideal A-form RNA {what} ({hand}): {atoms_note}")
+        out_notes.append(f"Built an ideal {'B-form DNA' if dna else 'A-form RNA'} {what} ({hand}): {atoms_note}")
     else:
         kind_text = f"with {PAIRING_LW[pairing]} pairs" if not motif else f"with a {motif} third strand"
         out_notes.append(f"Built an RNA {what} {kind_text} ({hand}): {atoms_note}; a starting model: "
@@ -792,16 +940,17 @@ def _torsion_note(s: Structure) -> str:
             "zeta -66 chi -175): " + "; ".join(parts))
 
 
-def _mismatch_notes(s: Structure, seq: str, other: str, kinds: Sequence[str]) -> List[str]:
+def _mismatch_notes(s: Structure, seq: str, other: str, kinds: Sequence[str], na: str = "rna") -> List[str]:
     segs = s.segments
     out = []
     n = len(seq)
+    names = DNA_BASE_NAMES if na == "dna" else BASE_NAMES
     for k, kind in enumerate(kinds):
         if kind != "mismatch":
             continue
         r1, r2 = segs[0][k], segs[1][n - 1 - k]
-        b1 = [a for a in r1.atoms if a.name in BASE_NAMES[seq[k]]]
-        b2 = [a for a in r2.atoms if a.name in BASE_NAMES[other[n - 1 - k]]]
+        b1 = [a for a in r1.atoms if a.name in names[seq[k]]]
+        b2 = [a for a in r2.atoms if a.name in names[other[n - 1 - k]]]
         d = min(np.linalg.norm(np.subtract(a.xyz, b.xyz)) for a in b1 for b in b2)
         if d < CLASH:
             out.append(f"WARNING: mismatch {r1.chain}:{r1.resseq} {seq[k]} · {r2.chain}:{r2.resseq} "
@@ -1878,7 +2027,7 @@ def _geometry_notes(labels: List[str], res_atoms: List[List[Tuple[str, np.ndarra
 
 # --- mutations ----------------------------------------------------------------------------------------
 
-_MUTATION_RE = re.compile(r"^([^:\s]?):?(-?\d+)([A-Za-z]?)(?:>|:|->)?([ACGUacgu])$")
+_MUTATION_RE = re.compile(r"^([^:\s]?):?(-?\d+)([A-Za-z]?)(?:>|:|->)?([ACGTUacgtu])$")  # T: DNA residues
 _ALIASES = {"A": "ADE", "C": "CYT", "G": "GUA", "U": "URA"}
 _SUGAR_EXTRA = frozenset({"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P", "HOP2", "HOP3", "H5T", "H3T"})
 _ALL_BASE_NAMES = frozenset(n for names in BASE_NAMES.values() for n in names) | frozenset(
@@ -1900,7 +2049,8 @@ class Mutation:
 
 
 def parse_mutations(spec) -> List[Mutation]:
-    """'A:5G, B:20C' (also 'A:5>G', ':5G' for a blank chain, a list of such strings) -> mutations."""
+    """'A:5G, B:20C' (also 'A:5>G', ':5G' for a blank chain, a list of such strings) -> mutations (new bases
+    A, C, G, U and, for DNA residues, T; :func:`mutate` checks the base against the residue)."""
     items = re.split(r"[,;\s]+", spec.strip()) if isinstance(spec, str) else list(spec)
     out: List[Mutation] = []
     for item in items:
@@ -1921,14 +2071,20 @@ def parse_mutations(spec) -> List[Mutation]:
 
 
 def mutated_name(name: str, base: str) -> str:
-    """Residue name for ``base`` in the scheme, chirality and terminal state of ``name``."""
+    """Residue name for ``base`` in the scheme, chirality and terminal state of ``name`` (DNA: DA5 -> DT5,
+    0DA -> 0DT, LDA3 -> LDT3; a DNA name without the D prefix, such as T or THY, becomes DA ...)."""
     up = name.strip().upper()
     if up in _ALIASES.values() or up == "URI":
         return _ALIASES[base]
     m = re.match(r"^([RL0]?)([ACGU])([53N]?)$", up)
+    if m:
+        return m.group(1) + base + m.group(3)
+    if up == "THY":
+        return "D" + base
+    m = re.match(r"^(D|0D|LD)?([ACGTU])([53N]?)$", up)
     if not m:
-        raise BuildError(f"cannot rename residue {name!r} (RNA nucleotides only)")
-    return m.group(1) + base + m.group(3)
+        raise BuildError(f"cannot rename residue {name!r} (RNA or DNA nucleotides only)")
+    return (m.group(1) or "D") + base + m.group(3)
 
 
 def _nucleotide(res: Residue) -> Optional[pdbtools.ResidueName]:
@@ -1966,7 +2122,8 @@ def _partners(s: Structure, cutoff: float = 3.5) -> Dict[int, Tuple[int, int]]:
 
 
 def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
-    """Replace the base of ``res`` in place; returns notes and the RMS of the glycosidic-frame fit."""
+    """Replace the base of ``res`` in place; returns notes and the RMS of the glycosidic-frame fit.  A DNA
+    residue gets the base of the B-DNA monomer."""
     from .spatial import kabsch
 
     info = pdbtools.parse_residue_name(res.name)
@@ -1977,7 +2134,8 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
     if missing:
         raise BuildError(f"{res.label}: missing atom(s) {', '.join(missing)} of the glycosidic frame")
     before, _ = pdbtools.sugar_chirality(coords, old)
-    t = template(base, hydrogens=False)
+    dna = info.sugar == "dna"
+    t = template(base, hydrogens=False, na="dna") if dna else template(base, hydrogens=False)
     new_frame = ["C1'"] + list(GLYCOSIDIC[base])
     mob = np.array([t[a] for a in new_frame])
     ref = np.array([coords[a] for a in old_frame])
@@ -1990,12 +2148,13 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
     altlocs = sorted({a.alt for a in res.atoms if a.alt})
     keep, dropped_h, unknown = [], [], []
     insert_at = None
+    base_names = DNA_BASE_NAMES if dna else BASE_NAMES
     for a in res.atoms:
         name = a.name.replace("*", "'")
         is_sugar = "'" in name or name in _SUGAR_EXTRA
         if is_sugar:
             keep.append(a)
-        elif name in _ALL_BASE_NAMES or name in BASE_NAMES[old]:
+        elif name in _ALL_BASE_NAMES or name in base_names.get(old, ()):
             if insert_at is None:
                 insert_at = len(keep)
             if name.lstrip("0123456789").startswith("H"):
@@ -2007,7 +2166,7 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
         insert_at = len(keep)
     record = template_c1.record
     new_atoms = []
-    for name in BASE_NAMES[base]:
+    for name in base_names[base]:
         xyz = (t[name] - mc) @ rot.T + rc
         tail = template_c1.tail[:3] + _tail(xyz)[3:33] + template_c1.tail[33:]  # occupancy 1.00, C1' B-factor
         new_atoms.append(Atom(record, name, "", tail, _element(name)))
@@ -2032,10 +2191,10 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
     return notes, rms
 
 
-def _new_partner_base(new: str, current: str, wobble: bool) -> str:
-    if wobble and new + current in WOBBLE_PAIRS:
+def _new_partner_base(new: str, current: str, wobble: bool, na: str = "rna") -> str:
+    if wobble and new + current in (DNA_WOBBLE_PAIRS if na == "dna" else WOBBLE_PAIRS):
         return current
-    return COMPLEMENT[new]
+    return (DNA_COMPLEMENT if na == "dna" else COMPLEMENT)[new]
 
 
 def mutate(source, mutations, compensatory: bool = True, wobble: bool = False, cutoff: float = 3.5
@@ -2045,7 +2204,9 @@ def mutate(source, mutations, compensatory: bool = True, wobble: bool = False, c
     ``mutations``: 'A:5G, B:20C' (or :class:`Mutation` objects).  ``compensatory``: also change the
     Watson-Crick / G·U partner (detected in the input) of every mutated base to the complement
     (G<->C, A<->U; with ``wobble`` a G·U pair is kept where the new base allows it) unless the
-    partner is mutated explicitly.
+    partner is mutated explicitly.  DNA residues take A, C, G, T (U is read as T) on the B-DNA base
+    geometry, with the DNA complement (A<->T) and G·T for the partners; a partner of the other kind (an RNA
+    base paired with DNA) is not changed.
     """
     s = pdbtools.read_pdb(source)
     notes = list(s.notes)
@@ -2058,36 +2219,47 @@ def mutate(source, mutations, compensatory: bool = True, wobble: bool = False, c
         if res is None:
             raise BuildError(f"residue {m.where} not found")
         info = _nucleotide(res)
-        if info is None or info.sugar != "rna":
-            raise BuildError(f"{res.label} is not an RNA nucleotide")
+        if info is None:
+            raise BuildError(f"{res.label} is not an RNA or DNA nucleotide")
+        if info.sugar == "dna" and m.base == "U":
+            notes.append(f"{m.where}: U read as T (DNA)")
+            m = replace(m, base="T")
+        elif info.sugar == "rna" and m.base == "T":
+            raise BuildError(f"{res.label} is an RNA nucleotide: T is a DNA base (RNA: A, C, G, U)")
         targets.append((res, m))
     if compensatory:
         partner_of = _partners(s, cutoff)
         residues = list(s.residues())
         explicit = {id(r) for r, _ in targets}
         for res, m in list(targets):
+            na = _nucleotide(res).sugar
+            wobble_label = "G·T" if na == "dna" else "G·U"
             hit = partner_of.get(id(res))
             if hit is None:
-                notes.append(f"{m.where}: no Watson-Crick / G·U partner in the input; no compensatory change")
+                notes.append(f"{m.where}: no Watson-Crick / {wobble_label} partner in the input; no compensatory "
+                             "change")
                 continue
             other = residues[hit[0]]
             other_info = _nucleotide(other)
-            if other_info is None or other_info.sugar != "rna":
-                notes.append(f"{m.where}: its partner {other.chain}:{other.resseq} {other.name} is not an RNA "
-                             "nucleotide; no compensatory change")
+            if other_info is None or other_info.sugar != na:
+                notes.append(f"{m.where}: its partner {other.chain}:{other.resseq} {other.name} is not "
+                             f"{'a DNA' if na == 'dna' else 'an RNA'} nucleotide; no compensatory change")
                 continue
             other_base = other_info.base
+            wc_pairs, wobble_pairs = ((DNA_WATSON_CRICK_PAIRS, DNA_WOBBLE_PAIRS) if na == "dna"
+                                      else (WATSON_CRICK_PAIRS, WOBBLE_PAIRS))
             if id(other) in explicit:
                 new_other = next(mm.base for rr, mm in targets if rr is other)
                 pair = m.base + new_other
-                if pair not in WATSON_CRICK_PAIRS and pair not in WOBBLE_PAIRS:
+                if pair not in wc_pairs and pair not in wobble_pairs:
                     notes.append(f"WARNING: {m.where} {m.base} and its partner {other.chain}:{other.resseq} "
                                  f"{new_other} (both mutated explicitly) do not pair canonically")
                 continue
-            new_base = _new_partner_base(m.base, other_base, wobble)
+            new_base = _new_partner_base(m.base, other_base, wobble, na)
             if new_base == other_base:
+                kind = f"{wobble_label} wobble" if m.base + other_base in wobble_pairs else "Watson-Crick"
                 notes.append(f"{m.where} {m.base}: partner {other.chain}:{other.resseq} {other_base} already "
-                             f"pairs ({'G·U wobble' if m.base + other_base in WOBBLE_PAIRS else 'Watson-Crick'})")
+                             f"pairs ({kind})")
                 continue
             comp = Mutation(other.chain, other.resseq, other.icode, new_base, explicit=False,
                             reason=f"compensates {m.where} {m.base}")
@@ -2258,15 +2430,19 @@ class BuildOutcome:
 
 def add_commands(sub) -> list:
     """Register 'helix', 'mutate' and 'fit' on an argparse sub-parser collection (returns the parsers)."""
-    h = sub.add_parser("helix", help="ideal A-form RNA helix (D or L), single strand or duplex")
+    h = sub.add_parser("helix", help="ideal helix (D or L), single strand or duplex: A-form RNA (also other "
+                                     "pairings and triplexes) or B-form DNA")
     h.add_argument("--seq", "--sequence", dest="seq", required=True, help="strand 1, 5'->3' (e.g. GGCAU)")
     h.add_argument("--partner", default="auto", help="auto (Watson-Crick complement), none (single strand) or "
-                   "the partner sequence 5'->3' (same length; mismatches / G·U allowed)")
+                   "the partner sequence 5'->3' (same length; mismatches / G·U, DNA: G·T allowed)")
+    h.add_argument("--na", "--nucleic-acid", dest="na", choices=NUCLEIC_ACIDS, default="rna",
+                   help="rna: the Arnott A-form (default); dna: the Arnott B-form (Watson-Crick duplex or single "
+                        "strand; U is read as T)")
     h.add_argument("--chirality", choices=("D", "L"), default="D", help="D (right-handed) or L (mirror image)")
     h.add_argument("--pairing", choices=PAIRINGS, default="wc", help="wc: antiparallel Watson-Crick A-form "
-                   "(default); reverse-wc (trans WC/WC), hoogsteen (cis WC/Hoogsteen, strand 1 the purine "
-                   "strand) and hh (trans Hoogsteen/Hoogsteen A·A, as PDB 4JRD): parallel strands; "
-                   "reverse-hoogsteen (trans WC/Hoogsteen): antiparallel")
+                   "(default; DNA: B-form, its only pairing); reverse-wc (trans WC/WC), hoogsteen (cis "
+                   "WC/Hoogsteen, strand 1 the purine strand) and hh (trans Hoogsteen/Hoogsteen A·A, as PDB 4JRD): "
+                   "parallel strands; reverse-hoogsteen (trans WC/Hoogsteen): antiparallel")
     h.add_argument("--triplex", choices=("none",) + TRIPLEX_MOTIFS, default="none",
                    help="add a third strand on the Hoogsteen edge of the strand-1 purines: hoogsteen (pyrimidine "
                         "motif, parallel) or reverse-hoogsteen (purine motif, antiparallel); needs --pairing wc")
@@ -2276,8 +2452,8 @@ def add_commands(sub) -> list:
                    "A,B / A,B,C)")
     h.add_argument("--start", default="1,1", help="first residue numbers of strand 1 and 2 (and 3; default 1,1; "
                                                   "write negative numbers as --start=-5,1)")
-    h.add_argument("--scheme", choices=SCHEMES, help="residue names (default: A/C/G/U and 0A/0C/0G/0U, "
-                   "no terminal variants)")
+    h.add_argument("--scheme", choices=SCHEMES, help="residue names (default: A/C/G/U and 0A/0C/0G/0U, DNA: "
+                   "DA/DC/DG/DT and 0DA/0DC/0DG/0DT, no terminal variants)")
     h.add_argument("--no-terminal-names", action="store_true", help="no 5'/3' residue name variants")
     h.add_argument("--phosphate5", action="store_true", help="keep a 5'-phosphate (P, OP1, OP2, OP3)")
     h.add_argument("--hydrogens", action="store_true", help="add all hydrogens (default: heavy atoms only)")
@@ -2286,7 +2462,8 @@ def add_commands(sub) -> list:
     m.add_argument("input", help="PDB file")
     m.add_argument("mutations", help="e.g. 'A:5G, B:20C'")
     m.add_argument("--no-compensatory", action="store_true", help="do not change the paired partners")
-    m.add_argument("--wobble", action="store_true", help="keep G·U pairs where the new base allows them")
+    m.add_argument("--wobble", action="store_true", help="keep G·U (DNA: G·T) pairs where the new base allows "
+                                                         "them")
     m.add_argument("--output", "-o", required=True, help="output PDB")
     f = sub.add_parser("fit", help="rigid-body fit of a model into a density map (MRC / CCP4)")
     f.add_argument("input", help="model PDB")
@@ -2307,7 +2484,8 @@ def run(args, progress: Optional[Callable[[float, str], None]] = None) -> BuildO
         text = build_helix(args.seq, args.partner, args.chirality, args.chains, args.start,
                            args.scheme or None, not args.no_terminal_names, args.hydrogens, args.phosphate5,
                            notes=notes, pairing=getattr(args, "pairing", "wc"),
-                           triplex=getattr(args, "triplex", None), third=getattr(args, "third", "auto"))
+                           triplex=getattr(args, "triplex", None), third=getattr(args, "third", "auto"),
+                           na=getattr(args, "na", "rna"))
         out = BuildOutcome(text, notes)
     elif cmd == "mutate":
         text, notes = mutate(args.input, args.mutations, compensatory=not args.no_compensatory,

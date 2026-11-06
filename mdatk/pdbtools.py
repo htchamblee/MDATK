@@ -12,7 +12,7 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
 * L-nucleotides are detected from signed chiral volumes at C1', C3' and C4' (every usable centre must agree); residue
   ranges such as ``"C:45-73"`` override the detection and force L.
 * Residue name schemes (base from the name, chirality from detection/override, terminal state from the
-  segment ends; DNA and unrecognised residues pass through unchanged):
+  segment ends; DNA and unrecognised residues pass through unchanged unless DNA is asked for, see below):
 
   ``amber``    D: A C G U, terminals A5/A3, single-residue segment AN.  L (Dudek & Trylska,
                nucleic12_LRNA.lib): LA LC LG LU, terminals LA5/LA3.  The library has no LAN-type unit, so a
@@ -26,6 +26,10 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
                that read standard RNA only and ignore chirality (map-model scores, DSSR).  The names no
                longer record the hand, so such a copy is never meant for tleap, refinement or analyses
                that read names.
+
+  DNA is renamed only on request (``convert_names(..., dna=True)``, as the structure builder does): D: DA DC
+  DG DT (amber: DA5/DA3/DAN of DNA.OL15); L: the CCD's 0DA 0DC 0DG 0DT, amber: MDATK's LDA, LDA5, LDA3, LDAN
+  ... (AmberTools ships no L-DNA library); standard: DA for both hands.  Both L-DNA spellings are read back.
 
 * Chains: restore ids of cpptraj output (from a reference PDB, a list per TER segment or A, B, C ...),
   split, combine and order; residue renumbering; SEQRES records and FASTA text.
@@ -92,6 +96,9 @@ _STANDARD_NAMES = frozenset(_AMINO) | {"A", "C", "G", "U", "I", "N", "DA", "DC",
 _WATER = frozenset({"HOH", "WAT", "H2O", "DOD", "SOL", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P", "T4E",
                     "SPC", "OPC"})
 _NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
+# L-DNA: the CCD's 2'-deoxy-L-ribonucleotides 0DA 0DC 0DG 0DT (no terminal variants) and the Amber-style names
+# MDATK's builder writes, LDA LDA5 LDA3 LDAN ... (after nucleic12_LRNA.lib's LA; AmberTools has no L-DNA units)
+_LDNA_RE = re.compile(r"^(?:0D([ACGT])|LD([ACGT])([53N]?))$")
 _NT_ALIASES = {"ADE": ("A", "rna"), "CYT": ("C", "rna"), "GUA": ("G", "rna"), "URA": ("U", "rna"),
                "URI": ("U", "rna"), "THY": ("T", "dna")}
 _TWO_LETTER_ELEMENTS = frozenset({"MG", "NA", "CL", "ZN", "MN", "CA", "LI", "RB", "CS", "SR", "BA", "CD",
@@ -175,7 +182,9 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
     """Recognise a nucleotide name in any supported scheme or common alias; None otherwise.
 
     RNA: A, A5, A3, AN, RA, RA5, RA3, RAN, ADE/CYT/GUA/URA/URI; L-RNA: LA, LA5, LA3, 0A, 0A5, 0A3 (and the
-    N forms); DNA: DA, DA5, DA3, DAN, T, THY ...
+    N forms); DNA: DA, DA5, DA3, DAN, T, THY ...; L-DNA: the CCD components 0DA, 0DC, 0DG, 0DT and the
+    Amber-style LDA, LDA5, LDA3, LDAN ... of MDATK's builder.  (LDA is also the CCD code of a detergent:
+    :func:`nucleotide` only takes a name for a nucleotide when the residue has backbone atoms.)
     """
     n = name.strip().upper()
     if n in _NT_ALIASES:
@@ -183,7 +192,11 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
         return ResidueName(base, sugar, "D", "")
     m = _NT_RE.match(n)
     if not m:
-        return None
+        m = _LDNA_RE.match(n)
+        if not m:
+            return None
+        ccd, amber, term = m.groups()
+        return ResidueName(ccd or amber, "dna", "L", term or "")
     pre, base, term = m.groups()
     if pre == "D" or (base == "T" and pre == ""):
         return ResidueName(base, "dna", "D", term)
@@ -192,8 +205,21 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
     return ResidueName(base, "rna", "L" if pre in ("L", "0") else "D", term)
 
 
-def scheme_name(base: str, chirality: str, terminal: str, scheme: str) -> str:
-    """Residue name of an RNA nucleotide in ``scheme`` (terminal: "5", "3", "N" or "")."""
+def scheme_name(base: str, chirality: str, terminal: str, scheme: str, sugar: str = "rna") -> str:
+    """Residue name of an RNA nucleotide in ``scheme`` (terminal: "5", "3", "N" or "").
+
+    ``sugar`` "dna": the name of a DNA nucleotide.  amber: DA DA5 DA3 DAN (the units of AmberTools'
+    DNA.OL15.lib), L: LDA LDA5 LDA3 LDAN (MDATK's own names, after nucleic12_LRNA.lib's LA LA5 LA3: AmberTools
+    ships no L-DNA library); ccd / rosetta / pdb: DA, L: 0DA (the CCD has no terminal variants for DNA);
+    standard: DA for both hands."""
+    if sugar == "dna":
+        if scheme == "amber":
+            return ("LD" if chirality == "L" else "D") + base + terminal
+        if scheme in ("ccd", "rosetta", "pdb"):
+            return ("0D" if chirality == "L" else "D") + base
+        if scheme == "standard":  # as for RNA: the hand is not in the name
+            return "D" + base
+        raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     if scheme == "amber":
         if chirality == "L":  # nucleic12_LRNA.lib defines LX, LX5 and LX3 only
             return "L" + base + {"5": "5", "3": "3", "N": "5"}.get(terminal, "")
@@ -760,7 +786,7 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
     """Set ``Residue.chirality`` of every nucleotide: override ranges (forced L) > detection > name."""
     ranges = parse_ranges(l_ranges)
     notes: List[str] = []
-    l_in_d_names, d_in_l_names, undetermined, forced_d, l_dna = [], [], [], [], []
+    l_in_d_names, d_in_l_names, undetermined, forced_d, l_dna, d_in_l_dna = [], [], [], [], [], []
     counts = Counter()
     in_range = 0
     for res in structure.residues():
@@ -778,10 +804,10 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
             res.chirality = call or nt.chirality
             if detect and call is None:
                 undetermined.append(res.label)
-            elif call == "L" and nt.chirality == "D":
+            elif call == "L" and nt.chirality == "D" and nt.sugar != "dna":  # L-DNA: the note below
                 l_in_d_names.append(res)
-            elif call == "D" and nt.chirality == "L":
-                d_in_l_names.append(f"{res.label} ({_volumes_text(vols)})")
+            elif call == "D" and nt.chirality == "L":  # a scheme renames RNA, not DNA
+                (d_in_l_dna if nt.sugar == "dna" else d_in_l_names).append(f"{res.label} ({_volumes_text(vols)})")
         if nt.sugar == "dna" and res.chirality == "L":
             l_dna.append(res.label)
         counts[res.chirality] += 1
@@ -801,8 +827,11 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
                      "name for "
                      + _listing(undetermined))
     if l_dna:
-        notes.append("L-DNA residues have no name in the supported schemes and keep their names: "
-                     + _listing(l_dna))
+        notes.append("L-DNA residues keep their names (the PDB tools rename RNA only; the CCD names L-DNA 0DA, "
+                     "0DC, 0DG, 0DT): " + _listing(l_dna))
+    if d_in_l_dna:
+        notes.append("WARNING: L-DNA names on residues with D sugar geometry (the PDB tools keep DNA names): "
+                     + _listing(d_in_l_dna))
     if ranges and not in_range:
         notes.append("WARNING: the L ranges match no nucleotide")
     return notes
@@ -955,30 +984,38 @@ def _terminals(seg: Sequence[Residue]) -> Dict[int, str]:
     return out
 
 
-def convert_names(structure: Structure, scheme: str, only=None, terminals: bool = True) -> List[str]:
+def convert_names(structure: Structure, scheme: str, only=None, terminals: bool = True,
+                  dna: bool = False) -> List[str]:
     """Rename RNA residues to ``scheme``; ``only`` (ranges) limits the renaming to those residues.
 
     ``terminals=False`` writes chain ends with the internal names (LA rather than LA5/LA3, A rather than
-    A5), for leap set-ups whose libraries map terminal residues with addPdbResMap."""
+    A5), for leap set-ups whose libraries map terminal residues with addPdbResMap.  ``dna``: rename the DNA
+    residues (A, C, G, T; both hands) too, as :func:`scheme_name` names them (terminal variants in the amber
+    scheme only); by default they keep their names (the PDB preparation renames RNA only)."""
     if scheme not in SCHEMES:
         raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     ranges = parse_ranges(only)
     changes = Counter()
-    term_mismatch, phosphate, single_l, kept_phosphate, plain_l = [], [], [], [], []
+    term_mismatch, phosphate, single_l, kept_phosphate, plain_l, l_dna = [], [], [], [], [], []
     for seg in structure.segments:
         terms = _terminals(seg)
         for res in seg:
             nt = _nucleotide(res)
-            if nt is None or nt.sugar != "rna" or (ranges and not _in_ranges(res, ranges)):
+            if nt is None or (ranges and not _in_ranges(res, ranges)):
+                continue
+            is_dna = nt.sugar == "dna"
+            if is_dna and not (dna and nt.base in "ACGT"):
                 continue
             term = seg_term = terms[id(res)] if terminals else ""
             chir = res.chirality or nt.chirality
-            if scheme == "ccd" and chir == "L" and term in ("5", "N") and any(a.name == "P" for a in res.atoms):
+            if (not is_dna and scheme == "ccd" and chir == "L" and term in ("5", "N")
+                    and any(a.name == "P" for a in res.atoms)):
                 # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself
                 term = ""  # (a single residue with a 5'-phosphate and a 3'-OH is the component, too)
                 kept_phosphate.append(res.label)
-            new = scheme_name(nt.base, chir, term, scheme)
-            single_l_unit = seg_term == "N" and chir == "L" and nt.terminal == "5"  # LA5 stands in for LAN
+            new = scheme_name(nt.base, chir, term, scheme, nt.sugar)
+            # LA5 stands in for LAN (L-DNA has its own LDAN)
+            single_l_unit = not is_dna and seg_term == "N" and chir == "L" and nt.terminal == "5"
             if terminals and nt.terminal and nt.terminal != seg_term and not single_l_unit:
                 term_mismatch.append(res.label)  # the old name shows the misplaced terminal
             if new != res.name:
@@ -986,10 +1023,12 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                 res.name = new
             if scheme == "amber" and terms[id(res)] in ("5", "N") and any(a.name == "P" for a in res.atoms):
                 phosphate.append(res.label)
-            if scheme == "amber" and term == "N" and chir == "L":
+            if scheme == "amber" and term == "N" and chir == "L" and not is_dna:
                 single_l.append(res.label)
             if scheme == "standard" and chir == "L":
                 plain_l.append(res)
+            if scheme == "amber" and chir == "L" and is_dna:
+                l_dna.append(res)
     notes = []
     if changes:
         summary = ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(changes.items(), key=lambda kv: -kv[1]))
@@ -1008,6 +1047,10 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     if single_l:
         notes.append("nucleic12_LRNA.lib has no unit for a single-residue L segment; wrote the 5' unit "
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
+    if l_dna:
+        notes.append(f"L-DNA: {len(l_dna)} residue(s) ({ranges_text(l_dna)}) have MDATK's Amber-style names LDA, "
+                     "LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no L-DNA library, so "
+                     "tleap needs residue units of these names")
     if plain_l:
         notes.append(f"WARNING: the standard scheme gives {len(plain_l)} L residue(s) plain D names "
                      f"({ranges_text(plain_l)}): the names no longer record the hand. Use this copy only for "

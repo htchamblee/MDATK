@@ -158,6 +158,126 @@ def test_parse_residue_name(name, expected):
     assert (tuple(got) if got else None) == expected
 
 
+@pytest.mark.parametrize("name, expected", [
+    ("0DA", ("A", "dna", "L", "")), ("0DC", ("C", "dna", "L", "")), ("0DG", ("G", "dna", "L", "")),
+    ("0DT", ("T", "dna", "L", "")), ("LDA", ("A", "dna", "L", "")), ("LDA5", ("A", "dna", "L", "5")),
+    ("LDC3", ("C", "dna", "L", "3")), ("LDGN", ("G", "dna", "L", "N")), ("ldt", ("T", "dna", "L", "")),
+    ("0DA5", None), ("0DU", None), ("LDU", None), ("LDX", None), ("0D", None), ("LD5", None),
+])
+def test_parse_residue_name_l_dna(name, expected):
+    """L-DNA: the CCD's 2'-deoxy-L-ribonucleotides 0DA ... (no terminal variants) and the Amber-style LDA ..."""
+    got = pt.parse_residue_name(name)
+    assert (tuple(got) if got else None) == expected
+
+
+def test_lda_detergent_is_no_nucleotide():
+    """LDA is also the CCD code of a detergent (lauryldimethylamine N-oxide): without backbone atoms it is no
+    nucleotide, whatever its name parses as."""
+    from mdatk import builder
+    from mdatk.modelcheck import residue_kind
+
+    names = ["N1", "O1", "CM1", "CM2"] + [f"C{k}" for k in range(1, 13)]
+    det = [atom_line(k + 1, n, "LDA", "D", 1, (k * 1.5, 0.0, 0.0), "HETATM") for k, n in enumerate(names)]
+    text = make_pdb([("A", [("DG", 1, "G", True), ("LDA", 2, "A", True)])], extra=det + ["TER"])
+    s = pt.read_pdb(text)
+    res = {(r.chain, r.resseq): r for r in s.residues()}
+    detergent, ldna = res[("D", 1)], res[("A", 2)]
+    assert pt.parse_residue_name("LDA") == ("A", "dna", "L", "")
+    for r, is_nt in ((detergent, False), (ldna, True)):
+        assert (pt.nucleotide(r, infer=True) is not None) == is_nt
+        assert (builder._nucleotide(r) is not None) == is_nt
+        assert residue_kind(r)[0] == ("nt" if is_nt else "other")
+    notes = pt.assign_chirality(s)
+    assert notes[0] == "Chirality (sugar geometry): 2 L and 0 D nucleotides"  # the detergent is not counted
+    pt.convert_names(s, "rosetta", dna=True)
+    assert [r.name for r in s.residues()] == ["0DG", "0DA", "LDA"]
+
+
+def test_scheme_name_dna():
+    rows = {scheme: [pt.scheme_name("T", c, t, scheme, "dna") for c in "DL" for t in ("", "5", "3", "N")]
+            for scheme in pt.SCHEMES}
+    assert rows == {
+        "amber": ["DT", "DT5", "DT3", "DTN", "LDT", "LDT5", "LDT3", "LDTN"],
+        "ccd": ["DT"] * 4 + ["0DT"] * 4, "rosetta": ["DT"] * 4 + ["0DT"] * 4, "pdb": ["DT"] * 4 + ["0DT"] * 4,
+        "standard": ["DT"] * 8}
+    for scheme in pt.SCHEMES:  # every name reads back as the DNA nucleotide it names
+        for c in "DL":
+            for t in ("", "5", "3", "N"):
+                info = pt.parse_residue_name(pt.scheme_name("A", c, t, scheme, "dna"))
+                assert info.base == "A" and info.sugar == "dna"
+                assert info.chirality == ("D" if scheme == "standard" else c)
+                assert info.terminal == (t if scheme == "amber" else "")
+    assert pt.scheme_name("G", "L", "5", "amber") == "LG5"  # RNA by default, as before
+    with pytest.raises(pt.PDBError):
+        pt.scheme_name("G", "D", "", "charmm", "dna")
+
+
+DNA_HYBRID = [("A", [("G", 1, "G", False), ("C", 2, "C", False)]),
+              ("E", [("DG", 3, "G", False), ("DA", 4, "A", False), ("DC", 5, "C", False)]),  # D-DNA
+              ("F", [("DG", 6, "G", True), ("DT", 7, "U", True), ("DC", 8, "C", True)]),  # L-DNA with D names
+              ("G", [("DA", 9, "A", True)])]  # a single L-DNA residue
+
+
+def test_convert_names_dna():
+    text = make_pdb(DNA_HYBRID)
+    # the PDB preparation renames RNA only (dna=False): DNA keeps its names, the L-DNA note says so
+    r = pt.clean(text, scheme="amber")
+    assert [n for _, _, n in names(r.structure)] == ["G5", "C3", "DG", "DA", "DC", "DG", "DT", "DC", "DA"]
+    assert any(n.startswith("L-DNA residues keep their names (the PDB tools rename RNA only; the CCD names "
+                            "L-DNA 0DA, 0DC, 0DG, 0DT): F:6 DG") for n in r.notes)
+    assert not any(n.startswith("L sugars in") for n in r.notes)  # 'L names when a scheme is applied': RNA only
+    by_scheme = {
+        "amber": ["G5", "C3", "DG5", "DA", "DC3", "LDG5", "LDT", "LDC3", "LDAN"],
+        "ccd": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
+        "rosetta": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
+        "pdb": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
+        "standard": ["G", "C", "DG", "DA", "DC", "DG", "DT", "DC", "DA"],
+    }
+    for scheme, want in by_scheme.items():
+        s = pt.read_pdb(text)
+        pt.assign_chirality(s)
+        notes = pt.convert_names(s, scheme, dna=True)
+        assert [n for _, _, n in names(s)] == want, scheme
+        if scheme == "amber":
+            # the 5'-phosphate warning covers DNA; L-DNA gets MDATK's names, with a note; LDAN is a unit name
+            warn = next(n for n in notes if n.startswith("WARNING: 5'-terminal residues carry P/OP1/OP2"))
+            assert "E:3 DG5" in warn and "F:6 LDG5" in warn and "G:9 LDAN" in warn
+            assert any(n.startswith("L-DNA: 4 residue(s) (F:6-8, G:9) have MDATK's Amber-style names") for n in notes)
+            assert not any("no unit for a single-residue L segment" in n for n in notes)
+        if scheme == "ccd":
+            assert not any("keep the CCD component names" in n for n in notes)  # no terminal variants for DNA
+        if scheme == "standard":
+            assert any(n.startswith("WARNING: the standard scheme gives 4 L residue(s) plain D names (F:6-8, G:9)")
+                       for n in notes)
+        again = pt.read_pdb(pt.write_pdb(s))  # the names read back with their hand (standard: D names)
+        hands = [pt.parse_residue_name(r.name).chirality for r in again.residues()]
+        assert hands[2:5] == ["D"] * 3 and hands[5:] == (["D"] * 4 if scheme == "standard" else ["L"] * 4)
+    s = pt.read_pdb(text)
+    pt.assign_chirality(s)
+    pt.convert_names(s, "amber", terminals=False, dna=True)
+    assert [n for _, _, n in names(s)][2:] == ["DG", "DA", "DC", "LDG", "LDT", "LDC", "LDA"]
+    s = pt.read_pdb(text)
+    pt.assign_chirality(s)
+    pt.convert_names(s, "amber", only="F", dna=True)
+    assert [n for _, _, n in names(s)] == ["G", "C", "DG", "DA", "DC", "LDG5", "LDT", "LDC3", "DA"]
+
+
+def test_l_dna_names_are_l_nucleotides():
+    """0DA ... read as L-DNA: counted, measured and kept by the PDB tools (no 'L-named residues with D sugar'
+    warning for an L sugar), and their FASTA chain is L-DNA."""
+    text = make_pdb([("F", [("0DG", 1, "G", True), ("0DT", 2, "U", True), ("LDC", 3, "C", True)])])
+    r = pt.clean(text, scheme="amber", make_fasta=True)
+    assert [n for _, _, n in names(r.structure)] == ["0DG", "0DT", "LDC"]
+    assert r.notes[0] == "Chirality (sugar geometry): 3 L and 0 D nucleotides"
+    assert not any("L-named residues with D sugar" in n for n in r.notes)
+    assert "| L-DNA | 3 residues" in r.fasta
+    d_geometry = make_pdb([("F", [("0DG", 1, "G", False)])])
+    notes = pt.clean(d_geometry, scheme="amber").notes
+    assert any(n.startswith("WARNING: L-DNA names on residues with D sugar geometry (the PDB tools keep DNA "
+                            "names): F:1 0DG") for n in notes)
+    assert not any("L-named residues with D sugar" in n for n in notes)  # that one promises D names: RNA only
+
+
 @pytest.mark.parametrize("chir, term, amber, ccd, rosetta", [
     ("D", "", "G", "G", "G"), ("D", "5", "G5", "G", "G"), ("D", "3", "G3", "G", "G"),
     ("D", "N", "GN", "G", "G"), ("L", "", "LG", "0G", "0G"), ("L", "5", "LG5", "0G5", "0G"),
