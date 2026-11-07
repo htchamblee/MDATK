@@ -22,20 +22,23 @@ Ideal helices (:func:`build_helix`)
     36.0 degrees, rise 3.38 A, 10 residues per turn): C3'-exo sugars (pseudorotation phase about 192
     degrees, S-type), chi about -98 degrees, Watson-Crick pairs with C1'-C1' 10.9 A and O3'-P links of
     1.60 A.  As published, its backbone (epsilon 155, zeta -95 degrees) puts OP2 2.69 A from C2' of the
-    previous nucleotide (and 1.91 A from its H2'), a heavy-atom clash of a model check; so the phosphate (P,
+    previous nucleotide (and 1.91 A from its H2''), a heavy-atom clash of a model check; so the phosphate (P,
     OP1, OP2) is turned 6 degrees about the line O3'(i-1)-O5'(i) (``DNA_PHOSPHATE_TURN``), a crankshaft
     that keeps both bridge bonds, the O3'-P-O5' angle and the PO2 group: C2'(i)-OP2(i+1) 2.88 A, C3'-O3'-P
     123.2 and P-O5'-C5' 115.9 degrees (published 119.4 / 118.8; 2.9 and 3.1 standard deviations from the
-    targets of Parkinson et al. 1996, where the 10 degrees that would also clear H2' make both validation
+    targets of Parkinson et al. 1996, where the 10 degrees that would also clear H2'' make both validation
     outliers), epsilon 155, zeta -91, alpha -53, beta -143.  The model check then finds no heavy-atom
     clash in Watson-Crick and G-T helices; its hydrogen contacts (reported only, as for the A-form RNA)
-    list H2'(i)-OP2(i+1) at 2.11 A, the fiber model's own H1'(i)-H5'(i+1) of 1.84 A and, before a thymine,
-    the methyl 1.94 A from H2' and 2.47-2.48 A from C6 / C8 of the 5' neighbour.  The 2'-deoxyribose carries the methylene H2' / H2'' (H2' cis
-    to O3', as the wwPDB CCD names them) and thymine the methyl H71-H73, staggered on C5-C7.  G-T pairs of
-    an explicit partner get the wobble turns ``DNA_WOBBLE_TURN`` (fitted as ``WOBBLE_TURN``, kept clear of
-    the sugars).  DNA is built as Watson-Crick B-form duplexes and single strands only (no other pairings,
-    no triplexes); residue names DA DC DG DT, L: the CCD's 0DA 0DC 0DG 0DT (Amber: DA5 / DA3 / DAN, L:
-    MDATK's LDA ...; see :func:`mdatk.pdbtools.scheme_name`).  The L helix is the mirror image, as for RNA.
+    list H2''(i)-OP2(i+1) at 2.11 A, the fiber model's own H1'(i)-H5'(i+1) of 1.84 A and, before a thymine,
+    the methyl 1.94 A from H2'' and 2.47-2.48 A from C6 / C8 of the 5' neighbour.  The 2'-deoxyribose
+    carries the methylene H2' / H2'' (H2'' cis to O3' and H1', H2' trans to O3', as IUPAC, Amber's DNA
+    libraries, the CCD's model coordinates and its L-DNA components name them) and thymine the methyl
+    H71-H73, staggered on C5-C7.  G-T pairs of an explicit partner get the wobble turns ``DNA_WOBBLE_TURN``
+    (fitted as ``WOBBLE_TURN``, kept clear of the sugars).  DNA is built as Watson-Crick B-form duplexes and
+    single strands only (no other pairings, no triplexes); residue names DA DC DG DT, L: the CCD's 0DA 0DC 0DG
+    0DT, written with the components' own atom names (0DA: N9A, C8A ... HN61, HN62; 0DT: C5M;
+    ``mdatk.pdbtools.CCD_ATOM_NAMES``) (Amber: DA5 / DA3 / DAN, L: MDATK's LDA ..., standard atom names; see
+    :func:`mdatk.pdbtools.scheme_name`).  The L helix is the mirror image, as for RNA.
 
 Other pairings and triplexes (``build_helix(pairing=..., triplex=...)``)
     'reverse-wc' (trans WC/WC), 'hoogsteen' (cis WC/Hoogsteen: A·U, G·C+ on the Hoogsteen edge of the
@@ -63,7 +66,7 @@ Mutations (:func:`mutate`)
     monomer (A, C, G, T; U is read as T).  Compensatory mutations change the Watson-Crick / G-U (DNA:
     G-T) partner of every mutated base (found with :class:`mdatk.secstruct.PairDetector`) to the
     complement unless the partner is mutated explicitly; an RNA base and a DNA partner (or the reverse)
-    are left alone.
+    are left alone.  LINK records (a chimera's junctions) follow the renamed residues.
 
 Rigid-body fit (:func:`fit_to_map`)
     The global (rotations x FFT translations, then local refinement) or local search of
@@ -192,21 +195,24 @@ DNA_BASE_NAMES = {b: tuple(n for n, *_ in atoms) for b, atoms in _DNA_BASES.item
 # The phosphate (P, OP1, OP2) of the B-DNA monomer is turned by this many degrees about the line O3'(i-1)-O5'(i), a
 # crankshaft (see _dna_phosphate): O3'-P, P-O5', the angle O3'-P-O5' and the PO2 group stay as published, only
 # C3'-O3'-P, P-O5'-C5' and epsilon, zeta, alpha, beta change.  As published (epsilon 155, zeta -95) OP2 is 2.69 Å
-# from C2' of the previous nucleotide (and 1.91 Å from its H2', cis to O3'), a heavy-atom clash of the model check.
+# from C2' of the previous nucleotide (and 1.91 Å from its H2'', cis to O3'), a heavy-atom clash of the model check.
 # 6 is the smallest whole turn that keeps every heavy-atom contact of the phosphate 0.05 Å outside the clash
 # distance (C2'-OP2 2.88 Å), with C3'-O3'-P 123.2 and P-O5'-C5' 115.9 degrees (published 119.4 / 118.8; Parkinson
-# et al. 1996: 119.7 +- 1.2 and 120.9 +- 1.6, so 2.9 and 3.1 standard deviations).  Clearing H2'-OP2 for the
+# et al. 1996: 119.7 +- 1.2 and 120.9 +- 1.6, so 2.9 and 3.1 standard deviations).  Clearing H2''-OP2 for the
 # hydrogen check as well (2.24 Å) would take 10, which makes both angles validation outliers (5.1 and 4.4
-# standard deviations, beyond the usual 4); the hydrogen check lists H2'-OP2 (2.11 Å) with the fiber model's
+# standard deviations, beyond the usual 4); the hydrogen check lists H2''-OP2 (2.11 Å) with the fiber model's
 # other hydrogen contacts instead
 DNA_PHOSPHATE_TURN = 6.0
-# hydrogens of a 2'-deoxynucleotide: the C2' methylene instead of H2' / O2' / HO2' (H2' is the hydrogen cis to
-# O3', the wwPDB CCD's name: a negative volume C2'(C1', C3', H2') in a D sugar; Amber's DNA.OL15.lib swaps the
-# two names, which have the same type and charge there), thymine's imino H3, H6 and methyl
+# hydrogens of a 2'-deoxynucleotide: the C2' methylene instead of H2' / O2' / HO2' (H2'' is the hydrogen cis to O3'
+# and to H1', about 2.3 Å from H1' in every pucker, H2' the one trans to O3': a positive volume C2'(C1', C3', H2')
+# in a D sugar, the pro-S hydrogen.  So IUPAC and NMR practice, Amber's DNA libraries (DNA.OL15, OL21, OL24) and
+# the wwPDB CCD name them, in the model coordinates of DA DC DG DT and in the L-DNA components 0DA 0DC 0DG 0DT;
+# only the CCD's ideal coordinates of DA / DC / DG and the CCP4 dictionaries DA / DT put H2' cis to O3'),
+# thymine's imino H3, H6 and methyl
 _DNA_H_RULES = {
     "sugar": (("H5'", "C5'", "ch2", ("O5'", "C4'")), ("H5''", "C5'", "ch2", ("O5'", "C4'")),
               ("H4'", "C4'", "ch", ("C5'", "O4'", "C3'")), ("H3'", "C3'", "ch", ("C4'", "O3'", "C2'")),
-              ("H2'", "C2'", "ch2", ("C3'", "C1'")), ("H2''", "C2'", "ch2", ("C3'", "C1'")),
+              ("H2'", "C2'", "ch2", ("C1'", "C3'")), ("H2''", "C2'", "ch2", ("C1'", "C3'")),
               ("H1'", "C1'", "ch", ("O4'", "C2'", "N"))),
     "A": _H_RULES["A"], "G": _H_RULES["G"], "C": _H_RULES["C"],
     "T": (("H3", "N3", "nh", ("C2", "C4")), ("H71", "C7", "ch3", ("C5", "C4")), ("H72", "C7", "ch3", ("C5", "C4")),
@@ -282,7 +288,7 @@ def _hydrogens(heavy: Dict[str, np.ndarray], base: str, na: str = "rna") -> Dict
             h1 = c + d * (math.cos(half) * bis + math.sin(half) * perp)
             h2 = c + d * (math.cos(half) * bis - math.sin(half) * perp)
             # PDB v3 names of a D sugar: the first name of the pair gives a positive volume parent(refs, H):
-            # H5' of C5'(O5', C4', H5'), H2' of C2'(C3', C1', H2') (2'-deoxyribose: cis to O3')
+            # H5' of C5'(O5', C4', H5'), H2' of C2'(C1', C3', H2') (2'-deoxyribose: trans to O3', H2'' cis)
             if pdbtools.chiral_volume(c, heavy[refs[0]], heavy[refs[1]], h1) < 0:
                 h1, h2 = h2, h1
             out[name], out[twin] = h1, h2
@@ -823,6 +829,9 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
             names = "A, C, G, U" if chirality == "D" else "0A, 0C, 0G, 0U (the CCD L-ribonucleotides)"
         renamed = ["Residue names " + names + ", ATOM records"]
     out_notes += renamed
+    if any(r.name in pdbtools.CCD_ATOM_NAMES for r in s.residues()):
+        out_notes.append("0DA / 0DT are written with their CCD components' own atom names (0DA: N9A, C8A ... HN61, "
+                         "HN62; 0DT: C5M), the names Coot / Phenix look up; MDATK reads them as N9, C8 ... C7")
     if scheme == "pdb":
         out_notes += pdbtools.set_records(s, "pdb")
     if phosphate5 and scheme == "amber":
@@ -2203,7 +2212,7 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
     insert_at = None
     base_names = DNA_BASE_NAMES if dna else BASE_NAMES
     for a in res.atoms:
-        name = a.name.replace("*", "'")
+        name = pdbtools.standard_atom_name(res.name, a.name.replace("*", "'"))  # (N9A of a 0DA is its N9)
         is_sugar = "'" in name or name in _SUGAR_EXTRA
         if is_sugar:
             keep.append(a)
@@ -2259,7 +2268,9 @@ def mutate(source, mutations, compensatory: bool = True, wobble: bool = False, c
     (G<->C, A<->U; with ``wobble`` a G·U pair is kept where the new base allows it) unless the
     partner is mutated explicitly.  DNA residues take A, C, G, T (U is read as T) on the B-DNA base
     geometry, with the DNA complement (A<->T) and G·T for the partners; a partner of the other kind (an RNA
-    base paired with DNA) is not changed.
+    base paired with DNA) is not changed.  LINK records (a chimera's 3'-3' / 5'-5' junctions) follow the new
+    residue names (:func:`mdatk.pdbtools.follow_links`); one that names an atom of a replaced base the new
+    base does not have is dropped, with a note.
     """
     s = pdbtools.read_pdb(source)
     notes = list(s.notes)
@@ -2319,16 +2330,18 @@ def mutate(source, mutations, compensatory: bool = True, wobble: bool = False, c
             targets.append((other, comp))
             explicit.add(id(other))
     done = 0
-    for res, m in targets:
-        old = pdbtools.parse_residue_name(res.name).base
-        if old == m.base:
-            notes.append(f"{m.where}: already {m.base}; unchanged")
-            continue
-        change, _rms = _swap_base(res, m.base)
-        if not m.explicit:
-            change[0] += f" - compensatory, {m.reason}"
-        notes += change
-        done += 1
+    with pdbtools.follow_links(s) as link_notes:  # LINK records (a chimera's junctions) follow the new names
+        for res, m in targets:
+            old = pdbtools.parse_residue_name(res.name).base
+            if old == m.base:
+                notes.append(f"{m.where}: already {m.base}; unchanged")
+                continue
+            change, _rms = _swap_base(res, m.base)
+            if not m.explicit:
+                change[0] += f" - compensatory, {m.reason}"
+            notes += change
+            done += 1
+    notes += link_notes
     stale = [line for line in s.header if line.startswith("REMARK 950")]
     if stale:
         s.header = [line for line in s.header if not line.startswith("REMARK 950")]

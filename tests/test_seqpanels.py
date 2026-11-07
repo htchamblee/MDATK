@@ -28,6 +28,9 @@ def project_with(panels, preset):
 def test_one_letter_codes():
     assert [one_letter(n) for n in ("G5", "RA", "LG3", "0C", "U", "DT", "HIS", "XYZ")] == \
         ["G", "A", "G", "C", "U", "T", "H", "X"]
+    # with the trace's backbone flag: no nucleotide without a backbone atom (the detergent LDA, a lanthanum LA)
+    assert [one_letter("LDA", True), one_letter("LDA", False), one_letter("LA", False), one_letter("HIS", False),
+             one_letter("0DA", None)] == ["A", "X", "X", "H", "A"]
 
 
 def test_residue_rows_by_chain_and_number():

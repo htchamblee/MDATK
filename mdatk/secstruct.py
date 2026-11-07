@@ -30,7 +30,10 @@ Barnaba (:class:`BarnabaRunner`)
     Optional engine (``pip install barnaba``; Bottaro et al., NAR 2014) giving Leontis-Westhof classes
     (``WCc`` Watson-Crick, ``GUc`` wobble, e.g. ``WHt``, ``SWc`` ...) and stacking.  Barnaba only
     recognises standard residue names, so residues are written with canonical names (A C G U, DA DC
-    DG DT) to a temporary PDB, all frames of one call as models of a single file.
+    DG DT) and standard atom names to a temporary PDB, all frames of one call as models of a single file.
+
+Both engines take a residue for a nucleotide by its name only when it has a backbone atom (a primed atom or
+P): a name can also be a CCD ligand's (the detergent LDA, a lanthanum ion LA).
 
 Only the standard library and numpy are needed; barnaba is imported lazily.
 """
@@ -46,7 +49,7 @@ from typing import Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .pdbtools import CHAIN_IDS, parse_residue_name
+from .pdbtools import CHAIN_IDS, has_backbone_atoms, parse_residue_name, standard_atom_name
 
 #: pair kinds (pairmap values)
 WATSON_CRICK, WOBBLE, OTHER = 1, 2, 3
@@ -171,17 +174,32 @@ def pairs_to_dotbracket(pairs: Sequence[Tuple[int, int]], n: int, chain_breaks: 
 # --- builtin detection ---------------------------------------------------------------------------------
 
 def base_letter(resname: str) -> Optional[str]:
-    """Base (A C G U T) of a nucleotide residue name in any supported scheme, else None."""
+    """Base (A C G U T) of a nucleotide residue name in any supported scheme, else None (the name alone: the
+    detector and the barnaba runner also ask for backbone atoms, see :func:`nucleotide_base`)."""
     info = parse_residue_name(resname)
     return info.base if info else None
 
 
 def canonical_name(resname: str) -> Optional[str]:
-    """Standard PDB name (A C G U; DA DC DG DT) of a nucleotide residue name, else None."""
+    """Standard PDB name (A C G U; DA DC DG DT) of a nucleotide residue name, else None (the name alone)."""
     info = parse_residue_name(resname)
     if info is None:
         return None
     return ("D" + info.base) if info.sugar == "dna" else info.base
+
+
+def nucleotide_base(resname: str, atom_names) -> Optional[str]:
+    """Base of a residue that is a nucleotide by its name and has backbone atoms (a primed atom or P), else None:
+    the detergent LDA, a lanthanum ion LA are no nucleotides (:func:`mdatk.pdbtools.has_backbone_atoms`)."""
+    return base_letter(resname) if has_backbone_atoms(atom_names) else None
+
+
+def _standard_index(resname: str, index: Mapping[str, int]) -> Mapping[str, int]:
+    """The atom index of a residue by the standard atom names (N9A of 0DA is N9; the first of a name wins)."""
+    out: Dict[str, int] = {}
+    for name, row in index.items():
+        out.setdefault(standard_atom_name(resname, name), row)
+    return out
 
 
 def _c1(index: Mapping[str, int]) -> int:
@@ -192,15 +210,17 @@ class PairDetector:
     """Canonical base pairs from coordinates (see the module docstring for the criteria).
 
     ``resnames``: residue name per residue; ``atom_index``: per residue, atom name -> row of the
-    coordinate array later passed to :meth:`detect`.  Residues that are no nucleotide, or lack the
-    atoms of a rule, never pair by that rule.
+    coordinate array later passed to :meth:`detect`.  Residues that are no nucleotide (by name, with a
+    backbone atom: :func:`nucleotide_base`), or lack the atoms of a rule, never pair by that rule.  The atoms
+    of a CCD component with names of its own (0DA's N1A ...) are read by their standard names.
     """
 
     def __init__(self, resnames: Sequence[str], atom_index: Sequence[Mapping[str, int]],
                  cutoff: float = 3.5, wobble: bool = True):
         self.n = len(resnames)
         self.cutoff = float(cutoff)
-        bases = [base_letter(r) for r in resnames]
+        atom_index = [_standard_index(r, idx) for r, idx in zip(resnames, atom_index)]
+        bases = [nucleotide_base(r, idx) for r, idx in zip(resnames, atom_index)]
         self.rules = []
         for base, partners, kind, atoms, need in PAIR_RULES:
             if kind == WOBBLE and not wobble:
@@ -324,17 +344,19 @@ def _name_field(name: str) -> str:
 class BarnabaRunner:
     """Runs ``barnaba.annotate`` on chosen residues.
 
-    ``resnames``: residue name per residue (non-nucleotides are left out); ``atoms``: per residue the
-    (atom name, coordinate row) pairs to write - heavy atoms suffice.  Residue k is written as residue
-    ``k % 9999 + 1`` of chain ``CHAIN_IDS[k // 9999]`` so that barnaba's residue labels
-    (``NAME_RESSEQ_CHAININDEX``) map back to k without relying on which residues barnaba skips.
+    ``resnames``: residue name per residue (non-nucleotides are left out: names that are none, and residues
+    without a backbone atom, such as the detergent LDA); ``atoms``: per residue the (atom name, coordinate
+    row) pairs to write - heavy atoms suffice; written by their standard names (N9A of 0DA as N9).  Residue
+    k is written as residue ``k % 9999 + 1`` of chain ``CHAIN_IDS[k // 9999]`` so that barnaba's residue
+    labels (``NAME_RESSEQ_CHAININDEX``) map back to k without relying on which residues barnaba skips.
     """
 
     BLOCK = 9999
 
     def __init__(self, resnames: Sequence[str], atoms: Sequence[Sequence[Tuple[str, int]]]):
-        self.residues = [(k, canonical_name(r), list(a)) for k, (r, a) in enumerate(zip(resnames, atoms))
-                         if canonical_name(r) is not None and a]
+        self.residues = [(k, canonical_name(r), [(standard_atom_name(r, n), row) for n, row in a])
+                         for k, (r, a) in enumerate(zip(resnames, atoms))
+                         if canonical_name(r) is not None and a and has_backbone_atoms(n for n, _row in a)]
         if len(self.residues) > self.BLOCK * len(CHAIN_IDS):
             raise ValueError("too many nucleotides for the barnaba engine")
 

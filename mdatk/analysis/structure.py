@@ -19,6 +19,7 @@ from typing import List
 
 import numpy as np
 
+from ..pdbtools import has_backbone_atoms
 from ..selections import SelectionError, atom_elements, heavy, split_csv
 from ..spatial import kabsch, pairs_within
 from .base import Analysis, register
@@ -231,7 +232,11 @@ class TraceAnalysis(Analysis):
                           resindex=self.residues.ix.astype(np.int64),
                           resid=self.residues.resids.astype(np.int64),
                           resname=np.array([str(r) for r in self.residues.resnames], dtype="U8"),
-                          chain_name=chain_names(self.residues))
+                          chain_name=chain_names(self.residues),
+                          # a backbone atom per residue: the sequence panel takes a nucleotide name (but not the
+                          # detergent LDA's) for a nucleotide only with one (mdatk.render.residues.one_letter)
+                          backbone=np.array([has_backbone_atoms(str(n) for n in r.atoms.names)
+                                             for r in self.residues], dtype=bool))
         return res
 
 
