@@ -12,8 +12,12 @@ named ``<project>_00_plan_<stamp>.{sh,md}``, and records what the folders are:
 files, the analysis box) have no folder.
 
 Step numbers are stored with each step and never change on their own: a new
-step gets the next free number (:func:`next_step`) and a template's steps are
-numbered after the existing ones.
+step gets the number after the highest one in the plan (:func:`next_step`), so
+after the last steps are deleted a new step gets their numbers, and folders,
+again, and a template's steps are numbered after the existing ones.  Step ids
+(``n1``, ``n2`` ...) are never given out twice (:func:`new_node_id`).  When a
+step's folder holds the files another step wrote (its ``MDATK_step.toml`` names
+another step), the check says so before the step is written over them.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import dataclasses
 import datetime as _dt
 import heapq
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 
@@ -43,6 +48,10 @@ class ResolvedStep:
     outputs: Dict[str, PortValue] = field(default_factory=dict)
     issues: List[Issue] = field(default_factory=list)
     files: List[GeneratedFile] = field(default_factory=list)
+    # the step's folder holds the files another step wrote, by the folder's MDATK_step.toml: what they are,
+    # e.g. "03_amber-md/ holds the files of 03 · production model12 (node n3, written 2026-11-07 17:18)"
+    # ("": they are the step's own, or nothing says; mdatk.workflows.manifest.held)
+    held: str = ""
 
     @property
     def label(self) -> str:
@@ -83,6 +92,8 @@ class WriteReport:
     # written, e.g. by the stand-alone wizard) and node id -> the MDATK_step.toml of each folder written into
     manifest: str = ""
     identity: Dict[str, str] = field(default_factory=dict)
+    # those records that could not be written, and why ("": none); the step files are written all the same
+    records_error: str = ""
 
 
 def node_title(node: PlanNode) -> str:
@@ -91,12 +102,16 @@ def node_title(node: PlanNode) -> str:
     return node.title or (tool.label if tool else node.tool)
 
 
-def step_title(node: PlanNode) -> str:
+def step_title(node: PlanNode, tag: bool = True) -> str:
+    """The step's label: ``03 · <title>`` for a step that writes files, with its folder tag after it
+    (``03 · <title> · model12``) so steps that share a number are told apart in logs and messages; ``tag``
+    False leaves the tag out (the box on the canvas shows it beside the title)."""
     tool = TOOLS.get(node.tool)
     title = node_title(node)
     if tool is not None and not tool.generates:
         return title
-    return f"{step_label(node.step)} · {title}"
+    folder_tag = node_folder_tag(node) if tag else ""
+    return f"{step_label(node.step)} · {title}" + (f" · {folder_tag}" if folder_tag else "")
 
 
 def node_folder_tag(node: PlanNode) -> str:
@@ -114,15 +129,26 @@ def node_folder(workflow: WorkflowParams, node: PlanNode) -> str:
     return step_folder(node.step, tool.tag, node_folder_tag(node))
 
 
+_NODE_ID = re.compile(r"^n(\d+)$")
+
+
 def new_node_id(workflow: WorkflowParams) -> str:
+    """A step id the plan has never given out (``n<k>``), also not one of a deleted step: the id after the
+    highest one given out so far, which the plan remembers (``WorkflowParams.last_node``), and after the
+    highest one in the plan.  A step's id is what its folder's ``MDATK_step.toml`` names, so a new step
+    must never get an id that may still name an old folder.  Gives the id out (records it)."""
     used = {n.id for n in workflow.nodes}
-    k = len(workflow.nodes) + 1
+    numbers = [int(m.group(1)) for m in (_NODE_ID.match(i) for i in used) if m]
+    k = max([workflow.last_node or 0] + numbers) + 1
     while f"n{k}" in used:
         k += 1
+    workflow.last_node = k
     return f"n{k}"
 
 
 def next_step(workflow: WorkflowParams) -> int:
+    """The number after the highest step number in the plan (deleted steps' numbers come back when they were
+    the highest)."""
     steps = [n.step for n in workflow.nodes if TOOLS.get(n.tool) is not None and TOOLS[n.tool].generates]
     return max(steps, default=0) + 1
 
@@ -253,6 +279,7 @@ class Plan:
         for nid in self.order:
             self._resolve_step(self.steps[nid], [e for e in edges if e.target == nid])
         self._check_steps_and_names()
+        self._check_held_folders()
 
     def _valid_edges(self, nodes: Dict[str, PlanNode]) -> List[PlanEdge]:
         valid = []
@@ -350,7 +377,7 @@ class Plan:
                 step.issues.append(Issue("error", f"{port.label}: connect a step that produces it or "
                                                   "choose a file", (f"input:{port.name}",)))
         step.ctx = StepContext(self.project, node.step, self.stamp, tool.tag, inputs, self.root,
-                               self.workflow.step_folders, step.label, node.id, self.groups)
+                               self.workflow.step_folders, step_title(node, tag=False), node.id, self.groups)
         # the context names every step's folder <step>_<tool>: a step's folder carries its folder tag, and a
         # step that writes no files has none
         step.ctx.folder = node_folder(self.workflow, node)
@@ -413,8 +440,11 @@ class Plan:
         if problem:
             step.issues.append(Issue("error", f"{problem}; it is added to the step's folder name", where))
         elif not self.workflow.step_folders:
+            store = step_folder(step.node.step, step.tool.tag, tag)
             step.issues.append(Issue("info", f"folder tag {tag!r}: the plan writes no step folders, so the tag "
-                                             "names no folder (MANIFEST lists it)", where))
+                                             f"names only the folder its completed runs move into "
+                                             f"(superseded/{store}/), and it is in the step's title and "
+                                             "MANIFEST line", where))
 
     def _check_steps_and_names(self) -> None:
         seen: Dict[Tuple, str] = {}
@@ -455,6 +485,32 @@ class Plan:
             if len(labels) > 1:
                 self.issues.append(Issue("info", f"step number {step_label(num)} is used by "
                                                  f"{', '.join(labels)}"))
+
+    def _check_held_folders(self) -> None:
+        """A step whose folder holds the files of another step, or files no step can be told for (by the
+        folder's MDATK_step.toml: type, folder tag and title, the node id only confirming them, since a plan
+        made again from scratch numbers its ids afresh; :func:`mdatk.workflows.manifest.claim`) would put its
+        files beside them, and writing it would move their completed run aside as this step's.  Steps only
+        warn: the folder may hold the step renamed since (or the plan)."""
+        if not self.root or not self.workflow.step_folders:
+            return
+        from .manifest import held
+
+        for nid in self.order:
+            step = self.steps[nid]
+            if step.tool is None or not step.tool.generates or step.ctx is None or not step.ctx.folder:
+                continue
+            step.held, why = held(self, nid)
+            if not step.held:
+                continue
+            if why == "project":  # another plan's files: their names differ from this plan's
+                text = "writing this step puts this plan's files beside them; give it a folder tag or another " \
+                       "step number to keep the two apart"
+            else:
+                text = "writing this step puts its files beside them and moves a completed run there aside as " \
+                       "this step's; give it a folder tag or another step number" + (
+                           ", or, if it is that step under a new title, write it again" if why == "title" else "")
+            step.issues.append(Issue("warning", f"{step.held}: {text}", ("folder_tag",)))
 
     def _check_shared_outputs(self) -> None:
         """Two steps must not write the same output file.  Built-in steps put their number and tag in every
@@ -525,7 +581,8 @@ class Plan:
         Every write also records what the folders are (:mod:`mdatk.workflows.manifest`): the plan folder's
         ``MANIFEST`` lists every step of the plan (not for the stand-alone wizard's plan), and each step
         folder that files were written into gets its ``MDATK_step.toml``; they are reported in
-        ``manifest`` and ``identity``, not in ``written``."""
+        ``manifest`` and ``identity``, not in ``written``, and a record that cannot be written is reported
+        in ``records_error`` without failing the write."""
         from .manifest import write_records
         from .supersede import candidate, move_aside
 
@@ -584,7 +641,7 @@ class Plan:
             report.summary = os.path.join(self.root, file_name(self.project, 0, "plan", self.stamp, "md"))
             _write_text(report.summary, self.summary_text(), False)
             report.written += [report.master, report.summary]
-        report.manifest, report.identity = write_records(self, into, when)
+        report.manifest, report.identity, report.records_error = write_records(self, into, when)
         return report
 
     def master_script(self) -> str:

@@ -22,11 +22,15 @@ What moves (:func:`run_files`), only from inside the step's own folder and only 
   step's own (``<project>_<NN>_...``), and only when no other step has the step's number.
 
 Relative paths are kept (``models/r01/S_000001.pdb`` stays ``models/r01/S_000001.pdb`` inside the run's
-folder) and a manifest (``manifest.toml``) records what moved, from which step and stamp, when and why.  A
-partial run stays where it is (resuming relies on it), a step that uses an earlier run (adopted) is never
-written, and nothing inside ``superseded/`` is ever replaced: each run gets a folder of its own.  A step's
-move is all or nothing: when one file cannot be moved, the files moved before it go back and the step is
-not written (:attr:`Supersede.error`).  :mod:`mdatk.workflows.runstate` never looks inside ``superseded/``.
+folder) and a manifest (``manifest.toml``) records what moved, from which step and stamp, when and why, and
+under ``written_by`` what the step folder's ``MDATK_step.toml`` said then: the step that wrote the files.  That
+is the step written again, unless the folder held another step's files (:attr:`Supersede.held`: a plan
+renumbered or made again from scratch, a step deleted and another one added with its number); the run is
+then that step's, and ``mdatk workflow manifest`` finds it as such.  A partial run stays where it is
+(resuming relies on it), a step that uses an earlier run (adopted) is never written, and nothing inside
+``superseded/`` is ever replaced: each run gets a folder of its own.  A step's move is all or nothing: when
+one file cannot be moved, the files moved before it go back and the step is not written
+(:attr:`Supersede.error`).  :mod:`mdatk.workflows.runstate` never looks inside ``superseded/``.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ import os
 import posixpath
 import re
 import shutil
+import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -74,6 +79,9 @@ class Supersede:
     moved: List[str] = field(default_factory=list)  # paths that moved (plan-relative, where they were)
     error: str = ""  # why the run could not be moved ("" when it moved, or has not been tried)
     deleted: bool = False  # the run was deleted instead of moved (``moved``: the paths deleted)
+    # the step folder holds the files of another step, by its MDATK_step.toml: what they are ("": the step's
+    # own, or nothing says); the run is then that step's (mdatk.workflows.manifest.held)
+    held: str = ""
 
     @property
     def paths(self) -> List[str]:
@@ -107,10 +115,18 @@ class Supersede:
                 if self.finished else "")
         return f"{self.label}: completed {run}{when} ({self.count()}) -> {self.destination()}/"
 
+    def held_line(self) -> str:
+        """Whose run it is when the step folder holds another step's files ("" when it does not)."""
+        if not self.held:
+            return ""
+        done = self.deleted or self.target or self.error
+        return f"  not this step's run: {self.held}" + ("" if done else "; it would move aside as this step's")
+
     def lines(self, limit: int = 20) -> List[str]:
-        """:meth:`summary` and the paths that moved (or would move), relative to the step folder."""
+        """:meth:`summary`, whose run it is when not the step's own (:meth:`held_line`), and the paths that
+        moved (or would move), relative to the step folder."""
         paths = self.moved if (self.target or self.deleted) else self.paths  # moved / deleted, else planned
-        out = [self.summary()]
+        out = [self.summary()] + ([self.held_line()] if self.held else [])
         if self.error and not self.target and not self.deleted:
             return out
         shown = [self.inner(p) + ("/" if p in self.folders else "") for p in paths]
@@ -122,10 +138,12 @@ class Supersede:
 
     def plain(self) -> Dict[str, Any]:
         """For JSON output (``mdatk workflow write``)."""
-        return {"step": self.step, "title": self.label, "stamp": self.stamp, "from": self.folder or ".",
-                "to": self.destination(), "files": [self.inner(p) for p in self.files],
-                "folders": [self.inner(p) for p in self.folders], "error": self.error,
-                "deleted": self.deleted}
+        out = {"step": self.step, "title": self.label, "stamp": self.stamp, "from": self.folder or ".",
+               "to": self.destination(), "files": [self.inner(p) for p in self.files],
+               "folders": [self.inner(p) for p in self.folders], "error": self.error, "deleted": self.deleted}
+        if self.held:  # not the step's own run (see held)
+            out["held"] = self.held
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +283,7 @@ def candidate(plan, node_id: str) -> Optional[Supersede]:
     if not files and not folders:
         return None
     return Supersede(node_id, step.label, step.node.step, step.tool.name, plan.stamp, step.ctx.folder,
-                     _store(plan, step), files, folders, status.finished)
+                     _store(plan, step), files, folders, status.finished, held=step.held)
 
 
 def pending(plan, node_ids: Optional[Sequence[str]] = None) -> Dict[str, Supersede]:
@@ -287,7 +305,24 @@ def pending(plan, node_ids: Optional[Sequence[str]] = None) -> Dict[str, Superse
 # ---------------------------------------------------------------------------
 
 
-def _manifest(plan, item: Supersede, when: _dt.datetime) -> str:
+# what a run's manifest keeps of the step folder's MDATK_step.toml (mdatk.workflows.manifest), as written_by
+WRITTEN_BY = {
+    "node": "Its id in the plan.",
+    "tool": "Its type.",
+    "title": "Its own title (\"\": none).",
+    "label": "Its title as RNAdo showed it: number, title and folder tag.",
+    "step": "Its step number then.",
+    "folder_tag": "Its folder tag (\"\": none).",
+    "project": "The plan's project name then.",
+    "stamp": "The time stamp in the names of the files written (\"\": none).",
+    "written": "When its files were written into the step folder.",
+    "folder": "The step folder, relative to the plan folder.",
+    "mdatk_version": f"The {PROJECT_ABBREV} version that wrote them.",
+}
+
+
+def _manifest(plan, item: Supersede, when: _dt.datetime, identity: Optional[Dict[str, Any]] = None) -> str:
+    """The run's ``manifest.toml``; ``identity``: the step folder's MDATK_step.toml, kept as ``written_by``."""
     from .. import tomlio
 
     data: Dict[str, Any] = {
@@ -299,13 +334,16 @@ def _manifest(plan, item: Supersede, when: _dt.datetime) -> str:
         data["finished"] = _dt.datetime.fromtimestamp(item.finished).replace(microsecond=0)
     data["folders"] = [item.inner(p) for p in item.folders]
     data["files"] = [item.inner(p) for p in item.files]
+    if identity:
+        data["written_by"] = {k: identity[k] for k in WRITTEN_BY if identity.get(k) is not None}
     docs = {
         "format": "File type marker; do not change.",
         "mdatk_version": f"{PROJECT_ABBREV} version that moved the run.",
         "moved": "When the run was moved here.",
         "reason": "Why.",
         "project": "The plan's project name.",
-        "step": "Step number of the planner step whose run this is.",
+        "step": "Step number of the planner step whose run this is (unless written_by below names another "
+                "step: then that step's files were in its folder).",
         "title": "The step's title.",
         "tool": "The step type.",
         "node": "The step's id in the plan.",
@@ -315,12 +353,26 @@ def _manifest(plan, item: Supersede, when: _dt.datetime) -> str:
         "finished": "When the run's newest output was written.",
         "folders": "Folders of the run that moved whole (their names carry no time stamp).",
         "files": "Files of the run: its outputs, the scripts, inputs and helpers written for it, its logs.",
+        "written_by": "What the step folder's MDATK_step.toml said when the run moved: the step that wrote the "
+                      "files there, whose run this is (another step than the one above when the plan had been "
+                      "renumbered or made again from scratch, or a step deleted and another one added with its "
+                      "number).",
     }
     header = [f"A completed run of step {step_label(item.step)} ({item.label}) of plan {plan.project}, moved "
               f"aside by {PROJECT_ABBREV} {__version__}",
               f"before the step's files were written again. To use it again, move its files back into "
               f"{item.folder or 'the plan folder'}/."]
-    return tomlio.dumps(data, lambda path, _stack: docs.get(path[0]) if len(path) == 1 else None, header)
+    if item.held:
+        header += textwrap.wrap(f"Not that step's run: {item.held} (written_by below).", 98)
+
+    def doc(path, _stack):
+        if len(path) == 1:
+            return docs.get(path[0])
+        if len(path) == 2 and path[0] == "written_by":
+            return WRITTEN_BY.get(path[1])
+        return None
+
+    return tomlio.dumps(data, doc, header)
 
 
 def _unique_folder(parent: str, name: str) -> str:
@@ -356,8 +408,13 @@ def move(plan, item: Supersede, when: Optional[_dt.datetime] = None) -> Supersed
     """Move ``item``'s run into a new folder ``<store>/<stamp>_<time>`` with a manifest, all or nothing:
     on an error the files moved so far go back, nothing is left in superseded/ and ``item.error`` says why.
     Returns ``item``."""
+    from .manifest import read_identity
+
     when = when or _dt.datetime.now()
     step_dir = plan.node_path(item.folder) if item.folder else plan.root
+    # whose files these are: the step folder's MDATK_step.toml stays in the folder and is replaced once the
+    # step's files are written, so the run's manifest keeps what it says now
+    identity = read_identity(step_dir) if item.folder else None
     done: List[Tuple[str, str, str]] = []  # (from, to, plan-relative path)
     target = ""
     doing = f"create a folder in {item.store}/"
@@ -376,7 +433,7 @@ def move(plan, item: Supersede, when: Optional[_dt.datetime] = None) -> Supersed
         doing = f"write {MANIFEST}"
         tmp = os.path.join(target, MANIFEST + ".tmp")
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(_manifest(plan, item, when))
+            fh.write(_manifest(plan, item, when, identity))
         os.replace(tmp, os.path.join(target, MANIFEST))
     except OSError as exc:
         item.error = f"could not {doing}: {exc.strerror or exc}"
@@ -469,7 +526,8 @@ def log_move(project_path: Optional[str], item: Supersede, root: str = "") -> No
                      folder=os.path.join(root, where) if root else where,
                      files=[os.path.join(root, item.target, item.inner(p)) if root else item.inner(p)
                             for p in item.moved] if item.target else [],
-                     summary=item.summary() + ("" if item.error or item.deleted else f". Reason: {REASON}."))
+                     summary=item.summary() + ("" if item.error or item.deleted else f". Reason: {REASON}.")
+                     + (f" Not this step's run: {item.held}." if item.held else ""))
     try:
         append_log(project_path, entry)
     except (OSError, ValueError) as exc:

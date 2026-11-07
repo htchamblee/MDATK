@@ -453,7 +453,8 @@ class PlanNode:
     # written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
     adopted: str = ""
     # Added to the step's folder name, e.g. "model12": 02_amber-build_model12 instead of 02_amber-build, so the
-    # folder says which branch or model it belongs to (letters, digits and '-'; file names do not change)
+    # folder says which branch or model it belongs to (ASCII letters and digits, '-' between them; file names
+    # do not change)
     folder_tag: str = field(default="", metadata={"saved": "when set"})
 
 
@@ -489,6 +490,9 @@ class WorkflowParams:
     parallel: int = 0
     cpu_cores: int = 0  # CPU cores the scripts MDATK runs at the same time may use together (0: half of them)
     gpus: int = -1  # GPUs they may use, each script its own (-1: the GPUs found; 0: none)
+    # The highest step id number given out so far (n1, n2, ...): a new step gets the next one, never the id
+    # of a deleted step (0: none recorded yet; ids then follow the highest one in the plan)
+    last_node: int = field(default=0, metadata={"saved": "when set"})
     nodes: List[PlanNode] = field(default_factory=list)  # Planner steps
     edges: List[PlanEdge] = field(default_factory=list)  # Planner connections
     # Stand-alone script wizard settings, one entry per step type

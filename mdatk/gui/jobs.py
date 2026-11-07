@@ -172,6 +172,12 @@ def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool =
         lines += item.lines(limit=4)
     if len(items) > SUPERSEDE_LIMIT:
         lines.append(f"… and {len(items) - SUPERSEDE_LIMIT} more step(s)")
+    held = [item for item in items if getattr(item, "held", "")]
+    if held:  # the folder's MDATK_step.toml names another step: the run would be filed as the wrong step's
+        lines += ["", f"{len(held)} of these folders hold the files of another step (\"not this step's run\" "
+                      "above): writing would put the step's files beside them and move that step's run aside as "
+                      "this step's. Cancel and give such a step a folder tag or another step number to keep the "
+                      "two apart; the run's manifest names the step that wrote it either way."]
     detail = ("\n".join(lines) + "\n\nWriting a step again moves its completed run - the outputs, the "
               "scripts and inputs that made them, and its logs - into the step's superseded/ folder "
               "(<time> is the time of writing), with a manifest, so the run stays repeatable. Steps that "

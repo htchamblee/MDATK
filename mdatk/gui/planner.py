@@ -83,10 +83,11 @@ RUN_COLORS = {"done": (0.20, 0.65, 0.35), "partial": (0.90, 0.60, 0.05), "missin
 FOLDER_TAG_TIP = (
     "Added to the step's folder name: 'model12' makes 02_amber-build into 02_amber-build_model12, so the folder "
     "says which branch or model the step belongs to, and a plan whose steps were renumbered can still be "
-    "matched to the folders it wrote (MANIFEST, mdatk workflow manifest). Letters, digits and '-'. File names "
-    "do not change. Empty: the folder is <step>_<tool>, as before. Changing it changes the folder the step "
-    "writes into and looks in for earlier runs; files already written stay where they are. Saved with the "
-    "project.")
+    "matched to the folders it wrote (MANIFEST, mdatk workflow manifest). The step's title in logs and "
+    "messages shows it too (02 · Amber · system build · model12). ASCII letters and digits, with '-' between "
+    "them. File names do not change. Empty: the folder is <step>_<tool>, as before. Changing it changes the "
+    "folder the step writes into and looks in for earlier runs; files already written stay where they are. "
+    "Saved with the project.")
 
 log = logging.getLogger(__name__)
 
@@ -431,7 +432,8 @@ class PlannerCanvas(Gtk.DrawingArea):
             self._draw_run_state(cr, run, n.x + w - 31, n.y + HEAD_H / 2, rgb)
         if run == "running":
             self._draw_stop_button(cr, n)
-        self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1),
+        # the folder tag is drawn as a badge below the title (it is in the step's title everywhere else)
+        self._text(cr, step_title(n, tag=False), title_x, n.y + 17, 11, True, (1, 1, 1),
                    n.x + w - (62 if run == "running" else 43 if run else 25) - title_x)
         step = self.win.plan.steps.get(n.id) if self.win.plan else None
         level = step.level() if step else "ok"
@@ -1074,7 +1076,8 @@ class PlannerPanel(Gtk.Box):
         if state:
             return state
         run = self.prev_runs.get(node_id)
-        if run is not None and run.state == "done" and (run.current or run.adopted):
+        # a run in a folder that holds another step's files is not this step's (RunStatus.held)
+        if run is not None and run.state == "done" and (run.current or run.adopted) and not run.held:
             return "ok"
         return None
 
@@ -1443,7 +1446,9 @@ class PlannerPanel(Gtk.Box):
             gen = bool(tool and tool.generates)
             self.d_step.set_sensitive(gen)
             self.d_step.set_value(max(1, n.step))
-            self.d_tag.set_sensitive(gen)  # a step that writes no files has no folder
+            # a step that writes no files has no folder; one that has a tag all the same (from a project file
+            # written by a script) can have it cleared, which ends the check's warning
+            self.d_tag.set_sensitive(gen or bool(n.folder_tag.strip()))
             if self.d_tag.get_text().strip() != n.folder_tag.strip():  # not while typing (the cursor)
                 self.d_tag.set_text(n.folder_tag)
             bad = folder_tag_problem(n.folder_tag) if gen else ""
@@ -1482,8 +1487,8 @@ class PlannerPanel(Gtk.Box):
             self.d_prev.set_text(self._previous_run_text(n) if gen else "")
             run = self.prev_runs.get(n.id)
             self.d_check.set_sensitive(gen)
-            self.d_adopt.set_sensitive(bool(gen and run is not None and run.state == "done" and run.stamp
-                                            and not run.adopted))
+            # never for a run in a folder that holds another step's files (runstate.offered)
+            self.d_adopt.set_sensitive(bool(gen and run is not None and runstate.offered(run)))
             self.d_forget.set_sensitive(bool(gen and n.adopted))
             if step is not None:
                 for issue in step.issues:
@@ -1504,6 +1509,7 @@ class PlannerPanel(Gtk.Box):
         n.title = self.d_name.get_text().strip()
         if TOOLS.get(n.tool) and TOOLS[n.tool].generates:
             n.step = int(self.d_step.get_value())
+        if self.d_tag.get_sensitive():  # also a tag on a step that writes no files, so it can be cleared
             n.folder_tag = self.d_tag.get_text().strip()
         if n.tool == "note":
             buf = self.d_note.get_buffer()
@@ -1755,6 +1761,10 @@ class PlannerPanel(Gtk.Box):
             self.host.append_log(f"Master script: {report.master}")
         if report.manifest:  # which folder is which step's: rewritten by every write
             self.host.append_log(f"Manifest: {report.manifest}")
+        if report.records_error:  # bookkeeping only: the step files are written
+            self.host.append_log(f"Planner: WARNING: MANIFEST / MDATK_step.toml not written: "
+                                 f"{report.records_error}")
+            self.set_status(msg + "; MANIFEST / MDATK_step.toml not written (see the output)", error=True)
         if run:
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
             jobs = plan_jobs(plan, ok_ids)
@@ -1864,16 +1874,31 @@ class PlannerPanel(Gtk.Box):
         for nid, run in runs.items():
             self.host.append_log(f"  {plan.steps[nid].label}: {run.summary()}")
         self.changed(resolve=False)
-        offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
+        # a complete run in a folder that holds another step's files is that step's (its summary above says
+        # whose): it is not offered (runstate.offered), and the question (or a warning) says why
+        offer = [n for n, r in runs.items() if runstate.offered(r)]
+        held = [n for n, r in runs.items() if r.held and r.state == "done" and not r.adopted]
+        others = ""
+        if held:
+            others = "\n".join(f"• {plan.steps[n].label}: {runs[n].held}" for n in held[:15])
+            if len(held) > 15:
+                others += f"\n… and {len(held) - 15} more"
+            others += ("\n\nThese folders hold the files another step wrote (their MDATK_step.toml says so), so "
+                       "their runs are not offered. Writing such a step puts its files beside them and moves the "
+                       "run aside as its own: give it a folder tag or another step number first.")
         if offer:
             text = "\n".join(f"• {plan.steps[n].label}: run {runs[n].stamp}, finished {runs[n].date}"
                              for n in offer[:15])
             if len(offer) > 15:
                 text += f"\n… and {len(offer) - 15} more"
-            if self._ask(f"Use the outputs of {len(offer)} finished run(s)?",
-                         text + "\n\nThe steps after them then read these files, and these steps are not "
-                                "written or run again (until 'Stop using it'). Saved with the project."):
+            text += ("\n\nThe steps after them then read these files, and these steps are not written or run "
+                     "again (until 'Stop using it'). Saved with the project.")
+            if others:
+                text += f"\n\nNot offered, {len(held)} run(s) that are not their steps' own:\n" + others
+            if self._ask(f"Use the outputs of {len(offer)} finished run(s)?", text):
                 self.adopt_runs(offer)
+        elif others:
+            self._message(f"{len(held)} run(s) found are not their steps' own", others, Gtk.MessageType.WARNING)
         return runs
 
     def adopt_runs(self, node_ids: List[str]) -> None:

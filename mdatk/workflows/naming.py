@@ -17,10 +17,10 @@ for example ``apt1_03_tleap_20261015-1432.parm7``:
     switch it off.
 
 Each step writes into its own folder ``<step>_<tool>`` (e.g. ``03_amber-build``).  A step may carry a folder
-tag (``PlanNode.folder_tag``, letters, digits and hyphens), which is added to its folder name:
-``03_amber-build_model12``.  File names do not carry it: :func:`parse_name` reads exactly the four parts
-above, and the tag is in the folder name and in the ``MDATK_step.toml`` identity file instead
-(:mod:`mdatk.workflows.manifest`).
+tag (``PlanNode.folder_tag``, ASCII letters and digits with hyphens between them), which is added to its
+folder name: ``03_amber-build_model12``.  File names do not carry it: :func:`parse_name` reads exactly the
+four parts above, and the tag is in the folder name, the step's title (``03 · MD · model12``) and the
+``MDATK_step.toml`` identity file instead (:mod:`mdatk.workflows.manifest`).
 """
 
 from __future__ import annotations
@@ -73,13 +73,13 @@ def step_folder(step: int, tag: str, folder_tag: str = "") -> str:
 
 
 def folder_tag_problem(tag: str) -> str:
-    """Why ``tag`` cannot be a step's folder tag ("" when it can, or is empty): only letters, digits and
-    inner hyphens, the characters :func:`sanitize_tag` keeps, so the folder name splits unambiguously."""
+    """Why ``tag`` cannot be a step's folder tag ("" when it can, or is empty): only ASCII letters, digits
+    and inner hyphens, the characters :func:`sanitize_tag` keeps, so the folder name splits unambiguously."""
     tag = (tag or "").strip()
     if not tag or sanitize_tag(tag) == tag:
         return ""
     fixed = _TAG_BAD.sub("-", tag).strip("-")
-    return (f"folder tag {tag!r}: use letters, digits and '-' only"
+    return (f"folder tag {tag!r}: use ASCII letters and digits, with '-' only between them"
             + (f" (e.g. {fixed!r})" if fixed else ""))
 
 

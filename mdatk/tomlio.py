@@ -56,6 +56,15 @@ def _scalar(text: str) -> str:
     return "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
 
 
+_COMMENT_BAD = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")  # control characters a TOML comment may not hold
+
+
+def _comment_text(line: str) -> str:
+    """One line of a comment as TOML allows it: control characters other than tab become spaces (and lone
+    surrogates U+FFFD); text without them is unchanged."""
+    return _COMMENT_BAD.sub(" ", _scalar(line))
+
+
 def quote(text: str) -> str:
     out = []
     for ch in _scalar(text):
@@ -151,7 +160,7 @@ class Writer:
         if not text:
             return
         for para in str(text).splitlines() or [""]:
-            wrapped = textwrap.wrap(para, _WIDTH - len(indent) - 2) or [""]
+            wrapped = textwrap.wrap(_comment_text(para), _WIDTH - len(indent) - 2) or [""]
             self.lines += [f"{indent}# {w}".rstrip() for w in wrapped]
 
     def blank(self) -> None:
@@ -159,8 +168,10 @@ class Writer:
             self.lines.append("")
 
     def document(self, data: Dict[str, Any], header: Sequence[str] = ()) -> str:
-        for line in header:
-            self.lines.append(f"# {line}".rstrip() if line else "#")
+        for item in header:  # an item with line breaks (e.g. a title in it) is one comment line per line
+            for line in str(item).splitlines() or [""]:
+                line = _comment_text(line)
+                self.lines.append(f"# {line}".rstrip() if line else "#")
         if header:
             self.lines.append("")
         self._body((), data, [data])

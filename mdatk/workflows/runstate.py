@@ -16,7 +16,10 @@ note :func:`stop_mark` beside its files; until a file of the run is written afte
 the run counts as partial.
 
 Runs moved aside before a step was written again (``<step folder>/superseded/``, see
-:mod:`mdatk.workflows.supersede`) are never looked at: only the step folder's own files count.
+:mod:`mdatk.workflows.supersede`) are never looked at: only the step folder's own files count.  A run found
+in a folder whose ``MDATK_step.toml`` names another step (``ResolvedStep.held``: a renumbered plan, a step
+deleted and another one added with its number) is that step's: it is reported with what the folder holds
+(:attr:`RunStatus.held`) and never adopted.
 """
 
 from __future__ import annotations
@@ -50,6 +53,9 @@ class RunStatus:
     missing: List[str] = field(default_factory=list)  # paths that are not, or logs without closing lines
     finished: float = 0.0  # newest modification time of the files found (seconds since the epoch)
     stopped: bool = False  # the run was stopped by the user (the stop_mark note is newer than its files)
+    # the step's folder holds another step's files, by its MDATK_step.toml (ResolvedStep.held): what they are;
+    # a run found there is that step's, so it is never offered for this step to use ("": its own)
+    held: str = ""
 
     @property
     def date(self) -> str:
@@ -70,6 +76,8 @@ class RunStatus:
             text = "missing: no output files of this step yet"
         else:
             text = "nothing to look for: the step has no output files of its own"
+        if self.held and self.state in ("done", "partial"):
+            text += f" - not this step's run: {self.held}"
         return text + (" - in use" if self.adopted else "")
 
 
@@ -149,6 +157,7 @@ def run_status(plan, node_id: str, stamp: str) -> RunStatus:
                        bool(step is not None and stamp and step.adopted == stamp))
     if step is None:
         return status
+    status.held = step.held
     paths = expected(plan, node_id, stamp)
     try:
         marks = step.tool.finish_marks(step.settings, step.ctx.with_stamp(stamp))
@@ -213,13 +222,22 @@ def check_runs(plan, node_ids: Optional[Sequence[str]] = None) -> Dict[str, RunS
     return out
 
 
+def offered(status: RunStatus) -> bool:
+    """A complete run its step can use (:func:`adopt`): one with a time stamp that the step does not use
+    yet, found in a folder that holds the step's own files (not another step's: :attr:`RunStatus.held`)."""
+    return status.state == "done" and bool(status.stamp) and not status.adopted and not status.held
+
+
 def adopt(plan, runs: Dict[str, RunStatus]) -> List[str]:
     """Let the steps of complete runs in ``runs`` use them (``PlanNode.adopted``); returns the node ids
-    changed.  Runs without a time stamp need no adopting (their names never change).  Resolve the plan
-    again afterwards."""
+    changed.  Runs without a time stamp need no adopting (their names never change), and a run in a folder
+    that holds another step's files (:attr:`RunStatus.held`) is that step's, never this one's.  Resolve the
+    plan again afterwards."""
     changed = []
     for nid, status in runs.items():
         step = plan.steps.get(nid)
+        if status.held:
+            continue
         if step is not None and status.state == "done" and status.stamp and step.node.adopted != status.stamp:
             step.node.adopted = status.stamp
             changed.append(nid)

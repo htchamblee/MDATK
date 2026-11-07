@@ -1022,6 +1022,9 @@ class WizardWindow(Gtk.Window):
             self.host.append_log("Script wizard: " + lines[0])
             for line in lines[1:]:
                 self.host.append_log(line)
+        if report.records_error:  # bookkeeping only: the step's files are written
+            self.host.append_log(f"Script wizard: WARNING: MANIFEST / MDATK_step.toml not written: "
+                                 f"{report.records_error}")
         if report.skipped:
             self._error("Some files were not written", "\n".join(report.skipped.values()))
         written = [p for p in report.written]
