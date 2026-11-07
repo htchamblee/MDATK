@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.12](#whats-new-in-0012)
+- [What's new in 0.0.13](#whats-new-in-0013)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,43 +82,33 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.12
+## What's new in 0.0.13
 
-- **Your analysis scripts as RNAdo steps.** New steps and commands, each generalised so that ranges,
-  chains, registers and paths are options: *Model check* (`mdatk pdb qc`: clashes, O3′–P links with the
-  strain a stretched link would put into tleap, sugar hands, kinks, a filter that passes on up to N
-  models and fails only below a minimum), *Decoy interfaces* (`mdatk decoys`: census, clusters, segment
-  support; builtin, barnaba or DSSR pairs), *Register census* and *Ensemble comparison* (`mdatk
-  ensemble`), *Map-model score* (`mdatk map score`: per-residue Q-score with ChimeraX's `qscore`,
-  ranked on dQ), *Body hybrids* (`mdatk pdb hybrids`), *Rosetta · run audit* (`mdatk rosetta audit`:
-  flags, Rosetta build and seeds of every run) and *MDATK · frame check* (`mdatk frame`). See [Model
-  checks](#model-checks), [FARFAR2 decoys](#farfar2-decoys-scores-run-audit-and-frames), [Decoy
-  interfaces](#decoy-interfaces) and [Decoy ensembles](#decoy-ensembles-map-model-scores-and-statistics).
-- **FARFAR2 decoys:** a decoy table (`run`, `tag`, `pdb`, every score term by name); validity filters
-  (hands, bases, closure, defining pairs) before clustering and quality filters after it; *Every decoy
-  (PDB)*, a large dot on the right of the FARFAR2 box, passes the whole set to the steps that take
-  several models. A template, *Decoy validation (FARFAR2)*, chains them.
-- **Applications menu:** `mdatk desktop install` (or *Add MDATK and RNAdo to the applications menu…*)
-  adds MDATK and RNAdo as two entries, from a source install or the AppImage (see [Applications menu
-  (Linux)](#applications-menu-linux)).
-- **Completed runs move aside:** writing a step again first moves its completed run, with the scripts
-  that made it, into `<step folder>/superseded/<stamp>_<time>/` (see [Previous runs](#previous-runs)).
-- **CPU and GPU budgets** replace *Parallel*: scripts start while their cores and GPUs fit (default:
-  half the cores, every GPU found); NAMD counts its `+p` cores and a GPU; a GPU step gets a free GPU in
-  `CUDA_VISIBLE_DEVICES` unless it names its own (see [Running steps](#running-steps)).
-- **Stop buttons:** *Stop scripts* in RNAdo's toolbar stops every script; a stop button on each running
-  box stops that one.
-- **The commands a step runs:** the script wizard has a *Commands* tab with the commands the step's
-  script will run.
-- **Fixes:** the NAMD MDFF result PDB's REMARK is numbered, so ChimeraX reads it; DSSR 2.9 output with
-  blank chains is read; a closed RNAdo no longer stays behind as a defunct process (`mdatk` from the
-  AppImage) while the analysis window that started it is open. Each program now quits when its main
-  window closes, and the programs it starts get `close_fds`; the cause of the reported MDATK process left
-  running after both of the AppImage's windows are closed is still being investigated (these changes are
-  not known to remove it).
-- **Generated workflow files** of the earlier step types are unchanged unless a new option is turned on,
-  apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds (see
-  [CHANGELOG.md](CHANGELOG.md)).
+- **B-form DNA and D/L chimeras in the structure builder.** Ideal B-DNA helices of either hand, DNA and
+  L-DNA residue names in every naming scheme, and chimeras of D and L, RNA and DNA segments joined by
+  3'-5', 5'-3', 3'-3' or 5'-5' links (a PO2 bridge with LINK records), from the command line, the
+  planner's structure-builder step and RNAdo's builder window (see [Structure
+  builder](#structure-builder)).
+- **LINK records are kept and checked:** the PDB tools carry them through renaming, renumbering and chain
+  changes, and the model check treats them as bonds.
+- **Amber MD stages, one option per job:** *Production stage* is split into *Run in the separate
+  script*, *Pass the trajectory on*, *Dry trajectory label* and *Dry PDB of its last frame*, so a chained
+  protocol (an annealing cycle, a restraint release) can run on the cluster as a whole and pass on only
+  the frames meant for analysis, dried per stage or per label (see [Amber MD stages](#amber-md-stages)).
+- **Batch-friendly waiting:** *Exit 0 + .waiting file* instead of exit status 75 while the separate
+  script has not finished, for `sbatch --dependency` chains.
+- **Ramp warnings know the starting temperature:** a ramp that starts where the previous stage ended is
+  no longer warned.
+- **Folder tags and MANIFEST:** a step's folder tag goes into its folder name (`03_amber-md_model12/`),
+  steps that write nothing get no folder, every write records the folders in `MANIFEST` and
+  `MDATK_step.toml`, and `mdatk workflow manifest` matches a renumbered plan to an existing tree (see
+  [Folder tags and MANIFEST](#folder-tags-and-manifest)).
+- **RNAdo:** tool rows wrap instead of stretching when the window first opens, the *Open* drop-down lists
+  recent projects, *Select all steps* / *Clear selection*, *Write selected steps*, and a timestamped
+  output log per step.
+- **Generated workflow files** of earlier step types are unchanged unless a new option is turned on,
+  apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds
+  (see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
