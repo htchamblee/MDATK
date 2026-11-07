@@ -25,6 +25,7 @@ from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 from ..config import Project, ResidueGroup, WorkflowParams, _from_plain, _to_plain  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 
 PROJECT_FILES = ("MDATK projects", ["*.mdatk.toml"])
 RUN_LOG_FILES = ("Parameter logs of runs", ["*_params_log.toml"])
@@ -256,6 +257,7 @@ def ask(parent: Optional[Gtk.Window], text: str, detail: str, buttons: Sequence[
     for label, response in buttons:
         dlg.add_button(label, response)
     dlg.set_default_response(default)
+    selectable_text(dlg)
     response = dlg.run()
     dlg.destroy()
     return response
@@ -268,6 +270,22 @@ def ask_unsaved(parent: Optional[Gtk.Window], what: str, detail: str = "") -> st
                    [("Cancel", Gtk.ResponseType.CANCEL), ("Don't save", Gtk.ResponseType.REJECT),
                     ("Save", Gtk.ResponseType.ACCEPT)], Gtk.ResponseType.ACCEPT)
     return {Gtk.ResponseType.ACCEPT: "save", Gtk.ResponseType.REJECT: "discard"}.get(response, "cancel")
+
+
+def keep_open_menu_filled(button: Gtk.MenuButton, menu: Gtk.Menu, fill: Callable[[], None]) -> None:
+    """Fill the Open button's drop-down before it opens.  GTK pops a menu button's menu up before the button's
+    'toggled' handlers run, and a menu filled there keeps the size it had empty: a small grey box without items.
+    So the menu is filled now, again when the pointer reaches or presses the button (before the popup, with the
+    recent projects of that moment), and after it closes (for a popup from the keyboard)."""
+    def refresh(*_args) -> bool:
+        if not button.get_active():  # the menu is open while its button is pressed in: never refill it then
+            fill()
+        return False  # the event goes on to the button; one call when run from GLib.idle_add
+
+    fill()
+    button.connect("enter-notify-event", refresh)
+    button.connect("button-press-event", refresh)
+    button.connect("toggled", lambda b: b.get_active() or GLib.idle_add(refresh))  # the menu closed
 
 
 def fill_open_menu(menu: Gtk.Menu, open_path: Callable[[str], None],

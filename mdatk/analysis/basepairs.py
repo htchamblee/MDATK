@@ -1,7 +1,8 @@
 """Base pairs of the structural-view residues (internal; feeds secondary-structure panels).
 
 Rows are exactly the residues of the ``trace`` analysis (:func:`structure_residues`, same order), so
-row k of the pair map is row k of the trace.  Only nucleotides pair.  Pairs are detected on every
+row k of the pair map is row k of the trace.  Only nucleotides pair (a nucleotide name with a backbone atom:
+a detergent named LDA is no deoxyadenosine).  Pairs are detected on every
 ``stride``-th analysed frame and held in between (base pairs live far longer than a frame).
 
 Engines (``analyses.basepairs.engine``):
@@ -26,6 +27,7 @@ from typing import Dict, List
 import numpy as np
 
 from ..data import CSRBuilder
+from ..pdbtools import standard_atom_name
 from ..secstruct import BarnabaRunner, PairDetector, import_barnaba, lw_kind
 from ..selections import heavy
 from .base import Analysis, register
@@ -71,14 +73,16 @@ class BasePairAnalysis(Analysis):
         if self.engine == "barnaba":
             import_barnaba()  # fail early with the installation hint
         resnames = [str(r) for r in residues.resnames]
-        # one coordinate array holding the atoms either engine needs, read once per detection frame
+        # one coordinate array holding the atoms either engine needs, read once per detection frame; both engines
+        # take a nucleotide name only with a backbone atom (a detergent named LDA is none) and read the atoms of a
+        # CCD component that names them its own way (0DA: N1A ...) by their standard names
         atom_ix: List[int] = []
         atom_index: List[Dict[str, int]] = []
         heavy_atoms = []
         for res in residues:
             names: Dict[str, int] = {}
             for a in heavy(res.atoms):
-                name = str(a.name).replace("*", "'")  # old-style primes
+                name = standard_atom_name(str(res.resname), str(a.name).replace("*", "'"))  # old-style primes
                 if name not in names:  # first alternate location wins
                     names[name] = len(atom_ix)
                     atom_ix.append(int(a.ix))

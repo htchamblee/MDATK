@@ -44,6 +44,9 @@ INTENDED = [
     # empty slot instead of reporting 'no atoms'.  The build script, the leap / ParmEd inputs and
     # the planner messages stay as they were (":forced:" keys: the files of builds refused for errors)
     (re.compile(r"(^\d+_amber-build/|^:forced:[^:]+:)[^/]*_(pdbtools|prep)_\d{8}-\d{4}\.py$"), None),
+    # unreleased: a separately run (cluster) production script activates its conda environment only when
+    # MDATK runs it on this computer ($MDATK_LOCAL); only the example sets a conda environment
+    (re.compile(r"_amber-prod_\d{8}-\d{4}\.sh$"), {"example:rna_plan.mdatk.toml"}),
 ]
 
 

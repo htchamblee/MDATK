@@ -452,6 +452,10 @@ class PlanNode:
     # Time stamp of an earlier run whose output files the plan uses for this step, which is then neither
     # written nor run again ("": none; set by 'Check previous runs' or 'mdatk workflow status --adopt')
     adopted: str = ""
+    # Added to the step's folder name, e.g. "model12": 02_amber-build_model12 instead of 02_amber-build, so the
+    # folder says which branch or model it belongs to (ASCII letters and digits, '-' between them; file names
+    # do not change)
+    folder_tag: str = field(default="", metadata={"saved": "when set"})
 
 
 @dataclass
@@ -486,6 +490,9 @@ class WorkflowParams:
     parallel: int = 0
     cpu_cores: int = 0  # CPU cores the scripts MDATK runs at the same time may use together (0: half of them)
     gpus: int = -1  # GPUs they may use, each script its own (-1: the GPUs found; 0: none)
+    # The highest step id number given out so far (n1, n2, ...): a new step gets the next one, never the id
+    # of a deleted step (0: none recorded yet; ids then follow the highest one in the plan)
+    last_node: int = field(default=0, metadata={"saved": "when set"})
     nodes: List[PlanNode] = field(default_factory=list)  # Planner steps
     edges: List[PlanEdge] = field(default_factory=list)  # Planner connections
     # Stand-alone script wizard settings, one entry per step type
@@ -968,9 +975,16 @@ def _key_groups(key: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+def _saved(f: dataclasses.Field, value: Any) -> bool:
+    """A field marked ``metadata={"saved": "when set"}`` is left out while it is empty, so files written
+    before it existed read and save unchanged."""
+    return bool(value) or f.metadata.get("saved") != "when set"
+
+
 def _to_plain(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+        return {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)
+                if _saved(f, getattr(obj, f.name))}
     if isinstance(obj, (list, tuple)):
         return [_to_plain(v) for v in obj]
     if isinstance(obj, dict):  # free-form settings: an unset (None) option is simply absent

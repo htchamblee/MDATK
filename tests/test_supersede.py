@@ -10,6 +10,7 @@ from mdatk.config import Project, WorkflowParams
 from mdatk.projectfile import read_log
 from mdatk.tomlio import load as load_toml
 from mdatk.workflows import runstate, supersede
+from mdatk.workflows.manifest import IDENTITY
 from mdatk.workflows.plan import Plan, add_node, apply_template, connect
 from mdatk.workflows.userscript import DONE_TEXT
 
@@ -190,8 +191,9 @@ def test_stamp_free_custom_outputs_move_with_their_marker(tmp_path):
     assert tree(target) == {"result.txt", "go.sh", f"run_01_custom_{OLD}.sh", f"run_01_custom_{OLD}.done",
                             "manifest.toml"}
     assert open(os.path.join(target, "result.txt")).read() == "hi\n"
+    # the folder's identity file is no part of a run: it stays
     assert tree(folder) - {p for p in tree(folder) if p.startswith("superseded/")} == {
-        "go.sh", f"run_01_custom_{OLD}.sh", "other.txt"}
+        "go.sh", f"run_01_custom_{OLD}.sh", "other.txt", IDENTITY}
 
 
 def test_a_plan_without_time_stamps_or_step_folders(tmp_path):
@@ -384,7 +386,7 @@ def test_a_failed_move_puts_everything_back_and_skips_the_step(tmp_path, monkeyp
     fake_run(plan, b.id, OLD)
     one = os.path.join(root, "01_custom")
     before = {n: open(os.path.join(one, n)).read() for n in tree(one)}
-    assert len(before) == 4  # output, marker, the script's copy, the run script
+    assert len(before) == 5  # output, marker, the script's copy, the run script, the folder's MDATK_step.toml
     a.settings["script"] = 'echo changed > "$MDATK_OUT_T"\n'  # the step's new script differs
     plan = Plan(wf, root)
     real = os.rename
@@ -437,7 +439,7 @@ def test_cli_write_dry_run_then_write_and_the_step_log(tmp_path, capsys):
     assert data["dry_run"] and any(f.endswith(f"run_02_custom_{OLD}.sh") for f in data["write"])
     [sup] = data["superseded"]
     assert (sup["step"], sup["stamp"], sup["to"]) == (1, OLD, f"01_custom/superseded/{OLD}_<time>")
-    assert sorted(sup["files"]) == sorted(before)
+    assert sorted(sup["files"]) == sorted(before - {IDENTITY})  # the folder's identity file stays
     assert f"would move 01 · Custom script: completed run {OLD}" in out.err
     assert f"  run_01_t_{OLD}.txt" in out.err
     assert tree(one) == before
@@ -458,8 +460,8 @@ def test_cli_write_dry_run_then_write_and_the_step_log(tmp_path, capsys):
     write = [e for e in read_log(proj) if e["step"] == "workflow write"][-1]
     assert write["summary"].endswith("1 completed run(s) moved aside")
     assert os.path.exists(os.path.join(wf.out_dir, sup["to"], f"run_01_t_{OLD}.txt"))
-    assert sorted(tree(one)) == sorted([f"run_01_custom_{OLD}.sh", f"run_01_script_{OLD}.sh"] +
-                                       [f"{sup['to'][len('01_custom/'):]}/{n}" for n in before] +
+    assert sorted(tree(one)) == sorted([f"run_01_custom_{OLD}.sh", f"run_01_script_{OLD}.sh", IDENTITY] +
+                                       [f"{sup['to'][len('01_custom/'):]}/{n}" for n in before - {IDENTITY}] +
                                        [f"{sup['to'][len('01_custom/'):]}/manifest.toml"])
 
 
@@ -549,3 +551,82 @@ def test_a_decoy_folder_moves_after_its_option_was_turned_off(tmp_path):
     item = plan.write().superseded[f.id]
     assert "models/r01/S_000001.pdb" in tree(os.path.join(root, item.target))
     assert not os.path.exists(os.path.join(fd, "models"))
+
+
+# ---------------------------------------------------------------------------
+# deleting a run instead of moving it aside (trial runs not worth the disk space)
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_can_be_deleted_instead_of_moved(tmp_path):
+    wf = WorkflowParams(project_name="apt1", stamp=OLD)
+    f = add_node(wf, "farfar2", settings={"sequence": "GGGCAC GUGCCC", "dotbracket": "(((((( ))))))",
+                                          "runs": 2, "extract_decoys": True})
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, f.id, OLD)
+    fd = os.path.join(root, "01_farfar2")
+    for run in ("r01", "r02"):
+        touch(os.path.join(fd, "runs", run, "default.out"))
+        touch(os.path.join(fd, "models", run, "S_000001.pdb"))
+    outside = os.path.join(fd, "my_notes.txt")  # not the run's: stays
+    touch(outside)
+    planned = set(supersede.pending(plan)[f.id].paths)
+    report = plan.write(discard=True)
+    item = report.superseded[f.id]
+    assert item.deleted and not item.error and set(item.moved) == planned
+    assert not os.path.exists(os.path.join(fd, "runs")) and not os.path.exists(os.path.join(fd, "models"))
+    assert superseded(fd) == []  # nothing kept
+    assert os.path.exists(outside)
+    assert os.path.exists(os.path.join(fd, f"apt1_01_farfar2_{OLD}.sh"))  # the step was written again
+    assert ": deleted its completed run" in item.summary()
+    assert item.plain()["deleted"] is True
+
+
+def test_a_link_in_a_deleted_run_is_removed_not_followed(tmp_path):
+    wf, build, _restraints, _md = amber_plan(tmp_path)
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, build.id, OLD)
+    target = tmp_path / "keep.txt"
+    target.write_text("keep\n")
+    link = os.path.join(root, "01_amber-build", f"apt1_01_extra_{OLD}.log")
+    os.symlink(target, link)
+    item = supersede.move_aside(Plan(wf, root), build.id, discard=True)
+    assert item is not None and item.deleted and not item.error
+    assert not os.path.lexists(link) and target.read_text() == "keep\n"
+
+
+def test_cli_write_delete_old_runs(tmp_path, capsys):
+    wf, a, b, proj = custom_chain(tmp_path)
+    assert main(["workflow", "write", "-p", proj, "-q"]) == 0
+    plan = Plan(Project.load(proj).workflow, wf.out_dir)
+    fake_run(plan, a.id, OLD)
+    capsys.readouterr()
+    assert main(["workflow", "write", "-p", proj, "--delete-old-runs"]) == 0
+    out = capsys.readouterr()
+    [sup] = json.loads(out.out)["superseded"]
+    assert sup["deleted"] and not sup["error"]
+    assert f"deleted  01 · Custom script: deleted its completed run {OLD} (4 files)" in out.err
+    one = os.path.join(wf.out_dir, "01_custom")
+    assert superseded(one) == [] and not os.path.exists(os.path.join(one, f"run_01_t_{OLD}.txt"))
+    [entry] = [e for e in read_log(proj) if e["step"] == supersede.LOG_STEP]
+    assert entry["title"] == "Deleted the completed run of 01 · Custom script" and entry["status"] == "ok"
+    write = [e for e in read_log(proj) if e["step"] == "workflow write"][-1]
+    assert write["summary"].endswith("1 completed run(s) deleted")
+
+
+def test_the_output_log_of_a_run_moves_aside_with_it(tmp_path):
+    from mdatk.workflows.runner import step_log_path
+    wf, build, _r, _md = amber_plan(tmp_path)
+    root = str(tmp_path / "plan")
+    plan = Plan(wf, root)
+    plan.write()
+    fake_run(plan, build.id, OLD)
+    script = os.path.join(root, "01_amber-build", f"apt1_01_amber-build_{OLD}.sh")
+    touch(step_log_path(script), "==== Step completed successfully - 2026-11-05 10:00:00 (exit status 0)\n")
+    item = Plan(wf, root).write().superseded[build.id]
+    assert f"apt1_01_amber-build_{OLD}.sh.log" in tree(os.path.join(root, item.target))
+    assert not os.path.exists(step_log_path(script))

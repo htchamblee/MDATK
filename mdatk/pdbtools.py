@@ -12,7 +12,9 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
 * L-nucleotides are detected from signed chiral volumes at C1', C3' and C4' (every usable centre must agree); residue
   ranges such as ``"C:45-73"`` override the detection and force L.
 * Residue name schemes (base from the name, chirality from detection/override, terminal state from the
-  segment ends; DNA and unrecognised residues pass through unchanged):
+  segment ends that are free: a segment end that a LINK record bonds to another residue, such as the O3' / O5'
+  of a chimera's 3'-3' / 5'-5' phosphate, keeps the internal name; DNA and unrecognised residues pass through
+  unchanged unless DNA is asked for, see below):
 
   ``amber``    D: A C G U, terminals A5/A3, single-residue segment AN.  L (Dudek & Trylska,
                nucleic12_LRNA.lib): LA LC LG LU, terminals LA5/LA3.  The library has no LAN-type unit, so a
@@ -27,8 +29,24 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
                longer record the hand, so such a copy is never meant for tleap, refinement or analyses
                that read names.
 
+  DNA is renamed only on request (``convert_names(..., dna=True)``, as the structure builder does): D: DA DC
+  DG DT (amber: DA5/DA3/DAN of DNA.OL15); L: the CCD's 0DA 0DC 0DG 0DT, amber: MDATK's LDA, LDA5, LDA3, LDAN
+  ... (AmberTools ships no L-DNA library); standard: DA for both hands.  Both L-DNA spellings are read back.
+  0DA and 0DT carry their CCD components' own atom names (0DA: N9A, C8A ... HN61, HN62; 0DT: C5M,
+  ``CCD_ATOM_NAMES``): :func:`read_pdb` reads them as the standard names, so that every reader of a parsed
+  structure sees N9, C7 ..., and :func:`write_pdb` writes them for every residue named 0DA / 0DT (and the
+  standard names for every other name, LDA and DA included).
+
 * Chains: restore ids of cpptraj output (from a reference PDB, a list per TER segment or A, B, C ...),
-  split, combine and order; residue renumbering; SEQRES records and FASTA text.
+  split, combine and order; residue renumbering; SEQRES records and FASTA text (the polymer residues: a
+  residue made only of phosphate atoms, such as a chimera's PO2 bridge or a lone 5'-phosphate, is left out;
+  SEQRES names have three characters, MDATK's four-character L-DNA names are written as their CCD components).
+* LINK records (bonds the polymer order does not imply, such as the 3'-3' / 5'-5' phosphate of a chimera)
+  follow the residues they name: the operations that rename, renumber, re-chain or remove residues rewrite
+  their residue columns (:func:`follow_links`); a record whose residue or atom is removed is dropped, one that
+  names no atom of the model stays as it was, each with a note.  A record whose two symmetry operators differ
+  (columns 60-65 / 67-72: one atom in a copy of the model made by the crystal symmetry) follows the names too,
+  but is no bond of the model (:attr:`LinkRecord.mate`).
 * Hydrogens and Rosetta's virtual residues (VRT, XXX) can be removed; :func:`infer_base` tells the base
   from the atom names when a residue name is not recognised.
 * Per-residue sugar hands (:func:`residue_hands`): the three-centre call, the C4' hand alone, epimers and
@@ -42,7 +60,9 @@ chains them for the CLI / GUI / planner.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import functools
 import math
 import os
 import re
@@ -92,6 +112,9 @@ _STANDARD_NAMES = frozenset(_AMINO) | {"A", "C", "G", "U", "I", "N", "DA", "DC",
 _WATER = frozenset({"HOH", "WAT", "H2O", "DOD", "SOL", "TIP", "TIP3", "TIP4", "TIP5", "T3P", "T4P", "T4E",
                     "SPC", "OPC"})
 _NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
+# L-DNA: the CCD's 2'-deoxy-L-ribonucleotides 0DA 0DC 0DG 0DT (no terminal variants) and the Amber-style names
+# MDATK's builder writes, LDA LDA5 LDA3 LDAN ... (after nucleic12_LRNA.lib's LA; AmberTools has no L-DNA units)
+_LDNA_RE = re.compile(r"^(?:0D([ACGT])|LD([ACGT])([53N]?))$")
 _NT_ALIASES = {"ADE": ("A", "rna"), "CYT": ("C", "rna"), "GUA": ("G", "rna"), "URA": ("U", "rna"),
                "URI": ("U", "rna"), "THY": ("T", "dna")}
 _TWO_LETTER_ELEMENTS = frozenset({"MG", "NA", "CL", "ZN", "MN", "CA", "LI", "RB", "CS", "SR", "BA", "CD",
@@ -136,10 +159,13 @@ class Residue:
         return f"{self.chain or '_'}:{self.resseq}{self.icode} {self.name}"
 
     def coords(self) -> Dict[str, Vec]:
-        """Atom name -> coordinates (first alternate location; old-style '*' read as a prime)."""
+        """Atom name -> coordinates (first alternate location; old-style '*' read as a prime; the atoms of a CCD
+        component with names of its own, such as N9A of 0DA, by their standard names: :func:`standard_atom_name`)."""
+        own = _CCD_STANDARD_NAMES.get(self.name.strip().upper(), {})
         out: Dict[str, Vec] = {}
         for a in self.atoms:
-            out.setdefault(a.name.replace("*", "'"), a.xyz)
+            name = a.name.replace("*", "'")
+            out.setdefault(own.get(name, name), a.xyz)
         return out
 
 
@@ -175,7 +201,15 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
     """Recognise a nucleotide name in any supported scheme or common alias; None otherwise.
 
     RNA: A, A5, A3, AN, RA, RA5, RA3, RAN, ADE/CYT/GUA/URA/URI; L-RNA: LA, LA5, LA3, 0A, 0A5, 0A3 (and the
-    N forms); DNA: DA, DA5, DA3, DAN, T, THY ...
+    N forms); DNA: DA, DA5, DA3, DAN, T, THY ...; L-DNA: the CCD components 0DA, 0DC, 0DG, 0DT and the
+    Amber-style LDA, LDA5, LDA3, LDAN ... of MDATK's builder.
+
+    A name alone can mean something else: in the CCD, LA, LU and RA are the lanthanum, lutetium and radium ions,
+    LDA a detergent (lauryldimethylamine N-oxide), LDT a ligand without a sugar, LDC an L-2'-deoxycytidine
+    nucleoside and LDG a D-deoxyguanosine adduct.  The readers that see the atoms (:func:`nucleotide`, the model
+    check, the base-pair engines, the interfaces, the sequence panel) take a name for a nucleotide only when the
+    residue has backbone atoms (a primed atom or P), which tells the ions, LDA and LDT apart; LDC and LDG have
+    a sugar, so their hand is the one the geometry gives (:func:`assign_chirality` measures it).
     """
     n = name.strip().upper()
     if n in _NT_ALIASES:
@@ -183,7 +217,11 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
         return ResidueName(base, sugar, "D", "")
     m = _NT_RE.match(n)
     if not m:
-        return None
+        m = _LDNA_RE.match(n)
+        if not m:
+            return None
+        ccd, amber, term = m.groups()
+        return ResidueName(ccd or amber, "dna", "L", term or "")
     pre, base, term = m.groups()
     if pre == "D" or (base == "T" and pre == ""):
         return ResidueName(base, "dna", "D", term)
@@ -192,8 +230,21 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
     return ResidueName(base, "rna", "L" if pre in ("L", "0") else "D", term)
 
 
-def scheme_name(base: str, chirality: str, terminal: str, scheme: str) -> str:
-    """Residue name of an RNA nucleotide in ``scheme`` (terminal: "5", "3", "N" or "")."""
+def scheme_name(base: str, chirality: str, terminal: str, scheme: str, sugar: str = "rna") -> str:
+    """Residue name of an RNA nucleotide in ``scheme`` (terminal: "5", "3", "N" or "").
+
+    ``sugar`` "dna": the name of a DNA nucleotide.  amber: DA DA5 DA3 DAN (the units of AmberTools'
+    DNA.OL15.lib), L: LDA LDA5 LDA3 LDAN (MDATK's own names, after nucleic12_LRNA.lib's LA LA5 LA3: AmberTools
+    ships no L-DNA library); ccd / rosetta / pdb: DA, L: 0DA (the CCD has no terminal variants for DNA);
+    standard: DA for both hands."""
+    if sugar == "dna":
+        if scheme == "amber":
+            return ("LD" if chirality == "L" else "D") + base + terminal
+        if scheme in ("ccd", "rosetta", "pdb"):
+            return ("0D" if chirality == "L" else "D") + base
+        if scheme == "standard":  # as for RNA: the hand is not in the name
+            return "D" + base
+        raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     if scheme == "amber":
         if chirality == "L":  # nucleic12_LRNA.lib defines LX, LX5 and LX3 only
             return "L" + base + {"5": "5", "3": "3", "N": "5"}.get(terminal, "")
@@ -207,10 +258,63 @@ def scheme_name(base: str, chirality: str, terminal: str, scheme: str) -> str:
     raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
 
 
+# Atom names of the CCD's L-deoxyribonucleotide components that differ from the standard (PDB v3) names of the
+# same atoms: 0DA keeps old names for its adenine (N9A ..., the amino hydrogens HN61 / HN62), 0DT calls its
+# methyl carbon C5M (wwPDB CCD, checked in the CCP4 monomer library and in ParmEd's CCD templates).  0DC and 0DG
+# use the standard names.  A residue written under one of these names carries the component's atom names, so
+# that Coot / Phenix find every atom in the dictionary; MDATK reads them back as the standard names.  Both happen
+# at the file: read_pdb gives the atoms of a 0DA / 0DT their standard names and write_pdb writes the component's
+# names for every residue named 0DA / 0DT, so a structure in memory always has the standard names (whatever an
+# operation renames a residue to) and every reader of one finds N9, C7 ... where it looks for them.
+CCD_ATOM_NAMES: Dict[str, Dict[str, str]] = {
+    "0DA": {"N9": "N9A", "C8": "C8A", "N7": "N7A", "C5": "C5A", "C6": "C6A", "N6": "N6A", "N1": "N1A",
+            "C2": "C2A", "N3": "N3A", "C4": "C4A", "H8": "H8A", "H2": "H2A", "H61": "HN61", "H62": "HN62",
+            "HOP2": "H2P"},  # (the hydrogen of a protonated OP2: the CCD's 0DA calls it H2P)
+    "0DT": {"C7": "C5M"},
+}
+_CCD_STANDARD_NAMES = {res: {v: k for k, v in names.items()} for res, names in CCD_ATOM_NAMES.items()}
+
+
+def component_atom_name(resname: str, name: str) -> str:
+    """The name of standard atom ``name`` in the residue ``resname`` (a CCD component's own spelling, e.g. N9A in
+    0DA; every other residue: ``name`` unchanged)."""
+    return CCD_ATOM_NAMES.get(resname.strip().upper(), {}).get(name, name)
+
+
+def standard_atom_name(resname: str, name: str) -> str:
+    """The standard (PDB v3) name of atom ``name`` of residue ``resname``: the inverse of
+    :func:`component_atom_name` (N9A of 0DA -> N9, C5M of 0DT -> C7; every other atom unchanged)."""
+    return _CCD_STANDARD_NAMES.get(resname.strip().upper(), {}).get(name, name)
+
+
+def _read_component_names(structure: "Structure") -> List[str]:
+    """Give the atoms of every 0DA / 0DT of a structure just read their standard names (in place); returns the
+    labels of those that came with standard names where the component has its own (they are written with the
+    component's)."""
+    out = []
+    for res in structure.residues():
+        key = res.name.strip().upper()
+        own = CCD_ATOM_NAMES.get(key)
+        if not own:
+            continue
+        if any(a.name in own for a in res.atoms):
+            out.append(res.label)
+        back = _CCD_STANDARD_NAMES[key]
+        for a in res.atoms:
+            a.name = back.get(a.name, a.name)
+    return out
+
+
+def has_backbone_atoms(atom_names) -> bool:
+    """Whether a residue with these atom names has a sugar-phosphate atom (a primed name, old-style '*' or P): the
+    guard that a name is taken for a nucleotide only with (a lanthanum ion 'LA', the detergent 'LDA' are none)."""
+    return any("'" in n or "*" in n or n.strip() == "P" for n in map(str, atom_names))
+
+
 def _nucleotide(res: Residue) -> Optional[ResidueName]:
     """Name-based recognition, guarded by backbone atoms so that e.g. a lanthanum ion 'LA' is not RNA."""
     info = parse_residue_name(res.name)
-    if info is None or not any("'" in a.name or "*" in a.name or a.name == "P" for a in res.atoms):
+    if info is None or not has_backbone_atoms(a.name for a in res.atoms):
         return None
     return info
 
@@ -237,15 +341,16 @@ def _chirality(res: Residue) -> Optional[str]:
     return res.chirality or (nt.chirality if nt else None)
 
 
-def infer_base(atom_names) -> Optional[str]:
+def infer_base(atom_names, resname: str = "") -> Optional[str]:
     """Base letter (A, C, G, U or T) from a residue's atom names; None when they do not decide it.
 
     For residue names :func:`parse_residue_name` does not know (DSSR ids, Rosetta's numbered or blank names,
     a mutated residue that kept its old name): purines have N9 (or N7 and C8), A carries N6, G O6 or N2;
     pyrimidines have N1 and C2 but no purine atoms, C carries N4, U O4, T O4 and its methyl carbon (C7 or
-    C5M).  Contradicting substituents (N6 with O6 / N2, N4 with O4) give None.
+    C5M).  Contradicting substituents (N6 with O6 / N2, N4 with O4) give None.  ``resname``: the residue's
+    name, whose CCD component may spell its atoms its own way (N9A ... of 0DA: :func:`standard_atom_name`).
     """
-    names = {str(n).strip().replace("*", "'").upper() for n in atom_names}
+    names = {standard_atom_name(resname, str(n).strip().replace("*", "'")).upper() for n in atom_names}
     if "N9" in names or {"N7", "C8"} <= names:
         a, g = "N6" in names, bool({"O6", "N2"} & names)
         return ("A" if a else "G") if a != g else None
@@ -267,7 +372,7 @@ def nucleotide(res: Residue, infer: bool = False) -> Optional[ResidueName]:
     if info is not None or not infer:
         return info
     names = {a.name.replace("*", "'") for a in res.atoms}
-    base = infer_base(names) if {"C1'", "C4'", "O4'"} <= names else None
+    base = infer_base(names, res.name) if {"C1'", "C4'", "O4'"} <= names else None
     if base is None:
         return None
     return ResidueName(base, "rna" if "O2'" in names else "dna", "D", "")
@@ -481,6 +586,11 @@ def read_pdb(source) -> Structure:
         if slot:  # the model check passed on fewer models than it has slots: say so, not 'not a PDB file'
             raise PDBError(f"an empty slot of a model check ({slot}): no model, no atoms")
         raise PDBError("no ATOM/HETATM records found (not a PDB file, or the path does not exist)")
+    standard_named = _read_component_names(s)
+    if standard_named:
+        s.notes.append(f"{len(standard_named)} 0DA / 0DT residue(s) use standard atom names where their CCD "
+                       "components have their own (0DA: N9A, C8A ... HN61, HN62; 0DT: C5M): read as the same "
+                       "atoms, written with the components' names: " + _listing(standard_named))
     if repaired:
         s.notes.append(f"Repaired {repaired} ChimeraX-damaged ATOM/HETATM lines (residue name fused with "
                        f"the chain id and a colon, e.g. 'GC:' -> residue G, chain C)")
@@ -525,10 +635,12 @@ def _id_columns(res: Residue) -> str:
 
 
 def _atom_line(atom: Atom, res: Residue, serial: int, record: Optional[str] = None) -> str:
-    """ATOM/HETATM line (or, with ``record`` 'ANISOU', the ANISOU line of the atom)."""
+    """ATOM/HETATM line (or, with ``record`` 'ANISOU', the ANISOU line of the atom); the atoms of a 0DA / 0DT
+    under their CCD component's names (:func:`component_atom_name`)."""
     element = _element(atom, res.name)
+    name = component_atom_name(res.name, atom.name)
     body = atom.tail.ljust(49)[:49] if record is None else atom.anisou.ljust(53)[:49]
-    return (f"{record or atom.record:<6}{serial % 100000:>5} {_atom_name_field(atom.name, element)}"
+    return (f"{record or atom.record:<6}{serial % 100000:>5} {_atom_name_field(name, element)}"
             f"{(atom.alt or ' ')[:1]}{_id_columns(res)}{body}{element:>2}{atom.charge:<2}")
 
 
@@ -540,7 +652,8 @@ def _seqres_insert_index(header: List[str]) -> int:
 
 
 def write_pdb(structure: Structure, strip_conect: bool = True, seqres: bool = False) -> str:
-    """Format a structure: serials renumbered (TER takes one), TER after every segment, END.
+    """Format a structure: serials renumbered (TER takes one), TER after every segment, END; the atoms of a
+    residue named 0DA / 0DT under their CCD component's names (N9A ..., C5M: ``CCD_ATOM_NAMES``).
 
     ``strip_conect``: CONECT records should be stripped until final deposition processing; when kept they
     are remapped to the new serials.  ``seqres``: (re)generate the SEQRES records in the header.
@@ -593,6 +706,322 @@ def _remap_conect(lines: Sequence[str], serial_map: Dict[int, List[int]]) -> Lis
         if len(new) > 1:
             out.append("CONECT" + "".join(f"{i % 100000:>5}" for i in new))
     return out
+
+
+# --- LINK records -------------------------------------------------------------------------------------
+
+class LinkAtom(NamedTuple):
+    """One end of a LINK record."""
+    name: str  # atom name
+    resname: str
+    chain: str
+    resseq: int
+    icode: str = ""
+
+    def matches(self, res: Residue) -> bool:
+        return (res.chain == self.chain and res.resseq == self.resseq and (res.icode or "") == self.icode
+                and res.name.strip() == self.resname)
+
+
+class LinkRecord(NamedTuple):
+    """A covalent bond between residues that the polymer order does not imply (e.g. a 3'-3' phosphate).
+
+    ``sym1`` / ``sym2``: the symmetry operators of the two atoms (columns 60-65 / 67-72), '' for the identity
+    (1555, or blank as most programs write it), so that a record of the model compares equal to
+    ``LinkRecord(first, second, length)``."""
+    first: LinkAtom
+    second: LinkAtom
+    length: Optional[float] = None
+    sym1: str = ""
+    sym2: str = ""
+
+    @property
+    def mate(self) -> bool:
+        """Whether the record bonds an atom of the model to one of a copy made by the crystal symmetry (the two
+        operators differ): the second atom of that name in the model is not the one bonded, so the record is no
+        bond of the model."""
+        return self.sym1 != self.sym2
+
+
+def link_line(first: LinkAtom, second: LinkAtom, length: Optional[float] = None) -> str:
+    """A LINK record in the PDB 3.3 columns: atom names aligned as in ATOM records (13-16 / 43-46), residue
+    names in 18-20 / 48-50 (four-character names reach 21 / 51), symmetry 1555 and the length (74-78)."""
+    def part(a: LinkAtom) -> str:
+        element = _element(Atom("ATOM", a.name, "", ""), a.resname)
+        resseq = a.resseq % 10000 if a.resseq > 9999 else a.resseq
+        return (f"{_atom_name_field(a.name, element)} {_residue_field(a.resname)}{(a.chain or ' ')[:1]}"
+                f"{resseq:>4}{(a.icode or ' ')[:1]}")
+    tail = f"  {'1555':>6} {'1555':>6} {length:5.2f}" if length is not None else ""
+    return f"LINK        {part(first)}{' ' * 15}{part(second)}{tail}".rstrip()
+
+
+def _link_atom(line: str, start: int) -> Optional[LinkAtom]:
+    """The atom of a LINK record whose name field starts at column ``start`` + 1 (12 or 42)."""
+    name = line[start:start + 4].strip()
+    resname = line[start + 5:start + 9].strip()
+    chain = line[start + 9:start + 10].strip()
+    try:
+        resseq = int(line[start + 10:start + 14])
+    except ValueError:
+        return None
+    if not name or not resname:
+        return None
+    return LinkAtom(name.replace("*", "'"), resname, chain, resseq, line[start + 14:start + 15].strip())
+
+
+def _is_link(line: str) -> bool:
+    return line[:6].strip().upper() == "LINK"
+
+
+def _symmetry(text: str) -> str:
+    """A symmetry operator of a LINK record: '' for the identity (1555 or blank)."""
+    text = text.strip()
+    return "" if text in ("", "1555") else text
+
+
+def _link_record(line: str) -> Optional[LinkRecord]:
+    """The record of a LINK line; None when an atom field cannot be read."""
+    line = line.ljust(80)
+    first, second = _link_atom(line, 12), _link_atom(line, 42)
+    if first is None or second is None:
+        return None
+    try:
+        length: Optional[float] = float(line[73:78])
+    except ValueError:
+        length = None
+    return LinkRecord(first, second, length, _symmetry(line[59:65]), _symmetry(line[66:72]))
+
+
+def link_records(structure: Structure) -> List[LinkRecord]:
+    """The LINK records of the header, then those that :func:`read_pdb` kept in the trailer (malformed ones
+    skipped), each with its symmetry operators (a record to a symmetry mate, :attr:`LinkRecord.mate`, is no bond
+    of the model).
+
+    The PDB format puts LINK records in the header, but a record a script appended after the coordinates
+    names the same bond: read where it is, it is a bond of the model check and follows the residues
+    (:func:`follow_links`) like one in the header, instead of going stale unnoticed in the trailer, which the
+    tools write back as it was."""
+    lines = [line for line in structure.header + structure.trailer if _is_link(line)]
+    return [record for record in map(_link_record, lines) if record is not None]
+
+
+# Old spellings of atom names (PDB format 2: O1P ..., the thymine methyl C5M), read as the new ones when a LINK
+# record is matched with the atoms of a model, as the model check matches them
+_LINK_NAME_ALIASES = {"O1P": "OP1", "O2P": "OP2", "O3P": "OP3", "C5M": "C7"}
+
+
+def _link_name(name: str, resname: str = "") -> str:
+    """The name an atom of residue ``resname`` is matched by: standard (N9A of 0DA is N9), new spellings."""
+    name = standard_atom_name(resname, name.strip().replace("*", "'"))
+    return _LINK_NAME_ALIASES.get(name, name)
+
+
+def _link_text(record: LinkRecord) -> str:
+    """'A:3 G O3' - A:4 PO2 P' for notes."""
+    return " - ".join(f"{a.chain or '_'}:{a.resseq}{a.icode} {a.resname} {a.name}"
+                      for a in (record.first, record.second))
+
+
+class _FollowedLink(NamedTuple):
+    """A LINK line as read and the residues and atom names its two ends name (None: an end names no atom)."""
+    line: str
+    record: Optional[LinkRecord]  # None: an atom field cannot be read (no record: left alone)
+    ends: Optional[Tuple[Tuple[Residue, str], Tuple[Residue, str]]]
+
+
+def _residue_index(structure: Structure) -> Dict[Tuple[str, int, str], List[Residue]]:
+    index: Dict[Tuple[str, int, str], List[Residue]] = {}
+    for res in structure.residues():
+        index.setdefault((res.chain, res.resseq, res.icode or ""), []).append(res)
+    return index
+
+
+def _find_link_atom(index: Dict[Tuple[str, int, str], List[Residue]], end: LinkAtom
+                    ) -> Optional[Tuple[Residue, str]]:
+    """The residue and atom name an end of a LINK record names: the first residue in file order with its chain,
+    number, insertion code and name (:meth:`LinkAtom.matches`) that has the atom, as the model check bonds it."""
+    name = _link_name(end.name, end.resname)
+    for res in index.get((end.chain, end.resseq, end.icode or ""), ()):
+        if end.matches(res) and any(_link_name(a.name, res.name) == name for a in res.atoms):
+            return res, name
+    return None
+
+
+def _has_link_atom(present: Dict[int, Residue], end: Tuple[Residue, str]) -> bool:
+    res, name = end
+    return id(res) in present and any(_link_name(a.name, res.name) == name for a in res.atoms)
+
+
+def _link_atom_name(end: LinkAtom, res: Residue) -> str:
+    """The atom name of a LINK record end for its residue as it is now: the record's own spelling, unless the
+    residue's new name is a CCD component that spells the atom another way than the old one did (N7 of a DA
+    renamed 0DA is N7A, N7A of a 0DA renamed LDA is N7)."""
+    std = standard_atom_name(end.resname, end.name)
+    new = component_atom_name(res.name, std)
+    return end.name if new == component_atom_name(end.resname, std) else new
+
+
+def _link_now(link: _FollowedLink) -> LinkRecord:
+    """The record of a followed LINK line for its residues as they are now."""
+    first, second = (LinkAtom(_link_atom_name(end, res), res.name.strip(), res.chain, res.resseq, res.icode or "")
+                     for end, (res, _name) in zip((link.record.first, link.record.second), link.ends))
+    return link.record._replace(first=first, second=second)
+
+
+def _relinked(link: _FollowedLink) -> str:
+    """The LINK line with the residue columns of each end (18-27 / 48-57) written for its residue as it is now.
+    An end whose residue kept its name, chain id, number and insertion code keeps its columns, and so do the
+    atom names (but one a renamed residue's CCD component spells its own way: :func:`_link_atom_name`),
+    alternate locations, symmetry operators and the length: the line is rewritten in place."""
+    line, changed = link.line, False
+    for start, end, (res, _name) in zip((17, 47), (link.record.first, link.record.second), link.ends):
+        if (res.name.strip(), res.chain, res.resseq, res.icode or "") != (end.resname, end.chain, end.resseq,
+                                                                          end.icode):
+            line = line.ljust(start + 10)
+            line, changed = line[:start] + _id_columns(res) + line[start + 10:], True
+            name = _link_atom_name(end, res)
+            if name != end.name:
+                field = _atom_name_field(name, _element(Atom("ATOM", name, "", ""), res.name))
+                line = line[:start - 5] + field + line[start - 1:]
+    return line.rstrip() if changed else line
+
+
+class _LinkFollower:
+    """The LINK records of a structure tied to the residues and atoms they name (:func:`follow_links`).
+
+    Every record is resolved once, before the operations run: an operation in between can leave two residues
+    with one chain id, number and name (combining chains before renumbering), and a record resolved again
+    after it would follow the wrong residue."""
+
+    def __init__(self, structure: Structure):
+        index = _residue_index(structure)
+        self.links: List[_FollowedLink] = []
+        for line in structure.header + structure.trailer:
+            if not _is_link(line):
+                continue
+            record = _link_record(line)
+            ends = None
+            if record is not None:
+                first, second = _find_link_atom(index, record.first), _find_link_atom(index, record.second)
+                ends = (first, second) if first and second else None
+            self.links.append(_FollowedLink(line, record, ends))
+
+    def partners(self, structure: Structure, res: Residue, names: Sequence[str]) -> List[Residue]:
+        """The residues that LINK records bond the atoms ``names`` of ``res`` to (both atoms still there; a
+        record to a symmetry mate bonds nothing of the model)."""
+        wanted = {_link_name(n) for n in names}
+        present = {id(r): r for r in structure.residues()}
+        out = []
+        for link in self.links:
+            if (link.ends is None or link.record.mate
+                    or not all(_has_link_atom(present, end) for end in link.ends)):
+                continue
+            (first, first_atom), (second, second_atom) = link.ends
+            if first is res and first_atom in wanted:
+                out.append(second)
+            if second is res and second_atom in wanted:
+                out.append(first)
+        return out
+
+    def rewrite(self, structure: Structure) -> List[str]:
+        """Rewrite the LINK lines of the header and trailer, in place, for the residues as they are now; drop
+        those whose residue or atom is gone.  Returns the notes."""
+        present = {id(r): r for r in structure.residues()}
+        queue: Dict[str, List[_FollowedLink]] = {}
+        for link in self.links:
+            queue.setdefault(link.line, []).append(link)
+        rewritten: List[str] = []
+        dropped: List[str] = []
+        unmatched: List[str] = []
+        followed: List[_FollowedLink] = []
+
+        def follow(lines: List[str]) -> List[str]:
+            out = []
+            for line in lines:
+                todo = queue.get(line)
+                link = todo.pop(0) if todo else None
+                if link is None or link.record is None:  # no LINK line read here, or no record
+                    out.append(line)
+                elif link.ends is None:
+                    unmatched.append(_link_text(link.record))
+                    out.append(line)
+                elif not all(_has_link_atom(present, end) for end in link.ends):
+                    dropped.append(_link_text(link.record))
+                else:
+                    new = _relinked(link)
+                    if new != line:
+                        rewritten.append(_link_text(_link_now(link)))
+                    followed.append(link)
+                    out.append(new)
+            return out
+
+        structure.header[:] = follow(structure.header)
+        structure.trailer[:] = follow(structure.trailer)
+        index = _residue_index(structure)
+        ambiguous = []
+        for link in followed:  # what a reader of the new names finds: the first residue that fits
+            now = _link_now(link)
+            for (res, _name), end in zip(link.ends, (now.first, now.second)):
+                found = _find_link_atom(index, end)
+                if found is None or found[0] is not res:
+                    ambiguous.append(f"{res.label} {end.name}")
+        notes = []
+        if rewritten:
+            notes.append(f"Rewrote {len(rewritten)} LINK record(s) for the new residue names, numbers or chain ids: "
+                         + _listing(rewritten))
+        if dropped:
+            notes.append(f"Dropped {len(dropped)} LINK record(s) whose residue or atom was removed: "
+                         + _listing(dropped))
+        if unmatched:
+            notes.append(f"Kept {len(unmatched)} LINK record(s) as they were: they name no atom of the model (by "
+                         "chain, residue number, insertion code, residue name and atom name), so they cannot follow "
+                         "the residues: " + _listing(unmatched))
+        if ambiguous:
+            notes.append(f"WARNING: {len(ambiguous)} LINK record end(s) now name two residues: an earlier residue "
+                         "has the same chain id, number, insertion code and name, and readers bond that one "
+                         "(renumber the residues): " + _listing(ambiguous))
+        return notes
+
+
+_FOLLOWERS: Dict[int, _LinkFollower] = {}  # id(structure) -> the follower of the operations running on it
+
+
+@contextlib.contextmanager
+def follow_links(structure: Structure) -> Iterator[List[str]]:
+    """Keep the LINK records of ``structure`` on the residues and atoms they name while the block renames,
+    renumbers, re-chains or removes residues; yields the list that receives the notes when the block ends.
+
+    Each record is resolved to its residues and atoms before the block runs (both ends by chain, residue number,
+    insertion code and name, the atom by name; the first residue that has it, as the model check bonds them).
+    Afterwards the residue columns of the records are rewritten, in place, from the residues' names, chain ids,
+    numbers and insertion codes; everything else of a record stays as it was (atom names, symmetry operators,
+    the length), and so does a record whose residues kept their ids.  A record whose residue or atom no longer
+    exists is dropped, one that named no atom of the model stays as it was; each with a note.  Every
+    operation of this module that edits residues follows the records itself; inside a block (:func:`clean`,
+    :func:`to_lrna`) they leave that to the block, which resolved the records before the first of them ran.
+    Nothing happens to a structure without LINK records, or when the block raises."""
+    notes: List[str] = []
+    key = id(structure)
+    if key in _FOLLOWERS or not any(_is_link(line) for line in structure.header + structure.trailer):
+        yield notes  # an outer block follows the records, or there are none
+        return
+    follower = _FOLLOWERS[key] = _LinkFollower(structure)
+    try:
+        yield notes
+    finally:
+        del _FOLLOWERS[key]
+    notes += follower.rewrite(structure)
+
+
+def _follows_links(operation):
+    """Decorator of the operations ``(structure, ...) -> notes`` that edit residues: the LINK records follow
+    (:func:`follow_links`), their notes after the operation's."""
+    @functools.wraps(operation)
+    def run(structure: Structure, *args, **kwargs) -> List[str]:
+        with follow_links(structure) as link_notes:
+            notes = operation(structure, *args, **kwargs)
+        return notes + link_notes
+    return run
 
 
 # --- chirality ----------------------------------------------------------------------------------------
@@ -694,7 +1123,7 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
     """Set ``Residue.chirality`` of every nucleotide: override ranges (forced L) > detection > name."""
     ranges = parse_ranges(l_ranges)
     notes: List[str] = []
-    l_in_d_names, d_in_l_names, undetermined, forced_d, l_dna = [], [], [], [], []
+    l_in_d_names, d_in_l_names, undetermined, forced_d, l_dna, d_in_l_dna = [], [], [], [], [], []
     counts = Counter()
     in_range = 0
     for res in structure.residues():
@@ -712,10 +1141,10 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
             res.chirality = call or nt.chirality
             if detect and call is None:
                 undetermined.append(res.label)
-            elif call == "L" and nt.chirality == "D":
+            elif call == "L" and nt.chirality == "D" and nt.sugar != "dna":  # L-DNA: the note below
                 l_in_d_names.append(res)
-            elif call == "D" and nt.chirality == "L":
-                d_in_l_names.append(f"{res.label} ({_volumes_text(vols)})")
+            elif call == "D" and nt.chirality == "L":  # a scheme renames RNA, not DNA
+                (d_in_l_dna if nt.sugar == "dna" else d_in_l_names).append(f"{res.label} ({_volumes_text(vols)})")
         if nt.sugar == "dna" and res.chirality == "L":
             l_dna.append(res.label)
         counts[res.chirality] += 1
@@ -735,8 +1164,11 @@ def assign_chirality(structure: Structure, detect: bool = True, l_ranges=None) -
                      "name for "
                      + _listing(undetermined))
     if l_dna:
-        notes.append("L-DNA residues have no name in the supported schemes and keep their names: "
-                     + _listing(l_dna))
+        notes.append("L-DNA residues keep their names (the PDB tools rename RNA only; the CCD names L-DNA 0DA, "
+                     "0DC, 0DG, 0DT): " + _listing(l_dna))
+    if d_in_l_dna:
+        notes.append("WARNING: L-DNA names on residues with D sugar geometry (the PDB tools keep DNA names): "
+                     + _listing(d_in_l_dna))
     if ranges and not in_range:
         notes.append("WARNING: the L ranges match no nucleotide")
     return notes
@@ -878,61 +1310,149 @@ def hands_table(rows: Sequence[ResidueHand]) -> str:
 
 # --- residue names ------------------------------------------------------------------------------------
 
-def _terminals(seg: Sequence[Residue]) -> Dict[int, str]:
-    """id(residue) -> terminal state over the nucleotides of a segment."""
+def _phosphate_only(res: Residue) -> bool:
+    """A residue of phosphate atoms only (P, OP1 ...): a lone 5'-phosphate, a chimera's PO2 bridge."""
+    return bool(res.atoms) and all(a.name.replace("*", "'") in PHOSPHATE_5P for a in res.atoms)
+
+
+def _linked_3prime(structure: Structure, links: Optional[_LinkFollower], res: Residue) -> bool:
+    """Whether LINK records bond the O3' of ``res`` to another residue (water and ions aside): no 3' end, but a
+    junction such as a chimera's 3'-3' phosphate."""
+    return links is not None and any(r is not res and not _is_solvent(r)
+                                     for r in links.partners(structure, res, ("O3'",)))
+
+
+def _linked_5prime(structure: Structure, links: Optional[_LinkFollower], res: Residue) -> bool:
+    """Whether LINK records bond the P or O5' of ``res`` to another residue than its own 5'-phosphate (a residue
+    of phosphate atoms whose P is bonded to nothing else): no 5' end, but a junction such as a chimera's 5'-5'
+    phosphate or the O3' of a strand before it.  Water and ions do not count, nor do records that name a
+    phosphate oxygen (a metal's coordination)."""
+    if links is None:
+        return False
+    for other in links.partners(structure, res, ("P", "O5'")):
+        if other is res or _is_solvent(other):
+            continue
+        if _phosphate_only(other) and not any(r is not res and r is not other and not _is_solvent(r)
+                                              for r in links.partners(structure, other, ("P",))):
+            continue  # its own 5'-phosphate, modelled as a residue of its own
+        return True
+    return False
+
+
+def _ends_state(five: bool, three: bool) -> str:
+    return "N" if five and three else "5" if five else "3" if three else ""
+
+
+def _terminals(seg: Sequence[Residue], structure: Optional[Structure] = None,
+               links: Optional[_LinkFollower] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """(id(residue) -> terminal state, id(residue) -> the state of the segment ends alone) over the nucleotides
+    of a segment.  The first nucleotide is a 5' end and the last a 3' end unless LINK records (``links``, the
+    follower of ``structure``) bond that end to another residue: then the end is a junction and gets no terminal
+    state; a single nucleotide is 'N' with both ends free."""
     nts = [r for r in seg if _nucleotide(r)]
-    if len(nts) == 1:
-        return {id(nts[0]): "N"}
     out = {id(r): "" for r in nts}
-    if nts:
-        out[id(nts[0])], out[id(nts[-1])] = "5", "3"
-    return out
+    plain = dict(out)
+    if not nts:
+        return out, plain
+    first, last = nts[0], nts[-1]
+    five = not _linked_5prime(structure, links, first)
+    three = not _linked_3prime(structure, links, last)
+    if len(nts) == 1:
+        out[id(first)], plain[id(first)] = _ends_state(five, three), "N"
+    else:
+        out[id(first)], out[id(last)] = _ends_state(five, False), _ends_state(False, three)
+        plain[id(first)], plain[id(last)] = "5", "3"
+    return out, plain
 
 
-def convert_names(structure: Structure, scheme: str, only=None, terminals: bool = True) -> List[str]:
+@_follows_links
+def convert_names(structure: Structure, scheme: str, only=None, terminals: bool = True,
+                  dna: bool = False) -> List[str]:
     """Rename RNA residues to ``scheme``; ``only`` (ranges) limits the renaming to those residues.
 
-    ``terminals=False`` writes chain ends with the internal names (LA rather than LA5/LA3, A rather than
-    A5), for leap set-ups whose libraries map terminal residues with addPdbResMap."""
+    Terminal variants go to the free ends of a TER segment's nucleotides: an end that a LINK record bonds to
+    another residue (the O3' / O5' of a chimera's 3'-3' / 5'-5' phosphate, the P of a strand bonded to the O3'
+    of the one before it; not its own 5'-phosphate modelled as a residue, water or ions) is a junction and keeps
+    the internal name, as the structure builder names it.  ``terminals=False`` writes chain ends with the
+    internal names (LA rather than LA5/LA3, A rather than A5), for leap set-ups whose libraries map terminal
+    residues with addPdbResMap.  ``dna``: rename the DNA residues (A, C, G, T; both hands) too, as
+    :func:`scheme_name` names them (terminal variants in the amber scheme only); by default they keep their
+    names (the PDB preparation renames RNA only)."""
     if scheme not in SCHEMES:
         raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
     ranges = parse_ranges(only)
+    links = _FOLLOWERS.get(id(structure))  # the LINK records (the decorator follows them through this)
     changes = Counter()
-    term_mismatch, phosphate, single_l, kept_phosphate, plain_l = [], [], [], [], []
+    term_mismatch, phosphate, single_l, kept_phosphate, plain_l, l_dna = [], [], [], [], [], []
+    junctions, bonded_o5 = [], []
+    kept_dna = seen = 0  # DNA residues the scheme leaves alone; nucleotides it names
     for seg in structure.segments:
-        terms = _terminals(seg)
+        terms, plain = _terminals(seg, structure, links)
         for res in seg:
             nt = _nucleotide(res)
-            if nt is None or nt.sugar != "rna" or (ranges and not _in_ranges(res, ranges)):
+            if nt is None or (ranges and not _in_ranges(res, ranges)):
                 continue
-            term = seg_term = terms[id(res)] if terminals else ""
+            is_dna = nt.sugar == "dna"
+            if is_dna and not (dna and nt.base in "ACGT"):
+                kept_dna += 1
+                continue
+            seen += 1
             chir = res.chirality or nt.chirality
-            if scheme == "ccd" and chir == "L" and term in ("5", "N") and any(a.name == "P" for a in res.atoms):
-                # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself
-                term = ""  # (a single residue with a 5'-phosphate and a 3'-OH is the component, too)
+            has_p = any(a.name == "P" for a in res.atoms)
+            # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself (a single
+            # residue with a 5'-phosphate and a 3'-OH is the component, too)
+            component = not is_dna and scheme == "ccd" and chir == "L" and has_p
+            term = seg_term = terms[id(res)] if terminals else ""
+            linked = plain[id(res)] != terms[id(res)]  # LINK records make a junction of a segment end
+            if component and term in ("5", "N"):
+                term = ""
                 kept_phosphate.append(res.label)
-            new = scheme_name(nt.base, chir, term, scheme)
-            single_l_unit = seg_term == "N" and chir == "L" and nt.terminal == "5"  # LA5 stands in for LAN
-            if terminals and nt.terminal and nt.terminal != seg_term and not single_l_unit:
+            new = scheme_name(nt.base, chir, term, scheme, nt.sugar)
+            free = "" if component and plain[id(res)] in ("5", "N") else plain[id(res)]  # (the end as if free)
+            # LA5 stands in for LAN (L-DNA has its own LDAN)
+            single_l_unit = not is_dna and seg_term == "N" and chir == "L" and nt.terminal == "5"
+            if terminals and nt.terminal and nt.terminal != seg_term and not single_l_unit and not linked:
                 term_mismatch.append(res.label)  # the old name shows the misplaced terminal
             if new != res.name:
+                old = res.name.strip().upper()
                 changes[(res.name, new)] += 1
                 res.name = new
-            if scheme == "amber" and terms[id(res)] in ("5", "N") and any(a.name == "P" for a in res.atoms):
+                if old in _CCD_STANDARD_NAMES:  # (atoms given the component's names in memory: standard again)
+                    for a in res.atoms:
+                        a.name = standard_atom_name(old, a.name)
+            if terminals and linked and scheme_name(nt.base, chir, free, scheme, nt.sugar) != new:
+                junctions.append(res.label)  # a free end would have another name
+            if (scheme == "amber" and plain[id(res)] in ("5", "N") and terms[id(res)] not in ("5", "N")
+                    and not has_p):
+                bonded_o5.append(res.label)
+            if scheme == "amber" and terms[id(res)] in ("5", "N") and has_p:
                 phosphate.append(res.label)
-            if scheme == "amber" and term == "N" and chir == "L":
+            if scheme == "amber" and term == "N" and chir == "L" and not is_dna:
                 single_l.append(res.label)
             if scheme == "standard" and chir == "L":
                 plain_l.append(res)
+            if scheme == "amber" and chir == "L" and is_dna:
+                l_dna.append(res)
     notes = []
     if changes:
         summary = ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(changes.items(), key=lambda kv: -kv[1]))
         notes.append(f"Renamed {sum(changes.values())} residues to the {scheme} scheme: {summary}")
-    else:
+    elif seen or not kept_dna:
         notes.append(f"Residue names already follow the {scheme} scheme")
+    if kept_dna:
+        notes.append(f"{kept_dna} DNA residue(s) keep their names: " + (
+            "no name in the scheme for their base" if dna else
+            "the PDB tools rename RNA only (the structure builder writes DNA in every scheme)"))
     if term_mismatch:
         notes.append("Terminal names that are not at a segment end (missing TER?): "
                      + _listing(term_mismatch))
+    if junctions:
+        notes.append("Segment ends that LINK records bond to another residue (a junction such as a chimera's 3'-3' "
+                     "/ 5'-5' phosphate, or a strand bonded on) have internal names: " + _listing(junctions))
+    if bonded_o5:
+        notes.append("WARNING: the residues bonded through O5' by LINK records (" + _listing(bonded_o5) + ") have "
+                     "internal names but no 5'-phosphate of their own: their units must not add one (tleap adds "
+                     "the atoms a unit has and the file lacks)")
     if phosphate:
         notes.append("WARNING: 5'-terminal residues carry P/OP1/OP2, which the Amber 5' units do not have "
                      "(tleap cannot type them; remove them with --strip-5p or cap the end): " + _listing(phosphate))
@@ -942,6 +1462,10 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     if single_l:
         notes.append("nucleic12_LRNA.lib has no unit for a single-residue L segment; wrote the 5' unit "
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
+    if l_dna:
+        notes.append(f"L-DNA: {len(l_dna)} residue(s) ({ranges_text(l_dna)}) have MDATK's Amber-style names LDA, "
+                     "LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no L-DNA library, so "
+                     "tleap needs residue units of these names")
     if plain_l:
         notes.append(f"WARNING: the standard scheme gives {len(plain_l)} L residue(s) plain D names "
                      f"({ranges_text(plain_l)}): the names no longer record the hand. Use this copy only for "
@@ -953,12 +1477,14 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
 def to_lrna(source, ranges, scheme: str = "amber", strip_conect: bool = True,
             terminals: bool = True) -> "CleanResult":
     """to_lrna.sh replacement: force L for ``ranges`` and rename only those residues (terminals kept unless
-    ``terminals`` is False, which reproduces to_lrna.sh's plain LG/LA/LC/LU)."""
+    ``terminals`` is False, which reproduces to_lrna.sh's plain LG/LA/LC/LU).  LINK records follow the renamed
+    residues (:func:`follow_links`)."""
     s = read_pdb(source)
     notes = list(s.notes)
-    notes += assign_chirality(s, detect=True, l_ranges=ranges)
-    notes += convert_names(s, scheme, only=ranges, terminals=terminals)
-    return CleanResult(write_pdb(s, strip_conect=strip_conect), notes, None, s)
+    with follow_links(s) as link_notes:
+        notes += assign_chirality(s, detect=True, l_ranges=ranges)
+        notes += convert_names(s, scheme, only=ranges, terminals=terminals)
+    return CleanResult(write_pdb(s, strip_conect=strip_conect), notes + link_notes, None, s)
 
 
 def set_records(structure: Structure, policy: str) -> List[str]:
@@ -1007,6 +1533,7 @@ def _polymer_segments(structure: Structure) -> List[List[Residue]]:
     return [seg for seg in structure.segments if not all(_is_solvent(r) for r in seg)]
 
 
+@_follows_links
 def restore_chains(structure: Structure, reference=None, chain_ids: Optional[Sequence[str]] = None,
                    copy_numbers: bool = False) -> List[str]:
     """Restore chain ids (cpptraj output has none).
@@ -1062,6 +1589,7 @@ def _free_ids(structure: Structure) -> Iterator[str]:
     raise PDBError("no unused single-character chain id left")
 
 
+@_follows_links
 def split_chains(structure: Structure, at=None) -> List[str]:
     """Give new unused chain ids to every further TER segment of a chain (``at`` None), or split chains
     at residues (``at``: e.g. ``"C:45"`` - residue 45 and the rest of chain C get a new id and a TER)."""
@@ -1103,6 +1631,7 @@ def split_chains(structure: Structure, at=None) -> List[str]:
     return notes
 
 
+@_follows_links
 def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[str] = None) -> List[str]:
     """Relabel ``chains`` as one chain (``into`` or the first listed); TER segments are kept."""
     chains = [c.strip() for c in chains]
@@ -1127,6 +1656,7 @@ def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[s
     return notes
 
 
+@_follows_links
 def order_chains(structure: Structure, order: Optional[Sequence[str]] = None) -> List[str]:
     """Reorder segments by chain: listed chains first in ``order`` (alphabetical when None); water and
     ion segments stay at the end in their original order."""
@@ -1157,6 +1687,7 @@ def _drop_empty(structure: Structure) -> None:
     structure.segments = [seg for seg in ([r for r in seg if r.atoms] for seg in structure.segments) if seg]
 
 
+@_follows_links
 def strip_hydrogens(structure: Structure) -> List[str]:
     """Remove hydrogens (element H / D, else by name: :func:`is_hydrogen`); tleap and most fitting programs
     rebuild or ignore them."""
@@ -1169,6 +1700,7 @@ def strip_hydrogens(structure: Structure) -> List[str]:
     return [f"Removed {n} hydrogen atoms"] if n else []
 
 
+@_follows_links
 def drop_virtual_residues(structure: Structure) -> List[str]:
     """Remove Rosetta's virtual residues (``VIRTUAL_RESIDUES``: VRT, XXX)."""
     dropped = []
@@ -1184,17 +1716,40 @@ def drop_virtual_residues(structure: Structure) -> List[str]:
             + _listing(dropped)]
 
 
+@_follows_links
 def strip_5prime_phosphates(structure: Structure) -> List[str]:
     """Remove P/OP1/OP2/OP3 from the first nucleotide of every TER segment (Amber's 5'-terminal units
-    have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5')."""
-    changed, skipped, emptied = [], [], []
+    have a 5'-OH).  A residue that has hydrogens gets HO5' where the phosphorus was (0.96 Å from O5').
+
+    A phosphate whose P a LINK record bonds to a residue other than the nucleotide it belongs to (for a
+    phosphate modelled as its own residue: the nucleotide after it) stays: it is a link, not a 5' end - the
+    5'-5' phosphate of a chimera (a PO2 residue bonded to the O5' of two strands), or the phosphate of a strand
+    whose P a LINK record bonds to the O3' of another.  Records that name a phosphate oxygen do not count: those
+    of deposited structures give a metal ion's coordination."""
+    links = _FOLLOWERS.get(id(structure))  # the LINK records (the decorator follows them through this)
+
+    def junction(seg: List[Residue], res: Residue) -> bool:
+        """Whether LINK records bond the P of ``res`` to a residue other than its own nucleotide."""
+        if links is None:
+            return False
+        own: Optional[Residue] = res
+        if _nucleotide(res) is None:  # a phosphate residue: its nucleotide follows it
+            k = next(k for k, r in enumerate(seg) if r is res)
+            own = next((r for r in seg[k + 1:] if _nucleotide(r)), None)
+        return any(r is not res and r is not own and not _is_solvent(r)
+                   for r in links.partners(structure, res, ("P",)))
+
+    changed, skipped, emptied, linked = [], [], [], []
     for seg in structure.segments:
         res = next((r for r in seg if not _is_solvent(r)), None)
-        while res is not None and res.atoms and all(a.name.replace("*", "'") in PHOSPHATE_5P for a in res.atoms):
+        while res is not None and _phosphate_only(res) and not junction(seg, res):
             emptied.append(res.label)  # a lone 5'-phosphate modelled as its own residue
             seg.remove(res)
             res = next((r for r in seg if not _is_solvent(r)), None)
         if res is None:
+            continue
+        if junction(seg, res):
+            linked.append(res.label)  # the strand's 5' end is bonded on: no 5' end to strip
             continue
         if _nucleotide(res) is None:
             skipped.append(res.label)  # the segment starts with something else: its phosphates stay
@@ -1221,9 +1776,13 @@ def strip_5prime_phosphates(structure: Structure) -> List[str]:
     if skipped:
         notes.append("5' phosphates kept where a segment does not start with a recognised nucleotide: "
                      + _listing(skipped))
+    if linked:
+        notes.append("Phosphates kept where LINK records bond them to another residue (a link such as the 5'-5' "
+                     "phosphate of a chimera, not a 5' end): " + _listing(linked))
     return notes
 
 
+@_follows_links
 def renumber_residues(structure: Structure, start: int = 1, per_chain: bool = False,
                       keep_gaps: bool = False) -> List[str]:
     """Renumber residues in file order, continuously across chains (each chain continues after the last
@@ -1261,22 +1820,61 @@ def renumber_residues(structure: Structure, start: int = 1, per_chain: bool = Fa
 
 
 def _sequence_chains(structure: Structure) -> Dict[str, List[Residue]]:
-    """Chain -> residues of the polymer segments (water and ions excluded), in order."""
+    """Chain -> residues of the polymer segments (water and ions excluded), in order.  A residue made only of
+    phosphate atoms (a chimera's PO2 bridge, a lone 5'-phosphate) is no residue of the sequence either: it is
+    bonded through LINK records or belongs to its nucleotide, and :func:`summary` lists it among the other
+    residues (modified nucleotides, which have a sugar, stay)."""
     chains: Dict[str, List[Residue]] = {}
     for seg in _polymer_segments(structure):
         if not any(_is_polymer(r) for r in seg):
             continue  # ligand-only segment
         for res in seg:
-            if not _is_solvent(res):
+            if not _is_solvent(res) and (_is_polymer(res) or not _phosphate_only(res)):
                 chains.setdefault(res.chain, []).append(res)
     return chains
 
 
-def seqres_records(structure: Structure) -> List[str]:
-    """SEQRES records (13 residue names per line) of the modelled residues, names as written."""
-    out = []
+def _seqres_names(structure: Structure) -> Tuple[Dict[str, List[str]], List[str]]:
+    """(chain -> the residue names of its SEQRES records, notes).  SEQRES names have three characters (columns
+    20-22, 24-26 ...): a longer nucleotide name, such as MDATK's Amber-style L-DNA LDA5 / LDA3 / LDAN, is written
+    as its CCD component (0DA), any other one as UNK, each with a note."""
+    out: Dict[str, List[str]] = {}
+    mapped: Counter = Counter()
+    unknown: List[str] = []
     for chain, residues in _sequence_chains(structure).items():
-        names = [r.name for r in residues]
+        names = []
+        for res in residues:
+            name = res.name.strip()
+            nt = _nucleotide(res)
+            # MDATK's Amber-style L-DNA names (LDA ...): in the CCD, LDA and LDT are other compounds
+            amber_l_dna = nt is not None and nt.sugar == "dna" and nt.chirality == "L" and name.upper()[:2] == "LD"
+            if len(name) > 3 or amber_l_dna:
+                info = parse_residue_name(name)
+                if info is not None:
+                    new = scheme_name(info.base, info.chirality, "", "ccd", info.sugar)
+                    mapped[(name, new)] += 1
+                else:
+                    new = "UNK"
+                    unknown.append(res.label)
+                name = new
+            names.append(name)
+        out[chain] = names
+    notes = []
+    if mapped:
+        notes.append("SEQRES names are the CCD's three-character ones: wrote the CCD components of MDATK's Amber-style "
+                     "L-DNA names and of other four-character names "
+                     + ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(mapped.items())))
+    if unknown:
+        notes.append("WARNING: SEQRES names have three characters: wrote UNK for the residue name(s) of "
+                     + _listing(unknown))
+    return out, notes
+
+
+def seqres_records(structure: Structure) -> List[str]:
+    """SEQRES records (13 residue names per line) of the modelled residues, names as written (three characters:
+    MDATK's four-character L-DNA names as their CCD components, see :func:`_seqres_names`)."""
+    out = []
+    for chain, names in _seqres_names(structure)[0].items():
         for k in range(0, len(names), 13):
             body = " ".join(f"{n:>3}" for n in names[k:k + 13])
             out.append(f"SEQRES {k // 13 + 1:>3} {(chain or ' ')[:1]} {len(names):>4}  {body}")
@@ -1341,7 +1939,8 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
     ``assign_chains``) -> chirality (detection unless ``detect_l`` is False; ``l_ranges`` force L and use
     the input residue numbers with the restored chain ids) -> split / combine / ``sort_chains`` (True =
     alphabetical, or an explicit order) -> 5'-phosphate removal (``strip_5p``) -> residue names (``scheme``) ->
-    renumbering -> record policy
+    renumbering -> LINK records rewritten for the residues they named in the input (:func:`follow_links`) ->
+    record policy
     (``records``; None follows the scheme: 'rosetta' for rosetta, 'pdb' for pdb, 'atom' for standard, else
     'keep') -> writing.
 
@@ -1356,33 +1955,35 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         s.header = [line for line in s.header if not line.startswith("REMARK 950")]
         notes.append(f"Dropped {len(stale)} REMARK 950 base-pair annotation lines (they name the input "
                      "residues); annotate the cleaned file again if needed")
-    if drop_virtual:
-        notes += drop_virtual_residues(s)
-    elif scheme == "standard" and any(r.name.strip().upper() in VIRTUAL_RESIDUES for r in s.residues()):
-        notes.append("WARNING: the copy keeps Rosetta virtual residues (VRT / XXX), which a map-model score "
-                     "reads as atoms; --drop-virtual removes them")
-    if strip_h:  # before the 5'-phosphate removal, which puts an HO5' on residues that have hydrogens
-        notes += strip_hydrogens(s)
-    if not s.segments:
-        raise PDBError("no atoms left after removing hydrogens / virtual residues")
-    if chain_reference is not None or chain_ids is not None or assign_chains:
-        notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
-    if detect_l or l_ranges:
-        notes += assign_chirality(s, detect=detect_l, l_ranges=l_ranges)
-    if split_segments:
-        notes += split_chains(s)
-    if split_at:
-        notes += split_chains(s, split_at)
-    if combine:
-        notes += combine_chains(s, combine, combine_into)
-    if sort_chains:
-        notes += order_chains(s, None if sort_chains is True else list(sort_chains))
-    if strip_5p:
-        notes += strip_5prime_phosphates(s)
-    if scheme:
-        notes += convert_names(s, scheme, terminals=terminal_names)
-    if renumber:
-        notes += renumber_residues(s, start, per_chain, keep_gaps)
+    with follow_links(s) as link_notes:  # every record resolved once, against the residues as read
+        if drop_virtual:
+            notes += drop_virtual_residues(s)
+        elif scheme == "standard" and any(r.name.strip().upper() in VIRTUAL_RESIDUES for r in s.residues()):
+            notes.append("WARNING: the copy keeps Rosetta virtual residues (VRT / XXX), which a map-model score "
+                         "reads as atoms; --drop-virtual removes them")
+        if strip_h:  # before the 5'-phosphate removal, which puts an HO5' on residues that have hydrogens
+            notes += strip_hydrogens(s)
+        if not s.segments:
+            raise PDBError("no atoms left after removing hydrogens / virtual residues")
+        if chain_reference is not None or chain_ids is not None or assign_chains:
+            notes += restore_chains(s, chain_reference, chain_ids, copy_numbers)
+        if detect_l or l_ranges:
+            notes += assign_chirality(s, detect=detect_l, l_ranges=l_ranges)
+        if split_segments:
+            notes += split_chains(s)
+        if split_at:
+            notes += split_chains(s, split_at)
+        if combine:
+            notes += combine_chains(s, combine, combine_into)
+        if sort_chains:
+            notes += order_chains(s, None if sort_chains is True else list(sort_chains))
+        if strip_5p:
+            notes += strip_5prime_phosphates(s)
+        if scheme:
+            notes += convert_names(s, scheme, terminals=terminal_names)
+        if renumber:
+            notes += renumber_residues(s, start, per_chain, keep_gaps)
+    notes += link_notes
     policy = records or {"rosetta": "rosetta", "pdb": "pdb", "standard": "atom"}.get(scheme or "", "keep")
     notes += set_records(s, policy)
     if s.conect:
@@ -1393,6 +1994,7 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         notes.append("WARNING: more than 99999 atoms; serial numbers wrap in the PDB columns")
     if seqres:
         notes.append(f"Wrote SEQRES records for {len(_sequence_chains(s))} chain(s)")
+        notes += _seqres_names(s)[1]
     name = title or "structure"
     is_path = isinstance(source, os.PathLike) or (isinstance(source, str) and "\n" not in source)
     if title is None and is_path:

@@ -53,8 +53,10 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [Script wizard](#script-wizard)
   - [Running steps](#running-steps)
   - [File names](#file-names)
+  - [Folder tags and MANIFEST](#folder-tags-and-manifest)
   - [Previous runs](#previous-runs)
   - [Step types](#step-types)
+  - [Amber MD stages](#amber-md-stages)
   - [FARFAR2 decoys: scores, run audit and frames](#farfar2-decoys-scores-run-audit-and-frames)
   - [Custom scripts](#custom-scripts)
   - [Decoy interfaces](#decoy-interfaces)
@@ -64,6 +66,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [Base-pair annotation](#base-pair-annotation)
   - [Model checks](#model-checks)
 - [Structure builder](#structure-builder)
+  - [D/L chimeras](#dl-chimeras)
 - [Restraint dictionaries, real-space refinement and MDFF](#restraint-dictionaries-real-space-refinement-and-mdff)
   - [Restraint dictionaries for L-RNA (Coot / Phenix)](#restraint-dictionaries-for-l-rna-coot--phenix)
   - [Real-space refinement (Phenix / Coot)](#real-space-refinement-phenix--coot)
@@ -352,7 +355,8 @@ The bottom bar holds **Render** (Ctrl+R), **Cancel**, the progress bar, **Open o
 in your file manager) and **Open video** (the most recent video); the log of the pipeline and of
 cpptraj is in the expander above it. The header bar has *Open project* (Ctrl+O; its drop-down lists the
 recent projects, the demo project and *Browse…*), *Save* (Ctrl+S) and *Save as…* (Ctrl+Shift+S). The
-main menu has *New project (defaults)*, *Create demo system…*, *Project log…* (the steps that ran),
+main menu has *New project (defaults)*, *Close project* (back to the defaults, tied to no file), *Create
+demo system…*, *Project log…* (the steps that ran),
 *Export citations (BibTeX)…*, *Add MDATK and RNAdo to the applications menu…* (see [Applications menu
 (Linux)](#applications-menu-linux)) and *About and citations*. The **RNAdo** menu next to them starts
 RNAdo on the project:
@@ -373,15 +377,19 @@ seconds is reported in the analysis window.
 
 - **Header bar:** *Open* (Ctrl+O; its drop-down lists the recent projects and *Browse…*), *Save* (Ctrl+S;
   it saves the plan into the project file), the tools *Script wizard* (Ctrl+Shift+W), *PDB clean-up* and
-  *Structure builder*, and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…*
-  (Ctrl+Shift+S), the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
+  *Structure builder*, *Close* (the project: back to an empty, unsaved plan, after asking about unsaved
+  changes), and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…* (Ctrl+Shift+S),
+  *Close project*, the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
   the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
-  previous runs*, *Write all files*, *Run all…*, *Run selected steps*, *Stop scripts*, *Open folder*),
-  the naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, *Move completed runs aside*,
-  the plan folder and *Change…*, then *CPU cores*, *GPUs* and *At once* for running steps), the canvas
-  and the details pane of the selected box (see [The plan](#the-plan) and [Running steps](#running-steps)).
+  previous runs*, *Select all steps*, *Clear selection*, *Write all files*, *Write selected steps*, *Run
+  all…*, *Run selected steps*, *Stop scripts*, *Open folder*), the naming bar (project name, *Time
+  stamp*, *New stamp*, *Step folders*, *Move completed runs aside*, the plan folder and *Change…*, then
+  *CPU cores*, *GPUs* and *At once* for running steps), the canvas and the details pane of the selected
+  box (see [The plan](#the-plan) and [Running steps](#running-steps)). In a window narrower than these
+  rows, the toolbar's buttons from *Select all steps* on and the naming bar's *CPU cores*, *GPUs* and *At
+  once* go onto a line of their own instead of widening the window.
 - **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
   unfolds it. It shows the planner's messages (files written, completed runs moved aside with their files,
   previous runs checked, runs used or dropped), MDATK's warnings, and every line the scripts print, marked
@@ -780,14 +788,19 @@ line](#command-line)).
 - `mdatk rnado [PROJECT]`, `mdatk gui --rnado [PROJECT]` (or `--planner`; `--open TOOL` alone starts
   RNAdo too), or `python -m mdatk.gui.rnado [PROJECT]` from a source checkout.
 
-`rnado ACTION …` with an action of `mdatk workflow` (`write`, `run`, `status`, `check`, `template`,
-`generate`, `tools`, `restraints`) is the same as `mdatk workflow ACTION …`.
+`rnado ACTION …` with an action of `mdatk workflow` (`write`, `run`, `status`, `manifest`, `check`,
+`template`, `generate`, `tools`, `restraints`) is the same as `mdatk workflow ACTION …`.
 
 ### The plan
 
-Place boxes (steps) with *Add step* or the canvas's right-click menu, and connect them by dragging from
-an output port (right edge) to an input port (left edge); only compatible files connect, and loops are
-refused. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
+Place boxes (steps) with *Add step* (in the visible part of the canvas, where there is room) or the
+canvas's right-click menu (where you clicked), and connect them by dragging from an output port (right
+edge) to an input port (left edge), or onto the box itself: its first free input that takes the file;
+only compatible files connect, and loops are refused. To move a connection, drag its end off the input
+it goes into and drop it on another input or another box; dropped anywhere else, or back on its input, it
+stays. Dragging a box or a connection to the edge of the visible canvas scrolls it that way (faster
+nearer the edge), so a box can be moved a long way in one drag. *Delete connection* (right-click on a
+connection) deletes only that connection. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
 the right of a FARFAR2 box, whose files are known only once that step has run (see [Every decoy from the
 FARFAR2 step](#farfar2-decoys-scores-run-audit-and-frames)). A set connects only to inputs drawn as large
 dots, on the left of the steps that take many models (the models of *Model check*, *Decoy interfaces*,
@@ -807,13 +820,26 @@ with notes on the validity filters, the rule "filter on validity before clusteri
 after, when choosing representatives" and the kink test (virtual C1′ angle; positions that in-line probing
 shows flexible are allowed); the models step's decoy table, which lists every decoy and not the cluster
 centres the later steps check, goes to none of them). *Write all files* writes every step, a master script
-that runs the steps in order, and a Markdown summary of the plan.
+that runs the steps in order, and a Markdown summary of the plan; every write also rewrites the plan
+folder's `MANIFEST`, which says which folder is which step's (see [Folder tags and
+MANIFEST](#folder-tags-and-manifest)).
+
+The details pane names the selected box: *Title* (shown on the box; empty: the type's label), *Step* (the
+`<step>` part of its folder and file names) and *Folder tag*, a short name such as `model12` that is added
+to the step's folder name (`03_amber-md_model12/`), so that the parallel branches of one plan write into
+folders that say which branch they are. The box shows the tag as a badge tinted like its header, left of
+the cores and GPUs it uses, and a tag that cannot be one gets an error icon in the entry. Below them the
+pane says where the step's files go: *Folder: 03_amber-md_model12/*, or *No folder: this step writes no
+files* for existing files, notes and the MDATK analysis box, which have no folder (their *Folder tag* is
+greyed out).
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click
-menu; *Tick all steps* / *Untick all steps* on the canvas): *Run selected steps (N)* writes the ticked
-steps' files and runs their main scripts in plan order, whatever order you ticked them in. Steps they
-read from are not written or run again, so their outputs must exist already. The ticks are not saved
-with the project.
+menu): *Select all steps* in the toolbar (*Tick all steps* on the canvas) ticks every step that writes
+files and *Clear selection* (*Untick all steps*) unticks them, greyed out while nothing is ticked.
+*Write selected steps (N)* writes only the ticked steps' files, and *Run selected steps (N)* writes them
+and runs their main scripts in plan order, whatever order you ticked them in. Steps they read from are
+not written or run again, so their outputs must exist already. The ticks are not saved with the
+project.
 
 The plan is saved in the project file (`workflow` section), so one file holds the plan and the analysis
 settings. The analysis window's *Use the plan's files* (Input & cleaning, also in its *RNAdo* menu) puts
@@ -888,34 +914,77 @@ uses are free; otherwise steps go in plan order.
   on. The step log records the run as *stopped*, and the run leaves a note beside the step's files
   (`<project>_<step>_stopped_<time>.txt`), so *Check previous runs* calls it **partial** until the step
   runs again (or a file of the run is written after the note).
+- **Output log of each step:** every script RNAdo or `mdatk workflow run` runs writes what it prints
+  (standard output and error, line by line as it comes, readable with `tail -f` while it runs) to
+  `<script>.log` beside it, e.g. `03_amber-md/apt1_03_amber-md_<stamp>.sh.log`. It starts with a line
+  giving the start time and the command, and ends with one giving the end time and the outcome:
+  `==== Step completed successfully - 2026-11-05 14:03:12 (exit status 0)`, or *Step failed* (with the
+  exit status), *Step stopped by the user*, *Step waiting* (for its separately run script) or *Run
+  cancelled*. Each run starts a new log; it carries the run's name and stamp, so it moves aside with the
+  run (see [Previous runs](#previous-runs)).
 - **Running markers:** a box whose script is running shows a turning arc in its title bar, and a
   waiting box a dashed ring. When a script ends, its box shows a tick (done), a cross (failed), two
   bars (waiting for a separately run script, see below), a square (stopped) or a dash (cancelled / not
-  started) until the next run.
+  started) until that step runs again (running other steps leaves it). A step whose folder holds a
+  complete run of the plan's current stamp (or that uses an earlier run) shows the tick too, also after
+  RNAdo is restarted: RNAdo looks for finished runs when a project is opened and after each run (see
+  [Previous runs](#previous-runs)). Writing a step again, which moves its run aside, removes it.
 - **Windows:** the generated scripts are bash scripts for Linux; RNAdo on Windows writes them but does
   not run them (*Run* says so), see [Installation](#installation).
 - **Writing again:** *Run all…*, *Run selected steps* and *Run step…* write the steps first, so a step
   that has a completed run is moved aside before it runs again (see [Previous runs](#previous-runs)).
 
-Scripts marked *run separately* (production runs meant for a cluster queue: *Separate production
-script* of the Amber MD and GROMACS steps) are not started unless you tick *Also run the scripts marked
-'run separately'* in the confirmation (or give `--include-separate`); they then run right after their
-step's main script. Such a step is complete only when its separate script has finished, and its main
-script checks that:
+Scripts marked *run separately* (stages meant for a cluster queue: the production stages of the Amber
+MD and GROMACS steps with *Separate production script*, and the Amber MD stages set to *Run in the
+separate script: Yes*, see [Amber MD stages](#amber-md-stages)) are not started unless you tick *Also run
+the scripts marked 'run separately'* in the confirmation (or give `--include-separate`); they then run
+right after their step's main script, and the main script runs once more after them for the rest of the
+step (the stages after the separate ones, the dry copies made at its end), before the steps that read from
+it. A separate script activates the step's *Conda environment* only when MDATK runs it
+on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand: `MDATK_LOCAL=1 bash
+<script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
+the *Setup commands* (`module load …`) run everywhere. *Conda in the separate script on a cluster too*
+(Environment) activates it there as well. Such a step is complete only when its separate script has
+finished, and its main script checks that:
 
-- it runs its own stages before production (equilibration; for GROMACS also the conversion) only while
-  the separate script has not finished - once it has, they are not redone, as production started from
-  them;
-- while production has not finished, it then exits with status **75**, naming the script to run
-  (`WAITING: the production stages have not finished. Run them … with: bash …/<name>_amber-prod_….sh`).
-  MDATK reports such a step as **waiting**, not as failed, and does not start the steps that read
-  from it; `mdatk workflow run` exits with 75 too. Run the separate script (e.g. on the cluster), then
-  the step again;
-- once production has finished, the stages after it (e.g. a cooling stage) and the dry PDB run, and the
-  step succeeds.
+- it runs its own stages before the separate ones (equilibration; for GROMACS also the conversion) only
+  while the separate script has not finished - once it has, they are not redone, as the separate stages
+  started from them;
+- while the separate script has not finished (its stages and the dry copies it makes), it then stops,
+  naming the script to run (`WAITING: the production stages have not finished. Run them … with: bash
+  …/<name>_amber-prod_….sh`, or *the separately run stages* when they are not all production stages).
+  The step's *While the separate script has not finished* says how: *Exit status 75* (the default) exits
+  with status **75**; *Exit 0 + .waiting file* exits 0 and leaves the WAITING line in
+  `<script>.waiting` beside the script, for batch schedulers that cancel the jobs depending on a job that
+  fails (`sbatch --dependency=afterok`); the file is removed when the script starts and when it finishes.
+  Either way MDATK reports such a step as **waiting**, not as failed, and does not start the steps that
+  read from it; `mdatk workflow run` exits with 75 in both modes, and the plan's master script stops after
+  the step (in the file mode with exit status 0 and a WAITING line: `03_amber-md/…sh waits for its
+  separately run script; run that, then this script again`). Run the separate script (e.g. on the
+  cluster), then the step again;
+- once the separate script has finished, the stages after it (e.g. a cooling stage) and the dry PDB run,
+  and the step succeeds.
+
+```text
+$ mdatk workflow run -p plan.mdatk.toml                      # exit status 75
+==== step 03: 03 · anneal cycle 1 - bash apt1_03_amber-md_20261107-1200.sh (1 core)
+[03] WAITING: the separately run stages have not finished. Run them (e.g. on a cluster) with:
+[03]   bash …/plan/03_amber-md/apt1_03_amber-prod_20261107-1200.sh
+[03] then run this script again.
+[03] ==== step 03: 03 · anneal cycle 1 - waiting for a separately run script: apt1_03_amber-prod_20261107-1200.sh
+==== step 04: 04 · relax movie - not started (step 03 waits for a separately run script)
+$ mdatk workflow run -p plan.mdatk.toml --include-separate   # main, separate, main again: exit status 0
+==== step 03: 03 · anneal cycle 1 - bash apt1_03_amber-md_20261107-1200.sh (1 core)
+[03] WAITING: the separately run stages have not finished. Run them (e.g. on a cluster) with:
+[03]   bash …/plan/03_amber-md/apt1_03_amber-prod_20261107-1200.sh
+[03] then run this script again.
+==== step 03: 03 · anneal cycle 1 - bash apt1_03_amber-prod_20261107-1200.sh (1 core)
+==== step 03: 03 · anneal cycle 1 - bash apt1_03_amber-md_20261107-1200.sh (1 core)
+==== step 04: 04 · relax movie - bash apt1_04_vmd_20261107-1200.sh (1 core)
+```
 
 Main scripts written before 0.0.10 do not make this check; MDATK treats such a step as waiting and
-asks you to write it again.
+asks you to write it again (and does not run such a main script again after its separate scripts).
 
 ### File names
 
@@ -923,23 +992,136 @@ Every file is named `<project>_<step>_<tool>_<time>.<ext>`, e.g. `apt1_03_tleap_
 the project name, the step number of the box, the program or stage that writes the file, and one
 time stamp per plan. The stamp is fixed the first time files are written (and stored in the project),
 so later re-generations keep the same names; *New stamp* starts a new set, and the stamp can be
-switched off. Each step writes into its own folder (`03_amber-build/`), and scripts refer to the files
+switched off. Each step that writes files writes into its own folder, `<step>_<tool>/` (`03_amber-build/`),
+or `<step>_<tool>_<folder tag>/` for a step with a folder tag (`03_amber-build_model12/`, see [Folder tags
+and MANIFEST](#folder-tags-and-manifest)); the tag is not part of the file names. Steps that write no files
+(existing files, notes, the MDATK analysis box) have no folder. Scripts refer to the files
 of other steps by relative paths (`../03_amber-build/apt1_03_parmed_….parm7`), so a whole plan folder
 can be copied to a cluster. Every script starts with `cd "$(dirname "$0")"`, so it can be started from
-anywhere. Each script's header cites what that step uses (see [Citations](#citations)).
+anywhere. Each script's header cites what that step uses (see [Citations](#citations)). Every write also
+leaves `MANIFEST` in the plan folder and `MDATK_step.toml` in each step folder it writes into, which say
+which folder is which step's.
+
+### Folder tags and MANIFEST
+
+Step numbers say where a step is in the plan, not which branch or model it belongs to: four parallel
+branches made from the *Amber RNA protocol* template write into `01_amber-build/`, `04_amber-build/`,
+`07_amber-build/` and `10_amber-build/`, and no name on disk says which model each one is. MDATK never
+renumbers steps on its own (a new step gets the number after the highest one in the plan, so after the
+last steps are deleted the next new ones get their numbers and folders again; a template's steps are
+numbered after the existing ones), but a plan made again from scratch, e.g. by a script of your own, can
+number them differently, and a step's folder then holds another step's files.
+
+**Folder tags.** A step's *Folder tag* (in the details pane; `folder_tag` of its `[[workflow.nodes]]` entry
+in the project file, saved only when set) is added to its folder name: `03_amber-md_model12/` instead of
+`03_amber-md/`. The box shows the tag as a badge, and the step's title carries it wherever MDATK names the
+step (logs, messages, the step log, the master script, the summary, `workflow status`: `03 · production
+model12 · model12`), so steps that share a number can be told apart. A tag holds ASCII letters and
+digits, with `-` only between them; anything else is a check error that suggests a tag (`folder tag 'model
+12': use ASCII letters and digits, with '-' only between them (e.g. 'model-12'); it is added to the step's
+folder name`), and so are two steps that would write into one folder, also through tags that differ only
+in case (one folder on macOS and Windows). A tag on a step that writes no files is a warning (the step
+has no folder; the entry stays editable until the tag is cleared), and in a plan without step folders an
+info: the tag then names only the folder the step's completed runs move into
+(`superseded/03_amber-md_model12/`). File names keep their four parts. Changing a tag changes the folder
+the step writes into and looks in for earlier runs; files already written stay where they are. Without
+tags nothing changes, and a project without tags is saved as before. Step ids (`n1`, `n2` …) are never
+given out twice: the project file keeps the highest one given out (`last_node`, saved once a step is
+added).
+
+**MANIFEST and MDATK_step.toml.** Every write of the plan (*Write all files*, *Write step*, *Write
+selected steps*, the *Run* actions, the wizard's *Write files* for a box, `mdatk workflow write`; the
+planner logs `Manifest: <path>`) rewrites `<plan folder>/MANIFEST` from the plan, also when only some
+steps are written: one tab-separated line per step in plan order (notes left out, `-` for an empty cell)
+under a header line, here aligned:
+
+```text
+step  folder                       node  tool              title               folder_tag  inputs                                         holds
+-     -                            n1    input-file        model12 PDB         -           file=/data/model12.pdb                         -
+01    01_amber-build_model12       n2    amber-build       build model12       model12     structure=/data/model12.pdb                    this step
+02    02_amber-restraints_model12  n3    amber-restraints  restraints model12  model12     topology=01_amber-build_model12/apt1_01_…      this step
+03    03_amber-md_model12          n4    amber-md          production model12  model12     topology=01_amber-build_model12/apt1_01_…; …   this step
+```
+
+A step that writes no files has `-` for number and folder, and its inputs name the file it stands for; in
+a plan without step folders the folder is `.`. The inputs are `port=path`, joined by `; `. *holds* is what
+the step's folder holds after the write: `this step` (`this step (node id only)` when only the node id
+says so), the step its `MDATK_step.toml` names instead (`n4 'production model12' (step 03, written
+2026-11-07 21:21)`), `unknown (no MDATK_step.toml)` or `-`. Each step
+folder a write puts files into gets `MDATK_step.toml`, a commented TOML file with the step's node id,
+type, title, label, folder tag, number and folder, the plan's project name and time stamp, the MDATK
+version and the time of writing. It does not belong to the step's runs: it stays in the folder when a
+completed run moves aside, and the run's `manifest.toml` keeps what it said (`[written_by]`), so a tree
+written before the plan changed still says which step each folder and each moved run was. The stand-alone
+wizard (`workflow generate`) leaves `MANIFEST` alone, and a plan without step folders gets no
+`MDATK_step.toml`. If the records cannot be written, the write warns (`WARNING  MANIFEST / MDATK_step.toml
+not written: …`) and still completes.
+
+**Matching a plan to a tree.** `mdatk workflow manifest -p plan.mdatk.toml [--tree DIR]` (`rnado
+manifest`) lists the plan's steps against the step folders of an output tree (default: the plan folder)
+and the runs moved into their `superseded/`. A folder holds the files of the one step of the plan with the
+type and folder tag its `MDATK_step.toml` names, else of the one with its type, folder tag and title
+(titles count where both have one; another project name means another plan's files). The node id only
+confirms that, or tells apart steps that agree on all of these; such a match is shown as *by node id
+only*, since a plan made again from scratch numbers its ids afresh and its `n3` may be another step than
+the `n3` that wrote a folder: titles or folder tags tell steps apart for certain. A folder without
+`MDATK_step.toml` (written before MDATK recorded its folders, or by hand) holds the files of the one step
+with its type and the folder tag in its name. Records that disagree (the identity file and the folder's
+name, the folder tag and the title, the node id and the rest) pick no step. A plan of two models (build →
+restraints → MD each) made again by a script with two branches in front, every step renumbered and the
+node ids given out afresh, against the tree the first plan wrote:
+
+```text
+$ mdatk workflow manifest -p plan.mdatk.toml        # tagged: every old folder found, exit status 0
+step  folder                        node  title               in the tree
+01    01_amber-build_inv1/          n2    build inv1          not there
+…
+09    09_amber-md_model12/          n12   production model12  not there; its files are in 03_amber-md_model12/ (step 03, by folder tag)
+…
+$ mdatk workflow manifest -p plan.mdatk.toml        # untagged: exit status 1
+step  folder                node  title               in the tree
+03    03_amber-md/          n4    production inv1     holds another step's files: 03_amber-md/ (step 03, node n4: 03 · production model12, written …), now 09 · production model12; this step has its node id with another title
+…
+09    09_amber-md/          n12   production model12  not there; its files are in 03_amber-md/ (step 03, by title)
+…
+6 step(s) would write into a folder that holds another step's files: 01 · build inv1, 02 · restraints inv1, …
+```
+
+A step is `this step's`, `not there` (with where its files are), `holds another step's files: …`, `holds
+files no step can be told for: …` or `there, without MDATK_step.toml`; the folders that belong to no step
+follow, with what disagrees (e.g. a folder renamed since its records were written). The exit status is 1
+when a step's folder holds another step's files or files no step can be told for: writing that step would
+put its files beside them and move their completed run aside as its own. `--json` gives the same for
+scripts, `--table` the `MANIFEST` a write of every step would leave. The planner checks the same before a
+write: such a step gets a warning (`03_amber-md/ holds the files of 03 · production model12 (node n4,
+written …), now 09 · production model12: writing this step puts its files beside them and moves a completed
+run there aside as this step's; give it a folder tag or another step number`), also a step renamed since
+it was written (`…, or, if it is that step under a new title, write it again`), and its run is not offered
+as its own (see [Previous runs](#previous-runs)).
 
 ### Previous runs
 
 Each iteration of a project may get a new time stamp (*New stamp*), and the stamp is part of every file
-name, so after an update the plan no longer sees the outputs of its earlier runs. *Check previous runs*
-(planner toolbar; for one box or the ticked boxes in the right-click menu and the details pane) looks
+name, so after an update the plan no longer sees the outputs of its earlier runs. RNAdo looks for them
+by itself, quietly, when a project is opened and after each run: steps with a complete or partial run get
+the footer below (a complete run of the current stamp also the tick), steps without outputs nothing.
+*Check previous runs* (planner toolbar; for one box or the ticked boxes in the right-click menu and the
+details pane) does the same for every step, lists the result in the output log and looks
 in each step's folder for the files the step's outputs name: under the plan's stamp first, otherwise
 under the newest earlier stamp with all of them. Only the files the step's scripts make count; for
 Amber MD every stage's output must also end with pmemd's closing lines, so a run still in progress is
 *partial*, and a custom script's run counts only with the marker its run script writes last (see
 [Custom scripts](#custom-scripts)). Each box then shows a footer: **done** with the stamp and the time
 its files were last written, **partial** with how many files are there (the details list the missing
-ones), or **missing**.
+ones), or **missing**. A step with a folder tag is looked for in its tagged folder, here and when its runs
+move aside.
+
+A run in a folder whose `MDATK_step.toml` names another step (see [Folder tags and
+MANIFEST](#folder-tags-and-manifest)) is that step's, not this one's: the check reports it as `not this
+step's run: 03_amber-md/ holds the files of 03 · production model12 (node n4, written …), now 09 ·
+production model12`, the box gets no tick, *Use this run* stays greyed out, the offer after a check lists
+it as not offered, and `workflow status --adopt` refuses it with a line (`workflow status --json`:
+`held`).
 
 A step with a complete run can **use it** (*Use this run* in the details, the right-click menu, or the
 offer after a check): the project file stores the run's stamp in the step (`adopted`), and the planner
@@ -978,10 +1160,16 @@ from the step's own folder and only of that stamp:
   of moved decoys, `<project>_<NN>_reframed_<stamp>/`.
 
 A `manifest.toml` in the run's folder says what moved, from which step and stamp, when and why; to use the
-run again, move its files back. Nothing else moves: partial runs stay where they are (resuming relies on
+run again, move its files back. It also keeps what the step folder's `MDATK_step.toml` said when the run
+moved (`[written_by]`): when that names another step (a renumbered plan), the run is that step's, the
+question before moving, the lines of `workflow write` and the step log say so (`not this step's run: …`),
+and `mdatk workflow manifest` reports the moved run under the step that wrote it (`not there; its files are
+in 03_amber-md/superseded/20261107-1200_20261107-212335/ (step 03, moved 2026-11-07 21:23, by title)`).
+Nothing else moves: partial runs stay where they are (resuming relies on
 them), steps that use an earlier run are never written, files of other stamps and your own files stay, and
 nothing in `superseded/` is ever replaced (a second move in the same second gets `…-2`). In a plan without
-step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder, the `<project>_<NN>_*` rule
+step folders a step's runs go to `superseded/<NN>_<tool>/` in the plan folder
+(`superseded/<NN>_<tool>_<folder tag>/` for a step with a folder tag), the `<project>_<NN>_*` rule
 applies only when no other step has the number, the step's own folders (`<project>_<NN>_models/`,
 `<project>_<NN>_qscore/`, `<project>_<NN>_reframed_<stamp>/`) move with it on the same terms, and `runs/`
 (steps share it) is left alone.
@@ -992,7 +1180,10 @@ them from a run left in place, i.e. a partial run, or any run with the option be
 moves aside, so the step runs again from the start.
 
 RNAdo asks first: *Write all files*, *Write step*, the *Run* actions and the wizard list the steps whose
-completed runs would move and where (*Cancel*, or *Move aside and write*); the output log then lists what
+completed runs would move and where (*Cancel*, *Delete them and write* or *Move aside and write*). *Delete
+them and write* removes the same files and folders for good instead of keeping them in `superseded/`, for
+trial runs not worth the disk space (a link is removed, never what it points to; a step whose run could
+not be deleted completely is not written); the output log then lists what
 moved, and a saved project records each move in its step log (`workflow supersede`). While a step that
 reads those outputs runs or waits to run (or the wizard's run, which RNAdo does not follow), RNAdo refuses
 such a write: write again once the scripts have finished. Only the runs listed move: a run that completes
@@ -1001,12 +1192,14 @@ message; write again. To keep a run in place, let the step use it instead (*Use 
 bar's *Move completed runs aside* (project option `workflow.supersede_runs`, on by default) turns moving
 off: writing then replaces the scripts, and the next run the outputs, as before 0.0.12. On the command
 line `workflow write` (also with `--run`) and `workflow generate` print the runs they moved on standard
-error and under `superseded` in their JSON; `workflow run` only runs scripts already written, so it moves
-nothing:
+error and under `superseded` in their JSON (`deleted` true for a deleted run); `workflow write
+--delete-old-runs` deletes those runs instead of moving them; `workflow run` only runs scripts already
+written, so it moves nothing:
 
 ```bash
 mdatk workflow write -p plan.mdatk.toml --dry-run   # what would be written, and which runs would move
 mdatk workflow write -p plan.mdatk.toml             # moved    03 · Amber · MD stages: moved its …
+mdatk workflow write -p plan.mdatk.toml --delete-old-runs   # deleted  03 · Amber · MD stages: deleted its …
 ```
 
 ### Step types
@@ -1022,10 +1215,10 @@ mdatk workflow write -p plan.mdatk.toml             # moved    03 · Amber · MD
 | **RNAMake** | script for `design_rna_scaffold` (current, `--options`) or the legacy `design_rna` (`-options`): motif-graph search, sequence optimisation, thermal-fluctuation scoring | needs `RNAMAKE`; current RNAMake has no separate builder / optimiser programs |
 | **Amber · system build** | tleap inputs (force field, water, box, ions, extra frcmod / libraries / leap commands), ParmEd inputs, helpers (PDB preparation, L-RNA naming and name check, CP library, TIP4P/2005 files) and the build script | see below |
 | **Amber · helix restraints** | DISANG file of the hydrogen bonds of every base pair (G–C ×3, A–U ×2, optional G·U), found by residue number and atom name in the final topology | written directly when the topology exists, otherwise by a small Python script (no ParmEd needed) the step runs |
-| **Amber · MD stages** | one mdin per stage and the run scripts | see below |
+| **Amber · MD stages** | one mdin per stage and the run scripts | see below and [Amber MD stages](#amber-md-stages) |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
 | **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours (chain groups keep to their chain), bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
-| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build` (the step's *Python*; from the Linux AppImage, the AppImage itself): ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see [Structure builder](#structure-builder) |
+| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build` (the step's *Python*; from the Linux AppImage, the AppImage itself): ideal A-form RNA or B-form DNA helix (D or L), a D/L chimera of such helices, base mutations with compensatory partners, or a rigid-body fit into a map | the PDB tells the steps it feeds its hand (D, L, or mixed for a chimera of both) and whether it has L-RNA; see [Structure builder](#structure-builder) and [D/L chimeras](#dl-chimeras) |
 | **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see [Restraint dictionaries](#restraint-dictionaries-for-l-rna-coot--phenix) |
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see [Real-space refinement](#real-space-refinement-phenix--coot) |
 | **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see [Real-space refinement](#real-space-refinement-phenix--coot) |
@@ -1048,9 +1241,9 @@ ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4
 models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;
-a separate production script for the cluster (the main script then waits for it, see above); resuming
-(finished stages are skipped); a dry PDB and a
-dry, imaged production trajectory. The engine is pmemd,
+a separate script for the cluster with the production stages or any stages you choose (the main script
+then waits for it, see above); resuming (finished stages are skipped); dry PDBs and dry, imaged
+trajectories of the stages you choose (see [Amber MD stages](#amber-md-stages)). The engine is pmemd,
 pmemd.cuda or pmemd.MPI (with an MPI launcher such as `mpirun -np {n}` or `srun`); Amber 24 and 26 use
 the same input, the version is recorded in the scripts. The *Environment* section adds
 `conda activate` / `module load` / `source amber.sh` lines.
@@ -1101,11 +1294,12 @@ libraries that map chain ends with `addPdbResMap` (plain LG, as `to_lrna.sh` wro
   mirrored phases the dihedral energy of an 8-bp duplex is off by about 3 kcal/mol.
 - **My own files.** The libraries and parameters listed under *Force field* (Dudek & Trylska's
   `nucleic12_LRNA.lib` + `parm10_LRNA.dat`, or your own `LRNA.lib` + `frcmod.LRNA`).
-- **Automatic** (default). Generated when the structure is known to have L residues when the plan is
-  made (an existing input PDB, *Force L for*, or an L helix straight from the builder), the force field
-  is OL3 or OL3 + CP, and no own L-RNA files are listed or loaded (extra libraries, a parameter file
-  defining LD / LH / LE, or load commands in the leap fields); own files otherwise. For a structure
-  that an earlier step makes (mutation, fitting, FARFAR2 …), choose *Generated by MDATK*.
+- **Automatic** (default). Generated when the structure is known to have L-RNA residues when the plan is
+  made (an existing input PDB with L-RNA residues, *Force L for*, or an L-RNA helix or a chimera with
+  L-RNA segments straight from the builder; L-DNA does not count, the library has no units for it), the
+  force field is OL3 or OL3 + CP, and no own L-RNA files are listed or loaded (extra libraries, a
+  parameter file defining LD / LH / LE, or load commands in the leap fields); own files otherwise. For a
+  structure that an earlier step makes (mutation, fitting, FARFAR2 …), choose *Generated by MDATK*.
 
 The generator refuses a parameter set with a dihedral or improper whose phase is not 0° / 180° and
 contains none of the twinned types (e.g. a 2′-OH torsion from an extra frcmod): the generated library
@@ -1271,6 +1465,105 @@ converted. Checks cover grompp warnings that stop a run with
 `-maxwarn 0` (Berendsen coupling, Parrinello-Rahman with new velocities), `-update gpu` restrictions
 (no Nose-Hoover, no virtual-site waters such as OPC / TIP4P-Ew), `mass-repartition-factor`
 (GROMACS 2024+ only), time steps that need hydrogen mass repartitioning, and more.
+
+### Amber MD stages
+
+The stages of *Amber · MD stages* run in order, each from the previous one's restart. Besides its mdin,
+every MD stage says what else happens with it. *Production stage* did all of it at once and is now the
+shorthand of the four options after it, which take it apart, so that a chained protocol whose
+temperature, time step or restraints change between stages can run on a cluster as a whole and still
+pass on only the frames meant for analysis:
+
+| Stage option | Values | What it does |
+|---|---|---|
+| *Production stage* (`production`) | off / on | the shorthand the Auto settings below follow: the separate script (with the step's *Separate production script*), the *Trajectory* output, and with the step's *Dry, imaged production trajectory* the dry production trajectory `dry-prod.nc` |
+| *Run in the separate script* (`separate`) | Auto / Yes / No | which script runs the stage. Auto: the separate script when it is a production stage and *Separate production script* is on; Yes: the separate script, whatever those say; No: the main script |
+| *Pass the trajectory on* (`export`) | Auto / Yes / No | whether its trajectory goes out on *Trajectory* to analysis and VMD steps. Auto: when it is a production stage (with Auto on every stage and no production stage with frames, the last MD stage with a trajectory goes out, as before); Yes: always (it needs ntwx > 0); No: never. Once a stage says Yes or No, no other stage goes out in place of the ones asked for |
+| *Dry trajectory label* (`dry`) | a label; empty: none | right after the stage, cpptraj images its trajectory (`autoimage`), strips the step's *Strip mask (trajectory)* and writes `<project>_<step>_dry-<label>.nc`, an output of its own (`dry_<label>`); the stages with one label are concatenated in stage order into one file, made after the last of them; `prod` joins `dry-prod.nc` |
+| *Dry PDB of its last frame* (`dry_pdb`) | off / on | right after the stage, cpptraj strips the step's *Strip mask* from its final restart into `<project>_<step>_dry-<stage>.pdb`, an output of its own (`dry_pdb_<stage>`); needs no trajectory frames |
+
+A minimisation stage has none of them (values set there are ignored). The step's own options: *Separate
+production script* (on by default; a stage's Yes or No takes precedence), *While the separate script has
+not finished* (*Exit status 75* or *Exit 0 + .waiting file*, see [Running steps](#running-steps)), *Dry PDB
+before production* (on by default: the last restart of the main script, stripped into `dry.pdb`), *Dry,
+imaged production trajectory* (`dry_traj`: `dry-prod.nc` of the production stages with a trajectory and
+no dry label of their own, plus the stages labelled `prod`), *Strip mask* (the dry PDBs) and *Strip mask
+(trajectory)* (the dry trajectories). A step that uses none of the stage options is written exactly as
+before.
+
+For example an annealing cycle in one node, of which only the 300 K relaxation may enter the analysis:
+heat1 (ramp 300 → 340 K), hold1 (340 K), cool1 (ramp 340 → 300 K) and relax1 (300 K), all four with *Run in
+the separate script: Yes*, *Pass the trajectory on: No* on the first three and *Yes* on relax1, the *Dry
+trajectory label* `relax1` on relax1 and *Dry PDB of its last frame* on heat1. The separate script runs
+the four pmemd runs; after heat1 it writes `apt1_03_dry-heat1_….pdb` (the structure at the top of the
+ramp), after relax1 the dry topology and `apt1_03_dry-relax1_….nc`, whose cpptraj input reads relax1's
+trajectory alone. The main script runs no pmemd at all and only waits for the separate script. The step's
+outputs are *Topology*, *Final restart*, *Trajectory* (relax1), *Dry topology*, *Dry trajectory relax1*
+and *Dry PDB of heat1*, so a VMD or analysis step can be connected to the 300 K frames alone. After an
+Amber MD step that ended at 300 K, `mdatk workflow check` gives this node no warning.
+
+Where the dry copies are made:
+
+- each right after the last segment of its stage (of a label: of its last stage), in the script that runs
+  that stage: a separately run stage dries in the separate script, a stage of the main script in the main
+  script. The first dry trajectory of each script also writes the dry topology
+  (`<project>_<step>_dry.parm7`);
+- cpptraj writes `<file>.part`, renamed once complete, so a copy cut off by the stop button or a wall-time
+  limit never counts as made: the main script's waiting check tests the separate script's dry copies too,
+  so it keeps waiting, and *Check previous runs* calls the run partial;
+- the main script's stages before the separate script are not run again once it has finished, so their
+  dry copies come after that part: each is made when one of its stages ran (not when it was skipped as
+  finished), and when it is missing (asked for later) or older than the output of one of its stages. A
+  dry production trajectory of such stages is made the same way;
+- `dry-prod.nc` at the end of the script that runs its last stage and the step's `dry.pdb` keep the lines
+  0.0.12 wrote (no `.part`).
+
+The checks:
+
+- **errors:** a stage of the main script between two separately run stages (the later one would start from
+  a restart that the main script writes only once the separate script has finished, so neither could
+  finish; *Production stage* on stages that are not next to each other counts too, and the GROMACS step
+  has the same rule for its production stages); a dry label on a stage without trajectory frames (ntwx =
+  0); a label with characters other than letters, digits, `-` and `_`; the reserved labels `pdb`,
+  `topology`, `trajectory` and `pdb_…` (the names of the step's other dry outputs); a label that reads as
+  true or false (`false`, `no`, `off` …); two labels that would write one file (`_` becomes `-` in file
+  names, so `hot_1` and `hot-1`, or `prod_` beside the dry production trajectory); a dry copy that would
+  write a stage's own trajectory (the label `relax` beside a stage named `dry-relax`); *Pass the
+  trajectory on: Yes* on a stage without frames (`its trajectory is to be passed on ('Pass the trajectory
+  on': Yes), but it writes none (ntwx=0)`). A label refused for its characters, as reserved or as a
+  true/false word is no label: no dry copy, no output;
+- **warnings:** a production stage on Auto without frames (`production stage without trajectory
+  output (ntwx=0)`, with the stage the *Trajectory* output carries instead, or `the step passes no
+  trajectory on`); with Auto on every stage, the last MD stages without frames, so that an earlier
+  stage goes out (`stage relax1 writes no trajectory frames (ntwx=0), so the 'Trajectory' output
+  carries stage cool1 instead`); a ramp on a continued run that does not start at the temp0 the
+  previous MD stage ended at, for the first stage the input restart's when an Amber MD step wrote it (`stage
+  heat: the ramp starts at tempi = 310 K, but stage eq ended at 300 K`; when that temperature is not known, a
+  heating ramp gets `a ramp from tempi on a continued run starts below the current temperature` and a
+  cooling ramp nothing); *MD stages use different temperatures* only when a change of temp0 is not a ramp
+  from the previous stage's temp0;
+- **infos:** `every production stage runs in the main script ('Run in the separate script': No);
+  everything runs in one script`. *tempi is ignored when velocities are continued* is not given for a
+  ramp, which starts at tempi.
+
+The outputs:
+
+| Output | Offered when | File |
+|---|---|---|
+| `topology` | always | the input topology |
+| `restart` (*Final restart*) | always | the last stage's restart; its data say whether it has velocities and, when the last stage is an MD stage, its temp0 (for the ramp check of the step it feeds) |
+| `trajectory` | a stage's trajectory is passed on | their trajectories, every segment (data: the stages) |
+| `dry_pdb` (*Dry final PDB*) | *Dry PDB before production* is on and a stage runs in the main script | `<project>_<step>_dry.pdb` |
+| `dry_topology` | a dry trajectory is written | `<project>_<step>_dry.parm7` |
+| `dry_trajectory` | `dry-prod.nc` is written | `<project>_<step>_dry-prod.nc` (data: its stages) |
+| `dry_<label>` (*Dry trajectory relax1*, *Dry trajectory relax (relax1, relax2)*) | a dry label is given | `<project>_<step>_dry-<label>.nc` (`relax_1`: `dry-relax-1.nc`; data: its stages and label) |
+| `dry_pdb_<stage>` (*Dry PDB of heat1*) | a stage has *Dry PDB of its last frame* | `<project>_<step>_dry-<stage>.pdb` |
+
+In a project file the stage keys are `separate` and `export` (`"auto"`, `"yes"`, `"no"`), `dry` and
+`dry_pdb`, and the step's `waiting_exit` is `"status"` or `"file"`; written by hand, `dry = true` names the
+label after the stage (`false`: none), and `separate` / `export` = true / false read as Yes / No. The
+command line sets them as other stage options do (stages counted from 0): `mdatk workflow generate
+amber-md … --set stages.4.separate=yes --set stages.5.dry=prod5 --set waiting_exit=file`.
 
 ### FARFAR2 decoys: scores, run audit and frames
 
@@ -1487,7 +1780,10 @@ step folder and exports these variables (`<NAME>` is the declared name in upper 
 | `MDATK_PROJECT`, `MDATK_STEP`, `MDATK_STAMP` | the parts of the plan's file names |
 
 It then replaces `{in:<name>}`, `{out:<name>}` and `{script}` in the arguments with the names, quoted
-for the shell (one word per file; do not put quotes around them). An optional input without a file
+for the shell (one word per file; do not put quotes around them). `<name>` stands for a declared name:
+for an input named `structure` and an output named `result`, write `{in:structure}` and
+`{out:result}`, e.g. `{in:structure} C1,29 > {out:result}`; the planner names the placeholders that
+would work when one names nothing declared. An optional input without a file
 becomes `''`, an empty word that keeps the place of a positional argument, or no word at all with
 *Several connections*. The run script removes the declared outputs of an earlier run, runs the script,
 checks that every declared output exists and is not empty, and only then writes the marker
@@ -1623,10 +1919,13 @@ mdatk workflow template farfar2-amber -p plan.mdatk.toml   # add a template to a
 mdatk workflow check -p plan.mdatk.toml                    # list the plan's problems
 mdatk workflow write -p plan.mdatk.toml [--step 3] [--run] # write files, master script, summary
 mdatk workflow write -p plan.mdatk.toml --dry-run    # ... list them, and the completed runs that would move
+mdatk workflow write -p plan.mdatk.toml --step 03_amber-md_model12   # one step, by its folder (or n4)
 mdatk workflow run -p plan.mdatk.toml [--step 3] [--parallel 2]  # run the written main scripts (logged)
 mdatk workflow run -p plan.mdatk.toml --cores 16 --gpus 2   # within 16 CPU cores and 2 GPUs
 mdatk workflow run -p plan.mdatk.toml --include-separate  # ... and the scripts marked 'run separately'
 mdatk workflow status -p plan.mdatk.toml [--adopt|--forget]  # earlier runs of the steps (see above)
+mdatk workflow manifest -p plan.mdatk.toml [--tree DIR]  # which step folder holds which step's files
+mdatk workflow manifest -p plan.mdatk.toml --table   # the MANIFEST a write of every step leaves
 mdatk workflow restraints --top sys.parm7 --sequence "GGGCAC GUGCCC" \
     --dotbracket "(((((( ))))))" -o helix.dist       # DISANG file for an existing topology
 ```
@@ -1663,20 +1962,40 @@ keeps coordinates, occupancies and B-factors verbatim:
   programs that read standard RNA only and ignore chirality, such as DSSR; ChimeraX's Q-score reads L
   names as they are and needs no copy; a warning says that the names no longer record the hand, so the
   copy is never meant for tleap, refinement or name-based analyses). Any of these, plus common aliases
-  (RA, G5, ADE …), is recognised on input; DNA and unknown residues pass through. *5′/3′ terminal names*
-  can be switched off.
+  (RA, G5, ADE …) and the DNA names of the [structure builder](#structure-builder) (DA …, the CCD's
+  L-DNA 0DA 0DC 0DG 0DT, MDATK's Amber-style LDA, LDA5, LDA3, LDAN …), is recognised on input; DNA and
+  unknown residues pass through (the PDB tools rename RNA only; the builder names DNA in every scheme). A
+  name alone is no nucleotide: the readers that see the atoms want a backbone atom (a primed name or P),
+  so the CCD's detergent LDA, the ligand LDT and the ions LA, LU and RA are not taken for nucleotides.
+  0DA and 0DT are written with their CCD components' own atom names (0DA: N9A, C8A … HN61, HN62; 0DT:
+  C5M) and read back as the standard ones (N9, C8 … C7). *5′/3′ terminal names* can be switched off.
 - **Hydrogens and Rosetta's virtual residues**: `--strip-h` removes hydrogens (element column, else the
   name), `--drop-virtual` the VRT / XXX residues Rosetta writes into density-scored models (no atoms of
   the molecule: tleap cannot type them, and a map-model score would read them as atoms).
 - **CONECT** records are stripped by default (until final deposition processing).
+- **LINK records** (bonds the polymer order does not imply, such as the PO2 phosphate of the builder's
+  3′–3′ and 5′–5′ chimeras) follow their residues through every renaming, renumbering, chain change and
+  removal (and `mdatk build mutate`), so that the model check, which finds a record's atoms by chain,
+  number, insertion code and residue name, still bonds them: only the residue columns of a record are
+  rewritten (and an atom name where a residue is renamed to or from 0DA / 0DT, whose atoms have names of
+  their own), a record whose residue or atom was removed is dropped, and one that names no atom of the
+  model is kept as it was, each with a note; a warning names an end that now shares its id with an
+  earlier residue (chains combined without renumbering). LINK lines after the coordinates are read and
+  followed where they are. A chain end that a LINK record bonds to another residue through its O3′, or
+  its P / O5′ (a chimera's junction; not its own 5′-phosphate residue, water, an ion or a symmetry mate),
+  keeps the internal name, as the builder names it (A, LA at a 3′–3′ bridge, not A3, LA3), with a note.
 - **5′ phosphates**: `--strip-5p` (window: *Remove 5′-terminal phosphates*, ticked automatically for
   the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
-  (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was.
+  (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was. A phosphate that a LINK
+  record bonds to another residue (the 5′–5′ phosphate of a chimera) is a link, not a 5′ end, and stays.
 - **Chains**: restore the chain ids of a cpptraj PDB by copying them residue by residue from a
   reference (e.g. the structure the topology was built from), from a list per TER segment, or as
   A, B, C …; split chains per TER segment or at a residue (new ids); combine chains; sort them.
 - **Numbering**: continuous across chains (default) or restarting per chain, optional start number
-  and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked).
+  and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked). Residues made
+  only of phosphate atoms (a chimera's PO2 bridge, a lone 5′-phosphate) are left out of the sequences, as
+  in `mdatk pdb check`, and SEQRES names have three characters: a four-character nucleotide name
+  (MDATK's LDA5, LDG3 …) is written as its CCD component (0DA, 0DG …), any other long name as UNK.
 
 `mdatk pdb check` also measures every sugar: `--expect-l` / `--expect-d RANGES` give the hands
 expected (`C:45-73`, `A,B`, `*:45-73` for every chain), `--strict` exits with status 1 when a residue
@@ -1746,13 +2065,21 @@ chain, number and insertion code, and every range is written as for the PDB tool
   from an H-bonded atom, against its partner and no closer than the H-bond itself, is the same contact
   and is not counted either. Atoms up to three bonds apart are left out, along the bonds of the
   nucleotide templates and the O3′–P links of each TER segment, so neighbouring residues (stacking,
-  sugar–base) and all chains are checked. Waters and ions are skipped unless asked for (`--waters`,
-  `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is coordination).
+  sugar–base) and all chains are checked. LINK records add the bonds the polymer order does not imply
+  (the PO2 phosphate of the builder's 3′–3′ and 5′–5′ chimeras): they are listed with their lengths,
+  with a warning beyond `--link-fail`, and an oxygen bonded through one (the bridge's O3′ / O5′) is no
+  hydroxyl donor; a record that names an atom the check leaves out, or an ion (its coordination is what
+  `--ions check` measures), is not used, nor is one to a symmetry mate (its two symmetry operators
+  differ: the second atom is in a copy of the model that the crystal makes), each counted in a note.
+  Records after the coordinates count too, and the PDB tools keep every record in step with the residues
+  they rename, renumber or re-chain (see [PDB clean-up](#pdb-clean-up)). Waters and ions are skipped
+  unless asked for (`--waters`, `--ions check`: ions against their first-shell distances, so Mg²⁺–O at
+  2.1 Å is coordination).
   Hydrogens are never part of it: their positions differ between programs, and the builder's ideal
-  A-form helix (the Arnott fiber) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
+  A-form helix (the Arnott fibre) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
   from the sugar's own geometry (1.09 Å from C2′, within 5° of the exact tetrahedral direction from C1′,
   C3′ and O2′; putting it exactly there moves the contact by under 0.03 Å): the short contact is the
-  fiber model's C2′(i)…C8/C6(i+1) of 3.5 Å, so smaller hydrogen radii would hide a geometry rather than
+  fibre model's C2′(i)…C8/C6(i+1) of 3.5 Å, so smaller hydrogen radii would hide a geometry rather than
   fix a threshold.
 - **Hydrogen contacts** (`--hydrogen-check`, off by default; reported in a section and columns of their
   own, `h_atoms h_clashes h_worst_overlap h_clashscore h_radii`, and never a gate or a filter): the
@@ -1763,7 +2090,7 @@ chain, number and insertion code, and every range is written as for the PDB tool
   (`--hydrogen-radii auto|nuclear|ecloud`); heavy atoms C 1.70, N 1.55, O 1.40, P 1.80 Å. An overlap
   of 0.4 Å or more is a clash; a polar hydrogen may overlap an acceptor by 0.6 Å (a hydrogen bond,
   Probe's `-HBRegular`) before the excess counts; pairs up to four bonds apart are left out; the
-  clashscore is clashes per 1000 atoms. On the fiber helix this flags every H2′(i)…H6/H8(i+1).
+  clashscore is clashes per 1000 atoms. On the fibre helix this flags every H2′(i)…H6/H8(i+1).
 - **Backbone**: O3′(i)–P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them
   (by name, whatever the distance): up to 2.0 Å a bond (`--link-max`); from 2.0 to 3.0 Å
   (`--link-fail`) a strained bond, a warning that gives the strain the first minimisation has to relax,
@@ -1774,7 +2101,9 @@ chain, number and insertion code, and every range is written as for the PDB tool
   longer than 3.0 Å a break (the chain is usually in two pieces), shorter than 1.4 Å an overlap, a
   missing atom an unmeasurable link, which fail the links gate. Report columns `strained_links` and
   `link_strain` (kcal/mol, every link outside the limits); consecutive P–P outside 5.0–7.5 Å are
-  reported.
+  reported. The bonds of LINK records (matched as the clash check matches them) are measured here too,
+  so `--checks links` alone lists them and warns of one longer than `--link-fail` (`2 LINK bond(s) longer
+  than 3 A (…)`: a broken junction), never a gate (JSON `links.link_bonds`).
 - **Loop compaction**: end-to-end distance over contour length along C1′ for `--segments` and for the
   runs of three or more residues unpaired in every `--secstruct` file given (two registers of one
   sequence, say: a segment that is a hairpin in one and a strand in the other is left out). Below 0.20
@@ -1838,7 +2167,9 @@ so the next step finds every file it was planned with: with *report* and *stop* 
 (inputs that were empty slots, decoys the set did not list) are empty slots too. *Kinks* and
 *Report hydrogen contacts* set the checks above. *Expected hands* is automatic by default: the hands
 measured on the first connected model when the plan is written (when it exists then; of a set of decoys
-the first it lists once its step has run), or the hand of a builder helix; *Ranges* takes them typed.
+the first it lists once its step has run), or the hand of a builder helix or of a builder chimera of one
+hand ("expected hands from the builder's L chimera"; a D/L chimera has no single hand, so until its model
+exists when the plan is written its hands are reported, not checked); *Ranges* takes them typed.
 Its script copies MDATK's PDB tools and model checks into the step folder, so the machine that runs it
 needs `python3` only, and removes the outputs of an earlier run
 first, so a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`,
@@ -1865,21 +2196,74 @@ partner, from the builtin engine, Barnaba or DSSR.
 
 *Structure builder* in RNAdo's header bar (or *RNAdo → Structure builder: open in RNAdo…* in the
 analysis window), `mdatk build` and the planner step *Structure builder (MDATK)* make starting
-structures without external programs.
+structures without external programs: ideal A-form RNA and B-form DNA helices of either hand, D/L
+chimeras of such helices ([below](#dl-chimeras)), base mutations and rigid-body fits into a density map.
+The window has a page for each (*Ideal helix*, *Chimera*, *Mutate*, *Fit to map*): *Check* validates
+the inputs of the first three without writing anything, *Write PDB* builds and writes (it asks before it
+replaces an existing file that the window suggested), and the two long jobs, the junction fits of a
+chimera and the density fit, run in the background with a progress bar and stop with *Cancel* (nothing
+is written, and the step log records the build as cancelled).
 
 **Ideal helices.** An A-form RNA duplex (Watson-Crick complement, or an explicit partner 5'→3' of the
-same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fiber
+same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fibre
 monomer (the `$ARNA` table of AmberTools' `dat/leap/parm/nucgen.dat`, embedded in MDATK): C3'-endo
 sugars, χ ≈ −166°, 11 bp per turn (twist 32.7°, rise 2.81 Å), Watson-Crick pairs with C1'–C1' 10.9 Å and
-O3'–P 1.59 Å. The **L** helix is the exact mirror image (left-handed, L-nucleotides) with L names from
-the PDB clean-up schemes: by default A/C/G/U and 0A/0C/0G/0U (all ATOM, no terminal variants), or
-`--scheme amber` (LA5 … LU3), `ccd`, `rosetta`, `pdb`. Chains start with a 5'-OH unless
-`--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by default). G·U pairs get an
-approximate wobble geometry (bases turned in their plane about C1'); other mismatches keep the
-Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre at the origin.
+O3'–P 1.59 Å. The **L** helix is the exact mirror image (left-handed, L-nucleotides) with the L names of
+the chosen scheme (*Residue names* below; by default 0A/0C/0G/0U, all ATOM, no terminal variants).
+Chains start with a 5'-OH unless `--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by
+default). G·U pairs get an approximate wobble geometry (bases turned in their plane about C1'); other
+mismatches keep the Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre
+at the origin.
 
-**Other pairings, parallel duplexes and triplexes.** `--pairing` (*Pairing* in the builder window and
-in the planner step) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form
+**B-form DNA.** `--na dna` (*Nucleic acid: DNA (B-form)* in the window and in the planner step) builds
+DNA with the same options: Watson-Crick duplexes (mismatches and G·T wobbles in an explicit partner) and
+single strands; the other pairings and the triplexes below are RNA only. U is read as T. Every nucleotide
+is the Arnott B-DNA fibre monomer (Arnott & Hukins 1972, which every DNA build cites; the `$ABDNA` table
+of the same `nucgen.dat`, embedded) on NAB's B-DNA screw, with the axis and dyad of the A-RNA helix:
+C3'-exo sugars (pseudorotation phase 192°), χ ≈ −98°, 10 bp per turn (twist 36.0°, rise 3.38 Å),
+Watson-Crick pairs with C1'–C1' 10.9 Å and O3'–P 1.60 Å. As published, its backbone (ε 155°, ζ −95°)
+puts OP2 of every nucleotide 2.69 Å from C2' of the one before (1.91 Å from its H2''), a heavy-atom clash
+of the [model check](#model-checks) at every step. The builder therefore turns P, OP1 and OP2 by 6° about
+the line O3'(i−1)–O5'(i), a crankshaft that keeps both bonds of the phosphodiester, the O3'–P–O5' angle
+and the PO2 group: C2'(i)–OP2(i+1) becomes 2.88 Å, C3'–O3'–P 123.2° and P–O5'–C5' 115.9° (published
+119.4° / 118.8°; 2.9 and 3.1 standard deviations from the targets of Parkinson et al. 1996), ε 155°,
+ζ −91°, α −53°, β −143°. 6° is the smallest whole turn that keeps every heavy-atom contact of the
+phosphate 0.05 Å outside the clash distance; the 10° that would also clear H2''–OP2 for the hydrogen
+check makes both angles validation outliers (5.1 and 4.4 standard deviations). A note and `REMARK 951
+PHOSPHATE TURNED 6 DEG ABOUT O3'-O5'` say so. The model check finds no heavy-atom clash in Watson-Crick
+duplexes, single strands and G·T wobbles of either hand; its hydrogen contacts, which only report (as
+for the A-form RNA), list H2''(i)…OP2(i+1) at 2.11 Å, the fibre model's own H1'(i)…H5'(i+1) at 1.84 Å
+and, before a thymine, its methyl 1.94 Å from H2'' and 2.47–2.48 Å from C6 / C8 of the 5' neighbour.
+With `--hydrogens` the 2'-deoxyribose carries H2' and H2'' as IUPAC and Amber's DNA libraries name them
+(H2'' cis to O3' and to H1', 2.27 Å from it; H2' trans to O3') and thymine a staggered methyl (H71–H73
+on C7). G·T pairs of an explicit partner are wobbles, turned in their plane like the G·U ones but kept
+clear of the sugars and the neighbours (G O6–T N3 2.73 Å, G N1–T O2 3.14 Å).
+
+**Residue names.** `--scheme` (*Residue names*) names every residue for its nucleic acid and hand, with
+the schemes of the [PDB clean-up](#pdb-clean-up); the records are ATOM but for the L residues of `pdb`:
+
+| `--scheme` | D-RNA | L-RNA | D-DNA | L-DNA |
+|---|---|---|---|---|
+| default, `rosetta` | A C G U | 0A 0C 0G 0U | DA DC DG DT | 0DA 0DC 0DG 0DT |
+| `amber` | A …; A5 / A3, one residue AN | LA …; LA5 / LA3, one residue LA5 | DA …; DA5 / DA3, DAN | LDA …; LDA5 / LDA3, LDAN |
+| `ccd` | A … | 0A …; 0A5 / 0A3 | DA … | 0DA … |
+| `pdb` | A … | 0A … (HETATM) | DA … | 0DA … (HETATM) |
+| `standard` | A … | A … (the hand is lost) | DA … | DA … (the hand is lost) |
+
+The Amber names are the units of AmberTools' RNA and DNA libraries and of Dudek & Trylska's
+`nucleic12_LRNA.lib`; LDA … are MDATK's own names in the same pattern, since AmberTools ships no L-DNA
+library (a note says that tleap needs units of these names). The CCD has no 5'/3' variants of DNA, so
+*5'/3' terminal names* matter for DNA in the `amber` scheme only; 0A5 / 0A3 are no CCD entries either (a
+5' end that keeps its phosphate is named after the component, 0A). 0DA, 0DC, 0DG and 0DT are the CCD's
+2'-deoxy-L-ribonucleotides, and two of them spell some atoms their own way: 0DA its adenine N9A, C8A,
+N7A … (H8A, H2A, HN61, HN62), 0DT its methyl carbon C5M. MDATK writes these names for every residue
+named 0DA / 0DT, so that Coot and Phenix find every atom in the dictionary, and reads them back as the
+standard names (N9, C8 … C7; a file that has the standard names there is read the same, with a note);
+LDA … have the standard names. The PDB clean-up reads every name of the table but renames RNA only:
+`mdatk pdb clean --scheme …` keeps DNA names, so the builder names DNA itself.
+
+**Other pairings, parallel duplexes and triplexes** (RNA). `--pairing` (*Pairing* in the builder window
+and in the planner step) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form
 duplex above, unchanged. The Leontis-Westhof rules fix the strand orientation:
 
 | `--pairing` | pairs (strand 1 · strand 2) | strands | Leontis-Westhof |
@@ -1933,7 +2317,11 @@ they are, the residue keeps its name scheme, chirality and terminal variant (LG5
 G5 → C5) and record type. Hydrogens of the old base are dropped (the new base has heavy atoms only).
 With *compensatory* mutations (default) every mutated base that is Watson-Crick / G·U paired in the
 input (builtin pair detection) gets its partner changed to the complement unless the partner is mutated
-explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed.
+explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed. A DNA
+residue gets the base of the B-DNA monomer (A, C, G, T; U is read as T, and T on an RNA residue is an
+error) and keeps its name pattern (DA5 → DT5, 0DA → 0DT, LDT3 → LDA3); its partner gets the DNA
+complement (`--wobble`: G·T), and a partner of the other nucleic acid is left as it is, with a note.
+LINK records (the junctions of a [chimera](#dl-chimeras)) follow the renamed residues.
 
 **Rigid-body fit.** The density-map fit of `mdatk density fit` (global search: rotations × FFT
 translations, then local refinement; or local refinement of the model as placed) applied to a PDB
@@ -1945,14 +2333,160 @@ mdatk build helix --seq GGCAUCGAUGCC -o helix.pdb                      # D duple
 mdatk build helix --seq GGCAU --chirality L --scheme amber --hydrogens -o lhelix.pdb
 mdatk build helix --seq GGCAU --partner AAGCU -o wobble.pdb            # G·U + A·A mismatch
 mdatk build helix --seq GGACU --partner none --chains C --start 45 -o strand.pdb
+mdatk build helix --seq GATCGTACGT --na dna -o bdna.pdb                # B-form DNA duplex, DA/DC/DG/DT
+mdatk build helix --seq GGCAT --na dna --chirality L --scheme amber --hydrogens -o ldna.pdb  # LDG5 … LDT3
+mdatk build helix --seq GGCAT --na dna --partner ATGTC -o gt.pdb       # one G·T wobble
 mdatk build mutate lhelix.pdb "A:2C, B:3G" [--no-compensatory] [--wobble] -o mutant.pdb
 mdatk build fit model.pdb map.mrc --resolution 4 [--search local] [--step 30] -o fitted.pdb
 ```
 
-Add `-p project.mdatk.toml` to log the step (the fit logs its correlation). The planner step writes a
-short script calling `python3 -m mdatk build …` (the step's *Python*, which must be able to import
-MDATK; with the default `python3`, a step written from the Linux AppImage calls the AppImage itself);
-its inputs are the model (mutate, fit) and the map (fit), its output the PDB.
+Add `-p project.mdatk.toml` to log the step (the fit logs its correlation; a helix or a chimera cites the
+Arnott fibre model of each nucleic acid it holds and, for the other pairings, PDB 4JRD). The planner
+step writes a short script calling `python3 -m mdatk build …` (the step's *Python*, which must be able
+to import MDATK; with the default `python3`, a step written from the Linux AppImage calls the AppImage
+itself). Its modes are *Ideal helix* (*Nucleic acid* RNA or DNA; *Pairing* and *Triplex* for RNA only),
+*D/L chimera*, *Mutate bases* and *Fit into a density map*; the residue names, terminal names,
+5'-phosphate and hydrogens of a helix or a chimera are on its page *Names & atoms*. A chain id that
+starts with `-` is written as one word (`--chains=-,B`), so that argparse does not take it for an
+option. Its inputs are the model (mutate, fit) and the map (fit), its outputs the PDB and, for a
+Watson-Crick duplex of RNA or DNA, the secondary structure (DNA's T is read as U there: A·T and G·T have
+the hydrogen-bond atoms of A·U and G·U that the restraint steps use; the `.secstruct` file keeps the T).
+The PDB tells the steps it feeds the hand of what was built (D, L, or mixed for a chimera of both hands)
+and whether it has L-RNA residues: the model check expects that hand (a mixed chimera has none, so its
+hands are reported, not checked, until its model exists when the plan is written), and the refinement
+steps ask for L-RNA restraint dictionaries and the Amber build generates its L-RNA library only for
+L-RNA (L-DNA needs neither). The Amber build loads RNA
+force fields only: DNA needs a DNA force field as well (e.g. `source leaprc.DNA.OL15` under *Leap
+commands before parameter files*), and L-DNA residue units of MDATK's names LDA … (AmberTools has none,
+and the generated L-RNA library has no L-DNA units either).
+
+### D/L chimeras
+
+`mdatk build chimera --design "…"` (the *Chimera* page of the window, the mode *D/L chimera* of the
+planner step) joins ideal helices of the builder, each of its own hand and nucleic acid, through strand
+1: by phosphodiesters (3'-5', 5'-3') or by a phosphate that bridges two 3' or two 5' ends (3'-3',
+5'-5'). A design is one line of tokens separated by spaces, `SEGMENT LINK SEGMENT [LINK SEGMENT …]`:
+
+- a **segment** is `HAND[-NA]:SEQUENCE[/PARTNER]`: `HAND` D or L; `NA` RNA or DNA, in either case
+  (without it the segment takes `--na`, the *Default nucleic acid*, RNA unless set); `SEQUENCE` strand 1 of
+  the segment 5'→3' (RNA reads T as U, DNA U as T, with a note); `PARTNER` `auto` or nothing (the
+  Watson-Crick complement: an A-form RNA or B-form DNA duplex), `none` or `-` (a single strand) or the
+  partner strand 5'→3' of the same length (mismatches and G·U / G·T wobbles are allowed and reported);
+- a **link** is `3'-5'`, `5'-3'`, `3'-3'` or `5'-5'` (also written `3-5`, `35` or `3'5'`, typographic
+  primes too). Its first end is the free end of the strand built so far: segment 1 is read 5'→3' unless
+  the first link starts at 5'; after a link that ends at 3' (`3'-3'`, `5'-3'`) the next segment is read
+  3'→5', so that its free end is its 5' end, and after one that ends at 5' it is read 5'→3'. A link at
+  the wrong end is an error that says why and which links fit: `link 2 (5'-3') starts at a 5' end, but
+  the free end of segment 2 (L-RNA:GCC, read 5'->3' after link 1 3'-5') is its 3' end: use 3'-5' or
+  3'-3'`.
+
+| design | the strand as the notes write it | chains |
+|---|---|---|
+| `D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC` | `5'-D-RNA(6)-p-L-RNA(6)-3'`: a D and an L duplex on one strand 1 | 3 |
+| `D-DNA:GGCAT 3'-3' L-DNA:GGCAT` | `5'-D-DNA(5)-3'p3'-L-DNA(5)-5'`: two 3' ends bonded to one phosphate | 4 |
+| `D:GAUC/none 5'-5' L-DNA:GATC` | `3'-D-RNA(4)-5'p5'-L-DNA(4)-3'`: an RNA single strand and an L-DNA duplex | 3 |
+| `D-RNA:GGCC 3'-5' D-DNA:GGCC` | `5'-D-RNA(4)-p-D-DNA(4)-3'`: RNA and DNA of one hand | 3 |
+| `D:GG 5'-3' L:CC 5'-5' D:AA` | `3'-D-RNA(2)-p-L-RNA(2)-5'p5'-D-RNA(2)-3'`: three segments | 5 |
+
+**The junction fit.** Every segment is the builder's ideal helix (or single strand) of its nucleic acid
+and hand; segment 1 stays where the builder puts it, and every next one is placed as a rigid body on the
+structure built so far: O–P 1.60 Å, C–O–P 119.7° and O–P–O 104° (the targets of the builder's backbone
+closure, Parkinson et al. 1996), the end pairs stacked 3.6 Å apart (a weak wish at a bridge, where the
+ends meet head to head). The residue that carries the P of a phosphodiester gets its OP1 and OP2 rebuilt
+from P, O3' and O5' in every step of the fit, as the builder builds a phosphate (P–OP 1.485 Å, OP1–P–OP2
+119.6°, so O3'–P–OP about 108°; OP1 named by the residue's hand), so that the O3' cannot land on an OP
+or invert the P. When that residue is DNA, its γ and β may turn as well, pulled back towards the B-form;
+an RNA one stays rigid. A 3'-3' or 5'-5' link adds a free phosphorus bonded to both O3' (O5'), with OP1
+and OP2 built the same way. Contacts are scored for the pairs four or more bonds apart through the
+junction, with the segments' hydrogens whether or not they are written (so the heavy atoms do not depend
+on `--hydrogens`): heavy atoms 3.2 Å from every atom already placed, 3.0 Å four or five bonds apart
+(3.2 Å between two DNA residues), never closer than the model check's clash distance plus 0.1 Å (C–C
+3.1, P–C 3.2 Å); hydrogens 2.1 Å from hydrogens and 2.4 Å from heavy atoms; a bridge 2.9 Å from every
+atom but the two oxygens it is bonded to and their carbons. 18 turns about the axis of the previous
+segment × 2 tilts (7 for a turning or bridged link) are fitted to the junction terms, and the 8 lowest in
+the full cost, one per pose, are refitted with the contacts. The design and its mirror image (every hand
+flipped) are both fitted, and the lower cost is written, as it is or as the exact mirror image, so a
+design and its twin give exact mirror images, hydrogens included. The two fits take seconds per junction
+(the examples below 2–6 s each, start-up included); the RNAdo window keeps the fits of the last 64
+designs, so building one again with other names or hydrogens refits nothing. With `--phosphate5` a
+partner strand's 5' end at a junction keeps a 5'-OH (its phosphate would stand in the way of the next
+segment's end pair). A junction is no minimised geometry: these are **starting models to be
+minimised** (`REMARK 951 RIGID-BODY JUNCTION: MINIMISE BEFORE PRODUCTION`).
+
+**Output.** Strand 1 is split into chains at the bridges, each written 5'→3' (a segment read 3'→5' is
+written 5'→3' like any chain, so consecutive residues of a chain are always O3'(i)–P(i+1) linked); the
+partner strands follow in segment order. Chains are A, B, C … (`--chains`, *Chain ids*: one id per
+chain), residues are numbered from 1 in each. A bridging phosphate is a residue PO2 (P, OP1, OP2;
+HETATM, ATOM in the `standard` scheme) written as a TER segment of its own after the run before it, with
+that run's chain id and the number after its last residue, so that FASTA and SEQRES leave it out; LINK
+records give its two O–P bonds and CONECT records its four bonds. Every residue is named for its hand
+and nucleic acid in the chosen scheme (the table above), with terminal variants at the free strand ends
+only: the residues bonded through a junction get internal names, OP3 (`--phosphate5`) goes on free 5'
+ends only, HO5' / HO3' (`--hydrogens`) on free hydroxyl ends. The model is centred on its heavy atoms; a
+design too long for the PDB coordinate columns (2000 Å for a centred model) is refused before any fit.
+The header names the strand, every segment and every junction (`--scheme amber`):
+
+```text
+REMARK 951 MDATK CHIMERA 5'-D-DNA(5)-3'p3'-L-DNA(5)-5'
+REMARK 951 SEGMENT 1 A:1-5 D-DNA B-FORM, PARTNER C:1-5, GGCAT
+REMARK 951 SEGMENT 2 B:1-5 L-DNA B-FORM, PARTNER D:1-5, GGCAT
+REMARK 951 JUNCTION 1 3'-3' A:5:O3'-A:6:P-B:5:O3' (PO2): O-P 1.60/1.60 A, C3'-O3'-P 121.8/121.0, …
+REMARK 951 RIGID-BODY JUNCTION: MINIMISE BEFORE PRODUCTION
+LINK         O3'  DT A   5                 P   PO2 A   6     1555   1555  1.60
+LINK         P   PO2 A   6                 O3' LDT B   5     1555   1555  1.60
+…
+TER     102       DT A   5
+HETATM  103  P   PO2 A   6       4.900  -5.404  -0.305  1.00  0.00           P
+…
+TER     106      PO2 A   6
+```
+
+**Notes.** For every junction its bonds and angles (for a phosphodiester O3'–P–OP1 / OP2 too), the γ / β
+turns of a DNA residue, how far apart the end pairs are, the closest heavy-atom contact between the
+segments, that of a hydrogen (`--hydrogens`) and that of the bridging phosphate; which fit was written
+(the design's own or its twin's mirror image, with both costs); the pairs, mismatches and wobbles of
+every segment; the names; the turned B-DNA phosphates when there is DNA; the size. A junction of the written
+model that misses its targets (an O–P bond by more than 0.05 Å, an angle by more than 10°, a
+phosphodiester's end pairs more than 2.5 Å beyond the stacking, a pair more than 0.1 Å inside its
+contact distance) gets a `WARNING: junction k (link) did not close: …` note with the numbers and the fit
+cost: `D:GC 3'-5' L:A 3'-5' D:GC`, whose one-pair segment cannot stack, warns of end pairs 6.87 Å apart.
+*Check* and the planner's checks read the design without fitting it: the strand, the pairs of every
+segment, the atom count, the chain ids and the errors.
+
+**Amber.** tleap has no unit for PO2 and does not read LINK records. With `--scheme amber` the notes say
+what it needs: a PO2 unit (P, OP1, OP2; MDATK writes none) loaded before `loadpdb`, and after it the
+`bond` commands for the LINK atoms, written for a unit `m = loadpdb …` with the residues numbered as
+tleap numbers them, in file order across the chains (`bond m.6.P m.5.O3' (A:6 P - A:5 O3'); bond
+m.6.P m.11.O3' (A:6 P - B:5 O3')` for the example above). The residues bonded to a 5'-5' bridge have
+internal names but no phosphate of their own, so their units must not add one (tleap adds the atoms a
+unit has and the file lacks), and L-DNA needs units of MDATK's names LDA … (AmberTools has no L-DNA
+library). The bond commands follow tleap's syntax and were not run with tleap here. The Amber build
+step does not handle a bridge for you: its PDB preparation keeps no LINK records. It keeps the PO2
+itself (*Remove 5′-terminal phosphates* removes the 5'-phosphates of nucleotides only), so tleap stops
+at a PO2 it has no unit for instead of building the two strands unconnected; list a PO2 unit under
+*Extra residue libraries* and put the bond commands, for the unit `mol`, under *Leap commands after
+loadpdb* (not tried with tleap either).
+
+The [model check](#model-checks) bonds the LINK records, so the 1.6 Å bonds of a bridge are no clashes,
+and the [PDB tools](#pdb-clean-up) keep the records in step with the residues when they rename,
+renumber or re-chain them, and name LINK-bonded chain ends as the builder does (`mdatk pdb clean`
+strips the CONECT records by default; the LINK records stay). The window's *Chimera* page has the design
+(its tooltip gives the grammar and three of the examples), the default nucleic acid, the chain ids, the
+names and atoms, and an output named after the design next to the project file
+(`chimera_D-RNA6_p_L-RNA6_c1e9cc.pdb`, `chimera_D-DNA5_3p3_L-DNA5_882f20.pdb`: the segments, the links
+and six hex digits of the design, so that two designs of one layout get two files) until you choose
+your own. *Check* reports wrong chain ids as the command line and the planner step do, and the step-log
+entry is the command line's (`build chimera`, *Chimera* and the strand, the notes, the citations), its
+summary led by the design and the options (`Design: D:GC 3'-3' L:GC (default nucleic acid RNA; chains
+P,Q,R,S; residue names amber)`). The planner step's mode has no inputs and writes the PDB only (no
+secondary structure); its *Chain ids* are checked against the chains the design writes.
+
+```bash
+mdatk build chimera --design "D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC" -o dl_rna.pdb
+mdatk build chimera --design "D-DNA:GGCAT 3'-3' L-DNA:GGCAT" --scheme amber -o dl_dna_33.pdb
+mdatk build chimera --design "D:GAUC/none 5'-5' L-DNA:GATC" --hydrogens --chains P,Q,R -o mixed.pdb
+mdatk build chimera --na dna --design "D:GGCAT 3'-5' L:ATGCC" -o dna_35.pdb   # the segments are DNA
+```
 
 ## Restraint dictionaries, real-space refinement and MDFF
 
@@ -2031,7 +2565,13 @@ Checks: a missing model / map / resolution, a resolution outside 1–20 Å, map 
 L-RNA 5'/3' variants (0A5, 0G3 …) without restraint dictionaries (the CCD defines only 0A/0C/0G/0U),
 dictionaries that miss a code of the model, Amber-style names (LA/LA5, A5/A3) and L sugars with D names
 (cpptraj output) that Phenix and Coot would not recognise or would restrain as D - convert those with
-`mdatk pdb clean --scheme ccd` first.
+`mdatk pdb clean --scheme ccd` first. L-DNA needs no dictionaries: 0DA, 0DC, 0DG and 0DT are CCD
+entries without 5'/3' variants (an info line says so). DNA names the CCD lacks (DA5 / DA3, LDA …) and
+L-DNA sugars with D-DNA names get a warning of their own, with a fix that works: rename them to DA, DC,
+DG, DT (L-DNA: 0DA, 0DC, 0DG, 0DT), since `mdatk pdb clean` renames RNA only, or build them with
+*Residue names: CCD for Coot / Phenix* (`--scheme ccd`). Before the model exists, the builder's port
+data say whether it will have L-RNA: only then are the dictionaries asked for ("the model is L-RNA",
+"the model has L-RNA residues (a D/L chimera)").
 
 ```bash
 mdatk workflow generate phenix-rsr -i model=model_ccd.pdb -i map=emd_1234.map \
@@ -2153,7 +2693,7 @@ VMD and writes its own restraints:
   (C1′ O4′ N C2′, C2′ C1′ O2′ C3′, C3′ C2′ O3′ C4′, C4′ C3′ O4′ C5′), default
   200 kcal/mol/rad². N is the base atom bonded to C1′: N9 or N1, or C5 for C-nucleosides such as
   pseudouridine.
-  - The targets come from the C3'-endo Arnott A-RNA fiber nucleotide of MDATK's helix builder:
+  - The targets come from the C3'-endo Arnott A-RNA fibre nucleotide of MDATK's helix builder:
     −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
     residues.
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
@@ -2404,7 +2944,10 @@ are used. The citations appear
   (BibTeX)…*, and in RNAdo's *About RNAdo* (the plan), with *Export BibTeX…*.
 
 The reference data live in `mdatk/_citation_data.py`; each entry records where its details were
-checked (the paper's PDF, the project's own citation file, or a reference list).
+checked (the paper's PDF, the project's own citation file, or a reference list), or that they are from
+memory: so is all of Arnott & Hukins 1972 (*Optimised parameters for A-DNA and B-DNA*, Biochem.
+Biophys. Res. Commun. 47, 1504–1509; `arnott1972dna`), the B-DNA fibre model of the structure builder,
+which DNA helices and chimeras with DNA segments cite.
 
 ## Command line reference
 
@@ -2438,19 +2981,24 @@ RNAdo and its tools:
 rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo, the workflow planner (rnado-gui: no terminal)
 rnado --install-launchers          the same as mdatk desktop install
 rnado ACTION ...                   the same as mdatk workflow ACTION ... (tools, check, write, run,
-                                   status, generate, template, restraints)
+                                   status, manifest, generate, template, restraints)
 mdatk rnado ...                    the same as rnado ...
 mdatk gui --rnado [PROJECT] [--open wizard|pdb|builder]   RNAdo instead of the analysis window
                                    (--planner is the same as --rnado; --open alone starts RNAdo too)
 mdatk workflow tools [TOOL]        step types, or the options of one
 mdatk workflow template [NAME] [-p PROJECT]   list templates, or add one to a project's plan
 mdatk workflow check  -p PROJECT   resolve the plan and list its problems
-mdatk workflow write  -p PROJECT [--step N] [--force] [--no-save] [--dry-run] [--run [--parallel N]
-                      [--cores N] [--gpus N] [--include-separate]]
-mdatk workflow run    -p PROJECT [--step N] [--parallel N] [--cores N] [--gpus N] [--include-separate]
+mdatk workflow write  -p PROJECT [--step STEP] [--force] [--no-save] [--dry-run] [--delete-old-runs]
+                      [--run [--parallel N] [--cores N] [--gpus N] [--include-separate]]
+mdatk workflow run    -p PROJECT [--step STEP] [--parallel N] [--cores N] [--gpus N] [--include-separate]
                                    CPU cores (0: half of them) and GPUs (-1: those found) the scripts
                                    share; --parallel caps the scripts at once (0: no limit)
-mdatk workflow status -p PROJECT [--step N] [--adopt | --forget] [--json]
+mdatk workflow status -p PROJECT [--step STEP] [--adopt | --forget] [--json]
+                                   STEP: a step number (every step with it), a step folder
+                                   (03_amber-md_model12) or a node id (n4)
+mdatk workflow manifest -p PROJECT [--tree DIR] [--table] [--json]   the plan's steps against the step
+                                   folders of a tree (default: the plan folder); --table: the MANIFEST
+                                   a write of every step leaves
 mdatk workflow generate TOOL [-o DIR] [--step N] [-i PORT=PATH ...] [-s KEY=VALUE ...] [--dry-run] [--run]
 mdatk workflow generate user-script -i NAME=PATH --set source=file --set script_file=SCRIPT \
     --set interpreter=bash|python3|custom [--set command=CMD] --set 'inputs=[...]' \
@@ -2459,7 +3007,7 @@ mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] 
 mdatk pdb check|clean|to-lrna|annotate|qc   (see PDB clean-up and Model checks)
 mdatk pdb check|clean|to-lrna|annotate|interface   (see PDB clean-up, Decoy interfaces)
 mdatk decoys census|clusters|support   interfaces of an ensemble of models (see Decoy interfaces)
-mdatk build helix|mutate|fit       (see Structure builder)
+mdatk build helix|chimera|mutate|fit   (see Structure builder, D/L chimeras)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 mdatk rosetta scores SILENT|DIR ... [--term T] [--max T=X] [--tsv OUT] [--extracted DIR] [--legacy-index N]
 mdatk rosetta audit ROOT ... [--pair C=T] [--pair-suffix S] [--controlled RANGES] [--allow=-FLAG]
@@ -2475,7 +3023,10 @@ mdatk pdb hybrids OLD NEW --body NAME=RANGES ... [--map MAP]   old/new body comb
 ```
 
 `run` and `write --run` exit with status 75 when a step waits for a separately run script (see [Running
-steps](#running-steps)); `status` without `--adopt` / `--forget` only reports. The planner commands
+steps](#running-steps)), also when its main script waits with exit status 0 and a `.waiting` file;
+`status` without `--adopt` / `--forget` only reports; `manifest` exits with 1 when a step's folder holds
+another step's files or files no step can be told for (see [Folder tags and
+MANIFEST](#folder-tags-and-manifest)). The planner commands
 share `-p/--project`, `-o/--out-dir` (the plan folder), `--project-name`, `--stamp`, `--no-stamp` and
 `-q/--quiet`; `mdatk workflow ACTION --help` lists the rest. Examples are in [Command
 line](#command-line) and the sections on the tools.
@@ -2519,8 +3070,9 @@ density    map_path, show, resolution, level, color, opacity, front, fit_frame, 
 layout     preset, panels[] {type, series[], title, options{}}
 output     out_dir, cache_dir, video{...}, charts{...}, pdb{...}, write_params_log, timestamp_files
 workflow   project_name, stamp, use_stamp, out_dir, step_folders, supersede_runs, parallel, cpu_cores, gpus,
-           nodes[] {id, tool, step, title, x, y, settings{}, files{}, adopted},
-           edges[] {source, output, target, input}, scratch[] (stand-alone wizard settings)
+           last_node (once a step is added), nodes[] {id, tool, step, title, x, y, settings{}, files{},
+           adopted, folder_tag (when set)}, edges[] {source, output, target, input},
+           scratch[] (stand-alone wizard settings)
 ```
 
 RNAdo writes only the `workflow` section; the analysis window writes the rest and keeps the plan RNAdo
@@ -2558,7 +3110,10 @@ mdatk/
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
   annotate.py        REMARK 950 base-pair / stacking / dot-bracket annotation
-  builder.py         structure builder: ideal and non-canonical helices (D / L), mutations, map fits
+  builder.py         structure builder: ideal A-form RNA (also non-canonical pairings, triplexes) and
+                     B-form DNA helices (D / L), mutations, map fits
+  chimera.py         D/L chimeras of the builder's helices: designs, junction fits, PO2 bridges with
+                     LINK / CONECT records
   dictionaries.py    restraint dictionaries for L-RNA residues (SMILES, renaming, PubChem lookup)
   citations.py       per-use citations (data in _citation_data.py)
   workflows/         script generators: schema.py (option schemas, shared with the wizard),
@@ -2567,8 +3122,10 @@ mdatk/
                      dictstep.py, refine.py (Phenix, Coot), userscript.py (custom scripts), misc.py
                      (notes, existing files, MDATK analysis); plan.py resolves the plan graph and
                      names files; runner.py runs generated scripts on request, within the CPU and
-                     GPU budgets of budget.py; runstate.py finds earlier runs; commands.py reads the
-                     commands out of a script (the wizard's Commands tab)
+                     GPU budgets of budget.py; runstate.py finds earlier runs; manifest.py records
+                     which step folder is which step's (MANIFEST, MDATK_step.toml) and matches a plan
+                     to a tree; commands.py reads the commands out of a script (the wizard's Commands
+                     tab)
     scripts/         self-contained helper programs embedded in generated workflows: prep_pdb.py,
                      cp_retype.py, tip4p2005.py, lrna_lib.py (generated L-RNA library),
                      lrna_names.py (L names before tleap), topcheck.py (topology check),
@@ -2676,7 +3233,12 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   selected steps*, *Run step…*, *Write and run…*). Generated scripts call the programs by name
   (`tleap`, `parmed`, `pmemd.cuda`, `rna_denovo`, `gmx` …); use the *Environment* section of each
   step (conda environment, `module load`, `source amber.sh`) when they are not on PATH. Scripts get
-  your own `PYTHONPATH`, also when the analysis window started RNAdo.
+  your own `PYTHONPATH`, also when the analysis window started RNAdo. `conda init` puts conda on PATH
+  for interactive shells only, so RNAdo started from the applications menu has none: when a script it
+  runs uses conda (a step's *Conda environment*) and conda is not on PATH, RNAdo and `mdatk workflow
+  run` find it as MDATK finds cpptraj (`$CONDA_EXE`, `~/miniforge3`, `~/miniconda3`, `~/anaconda3`, …,
+  `~/.conda/environments.txt`) and put its `condabin` folder first on the script's PATH, saying so in
+  the log; when none is found the log says how to point MDATK at it (`CONDA_EXE`).
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame
@@ -2696,8 +3258,15 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   contacts (e.g. reverse-wc twist ≈ 22°, rise ≈ 4.2 Å; triplex rise ≈ 5 Å, so stacked bases are
   ≈ 4.4 Å apart), and some backbone torsions are unusual. Minimise or restrain them before production
   MD; long sequences take a few seconds per 10 nt to build.
-- Ideal helices are starting models: hydrogens, OP3 and G·U wobble placements are idealised, and a
-  self-complementary duplex fitted into a map may come out with its strands swapped.
+- Ideal helices are starting models: hydrogens, OP3 and G·U (DNA: G·T) wobble placements are idealised,
+  the B-DNA phosphates are turned 6° from the fibre model (C3′–O3′–P and P–O5′–C5′ about 3 standard
+  deviations off their targets), and a self-complementary duplex fitted into a map may come out with its
+  strands swapped.
+- D/L chimeras are ideal helices joined by rigid-body fits: the bonds and angles at a junction are on
+  target, but its torsions (ζ, α) are not restrained and its stacking is what the fit found, so minimise
+  them before production. For tleap they need a PO2 unit and `bond` commands, DNA a DNA force field and
+  L-DNA residue units of their own, none of which the Amber build step provides (its PDB preparation
+  keeps a bridging PO2 but no LINK records; see [D/L chimeras](#dl-chimeras)).
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.

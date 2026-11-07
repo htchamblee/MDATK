@@ -626,9 +626,17 @@ def cmd_decoys(args) -> int:
 def cmd_build(args) -> int:
     from . import builder
     from .projectfile import logged
+    na = "rna"
     if args.build_command == "helix":
-        kind = builder.helix_kind(getattr(args, "pairing", "wc"), getattr(args, "triplex", None))
-        title = f"Ideal {kind} {args.chirality}-RNA helix {args.seq.strip()}"
+        na = builder.check_na(getattr(args, "na", "rna"))  # the step-log title says D-DNA / L-DNA
+        kind = builder.helix_kind(getattr(args, "pairing", "wc"), getattr(args, "triplex", None), na)
+        title = f"Ideal {kind} {args.chirality}-{na.upper()} helix {args.seq.strip()}"
+    elif args.build_command == "chimera":
+        from . import chimera
+        try:  # a design that does not parse fails inside the logged step, with its own message
+            title = f"Chimera {chimera.describe(args.design, getattr(args, 'na', 'rna'))}"
+        except builder.BuildError:
+            title = f"Chimera {args.design.strip()}"
     elif args.build_command == "mutate":
         title = f"Mutation of {os.path.basename(args.input)}: {args.mutations.strip()}"
     else:
@@ -643,7 +651,13 @@ def cmd_build(args) -> int:
         if args.build_command == "helix":
             from .citations import keys_for
             other = getattr(args, "pairing", "wc") != "wc" or getattr(args, "triplex", "none") not in (None, "", "none")
-            entry.citations = keys_for(["arnott-arna"] + (["pdb-4jrd"] if other else []))  # the template sources
+            fiber = "arnott-bdna" if na == "dna" else "arnott-arna"
+            entry.citations = keys_for([fiber] + (["pdb-4jrd"] if other else []))  # the template sources
+        elif args.build_command == "chimera":
+            from .citations import keys_for
+            fibers = {"rna": "arnott-arna", "dna": "arnott-bdna"}  # the helices of the segments, in order of use
+            used = chimera.nucleic_acids(args.design, getattr(args, "na", "rna"))
+            entry.citations = keys_for([fibers[n] for n in used])
     if res.cc is not None:
         print(json.dumps({"output": os.path.abspath(args.output), "cc": round(res.cc, 4)}, indent=2))
     return 0
@@ -720,6 +734,40 @@ def _workflow_project(args) -> Project:
     return project
 
 
+STEP_HELP = ("only this step: its number (every step with it), its folder (e.g. 03_amber-md_model12) or its "
+             "node id (e.g. n3; MANIFEST and 'workflow manifest' list them)")
+
+
+def _step_ids(workflow, value: Optional[str]) -> Optional[List[str]]:
+    """The node ids ``--step`` selects (None: every step): a step number selects every step with it, a step
+    folder the one step writing into it (steps that share a number have folder tags that tell them apart)
+    and a node id that step."""
+    from .workflows.plan import node_folder
+    if value is None:
+        return None
+    text = str(value).strip().rstrip("/")
+    if text.isdigit():
+        ids = [n.id for n in workflow.nodes if n.step == int(text)]
+        if not ids:
+            raise ValueError(f"no step number {int(text)} in the plan")
+        return ids
+    ids = [n.id for n in workflow.nodes if text and node_folder(workflow, n) == text] or \
+        [n.id for n in workflow.nodes if n.id == text]
+    if not ids:
+        raise ValueError(f"no step {text!r} in the plan: give a step number, a step folder (e.g. 03_amber-md) "
+                         "or a node id (e.g. n3)")
+    return ids
+
+
+def _step_arg(plan, node_id: str) -> str:
+    """What ``--step`` takes to select exactly this step: its number, or its folder (or node id) when
+    another step has the number."""
+    step = plan.steps[node_id]
+    if not any(s is not step and s.node.step == step.node.step for s in plan.steps.values()):
+        return str(step.node.step)
+    return (step.ctx.folder if step.ctx is not None and step.ctx.folder else "") or node_id
+
+
 def cmd_workflow_check(args) -> int:
     from .workflows.plan import Plan
     project = _workflow_project(args)
@@ -739,7 +787,8 @@ def _print_superseded(items, quiet: bool = False, dry_run: bool = False) -> int:
         failed += bool(item.error)
         if quiet and not item.error and not dry_run:
             continue
-        head = "ERROR" if item.error else ("would move" if dry_run else "moved")
+        done = "deleted" if item.deleted else "moved"
+        head = "ERROR" if item.error else ("would move" if dry_run else done)
         lines = item.lines(limit=10 if dry_run else 20)
         print(f"{head:8s} {lines[0]}", file=sys.stderr)
         for line in lines[1:]:
@@ -749,6 +798,7 @@ def _print_superseded(items, quiet: bool = False, dry_run: bool = False) -> int:
 
 def cmd_workflow_write(args) -> int:
     from .workflows import supersede
+    from .workflows.manifest import IDENTITY, MANIFEST
     from .workflows.plan import Plan
     project = _workflow_project(args)
     if args.dry_run and args.run:
@@ -756,11 +806,7 @@ def cmd_workflow_write(args) -> int:
     # a bad --parallel / --cores / --gpus fails before writing
     parallel, budget = (_parallel(args, project), _budget(args, project)) if args.run else (1, None)
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
-    ids = None
-    if args.step is not None:
-        ids = [n.id for n in project.workflow.nodes if n.step == args.step]
-        if not ids:
-            raise ValueError(f"no step number {args.step} in the plan")
+    ids = _step_ids(project.workflow, args.step)
     n_err = _print_issues(plan, quiet=args.quiet)
     if n_err and not args.force:
         print("error: the plan has errors (fix them or use --force to write the other steps)", file=sys.stderr)
@@ -769,27 +815,36 @@ def cmd_workflow_write(args) -> int:
         moving = supersede.pending(plan, ids)
         _print_superseded(moving.values(), args.quiet, dry_run=True)
         targets = [n for n in (ids if ids is not None else plan.order) if not plan.steps[n].adopted]
+        generated = plan.generate(targets)
         files = [os.path.join(plan.root, plan.steps[n].ctx.from_own(f.name))
-                 for n, fs in plan.generate(targets).items() for f in fs]
+                 for n, fs in generated.items() for f in fs]
+        records = [os.path.join(plan.root, plan.steps[n].ctx.folder, IDENTITY)
+                   for n, fs in generated.items() if fs and plan.steps[n].ctx.folder]
         out = {"folder": plan.root, "dry_run": True, "write": files,
+               "records": [os.path.join(plan.root, MANIFEST)] + records,
                "superseded": [i.plain() for i in moving.values()]}
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
     stamp_was = project.workflow.stamp
     from .projectfile import logged
     with logged(_project_file(args), "workflow write", "Generated the plan's files") as entry:
-        report = plan.write(ids, project_path=_project_file(args))
+        report = plan.write(ids, project_path=_project_file(args), discard=args.delete_old_runs)
         entry.folder = report.root
         entry.files = list(report.written)
         entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
         if report.superseded:
-            entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+            entry.summary += f", {len(report.superseded)} completed run(s) " + (
+                "deleted" if args.delete_old_runs else "moved aside")
     failed = _print_superseded(report.superseded.values(), args.quiet)
+    if report.records_error:  # bookkeeping only: the step files are written
+        print(f"WARNING  {MANIFEST} / {IDENTITY} not written: {report.records_error}", file=sys.stderr)
     if args.params and not stamp_was and project.workflow.stamp and not args.no_save:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
         _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
     out = {"folder": report.root, "written": report.written, "skipped": report.skipped,
-           "master": report.master, "summary": report.summary}
+           "master": report.master, "summary": report.summary, "manifest": report.manifest}
+    if report.records_error:
+        out["records_error"] = report.records_error
     if report.kept:  # steps that use the outputs of an earlier run: not written
         out["kept"] = report.kept
     if report.superseded:  # completed runs moved aside before their steps were written
@@ -806,11 +861,7 @@ def cmd_workflow_run(args) -> int:
     from .workflows.plan import Plan
     project = _workflow_project(args)
     plan = Plan(project.workflow, project.workflow_dir, project.groups)
-    ids = None
-    if args.step is not None:
-        ids = [n.id for n in project.workflow.nodes if n.step == args.step]
-        if not ids:
-            raise ValueError(f"no step number {args.step} in the plan")
+    ids = _step_ids(project.workflow, args.step)
     return _run_plan_scripts(plan, ids, _project_file(args), _parallel(args, project), args.include_separate,
                              _budget(args, project))
 
@@ -820,11 +871,7 @@ def cmd_workflow_status(args) -> int:
     from .workflows import runstate
     from .workflows.plan import Plan
     project = _workflow_project(args)
-    ids = None
-    if args.step is not None:
-        ids = [n.id for n in project.workflow.nodes if n.step == args.step]
-        if not ids:
-            raise ValueError(f"no step number {args.step} in the plan")
+    ids = _step_ids(project.workflow, args.step)
     if (args.adopt or args.forget) and not args.params:
         raise ValueError("give the project file (--project) that stores which runs the steps use")
     if args.adopt and args.forget:
@@ -850,7 +897,8 @@ def cmd_workflow_status(args) -> int:
     if args.json:
         steps = [{"step": plan.steps[n].node.step, "title": plan.steps[n].label, "state": r.state,
                   "stamp": r.stamp, "current": r.current, "adopted": r.adopted, "finished": r.date,
-                  "found": r.found, "missing": r.missing} for n, r in runs.items()]
+                  "found": r.found, "missing": r.missing, **({"held": r.held} if r.held else {})}
+                 for n, r in runs.items()]
         print(json.dumps({"folder": plan.root, "stamp": plan.stamp, "changed": changed, "steps": steps},
                          indent=2, ensure_ascii=False))
         return 0
@@ -866,11 +914,40 @@ def cmd_workflow_status(args) -> int:
         stamp = next(n.adopted for n in project.workflow.nodes if n.id == nid)
         print(f"{plan.steps[nid].label}: " + (f"now uses the outputs of its run of {stamp}" if stamp
                                                else "runs again (no longer uses an earlier run)"))
-    offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
+    if args.adopt:  # a run in a folder that holds another step's files is that step's: never adopted
+        for nid, r in runs.items():
+            if r.held and r.state == "done" and r.stamp and not r.adopted:
+                print(f"{plan.steps[nid].label}: not adopted: the run is not this step's ({r.held})")
+    offer = [n for n, r in runs.items() if runstate.offered(r)]
     if offer and not args.adopt:
         print(f"{len(offer)} step(s) have a complete run they do not use yet: --adopt lets them use it "
               "(they are then not written or run again)")
     return 0
+
+
+def cmd_workflow_manifest(args) -> int:
+    """The plan's steps against the step folders of an existing tree (by default the plan folder): which
+    folder holds which step's files, by the identity file each write leaves in a step folder (type and
+    folder tag, then title; the node id only confirms them or tells apart steps that agree on all of them)
+    or by the folder tag in a folder's name.  1 when a step's folder holds another step's files, or files
+    no step can be told for (writing that step would put its files beside them)."""
+    from .workflows.manifest import manifest_text, match, would_write
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    if args.table:  # what a write of every step puts into <plan folder>/MANIFEST
+        sys.stdout.write(manifest_text(plan, would_write(plan)))
+        return 0
+    tree = os.path.abspath(args.tree) if args.tree else plan.root
+    if not os.path.isdir(tree):
+        raise ValueError(f"{tree} is not a folder" + ("" if args.tree else
+                                                      " (nothing written yet; --tree names another one)"))
+    result = match(plan, tree)
+    if args.json:
+        print(json.dumps(result.plain(), indent=2, ensure_ascii=False))
+    else:
+        print(result.text())
+    return 1 if result.conflicts else 0
 
 
 def _parallel(args, project) -> int:
@@ -905,7 +982,7 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
     for nid in kept:
         step = plan.steps[nid]
         print(f"{step.label} uses the outputs of its run of {step.adopted}: "
-              f"not run again (to run it: mdatk workflow status --forget --step {step.node.step})")
+              f"not run again (to run it: mdatk workflow status --forget --step {_step_arg(plan, nid)})")
     jobs = plan_jobs(plan, ids, include_separate)
     if not jobs:
         if kept:
@@ -1217,8 +1294,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
     from .builder import add_commands as build_commands
-    p = sub.add_parser("build", help="starting structures: ideal A-form helices (D / L), base mutations, "
-                                     "rigid-body fit into a density map")
+    p = sub.add_parser("build", help="starting structures: ideal A-form RNA / B-form DNA helices (D / L), D/L "
+                                     "chimeras, base mutations, rigid-body fit into a density map")
     bsub = p.add_subparsers(dest="build_command", metavar="action")
     for c in build_commands(bsub):
         c.add_argument("--project", "-p", "--params", dest="params",
@@ -1301,13 +1378,16 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_workflow_check)
     w = wsub.add_parser("write", help="write the plan's files, master script and summary")
     naming(w)
-    w.add_argument("--step", type=int, help="only this step number")
+    w.add_argument("--step", metavar="STEP", help=STEP_HELP)
     w.add_argument("--force", action="store_true", help="write the steps without errors even if others "
                                                        "have errors")
     w.add_argument("--no-save", action="store_true", help="do not store the new time stamp in the project")
     w.add_argument("--dry-run", action="store_true",
                    help="write and move nothing: list the files that would be written and the completed runs "
                         "that would move into their step's superseded/ folder first")
+    w.add_argument("--delete-old-runs", action="store_true",
+                   help="delete the completed runs that would move into superseded/ instead (trial runs not "
+                        "worth the disk space; cannot be undone)")
     w.add_argument("--run", action="store_true", help="then run the written steps' main scripts (each when "
                                                      "the steps it reads from succeeded)")
     w.add_argument("--parallel", type=int, metavar="N", help="with --run: run up to N scripts at the same "
@@ -1316,26 +1396,27 @@ def build_parser() -> argparse.ArgumentParser:
     budget_args(w, "with --run: ")
     w.add_argument("--include-separate", action="store_true",
                    help="with --run: also run the scripts marked 'run separately' (e.g. production), each "
-                        "after its step's main script")
+                        "after its step's main script, which then runs again for the rest of the step")
     w.set_defaults(func=cmd_workflow_write)
     w = wsub.add_parser("run", help="run the plan's main scripts (already written), each when the steps it "
                                     "reads from succeeded; each run is logged in the project file. A step "
                                     "whose separately run script has not finished is reported as waiting "
                                     "(exit status 75) and the steps after it are not started")
     naming(w)
-    w.add_argument("--step", type=int, help="only this step number")
+    w.add_argument("--step", metavar="STEP", help=STEP_HELP)
     w.add_argument("--parallel", type=int, metavar="N", help="run up to N scripts at the same time (0: no "
                                                             "limit; default: the project's setting)")
     budget_args(w)
     w.add_argument("--include-separate", action="store_true",
                    help="also run the scripts marked 'run separately' (e.g. production runs meant for a "
-                        "cluster), each after its step's main script and before the steps that read from it")
+                        "cluster), each after its step's main script, which then runs again for the rest of the "
+                        "step, and before the steps that read from it")
     w.set_defaults(func=cmd_workflow_run)
     w = wsub.add_parser("status", help="look in each step's folder for the output files of earlier runs "
                                        "(under the plan's time stamp or an earlier one): done, partial or "
                                        "missing")
     naming(w)
-    w.add_argument("--step", type=int, help="only this step number")
+    w.add_argument("--step", metavar="STEP", help=STEP_HELP)
     w.add_argument("--adopt", action="store_true",
                    help="let steps with a complete run use its outputs: later steps read them and the step "
                         "is not written or run again (stored in the project file)")
@@ -1343,6 +1424,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="stop using earlier runs (all steps, or --step): they are written and run again")
     w.add_argument("--json", action="store_true", help="print the result as JSON")
     w.set_defaults(func=cmd_workflow_status)
+    w = wsub.add_parser("manifest", help="match the plan's steps to the step folders of an output tree (e.g. "
+                                         "one written before the steps were renumbered) and to the runs moved "
+                                         "into their superseded/: by the MDATK_step.toml every write leaves in "
+                                         "a step folder (type and folder tag, then title; the node id only "
+                                         "confirms them or tells apart steps that agree on all of them, and "
+                                         "records that disagree pick no step) or the folder tag in a folder's "
+                                         "name. Exit status 1 when a step's folder holds another step's files, "
+                                         "or files no step can be told for")
+    naming(w)
+    w.add_argument("--tree", metavar="DIR", help="the output tree (default: the plan folder)")
+    w.add_argument("--table", action="store_true",
+                   help="print the plan's MANIFEST instead (one line per step: step, folder, node id, type, "
+                        "title, folder tag, input files, what its folder holds), as 'workflow write' of every "
+                        "step leaves it in the plan folder")
+    w.add_argument("--json", action="store_true", help="print the result as JSON")
+    w.set_defaults(func=cmd_workflow_manifest)
     w = wsub.add_parser("generate", help="stand-alone wizard: write one step's files")
     w.add_argument("tool", help="step type (see: mdatk workflow tools)")
     naming(w)
@@ -1379,7 +1476,8 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 RNADO_TOOLS = ("wizard", "pdb", "builder")  # mdatk.gui.launch.TOOLS (that module stays free of the CLI)
-WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "generate", "template", "restraints")
+WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "manifest", "generate", "template",
+                    "restraints")
 
 
 def rnado_gui_parser() -> argparse.ArgumentParser:

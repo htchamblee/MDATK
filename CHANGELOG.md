@@ -12,6 +12,535 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Amber MD: per-stage dry trajectories, the production stage unbundled
+
+- ***Production stage* is split into four stage options** (MD stages; those of a minimisation stage are
+  ignored), so that a chained protocol can run on the cluster as a whole and still pass on only the frames
+  meant for analysis: *Run in the separate script* (`separate`: Auto / Yes / No), *Pass the trajectory on*
+  (`export`: Auto / Yes / No), *Dry trajectory label* (`dry`) and *Dry PDB of its last frame* (`dry_pdb`).
+  Auto follows *Production stage* as before (the separate script with the step's *Separate production
+  script*, the *Trajectory* output, and with *Dry, imaged production trajectory* `dry-prod.nc`); Yes and
+  No override it for the stage, Yes also with *Separate production script* off. An annealing cycle in one
+  node (heat1 300 → 340 K, hold1 at 340 K, cool1 340 → 300 K, relax1 at 300 K) with *Run in the separate
+  script: Yes* on all four stages has its four pmemd runs in the separate script and none in the main
+  script; with *Pass the trajectory on* and a dry label on relax1 only, only the 300 K frames go out and are
+  dried. With *Separate production script* on and every production stage set to No, an info says that
+  everything runs in one script.
+- **Dry trajectory labels.** cpptraj images (`autoimage`) the trajectory of a stage with a label and strips
+  *Strip mask (trajectory)* into `<project>_<step>_dry-<label>.nc` right after the stage's last segment,
+  in the script that runs the stage. Stages that share a label are concatenated in stage order, every
+  segment, into one file made after the last of them; each label is an output of its own (`dry_<label>`:
+  *Dry trajectory relax1* for the label relax1 of stage relax1, *Dry trajectory relax (relax1, relax2)*
+  for a label of two stages; data: its stages and label), and the first dry trajectory of each script
+  writes the dry topology (`<project>_<step>_dry.parm7`). The label `prod` joins the step's dry production
+  trajectory. A label holds letters, digits, `-` and `_` (`_` becomes `-` in the file name: `relax_1`
+  writes `dry-relax-1.nc`, output `dry_relax_1`). Check errors: a label on a stage without trajectory
+  frames (ntwx = 0), other characters, the reserved `pdb`, `topology`, `trajectory` and `pdb_…` (the
+  names of the step's other dry outputs), a word that reads as true or false (`false`, `no`, `off` …), two
+  labels that would write one file (`hot_1` and `hot-1`; `prod_` beside the dry production trajectory) and
+  a dry copy that would write a stage's own trajectory (the label `relax` beside a stage named
+  `dry-relax`). Labels refused for their characters, as reserved or as true/false words are no labels: no
+  dry copy, no output.
+- **A dry PDB of any MD stage's last frame**: `<project>_<step>_dry-<stage>.pdb`, stripped of *Strip mask*
+  from the stage's final restart right after the stage, with an output of its own (`dry_pdb_<stage>`, *Dry
+  PDB of heat1*), e.g. the structure at the top of a heating ramp. It needs no trajectory frames. The
+  step's *Dry PDB before production* still strips the last restart of the main script into `dry.pdb`.
+- **Stage dry copies are written as `<file>.part` and renamed once complete**, so a copy cut off by the
+  stop button or a wall-time limit never counts as made: the main script, whose waiting check also tests
+  the dry copies the separate script makes, keeps waiting, and *Check previous runs* calls the run partial.
+  The main script's stages before the separate script are not run again once it has finished, so their
+  dry copies come after that part, each made when one of its stages' pmemd ran (`STAGES_RAN=1` right after
+  pmemd) or when it is missing (asked for later) or older than the output of one of its stages
+  (`dry_out_of_date`); a dry production trajectory of such stages is made the same way.
+- ***Dry, imaged production trajectory* keeps its meaning**: one `dry-prod.nc` of the production stages
+  with a trajectory, now only those without a dry label of their own, plus the stages labelled `prod`.
+  Steps that use none of the new options are written as before (`tests/test_golden.py` unchanged; the
+  0.0.12 scripts of a `dry_traj` step, with and without the separate script, pinned by hash):
+  `dry-prod.nc` and `dry.pdb` keep the lines 0.0.12 wrote where 0.0.12 wrote them, without `.part`.
+- **The separately run stages must follow one another.** A stage of the main script between two of them
+  is an error, as the later one would start from a restart that the main script writes only after the
+  separate script: `stage hold1 runs in the main script between stages of the separate script: stage cool1
+  would start from a restart that the main script writes only once the separate script has finished, so
+  neither could finish; set 'Run in the separate script' to Yes for it, or move it before or after the
+  separately run stages` (a minimisation, which always runs in the main script, can only move). The same
+  error now covers *Production stage* on stages that are not next to each other, which 0.0.12 wrote
+  without a word, and the production stages of the GROMACS step. A separate script that runs stages other
+  than production stages is titled *Amber MD stages run separately*, and its waiting line says "the
+  separately run stages".
+- **The outputs follow the stage options.** *Trajectory* carries the stages passed on (data `stages`).
+  With *Pass the trajectory on* on Auto everywhere and no production stage with frames it carries the last
+  MD stage with a trajectory, as before; once a stage says Yes or No, only the stages asked for go out, so
+  No on an annealing cycle's relaxation never passes on its cooling ramp instead. Yes on a stage with
+  ntwx = 0 is an error, and the warning for a production stage without frames names the stage the
+  output carries instead (`stage relax1: production stage without trajectory output (ntwx=0): the
+  'Trajectory' output carries stage cool1 instead`, or `the step passes no trajectory on`). With Auto
+  everywhere, a warning also says when the last MD stages write no frames and an earlier stage goes out
+  in their place (`stage relax1 writes no trajectory frames (ntwx=0), so the 'Trajectory' output
+  carries stage cool1 instead`); the scripts are as before. *Dry final PDB* is
+  offered only when some stage runs in the main script, *Dry topology* and *Dry trajectory* only when such
+  a file is written, so the outputs offered and the files written agree: a step whose every stage runs
+  separately no longer offers a dry PDB it never writes. *Final restart* records the temp0 of the last
+  stage when that is an MD stage, for the ramp check of the Amber MD step it feeds.
+- ***While the separate script has not finished***, a new option of the Amber MD step and of the GROMACS
+  step with *Separate production script*: *Exit status 75* (as before) or *Exit 0 + .waiting file*. In
+  the second mode the main script writes its WAITING line into `<main script>.waiting` and exits 0, so a
+  batch chain (`sbatch --dependency=afterok`) is not cancelled; the file is removed when the script starts
+  and when it finishes. RNAdo and `mdatk workflow run` report the step as waiting either way and do not
+  start the steps after it (`workflow run` still exits with 75), and the plan's master script stops after
+  such a step with exit status 0: `if [ -e "<script>.waiting" ]; then echo "WAITING: <script> waits for
+  its separately run script; run that, then this script again" >&2; exit 0; fi`.
+- **The main script runs again after its separate scripts.** With *Also run the scripts marked 'run
+  separately'* (`--include-separate`) a step's separate scripts run after its main script, and then the
+  main script once more for the rest of the step (the stages after the separate ones, the dry copies made
+  at its end, the `.waiting` file removed), before the steps that read from it. It does not run again when
+  its first run found the separate scripts finished, nor when it was written before the waiting check; a
+  line says why.
+- **Ramp warnings know the temperature a stage starts from.** The warning for a ramp on a continued run
+  compares tempi with the temp0 of the previous MD stage, for the first stage with that of the input
+  restart when an Amber MD step wrote it: none when they match (a heating ramp from 300 K after a 300 K
+  equilibration, a cooling ramp from the temperature held before it), `stage heat: the ramp starts at tempi
+  = 310 K, but stage eq ended at 300 K` (or `… but the input restart ended at 300 K`) when they differ,
+  for heating and cooling ramps alike. When that temperature is not known, a heating ramp gets the old
+  warning (`a ramp from tempi on a continued run starts below the current temperature`) and a cooling ramp
+  none. *MD stages use different temperatures* is not given when every change of temp0 is a ramp from the
+  previous stage's temp0 (after an Amber MD step that ended at 300 K, the annealing cycle above checks
+  without a warning), and *tempi is ignored when velocities are continued* is no longer given for a ramp,
+  which starts at tempi.
+- **Project files** save the stage keys `separate`, `export` (`"auto"`, `"yes"`, `"no"`), `dry` and
+  `dry_pdb` and the step's `waiting_exit` (`"status"`, `"file"`) with their comments. Written by hand, `dry
+  = true` names the label after the stage (`false`: none), and `separate` / `export` = true / false read
+  as Yes / No.
+
+### Planner: folder tags, a record of the step folders
+
+- **Folder tags.** A step can carry a folder tag (*Folder tag* in the details pane, after *Title* and
+  *Step*; `folder_tag` of a `[[workflow.nodes]]` entry, saved only when set), which is added to its folder
+  name: `03_amber-md_model12/` instead of `03_amber-md/`. Parallel branches of one plan no longer write
+  into `01_amber-build/`, `04_amber-build/` … with nothing on disk saying which model is which, and a
+  branch added later changes the folders of no other branch. The box shows the tag as a badge tinted like
+  its header, left of its cores and GPUs; the step's title carries it in logs, messages, the step log, the
+  master script, the summary and `workflow status` (`03 · production model12 · model12`), so steps that
+  share a number can be told apart. ASCII letters and digits, with `-` only between them: another
+  character is a check error that suggests a tag (`folder tag 'model 12': use ASCII letters and digits,
+  with '-' only between them (e.g. 'model-12'); it is added to the step's folder name`), and so are two
+  steps that would write into one folder (`… would write into the same folder 99_amber-restraints_Model13/
+  with the same names: give one of them another folder tag or step number`), also through tags that differ
+  only in case (`… would write into 09_amber-md_Model13/ and 09_amber-md_model13/, one folder on a file
+  system that ignores case (macOS, Windows): give one of them another folder tag`). A tag on a step that
+  writes no files is a warning (the entry, otherwise greyed out for such a step, stays editable so the tag
+  can be cleared), and in a plan without step folders an info (the tag then names only the folder its
+  completed runs move into, `superseded/03_amber-md_model12/`). File names keep their four parts,
+  `<project>_<step>_<tool>_<time>.<ext>`, which the readers of earlier runs, the stamp globs of custom
+  scripts and the run audit's `farfar2-rNN` log names rely on. Changing a tag changes the folder the step
+  writes into and looks in for earlier runs; files already written stay where they are. Untagged steps
+  keep their folders and messages, and a project without tags is saved as before.
+- **Steps that write no files have no folder** (existing files, notes, the MDATK analysis box; MDATK never
+  created one for them): the details pane says *No folder: this step writes no files*, for the other steps
+  *Folder: 03_amber-md_model12/* (*the plan folder (no step folders)* without step folders).
+- **Every write records what the folders are.** `mdatk workflow write` and every write of the plan in
+  RNAdo (the planner logs `Manifest: <path>`) rewrite `<plan folder>/MANIFEST` from the plan, also when
+  only some steps are written: a tab-separated table under the header line `step folder node tool title
+  folder_tag inputs holds`, one line per step in plan order (notes left out, `-` for an empty cell):
+  number and folder (`-` for a step that writes no files, `.` in a plan without step folders), node id,
+  step type, title, folder tag, the input files (`port=path`, joined by `; `; an existing file's line names
+  its file) and what the step's folder holds (`this step`, or `this step (node id only)` when only the node
+  id says so; the step its `MDATK_step.toml` names instead, e.g. `n4 'production model12' (step 03,
+  written 2026-11-07 21:21)`; `unknown (no MDATK_step.toml)`; `-`). Each step folder a
+  write puts files into gets `MDATK_step.toml` (format `mdatk-step-folder`, commented): the MDATK version,
+  the time of writing, the project, step number, folder, node id, type, title, label, folder tag and time
+  stamp. It is not part of the step's runs: it stays when a completed run moves aside, and the run's
+  `manifest.toml` keeps what it said under `[written_by]`. The stand-alone wizard (`workflow generate`)
+  leaves MANIFEST alone, and a plan without step folders gets no identity files. Neither record is in
+  `WriteReport.written` (`WriteReport.manifest`, `.identity`), so the golden test sees the same files; the
+  JSON of `workflow write` gains `manifest`, that of `--dry-run` `records`. A record that cannot be written
+  gives a warning (`WARNING  MANIFEST / MDATK_step.toml not written: …`, `records_error` in the JSON), not
+  a failed write. The namd_mdff example generator leaves both out (this machine's paths, the time of
+  writing), so the shipped example regenerates unchanged.
+- **`mdatk workflow manifest -p PROJECT [--tree DIR] [--table] [--json]`** (`rnado manifest`) matches the
+  plan's steps to the step folders of an output tree (default: the plan folder) and to the runs moved into
+  their `superseded/`. A folder belongs to the one step of the plan with the type and folder tag its
+  `MDATK_step.toml` names, else to the one with its type, folder tag and title (titles count where both
+  have one; another project name means another plan's files). The node id only confirms that, or tells
+  apart steps that agree on all of these (*by node id only*, with a note), as a plan made again from
+  scratch numbers its ids afresh. A folder without `MDATK_step.toml` belongs to the one step with its type
+  and the folder tag in its name. Records that disagree (the identity file and the folder's name, the
+  folder tag and the title, the node id and the rest) pick no step. Each step is `this step's`, `not there;
+  its files are in 03_amber-md_model12/ (step 03, by folder tag)`, `holds another step's files: …, now 09 ·
+  production model12`, `holds files no step can be told for: …` or `there, without MDATK_step.toml`; the
+  folders of no step follow, and the exit status is 1 when a step's folder holds another step's files or
+  files no step can be told for. `--json` for scripts (per step `state`, `matched_by`, `node_id_agrees`,
+  `doubt`, `owner`, `differs`; `conflicts`, `by_node_id_only`); `--table` prints the MANIFEST a write of
+  every step would leave. A plan made again with two branches put in front (twelve steps renumbered, node
+  ids afresh) finds every old folder: tagged steps by folder tag, untagged ones by title, and the six steps
+  that took over the old numbers are reported as writing into folders that hold another step's files.
+- **The planner checks the folders before it writes.** Each resolve reads every step folder's
+  `MDATK_step.toml`; a step whose folder holds another step's files, or files no step can be told for,
+  gets a warning: `03_amber-md/ holds the files of 03 · production model12 (node n4, written …), now 09 ·
+  production model12: writing this step puts its files beside them and moves a completed run there aside
+  as this step's; give it a folder tag or another step number` (a step renamed since it was written: `…, or,
+  if it is that step under a new title, write it again`). *Check previous runs* and `workflow status`
+  report such a run as `not this step's run: …` and do not offer it: no tick on the box, *Use this run*
+  greyed out, `workflow status --adopt` refuses it with a line (`--json`: `held`). The question before
+  runs move aside, the CLI's lines and the step log say whose run it is.
+- **Step ids are never given out twice**: a new step's id follows the highest one given out so far, which
+  the project file keeps (`[workflow] last_node`, saved once a step is added; old files load and save
+  unchanged). Step numbers never change on their own: a new step gets the number after the highest one in
+  the plan (the numbers of deleted last steps come back) and a template's steps are numbered after the
+  existing ones.
+- **`--step` of `workflow write`, `run` and `status`** takes a step number (every step with it), a step
+  folder (`03_amber-md_model12`) or a node id (`n4`).
+- **Header comments of the TOML files MDATK writes** put each line of a header item on a comment line of
+  its own, control characters replaced: a step title with a line break made a moved run's
+  `manifest.toml` invalid TOML (and would have done the same to `MDATK_step.toml`).
+
+### RNAdo window
+
+- **Select all steps and Clear selection.** Two new buttons in the plan's tool bar, before *Write all
+  files*, tick or untick the box of every step that writes files: the steps *Write selected steps (N)*
+  and *Run selected steps (N)* act on, as the canvas menu's *Tick all steps* / *Untick all steps* do.
+  *Clear selection* is greyed out while no step is ticked.
+- **The tool rows fit a narrower window.** The plan's tool bar and its naming bar (*Project*, *Time
+  stamp*, *New stamp*, *Step folders*, *Move completed runs aside*, the folder and *Change…*, *CPU cores*,
+  *GPUs*, *At once*) are groups that move onto a further line when the window is narrower than the row
+  (`widgets.flow_row`), instead of making the window wider: RNAdo opened 1547 px wide instead of at its
+  default size (1400 px), and now goes down to 1065 px (GTK's default theme). The naming bar's entry,
+  buttons (*New stamp*, *Change…*), spin buttons and combo box keep their height (34 px): they stretched
+  to that of a check-button label wrapped onto two lines (55 px) when the window opened narrower than the
+  full row.
+- **The Open drop-down shows its items.** In RNAdo and in the analysis window, *Open*'s drop-down (the
+  recent projects and *Browse…*; in the analysis window the demo project too) opened as an empty grey box
+  (50 × 8 px): GTK pops a menu button's menu up before the button's *toggled* handlers run, and the menu
+  was filled there. It is now filled when the window is made, when the pointer reaches or presses the
+  button and after it closes (`projectui.keep_open_menu_filled`), so it opens with its items and the
+  recent projects of that moment.
+
+### Structure builder: B-form DNA helices
+
+- **`mdatk build helix --na dna`** (`--nucleic-acid`; *Nucleic acid: DNA (B-form)* on the builder
+  window's *Ideal helix* page and in the planner step) builds ideal B-form DNA of either hand: Watson-Crick
+  duplexes (the complement, or an explicit partner 5′→3′ with mismatches and G·T wobbles) and single
+  strands, with the chain, numbering, name, 5′-phosphate and hydrogen options of the RNA helix. Other
+  pairings and triplexes stay RNA only (an error for DNA; the window greys them out). U is read as T,
+  with a note. RNA builds are unchanged: 705 hashes of RNA helices, renamings, mutations, clean-ups and
+  command-line runs are the same before and after.
+- **The Arnott B-DNA fibre monomer** (the `$ABDNA` table, "ARNOTT BDNA MONOMER UNIT", of AmberTools'
+  `dat/leap/parm/nucgen.dat`, embedded; Arnott & Hukins 1972, new reference `arnott1972dna` and resource
+  `arnott-bdna`, cited by every DNA build) on NAB's B-DNA screw, 36.0° and 3.38 Å per residue (10 bp
+  per turn), with the axis (z) and dyad of the A-RNA helix: C3′-exo sugars (pseudorotation phase 192°),
+  χ −98°, C1′–C1′ 10.9 Å, O3′–P 1.60 Å. The L helix is its exact mirror image. The header (`REMARK 951
+  MDATK IDEAL B-FORM DNA …`), the notes and the step-log title (`Ideal B-form L-DNA helix GGCAT`) say
+  what was built.
+- **Each phosphate turned 6° about O3′–O5′.** As published, the monomer's backbone (ε 155°, ζ −95°) puts
+  OP2 of every nucleotide 2.69 Å from C2′ of the one before (1.91 Å from its H2″), a heavy-atom clash of
+  the model check at every step. The builder turns P, OP1 and OP2 by 6° (`DNA_PHOSPHATE_TURN`; the table
+  stays as published) about the line O3′(i−1)–O5′(i), a crankshaft that keeps O3′–P (1.595 Å), P–O5′,
+  the O3′–P–O5′ angle (101.5°) and the PO2 group: C2′(i)–OP2(i+1) 2.88 Å, C3′–O3′–P 123.2° and P–O5′–C5′
+  115.9° (published 119.4° / 118.8°; 2.9 and 3.1 standard deviations from the 119.7 ± 1.2° and
+  120.9 ± 1.6° of Parkinson et al. 1996), ε 155°, ζ −91°, α −53°, β −143°. 6° is the smallest whole
+  turn that keeps every heavy-atom contact of the phosphate 0.05 Å outside the model check's clash
+  distance (at 5° C2′–OP2 is 0.37 Å inside van der Waals contact, a clash from 0.4 Å); clearing H2″–OP2
+  for the hydrogen check as well (2.24 Å) would take 10°, which makes both angles validation outliers
+  (125.8° and 113.8°: 5.1 and 4.4 standard deviations). A note and `REMARK 951 PHOSPHATE TURNED 6 DEG
+  ABOUT O3'-O5' (C2'(I)-OP2(I+1) 2.88 A)` say so. The model check finds no heavy-atom clash in
+  Watson-Crick duplexes, single strands and G·T wobbles (all 16 neighbour contexts, the G on either
+  strand) of either hand; its hydrogen contacts (reported only, as for the A-form RNA) list H2″(i)…OP2(i+1)
+  at 2.11 Å, the fibre model's own H1′(i)…H5′(i+1) at 1.84 Å and, before a thymine, its methyl 1.94 Å
+  from H2″ and 2.47–2.48 Å from C6 / C8 of the 5′ neighbour.
+- **Hydrogens** (`--hydrogens`): the C2′ methylene of the 2′-deoxyribose as IUPAC and Amber's DNA
+  libraries name it, H2″ cis to O3′ and to H1′ (2.27 Å from it) and H2′ trans to O3′, and a staggered
+  thymine methyl H71–H73 on C7 (C4–C5–C7–H 180°, 60°, −60°).
+- **G·T wobbles** of an explicit partner are turned in their plane about C1′ like the A-form's G·U
+  (`DNA_WOBBLE_TURN`: G −10.1°, T 3.5°, fitted to keep both bases clear of the sugars and the
+  neighbours): G O6–T N3 2.73 Å, G N1–T O2 3.14 Å.
+- **Mutations of DNA residues** (`mdatk build mutate`, the *Mutate* page): the base of the B-DNA monomer
+  (A, C, G, T; U is read as T, and T on an RNA residue is an error), the name pattern kept (DA5 → DT5,
+  0DA → 0DT, LDT3 → LDA3); a compensatory partner gets the DNA complement (`--wobble` keeps a G·T pair),
+  and a partner of the other nucleic acid is left as it is, with a note.
+
+### DNA and L-DNA residue names
+
+- **Every scheme names DNA** (`pdbtools.scheme_name(..., sugar="dna")`): D-DNA DA DC DG DT (`amber`:
+  DA5 / DA3 at the chain ends, DAN for a single residue, the units of AmberTools' DNA libraries); L-DNA
+  the CCD's 2′-deoxy-L-ribonucleotides 0DA 0DC 0DG 0DT (default, `ccd`, `rosetta`; `pdb`: HETATM; the
+  CCD has no 5′/3′ variants of DNA) and, in the `amber` scheme, MDATK's own LDA LDC LDG LDT, LDA5 /
+  LDA3 / LDAN … in the pattern of Dudek & Trylska's L-RNA names: AmberTools ships no L-DNA library, so
+  tleap needs units of these names, which a note says. `standard` writes DA … for both hands, with the
+  warning that the names no longer record the hand.
+- **0DA and 0DT carry their components' atom names.** The CCD spells some atoms of these two its own
+  way: 0DA's adenine N9A, C8A, N7A, C5A, C6A, N6A, N1A, C2A, N3A, C4A (H8A, H2A, HN61, HN62; H2P for a
+  protonated OP2) and 0DT's methyl carbon C5M (`pdbtools.CCD_ATOM_NAMES`); 0DC and 0DG use the standard
+  names. `write_pdb` writes the component's names for every residue named 0DA / 0DT (builds, mutations,
+  chimeras, clean-ups), so that Coot and Phenix find every atom in the dictionary, and `read_pdb` reads
+  them back as the standard names (N9, C8 … C7), so every reader of a parsed structure (`Residue.coords`,
+  `infer_base`, the model check, LINK matching, mutations, the base-pair engines, interfaces,
+  annotation, stacking, the molecule view) finds them where it looks; a file with the standard names
+  there is read the same, with a note, and written with the component's. LDA … keep the standard names.
+- **`mdatk pdb clean` renames RNA only.** Every DNA name above (0DA …, LDA, LDA5, LDA3, LDAN …) is
+  recognised on input, but DNA residues keep their names in every scheme, with a note that counts them
+  ("N DNA residue(s) keep their names: the PDB tools rename RNA only …"; a file of DNA alone no longer
+  gets "Residue names already follow the … scheme"), so the PDB preparation of the Amber build keeps
+  DNA names as before; the builder names DNA itself.
+
+### D/L chimeras
+
+- **`mdatk build chimera --design "…"`** (`mdatk/chimera.py`; the *Chimera* page of the builder window,
+  mode *D/L chimera* of the planner step) joins ideal helices of the builder, each of its own hand and
+  nucleic acid (A-form RNA, B-form DNA), through strand 1: by a phosphodiester (3′-5′, 5′-3′) or by a
+  phosphate that bridges two 3′ or two 5′ ends (3′-3′, 5′-5′). A design is one line, `SEGMENT LINK
+  SEGMENT [LINK SEGMENT …]`: a segment `HAND[-NA]:SEQUENCE[/PARTNER]` (HAND D or L, NA RNA or DNA in
+  either case, else `--na`; PARTNER `auto` or nothing for the Watson-Crick complement, `none` or `-` for a
+  single strand, or the partner 5′→3′ with mismatches and wobbles), a link `3'-5'`, `5'-3'`, `3'-3'` or
+  `5'-5'` (also `3-5`, `35`, `3'5'`, typographic primes). A link's first end is the free end of the strand
+  built so far: segment 1 is read 5′→3′ unless the first link starts at 5′, and after a link that ends at
+  3′ the next segment is read 3′→5′. `D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC` is 5′-D-RNA(6)-p-L-RNA(6)-3′,
+  `D-DNA:GGCAT 3'-3' L-DNA:GGCAT` 5′-D-DNA(5)-3′p3′-L-DNA(5)-5′, `D:GAUC/none 5'-5' L-DNA:GATC`
+  3′-D-RNA(4)-5′p5′-L-DNA(4)-3′, `D-RNA:GGCC 3'-5' D-DNA:GGCC` an RNA-DNA strand of one hand
+  (`chimera.describe`). An error names the token or the segment, and a link at the wrong end the links
+  that fit ("link 2 (5'-3') starts at a 5' end, but the free end of segment 2 (L-RNA:GCC, read 5'->3'
+  after link 1 3'-5') is its 3' end: use 3'-5' or 3'-3'"). `chimera.check_chimera` reads a design without
+  fitting it: the strand, the pairs of every segment, the atom count, the chain ids and a design too long
+  for the PDB coordinate columns.
+- **The junction fit.** Segment 1 stays as the builder builds it; every next segment is placed as a
+  rigid body on the structure built so far: O–P 1.60 Å, C–O–P 119.7° and O–P–O 104° (the targets of the
+  builder's backbone closure, Parkinson et al. 1996), the end pairs stacked 3.6 Å apart (a weak wish at
+  a bridge, where the ends meet head to head). The residue that carries the P of a phosphodiester gets
+  its OP1 / OP2 rebuilt from P, O3′ and O5′ in every step, as the builder builds a phosphate (P–OP
+  1.485 Å, OP1–P–OP2 119.6°, so O3′–P–OP about 108°; OP1 named by the residue's hand), so that the O3′
+  cannot land on an OP or invert the P; a DNA residue there may turn its γ and β as well, pulled back
+  towards the B-form (a prior of 0.3 per radian), an RNA one stays rigid. A 3′-3′ / 5′-5′ link adds a
+  free phosphorus bonded to both O3′ (O5′), its OP1 / OP2 built the same way. Contacts are scored for
+  pairs four or more bonds apart through the junction, with the segments' hydrogens whether or not they
+  are written (the heavy atoms are the same either way): heavy atoms 3.2 Å from every atom already
+  placed, 3.0 Å four or five bonds apart (3.2 Å between two DNA residues), never closer than the model
+  check's clash distance plus 0.1 Å (C–C 3.1, P–C 3.2 Å); hydrogens 2.1 Å from hydrogens and 2.4 Å from
+  heavy atoms; a bridge 2.9 Å from every atom but its two oxygens and their carbons. 18 turns about the
+  previous segment's axis × 2 tilts (7 for a turning or bridged link) are fitted to the junction terms
+  alone, and the 8 lowest in the full cost, one per pose, are refitted with the contacts. The design and
+  its mirror image (every hand flipped) are both fitted and the lower cost is written, as it is or as the
+  exact mirror image, so a design and its twin give exact mirror images, hydrogens included. A process
+  keeps the fits of the last 64 designs (`chimera._FITS`), so that the RNAdo window builds a design again
+  with other names or hydrogens without refitting. With `--phosphate5` a partner strand's 5′ end at a
+  junction keeps a 5′-OH (its phosphate would stand in the way of the next segment's end pair), with a
+  note.
+- **What is written.** Strand 1 is split into chains at the bridges, each written 5′→3′, then the
+  partner strands in segment order: chains A, B, C … (`--chains`, one id per chain;
+  `chimera.chain_count`), residues numbered from 1 in each. A bridging phosphate is a residue PO2 (P,
+  OP1, OP2; HETATM, ATOM in the standard scheme), a TER segment of its own after the run before it with
+  that run's chain id and the next number, so that FASTA and SEQRES leave it out; LINK records give its
+  two O–P bonds and CONECT records its four bonds. Every residue is named for its hand and nucleic acid
+  in the chosen scheme; terminal variants only at the free strand ends (the residues bonded through a
+  junction get internal names), OP3 only on free 5′ ends, HO5′ / HO3′ only on free hydroxyl ends. The
+  model is centred on its heavy atoms; a design whose segments end to end would leave the PDB coordinate
+  columns (2000 Å for a centred model) is refused before any fit. The header names the design, every
+  segment and every junction (`REMARK 951 MDATK CHIMERA …`, `SEGMENT`, `JUNCTION` with its bonds and
+  angles, `RIGID-BODY JUNCTION: MINIMISE BEFORE PRODUCTION`).
+- **Notes and warnings:** per junction its bonds and angles (O3′–P–OP1 / OP2 too), the γ / β turns of a
+  DNA residue, the distance of the end pairs, the closest heavy-atom contact between the segments, that
+  of a hydrogen (`--hydrogens`) and that of the bridging phosphate; which fit was written (the design's
+  own or its twin's mirror image, with both costs); the pairs and wobbles of every segment, the names
+  and, with DNA, the turned B-DNA phosphates. A junction of the written model off its targets (an O–P
+  bond by more than 0.05 Å, an angle by more than 10°, a phosphodiester's end pairs more than 2.5 Å
+  beyond the stacking, a pair more than 0.1 Å inside its contact distance) gets `WARNING: junction k
+  (link) did not close: …; fit cost …` (`D:GC 3'-5' L:A 3'-5' D:GC`: its end pairs 6.87 Å apart). These
+  are starting models to be minimised.
+- **Amber hints.** tleap has no unit for PO2 and does not read LINK records: with `--scheme amber` a
+  WARNING says what it needs, a PO2 unit (P, OP1, OP2; MDATK writes none) loaded before `loadpdb` and the
+  `bond` commands for the LINK atoms after it, numbered as tleap numbers residues, in file order across
+  the chains (`bond m.6.P m.5.O3' (A:6 P - A:5 O3'); bond m.6.P m.11.O3' (A:6 P - B:5 O3')` for
+  `D-DNA:GGCAT 3'-3' L-DNA:GGCAT`), and that the residues bonded to a 5′-5′ bridge have internal names
+  but no 5′-phosphate of their own, so their units must not add one. L-DNA needs units of MDATK's names
+  LDA … (AmberTools has none, nor has the generated L-RNA library), and the Amber build step loads RNA
+  force fields only. Its PDB preparation keeps no LINK records but keeps a bridging PO2: *Remove
+  5′-terminal phosphates* removes the 5′-phosphates of nucleotides only (before, it removed the PO2 as
+  the first residue of its TER segment and tleap built the strands unconnected; now tleap stops at the
+  PO2 until a unit is listed). The planner warns that an L-DNA input has no units in the generated
+  L-RNA library. The bond commands follow tleap's syntax and were not run with tleap.
+- **Command line, planner, RNAdo.** `mdatk build chimera --design D [--na rna|dna] [--scheme S]
+  [--no-terminal-names] [--phosphate5] [--hydrogens] [--chains A,B,…] -o OUT [-p PROJECT]`, logged as
+  `Chimera <strand>` (the design as typed when it does not parse, so that a failure is logged too) and
+  citing the Arnott fibre model of each nucleic acid it uses; the planner step's mode *D/L chimera* and
+  the builder window's *Chimera* page are under *Planner and refinement* below.
+
+### Model check: LINK records are bonds
+
+- **LINK records add the bonds the polymer order does not imply** (the PO2 of a chimera's 3′-3′ / 5′-5′
+  link): the two atoms of every record that are both in the model (the residue by chain, number,
+  insertion code and name, the atom by its standard name, first altloc) are bonded, so the clash and
+  hydrogen checks leave out the atoms up to three (hydrogens: four) bonds apart through it and a
+  bridge's 1.6 Å bonds are no clashes; an oxygen bonded through one (the bridge's O3′ / O5′) is an ester
+  oxygen, no hydroxyl donor. Records after the coordinates count too. Not used, with a note that counts
+  them: a record that names an atom the check leaves out or does not find, or an ion (the ion check
+  measures metal coordination), and a record to a symmetry mate (its two symmetry operators differ: the
+  second atom is in a copy the crystal makes), which the PDB tools still follow by name.
+- **The links check measures them** (also `--checks links` alone; `modelcheck.link_record_bonds`): the
+  bonds are listed with their lengths in the text (with the clashes, or the backbone without the clash
+  check) and the JSON (`clashes.link_bonds` / `links.link_bonds`, `link_records_unused`,
+  `link_records_mates`); one longer than `--link-fail` (3.0 Å) is a warning (`2 LINK bond(s) longer than
+  3 A (…)`), never a gate, so a model passes or fails as before. Models without LINK records get the
+  reports they got.
+
+### PDB tools: LINK records follow the residues
+
+- **LINK records follow their residues** through every operation that renames, renumbers, re-chains or
+  removes residues (`pdbtools.follow_links`: `convert_names`, chain restore / split / combine / order,
+  renumbering, `--strip-h`, `--drop-virtual`, `--strip-5p`, `to-lrna`, `mdatk build mutate`). Each record
+  is resolved once, before the operations, to the first residue in file order with its chain, number,
+  insertion code and name that has the atom (as the model check bonds it); afterwards only the residue
+  columns of an end whose residue changed are rewritten, in place (the atom names, altlocs, symmetry
+  operators and length stay; an atom name changes only for a residue renamed to or from 0DA / 0DT), with
+  a note. A record whose residue or atom is gone is dropped, one that never matched is kept as it was,
+  each with a note, and a WARNING names an end that now shares its id with an earlier residue (chains
+  combined without renumbering). LINK lines after the coordinates are read and followed where they are.
+  Models without LINK records give byte-identical output. So `mdatk pdb clean --scheme amber --renumber`
+  of a chimera leaves a model in which the model check finds both bonds of the bridge.
+- **LINK-bonded chain ends keep internal names.** `convert_names` (clean, to-lrna) names a segment end
+  whose O3′, or P / O5′, a LINK record bonds to another residue (not its own 5′-phosphate residue, water,
+  an ion or a symmetry mate) as an internal residue, as the builder does, with a note: cleaning a
+  3′-3′ / 5′-5′ chimera into `amber` or `ccd` gives the names the builder writes in that scheme (A, LA at
+  a 3′-3′ bridge, not A3, LA3). For `amber` a WARNING names the residues bonded through O5′ that have no
+  5′-phosphate of their own.
+- **`--strip-5p` keeps a LINKed phosphate**: one whose P a LINK record bonds to a residue other than its
+  own nucleotide (the 5′-5′ PO2 of a chimera, a strand's phosphate bonded to another strand's O3′) is a
+  link, not a 5′ end, and stays, with a note; records on phosphate oxygens (metal coordination) do not
+  count.
+- **Sequences leave out phosphate-only residues**: FASTA, SEQRES and `pdb check` skip non-polymer
+  residues made only of phosphate atoms (a PO2 bridge, a lone 5′-phosphate); they stay in
+  `other_residues`.
+- **SEQRES names have three characters**: a four-character nucleotide name (MDATK's LDA5, LDG3 …) and
+  MDATK's three-character Amber-style L-DNA names (LDA, LDG …: in the CCD, LDA and LDT are other
+  compounds) are written as their CCD components (0DA, 0DG …), any other long name as UNK with a
+  WARNING, with a note; the residue names themselves stay.
+- **A detergent named LDA is no nucleotide.** In the CCD, LDA is lauryldimethylamine N-oxide and LDT a
+  ligand without a sugar (as LA, LU and RA are ions): the readers that see the atoms (`nucleotide`, the
+  model check, the base-pair engines and analysis, interfaces, the sequence panel through the trace's new
+  `backbone` flags) take such a name for a nucleotide only when the residue has a backbone atom (a primed
+  name or P), so a detergent LDA stays out of the sequences and the pair search.
+
+### Planner and refinement: the structure builder step
+
+- **Structure builder (MDATK)**, mode *Ideal helix*: *Nucleic acid* (*RNA (A-form)* / *DNA (B-form)*,
+  before *Sequence*); for DNA the pairing, triplex and third-strand options are greyed out, the command
+  gets `--na dna` (RNA command lines are unchanged), the script is titled *Ideal B-form DNA helix* and the
+  box *D-DNA helix GGCAT*, and a Watson-Crick DNA duplex feeds the secondary-structure output (T read as U:
+  A·T and G·T have the hydrogen-bond atoms of A·U and G·U that the Amber, NAMD and Phenix restraint
+  steps use; the `.secstruct` file keeps the T). New mode *D/L chimera* (section *D/L chimera*: *Design*,
+  *Default nucleic acid*, optional *Chain ids*): no inputs, the PDB out, `build chimera --design '…'`
+  (the design on one line, quoted for bash: its primes and spaces arrive unchanged), the checks of
+  `chimera.check_chimera` (the chain ids too), the box *chimera 5′-D-RNA(6)-p-L-RNA(6)-3′*, the citations
+  by nucleic acid. Residue names, terminal names, 5′-phosphate and hydrogens moved to a page of their own,
+  *Names & atoms*, shared by both builds (same keys: projects load as they were). Chain ids that start
+  with `-` are written as one word, `--chains=-,B`, which argparse would otherwise take for an option.
+- **The builder's port data**: the PDB tells the steps it feeds the hand (`chirality`: D, L, or `mixed`
+  for a chimera of both hands), whether it has L-RNA (`l_rna`) and what was built (`build`: helix or
+  chimera). The refinement steps ask for L-RNA restraint dictionaries (0A5 / 0A3 …) and the Amber build
+  generates its L-RNA library only with L-RNA ("the model is L-RNA", "the model has L-RNA residues (a
+  D/L chimera)"); L-DNA needs neither. The model check expects the hand of a helix or a one-hand chimera
+  ("expected hands from the builder's L chimera: L *"); a D/L chimera has no single hand, so its hands
+  are reported, not checked, until its model exists when the plan is written.
+- **Refinement knows L-DNA.** 0DA 0DC 0DG 0DT are CCD entries (an info line, no 'not recognised'
+  warning; they have no 5′/3′ variants that would need dictionaries). DNA names the CCD lacks (DA5 /
+  DA3, LDA …) and L-DNA sugars with D-DNA names get a warning whose fix works: rename them to DA, DC, DG,
+  DT (L-DNA: 0DA, 0DC, 0DG, 0DT), since `mdatk pdb clean` renames RNA only, or build them with *Residue
+  names: CCD for Coot / Phenix* (`--scheme ccd`).
+- **The RNAdo builder window**: *Nucleic acid* on the *Ideal helix* page (DNA greys out *Pairing*,
+  *Triplex* and the third strand, showing the Watson-Crick B-form duplex they build, and *Residue names*
+  lists the DNA names); a new *Chimera* page after it: the design (its tooltip gives the grammar and three
+  examples), the default nucleic acid, optional chain ids, names and atoms, and an output named after the
+  design next to the project file (`chimera_D-RNA6_p_L-RNA6_c1e9cc.pdb`: the layout and six hex digits of
+  the design, so that two designs of one layout get two files) until you choose your own. *Check* reports
+  the design and the chain ids with the words of the command line and the planner; *Write PDB* fits in
+  the background with a progress bar, asks before it replaces an existing file it suggested (on the
+  *Mutate* and *Fit to map* pages too), and logs the build as the command line does, its summary led by
+  the design (`Design: D:GC 3'-3' L:GC (default nucleic acid RNA; chains P,Q,R,S; residue names
+  amber)`). *Cancel* stops the chimera fit and the density fit alike: "Cancelled: … nothing was written.",
+  logged as *cancelled* (a cancelled density fit was logged as *failed*).
+
+### Output log of each step
+
+- **Every script run leaves `<script>.log` beside it** (`mdatk.workflows.runner.StepLog`): what it
+  printed (standard output and error, written as it comes), between a start line with the date and time
+  and the command, and a closing line with the date and time and the outcome - `==== Step completed
+  successfully - <date> <time> (exit status 0)` when the step completed, else *Step failed*, *Step
+  stopped by the user*, *Step waiting* or *Run cancelled*. For RNAdo's runs and `mdatk workflow run`;
+  a new run starts a new log, and the log moves aside with its run.
+
+### Separately run (cluster) scripts without conda
+
+- **The production script run separately activates conda only on this computer.** The *Separate
+  production script* of the Amber MD and GROMACS steps (meant for a cluster queue) wraps the step's
+  *Conda environment* lines in `if [ -n "${MDATK_LOCAL:-}" ]`: they run when MDATK runs the script here
+  (RNAdo, `mdatk workflow run --include-separate`; MDATK sets `MDATK_LOCAL=1` for every script it runs),
+  and a cluster job skips them, where `conda` is often not available. *Setup commands* (`module load …`)
+  still run everywhere, and the main script is unchanged. New option *Conda in the separate script on a
+  cluster too* (Environment) for clusters that have conda. Only production scripts of steps with a conda
+  environment change (listed as intended in `tests/test_golden.py`).
+
+### Previous runs: delete instead of moving aside
+
+- **Delete them and write.** The question before a step with a completed run is written again (*Write all
+  files*, *Write step*, the *Run* actions, the wizard) has a third answer beside *Cancel* and *Move aside
+  and write*: it deletes the run - the same files and folders that would move into `superseded/` - so
+  broken or trial runs do not fill the disk. A link is removed, never what it points to; a step whose run
+  could not be deleted completely is not written. The deletion is in the output log and the project's step
+  log ("Deleted the completed run of …"). `mdatk workflow write --delete-old-runs` does the same
+  (`mdatk.workflows.supersede.delete`, `Plan.write(discard=True)`; the JSON says `"deleted": true`).
+
+### Running scripts
+
+- **Steps with a conda environment run from RNAdo started from the applications menu.** `conda init`
+  puts conda on PATH in `~/.bashrc`, i.e. for interactive shells only; RNAdo started from the menu (and
+  every script it runs, a non-interactive bash) had no conda, so a step with a *Conda environment* failed
+  at once with "conda: command not found" (exit status 127), although the same script ran in a terminal.
+  When a script uses conda and conda is not on PATH, RNAdo and `mdatk workflow run` now find it as MDATK
+  finds cpptraj (`$CONDA_EXE`, the usual installation folders, `~/.conda/environments.txt`) and put its
+  `condabin` folder first on the script's PATH, with a line in the log
+  (`mdatk.workflows.runner.conda_on_path`); found nowhere, the log says so and how to set `CONDA_EXE`.
+  The generated scripts are unchanged.
+
+### Planner and dialogs
+
+- **Check marks stay.** A finished step's tick (and a failed step's cross) stays until that step runs
+  again; a new run of other steps used to clear every box's mark. RNAdo also looks for finished runs
+  quietly when a project is opened and after each run (what *Check previous runs* does, without its
+  question): a step with a complete run of the current stamp shows the tick after a restart too, and the
+  boxes of complete and partial runs their footer. Writing a step again (its run moves aside) removes
+  its tick.
+- **Write selected steps.** A toolbar button beside *Write all files* writes the ticked steps' files
+  without running them (*Write selected steps (N)*; greyed out while no step is ticked).
+- **Long dialogs scroll.** The question before running many steps (*Run ## generated script(s)?*) grew
+  past the bottom of the screen; a message dialog's long detail text now scrolls in a box at most half
+  the screen tall, so its buttons stay on screen, and the run question lists every script instead of
+  the first 20.
+- **Moving a connection.** Dragging the end of a connection off its input and dropping it on another
+  step's input, or on a step's box, moves the connection there (onto a box: its first free input that
+  takes the file). Before, the drag started a new connection, which an input could not take, and nothing
+  happened. A new connection dropped on a box also connects to its first free input that fits.
+- **Delete connection deletes only the connection.** The right-click menu of a connection left the step
+  selected before it selected too (as after a failed attempt to move the connection), and *Delete
+  connection* deleted that step, with its connections.
+- **Scrolling while dragging.** Dragging a step (or a connection) to the edge of the visible canvas scrolls
+  the canvas that way, so a step can be moved a long way in one drag.
+- **New steps in view.** *Add step* and *Templates* place the new steps in the visible part of the canvas,
+  at the first free spot, instead of below the left-most column of the plan.
+- **Close project.** RNAdo (header bar and main menu) and the analysis window (main menu) can close the
+  project and return to an empty, unsaved plan / the default settings; RNAdo asks first about unsaved
+  changes.
+- **Selectable text in dialogs.** The text of every error, question and message dialog of both programs
+  can be selected and copied (`mdatk.gui.dialogtext.selectable_text`); the keyboard focus stays on the
+  dialog's button, so Enter still answers it.
+
+### Custom scripts
+
+- **Placeholders with real names in the help.** The help of a custom script's *Arguments*, input and output
+  *Name* and *Script text* wrote `{in:<name>}` / `$MDATK_IN_<NAME>`, which read as text to type; it now
+  shows them with example names (`{in:structure}`, `$MDATK_IN_STRUCTURE`, `{out:result}`).
+- **A placeholder that names nothing declared says what to write.** `{in:<name>}` as it stood in the help
+  gives "replace '<name>' in {in:<name>} with the input's name: write {in:structure}" (every declared input
+  offered), a name in other case "names are case-sensitive: write {in:structure}", and with nothing declared
+  yet "declare the input under Input files first"; the README's *Custom scripts* gives an example.
+
 ## 0.0.12 (2026-11-02)
 
 ### Model checks

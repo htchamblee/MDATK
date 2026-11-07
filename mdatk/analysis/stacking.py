@@ -20,6 +20,7 @@ from typing import Dict, List
 import numpy as np
 
 from ..data import CSRBuilder
+from ..pdbtools import standard_atom_name
 from ..spatial import minimum_image_vectors, pairs_within
 from .base import Analysis, register
 from .common import labels
@@ -37,8 +38,9 @@ AROMATIC_RESIDUES: Dict[str, tuple] = {
 
 
 def ring_atoms(residue):
-    """Atom indices of the aromatic ring of a residue, or None."""
-    names = {a.name: a.ix for a in residue.atoms}
+    """Atom indices of the aromatic ring of a residue, or None (a CCD component's own atom names, such as N9A of
+    0DA, by the standard ones)."""
+    names = {standard_atom_name(str(residue.resname), str(a.name)): a.ix for a in residue.atoms}
     for ring in (PURINE, PYRIMIDINE):
         if all(n in names for n in ring):
             return [names[n] for n in ring]

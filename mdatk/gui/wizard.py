@@ -35,6 +35,7 @@ from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
 from .host import Host  # noqa: E402
 from .jobs import confirm_supersede  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 
 LEVEL_COLORS = {"error": "#c01c28", "warning": "#b56a00", "info": "#1a5fb4"}
 TYPE_KEYS = ("kind", "integrator")  # record options that switch whole groups of fields
@@ -1001,12 +1002,14 @@ class WizardWindow(Gtk.Window):
                         "scripts run that may read it. Wait for them to finish, or cancel them, then write "
                         "again.")
             return
-        if moving and not confirm_supersede(self, list(moving.values()), run):
+        choice = confirm_supersede(self, list(moving.values()), run) if moving else "move"
+        if choice is None:
             return
         try:
             with logged(self.host.project_path, "workflow write",
                         f"Script wizard: {step.tool.label}") as entry:
-                report = plan.write([self.node.id], master=False, project_path=self.host.project_path)
+                report = plan.write([self.node.id], master=False, project_path=self.host.project_path,
+                                    discard=choice == "delete")
                 entry.files = list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written"
         except OSError as exc:
@@ -1019,6 +1022,9 @@ class WizardWindow(Gtk.Window):
             self.host.append_log("Script wizard: " + lines[0])
             for line in lines[1:]:
                 self.host.append_log(line)
+        if report.records_error:  # bookkeeping only: the step's files are written
+            self.host.append_log(f"Script wizard: WARNING: MANIFEST / MDATK_step.toml not written: "
+                                 f"{report.records_error}")
         if report.skipped:
             self._error("Some files were not written", "\n".join(report.skipped.values()))
         written = [p for p in report.written]
@@ -1054,6 +1060,7 @@ class WizardWindow(Gtk.Window):
                                 buttons=Gtk.ButtonsType.CLOSE, text=text)
         if detail:
             dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 

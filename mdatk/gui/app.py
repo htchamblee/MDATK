@@ -44,12 +44,14 @@ from ..render.panels import PANEL_TYPES  # noqa: E402
 from ..selections import SelectionError  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .about import citation_text, export_bibtex  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
 from .jobs import JobControl  # noqa: E402
 from .problemview import ProblemView  # noqa: E402
 from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
-                        choose_save_path, fill_open_menu, other_data, renamed_workflow)
+                        choose_save_path, fill_open_menu, keep_open_menu_filled, other_data,
+                        renamed_workflow)
 from .worker import call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -182,7 +184,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.open_menu_button.set_image(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON))
         self.open_menu_button.set_tooltip_text("Recent projects, the demo project, or browse")
         self.open_menu_button.set_popup(self.open_menu)
-        self.open_menu_button.connect("toggled", lambda b: b.get_active() and self._fill_open_menu())
+        keep_open_menu_filled(self.open_menu_button, self.open_menu, self._fill_open_menu)
         open_box.pack_start(self.open_menu_button, False, False, 0)
         hb.pack_start(open_box)
         hb.pack_start(W.button("Save", self.save_project, "Save the project (Ctrl+S)",
@@ -200,8 +202,8 @@ class MainWindow(Gtk.ApplicationWindow):
                                "Repair, rename (D/L-RNA naming schemes), re-chain and renumber PDB files, "
                                "in RNAdo"),
                               ("Structure builder: open in RNAdo…", lambda: self.open_in_rnado("builder"),
-                               "Ideal A-form helices (D / L), base mutations and rigid-body fits into a "
-                               "density map, in RNAdo"),
+                               "Ideal helices (A-form RNA, B-form DNA; D / L), D/L chimeras, base mutations "
+                               "and rigid-body fits into a density map, in RNAdo"),
                               (None, None, None),
                               ("Use the plan's files as inputs", self.use_plan_inputs,
                                "Take the topology and trajectories that the plan's MDATK analysis step reads "
@@ -230,6 +232,8 @@ class MainWindow(Gtk.ApplicationWindow):
         hb.pack_start(wf)
         menu = Gtk.Menu()
         for text, cb, tip in (("New project (defaults)", self.new_project, None),
+                              ("Close project", self.close_project,
+                               "Close the project file and return to the default settings, tied to no file"),
                               ("Create demo system…", self.create_demo, None),
                               ("Project log…", self.show_project_log, None),
                               ("Export citations (BibTeX)…", self.export_citations, None),
@@ -1922,6 +1926,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.load_project(Project(), None)
         self.append_log("New project with default settings (unsaved).")
 
+    def close_project(self):
+        """Back to a blank state: default settings, tied to no project file."""
+        name = os.path.basename(self.project_path) if getattr(self, "project_path", None) else ""
+        self.preview_data = None
+        self.load_project(Project(), None)
+        self.append_log(f"Closed {name}: default settings (unsaved)." if name else "Closed the project.")
+
     def open_project(self):
         path = choose_project(self)
         if path:
@@ -2132,6 +2143,7 @@ class MainWindow(Gtk.ApplicationWindow):
         sw.set_min_content_height(420)
         sw.add(view)
         dlg.get_content_area().pack_start(sw, True, True, 0)
+        selectable_text(dlg)
         dlg.show_all()
         dlg.run()
         dlg.destroy()
@@ -2244,6 +2256,7 @@ class MainWindow(Gtk.ApplicationWindow):
         box.set_spacing(6)
         box.pack_start(W.label("The plan has several MDATK analysis steps:"), False, False, 0)
         box.pack_start(combo, False, False, 0)
+        selectable_text(dlg)
         dlg.show_all()
         ok = dlg.run() == Gtk.ResponseType.OK
         chosen = combo.get_active_id()
@@ -2313,6 +2326,7 @@ class MainWindow(Gtk.ApplicationWindow):
         sw.set_shadow_type(Gtk.ShadowType.IN)
         sw.add(view)
         box.pack_start(sw, True, True, 0)
+        selectable_text(dlg)
         dlg.show_all()
         response = dlg.run()
         dlg.destroy()
@@ -2541,6 +2555,7 @@ class MainWindow(Gtk.ApplicationWindow):
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
             dlg.format_secondary_text(detail[:3000])
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 
@@ -2550,6 +2565,7 @@ class MainWindow(Gtk.ApplicationWindow):
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
             dlg.format_secondary_text(detail[:3000])
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 
@@ -2565,6 +2581,7 @@ class MainWindow(Gtk.ApplicationWindow):
             pix = pix.scale_simple(screen_w, h, GdkPixbuf.InterpType.BILINEAR)
         dlg.get_content_area().pack_start(Gtk.Image.new_from_pixbuf(pix), True, True, 0)
         dlg.connect("response", lambda d, _r: d.destroy())
+        selectable_text(dlg)
         dlg.show_all()
         self.append_log(f"Still frame written to {path}")
 

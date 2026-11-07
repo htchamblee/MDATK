@@ -310,10 +310,28 @@ def env_section(placeholder: str, extra: Sequence[Option] = ()) -> Section:
     ], tooltip="How the generated scripts find the programs.")
 
 
-def env_lines(s: Dict[str, Any]) -> List[str]:
+# Set by MDATK for every script it runs itself (RNAdo, mdatk workflow run); a cluster job has not got it
+LOCAL_VAR = "MDATK_LOCAL"
+
+SEPARATE_CONDA = Option(
+    "conda_separate", "Conda in the separate script on a cluster too", "bool", False,
+    "The separately run script (production, e.g. on a cluster) activates the conda environment only when "
+    f"MDATK runs it on this computer (RNAdo's 'Also run the scripts marked run separately here', or "
+    f"{LOCAL_VAR}=1 bash <script>); a cluster job skips it, as clusters set up their own programs (the "
+    "Setup commands run everywhere). Tick to activate it on the cluster too.")
+
+
+def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
+    """The Environment lines of a script: conda activation, then the setup commands.  In a separately run
+    script (``separate``) the conda lines run only when MDATK runs it here (``$MDATK_LOCAL``), unless the
+    step's ``conda_separate`` is set."""
     lines: List[str] = []
     if s.get("conda_env", "").strip():
-        lines += ['eval "$(conda shell.bash hook)"', f"conda activate {s['conda_env'].strip()}"]
+        conda = ['eval "$(conda shell.bash hook)"', f"conda activate {s['conda_env'].strip()}"]
+        if separate and not s.get("conda_separate"):
+            conda = ["# conda only when MDATK runs this script on this computer; a cluster job skips it",
+                     f'if [ -n "${{{LOCAL_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
+        lines += conda
     for line in (s.get("env_setup") or "").splitlines():
         if line.strip():
             lines.append(line.rstrip())
@@ -321,7 +339,7 @@ def env_lines(s: Dict[str, Any]) -> List[str]:
 
 
 def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
-                  notes: Sequence[str] = ()) -> List[str]:
+                  notes: Sequence[str] = (), separate: bool = False) -> List[str]:
     today = _dt.date.today().isoformat()
     lines = ["#!/bin/bash",
              f"# {title}",
@@ -330,7 +348,7 @@ def script_header(title: str, ctx: StepContext, s: Dict[str, Any], script: str,
              f"# {PROJECT_ABBREV} only writes this script; review it, then run it with: bash {script}"]
     lines += [f"# {n}" for n in notes]
     lines += ["", "set -eo pipefail", 'cd "$(dirname "$0")"', ""]
-    env = env_lines(s)
+    env = env_lines(s, separate)
     if env:
         lines += ["# Environment"] + env + [""]
     return lines
@@ -371,27 +389,63 @@ def listed_files(name: str, ctx: StepContext, port: str) -> List[str]:
 # a cluster) that has not finished: "run that one, then this one again" (sysexits' EX_TEMPFAIL).  MDATK's
 # runner reports it as waiting, not as a failure, and does not start the steps that depend on the step.
 WAITING_STATUS = 75
+# ... or, for batch schedulers that cancel the jobs depending on a non-zero exit (sbatch --dependency), the
+# main script exits 0 and leaves the file <main script>.waiting beside itself (WAITING_EXIT 'file'); the
+# runner reports that as waiting too
+WAITING_EXT = ".waiting"
+
+WAITING_EXIT = Option(
+    "waiting_exit", "While the separate script has not finished", "radio", "status",
+    f"What the main script does while the step's separately run script has not finished. Exit status "
+    f"{WAITING_STATUS}: it stops with that status ('waiting'), which a batch scheduler counts as a failure "
+    f"(sbatch --dependency=afterok cancels the jobs submitted after it, e.g. the separate script). Exit 0 + "
+    f"{WAITING_EXT} file: it leaves <main script>{WAITING_EXT} beside itself and exits 0, so those jobs start; "
+    f"the file is removed when the script starts and when it finishes. MDATK (and the plan's master script) "
+    f"reports the step as waiting either way and does not start the steps after it.",
+    choices=[("status", f"Exit status {WAITING_STATUS}"), ("file", f"Exit 0 + {WAITING_EXT} file")])
 
 
-def separate_check(script: str, finished: Sequence[str], what: str) -> Tuple[List[str], List[str]]:
+def waiting_file(script: str) -> str:
+    """The file a main script in the 'exit 0' waiting mode (:data:`WAITING_EXIT`) leaves beside itself while
+    its separately run script has not finished: ``<script>.waiting``."""
+    return script + WAITING_EXT
+
+
+def separate_check(script: str, finished: Sequence[str], what: str,
+                   flag: str = "") -> Tuple[List[str], List[str]]:
     """Shell lines for the main script of a step that leaves ``what`` to the separate ``script``.
 
     ``finished`` are shell tests that all succeed once that script has finished.  The first lines define
     ``separate_done`` (place them before the step's own work; :func:`skip_when_done` keeps the work that
     production starts from from running again).  The last lines exit with :data:`WAITING_STATUS` and name
     the script to run while it has not finished - place them before anything that needs its output - so a
-    step never reports success with its production missing."""
+    step never reports success with its production missing.  With ``flag`` (:func:`waiting_file` of the
+    main script) they write that file and exit 0 instead; the first lines remove it, and so do the lines of
+    :func:`waiting_done`, which end the script."""
     tests = [f"  {t} &&" for t in finished[:-1]] + [f"  {finished[-1]}"]
     head = [f"# {what[:1].upper() + what[1:]} run in a separate script, e.g. on a cluster: this step is "
             f"complete once", f"# bash {script} has finished",
             "separate_done() {", *tests, "}", ""]
+    if flag:
+        head += [f"# While they have not finished, this script exits 0 and leaves {flag}",
+                 f"# (instead of exit status {WAITING_STATUS}); every run starts without it", f"rm -f {flag}", ""]
     tail = [f"# The step is not complete before {what} have finished",
             "if ! separate_done; then",
             f'  echo "WAITING: {what} have not finished. Run them (e.g. on a cluster) with:" >&2',
             f'  echo "  bash $PWD/{script}" >&2',
-            '  echo "then run this script again." >&2',
-            f"  exit {WAITING_STATUS}", "fi", ""]
-    return head, tail
+            '  echo "then run this script again." >&2']
+    if flag:
+        tail += [f'  echo "WAITING: {what} have not finished: bash {script}, then this script again" > {flag}',
+                 "  exit 0"]
+    else:
+        tail.append(f"  exit {WAITING_STATUS}")
+    return head, tail + ["fi", ""]
+
+
+def waiting_done(flag: str) -> List[str]:
+    """The last lines of a main script in the 'exit 0' waiting mode (``flag``: its :func:`waiting_file`): the
+    step is complete, so it no longer waits.  No lines without ``flag``."""
+    return ["# The step is complete: it no longer waits", f"rm -f {flag}", ""] if flag else []
 
 
 def skip_when_done(lines: Sequence[str], what: str) -> List[str]:

@@ -1187,3 +1187,59 @@ def test_mg_cl_pair_matches_verified_build():
     pm = generated(step("amber-build", {"mg_count": 2, "mg_model": "nano", "water": "tip3p"},
                         {"structure": "/x.pdb"})[0])["apt1_01_parmed_20261015-1432.in"].content
     assert "changeLJPair :MG :Cl- 5.48171290 0.25139520" in pm
+
+
+# ---------------------------------------------------------------------------
+# conda in separately run (cluster) scripts
+# ---------------------------------------------------------------------------
+
+
+def test_a_separate_production_script_activates_conda_only_when_run_here():
+    wf, b, r, m = amber_plan(md={"conda_env": "AmberTools26", "env_setup": "module load Amber/24"})
+    files = generated(Plan(wf, "/tmp/mdatk-plan"), m.id)
+    main = files[f"apt1_03_amber-md_{STAMP}.sh"].content
+    prod = files[f"apt1_03_amber-prod_{STAMP}.sh"].content
+    # the main script runs here: conda as before
+    assert '\neval "$(conda shell.bash hook)"\nconda activate AmberTools26\n' in main
+    # the separate one: only when MDATK runs it (a cluster job skips it); setup commands run everywhere
+    assert ('if [ -n "${MDATK_LOCAL:-}" ]; then\n  eval "$(conda shell.bash hook)"\n'
+            '  conda activate AmberTools26\nfi\nmodule load Amber/24\n') in prod
+    # ... unless asked for on the cluster too
+    wf, b, r, m = amber_plan(md={"conda_env": "AmberTools26", "conda_separate": True})
+    prod = generated(Plan(wf, "/tmp/mdatk-plan"), m.id)[f"apt1_03_amber-prod_{STAMP}.sh"].content
+    assert '\neval "$(conda shell.bash hook)"\nconda activate AmberTools26\n' in prod
+    assert "MDATK_LOCAL" not in prod
+
+
+def test_gromacs_separate_production_script_activates_conda_only_when_run_here():
+    plan, st = step("gromacs", {"conda_env": "gmx"}, {"topology": "/x.parm7", "coordinates": "/x.rst7"})
+    files = generated(plan)
+    assert 'if [ -n "${MDATK_LOCAL:-}" ]; then' in files[f"apt1_01_gromacs-prod_{STAMP}.sh"].content
+    assert "MDATK_LOCAL" not in files[f"apt1_01_gromacs_{STAMP}.sh"].content
+
+
+def test_scripts_run_by_mdatk_have_mdatk_local(tmp_path):
+    from mdatk.workflows.runner import run_script
+    script = tmp_path / "s.sh"
+    script.write_text('echo "local=${MDATK_LOCAL:-unset}"\n')
+    lines = []
+    assert run_script(str(script), lines.append)[0] == 0
+    assert lines == ["local=1"]
+
+
+def test_prep_pdb_keeps_a_phosphate_only_residue():
+    """--strip-5p removes the 5'-phosphate of each chain's first nucleotide only: a residue made of phosphate atoms
+    alone (a chimera's PO2 bridge in its TER segment, a phosphate ion) stays, so tleap names it instead of building
+    the strands it joins unconnected."""
+    from mdatk import chimera, pdbtools
+
+    text = chimera.build_chimera("D:GC 3'-3' L:GC", phosphate5=True)
+    s = pdbtools.read_pdb(text)
+    po2 = [r for r in s.residues() if r.name.strip() == "PO2"]
+    assert len(po2) == 1 and {a.name for a in po2[0].atoms} == {"P", "OP1", "OP2"}
+    lines, stats = prep_pdb.prepare(text.splitlines())
+    kept = [ln for ln in lines if ln[17:20] == "PO2"]
+    assert len(kept) == 3
+    firsts = [ln for ln in lines if ln.startswith(("ATOM", "HETATM")) and ln[22:26].strip() == "1"]
+    assert not any(ln[12:16].strip() in ("P", "OP1", "OP2", "OP3") for ln in firsts)  # the strands' 5' ends
+    assert stats["phosphates"] > 0

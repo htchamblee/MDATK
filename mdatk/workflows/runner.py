@@ -4,9 +4,11 @@ Generated scripts are meant to be reviewed and normally run by hand.  On
 request, MDATK runs each step's main scripts (role ``run``) with ``bash``, streams
 their output to a callback and appends one entry per script to the project file's
 step log.  Scripts marked "run separately" (production runs meant for a cluster
-queue, long sampling runs) are started only when asked for (``include_separate``).
+queue, long sampling runs) are started only when asked for (``include_separate``),
+after their step's main script, which then runs once more for the rest of the step.
 The main script of a step that has such a script exits with
-:data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished: the step
+:data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished (or, in the step's
+'exit 0' waiting mode, exits 0 leaving ``<script>.waiting`` beside itself): the step
 is then *waiting*, which is not a failure, but the steps that depend on it are not
 started either.  Steps that use the outputs of an earlier run (``PlanNode.adopted``)
 are not run again.
@@ -24,6 +26,7 @@ the run leaves a note that marks it partial (:func:`mdatk.workflows.runstate.sto
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -36,7 +39,7 @@ from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
-from .base import WAITING_STATUS
+from .base import LOCAL_VAR, WAITING_STATUS, waiting_file
 from .budget import Budget, Grant, Resources, Slots, budget_notes, schedule
 from .runstate import stop_mark
 
@@ -137,6 +140,9 @@ class ScriptJob:
     role: str = "run"  # "run-separate": one of those, run on request after its step's main script
     resources: Resources = Resources()  # what one run of the step uses (Tool.run_resources)
     stop_mark: str = ""  # the note a stopped run leaves (absolute; runstate.stop_mark; "": none)
+    # role "run": the main script once more, after its step's separate scripts (plan_jobs with
+    # include_separate), for its part after them and its end; it runs only when its first run waited for them
+    again: bool = False
 
     def waiting_message(self) -> str:
         names = ", ".join(os.path.basename(p) for p in self.separate) or "a separately run script"
@@ -155,8 +161,10 @@ class ScriptResult:
 def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
               include_separate: bool = False) -> List[ScriptJob]:
     """The main scripts of the plan's steps, in plan order (written or not); with ``include_separate``
-    each step's scripts marked 'run separately' follow its main scripts.  Steps that use the outputs of an
-    earlier run (``PlanNode.adopted``) have no jobs: they are not run again."""
+    each step's scripts marked 'run separately' follow its main scripts, and then its main scripts once more
+    (``ScriptJob.again``: the stages after the separate ones, the dry copies made at the end, the end of the
+    'exit 0' waiting mode).  Steps that use the outputs of an earlier run (``PlanNode.adopted``) have no jobs:
+    they are not run again."""
     from ..citations import step_citations
     from .plan import generate_step
 
@@ -190,11 +198,14 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
         except Exception:  # noqa: BLE001 - a generator bug: one core (the planner shows the settings' issues)
             needs = Resources()
         mark = os.path.join(plan.root, stop_mark(step.ctx)) if plan.root and step.ctx is not None else ""
-        for role in ("run", "run-separate") if include_separate else ("run",):
+        passes = [("run", False)]
+        if include_separate and separate:  # then its separate scripts, then its main scripts again
+            passes += [("run-separate", False), ("run", True)]
+        for role, again in passes:
             for f in step.files:
                 if f.role == role:
                     jobs.append(ScriptJob(step.node.step, step.label, path[f.name], step_citations(step), nid,
-                                          after, separate, role, needs, mark))
+                                          after, separate, role, needs, mark, again))
     return jobs
 
 
@@ -214,6 +225,123 @@ def adopted_steps(plan, node_ids: Optional[Sequence[str]] = None) -> List[str]:
     return [nid for nid in plan.order if (node_ids is None or nid in node_ids) and plan.steps[nid].adopted]
 
 
+def conda_on_path(environ: Optional[Dict[str, str]], script: str,
+                  on_line: Optional[LineFn] = None) -> Optional[Dict[str, str]]:
+    """``environ`` with conda on its PATH when the script at ``script`` uses conda (``conda activate``, as
+    the steps' *Conda environment* writes) and conda is not on it.
+
+    ``conda init`` puts conda on PATH in ~/.bashrc, i.e. for interactive shells only: a script run by RNAdo
+    started from the applications menu (or any non-interactive bash) does not have it and fails with
+    "conda: command not found".  conda is found as MDATK finds it for cpptraj (``$CONDA_EXE``, the usual
+    install folders, ~/.conda/environments.txt); its ``condabin`` folder (only the conda command) is put
+    first on PATH, else the folder of ``bin/conda``.  Unchanged (None stays None) when the script does not
+    use conda, conda is already on PATH, or no conda is found (then ``on_line`` gets a hint)."""
+    try:
+        with open(script, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return environ
+    if not re.search(r"(?m)^[^#\n]*\bconda\s+(?:activate|shell\.bash|run)\b", text):
+        return environ
+    env = dict(os.environ if environ is None else environ)
+    path = env.get("PATH") or os.defpath
+    if shutil.which("conda", path=path):
+        return environ
+    from ..cleaning.conda import _registered_prefixes, candidate_roots
+
+    found = ""
+    exe = env.get("CONDA_EXE", "")
+    registered = []  # the installations of the environments conda lists in ~/.conda/environments.txt
+    for prefix in _registered_prefixes():
+        parent = os.path.dirname(prefix)
+        registered.append(os.path.dirname(parent) if os.path.basename(parent) == "envs" else prefix)
+    roots = ([os.path.dirname(os.path.dirname(exe))] if exe else []) + candidate_roots() + registered
+    for root in roots:
+        for rel in ("condabin/conda", "bin/conda"):
+            cand = os.path.join(root, rel)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                found = cand
+                break
+        if found:
+            break
+    if not found:
+        if on_line is not None:
+            on_line("WARNING: the script uses conda, but conda is not on PATH here (conda init sets it up "
+                    "for interactive shells only) and was not found in the usual places; set CONDA_EXE to "
+                    "the conda program, or start RNAdo from a terminal where conda works")
+        return environ
+    env["PATH"] = os.path.dirname(found) + os.pathsep + path
+    if on_line is not None:
+        on_line("conda is not on PATH here (conda init sets it up for interactive shells only): "
+                f"using {found}")
+    return env
+
+
+STEP_LOG_EXT = ".log"  # <script>.sh.log beside the script: the output of its last run
+DONE_FLAG = "Step completed successfully"
+
+
+def step_log_path(script: str) -> str:
+    """The output log of a run of ``script``: ``<script>.log`` beside it (``…_amber-md_<stamp>.sh.log``),
+    so it carries the run's name and stamp and moves aside with the run (mdatk.workflows.supersede)."""
+    return script + STEP_LOG_EXT
+
+
+class StepLog:
+    """The per-step output log of one script run: a header with the start time, every line the script
+    prints (standard output and error) as it comes, and a closing line with the end time and the outcome
+    (:data:`DONE_FLAG` when the step completed).  Never fails a run: a log that cannot be written is
+    skipped with a note in the output."""
+
+    def __init__(self, script: str, command: str, on_line: Optional[LineFn] = None):
+        self.path = step_log_path(script)
+        self._lock = threading.Lock()
+        self._fh = None
+        try:
+            self._fh = open(self.path, "w", encoding="utf-8", errors="replace", newline="\n")
+            self._fh.write(f"==== {os.path.basename(script)} - started {_now()} by {PROJECT_ABBREV} "
+                           f"({command}, in {os.path.dirname(script) or '.'})\n")
+            self._fh.flush()
+        except OSError as exc:
+            self._fh = None
+            if on_line is not None:
+                on_line(f"WARNING: could not write the step's output log {self.path}: {exc.strerror or exc}")
+
+    def write(self, line: str) -> None:
+        if self._fh is None:
+            return
+        with self._lock:
+            try:
+                self._fh.write(line + "\n")
+                self._fh.flush()  # readable while the script runs (tail -f)
+            except (OSError, ValueError):
+                pass
+
+    def close(self, outcome: str, code: Optional[int], message: str = "", waits_next: bool = False) -> None:
+        if self._fh is None:
+            return
+        when = _now()
+        status = f" (exit status {code})" if code is not None else ""
+        text = {"ok": f"{DONE_FLAG} - {when}{status}",
+                "failed": f"Step failed - {when}{status}" + (f": {message}" if message else ""),
+                "stopped": f"Step stopped by the user - {when}",
+                "waiting": f"Step waiting - {when}{status}" + (f": {message}" if message else ""),
+                "cancelled": f"Run cancelled - {when}"}.get(outcome, f"Step ended ({outcome}) - {when}")
+        if outcome == "ok" and waits_next:
+            text = f"Main script finished - {when}{status}; its separately run script runs next"
+        self.write(f"==== {text}")
+        with self._lock:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
                on_stderr: Optional[LineFn] = None, env: Optional[Dict[str, str]] = None) -> "tuple[int, str]":
     """Run ``bash path`` in the script's folder; returns (exit status, captured output).
@@ -228,8 +356,9 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
     environ = child_env()
-    if env:
-        environ = {**(os.environ if environ is None else environ), **env}
+    # run here by MDATK: a separately run script activates its conda environment (base.LOCAL_VAR)
+    environ = {**(os.environ if environ is None else environ), LOCAL_VAR: "1", **(env or {})}
+    environ = conda_on_path(environ, path, on_line)
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
     # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive
     # pipe or its fd 1023 on the mount, which would keep the AppImage mounted for as long as the script (or
@@ -294,14 +423,30 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     return code, "\n".join(captured)
 
 
+def _script_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _flags_waiting(text: str, path: str) -> bool:
+    """Whether the main script at ``path`` (its text) waits in the 'exit 0' mode: it leaves its
+    :func:`~mdatk.workflows.base.waiting_file` instead of exiting with WAITING_STATUS."""
+    return os.path.basename(waiting_file(path)) in text
+
+
 def _checks_separate(path: str) -> bool:
     """Whether a step's main script checks that its separately run scripts have finished (see
     base.separate_check); older ones exit 0 having run only the part before production."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return f"exit {WAITING_STATUS}" in fh.read()
-    except OSError:
-        return False
+    text = _script_text(path)
+    return f"exit {WAITING_STATUS}" in text or _flags_waiting(text, path)
+
+
+def _left_waiting(path: str) -> bool:
+    """A main script in the 'exit 0' waiting mode that exited 0 left its waiting file: it waits."""
+    return os.path.exists(waiting_file(path)) and _flags_waiting(_script_text(path), path)
 
 
 def _dependencies(jobs: Sequence[ScriptJob]) -> List[Set[int]]:
@@ -370,10 +515,12 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     terminated) or, not started yet, never started: result status "stopped", its dependents not started
     ("skipped"), the other jobs go on, and its run leaves the note ``job.stop_mark``.
 
-    A main script that exits with WAITING_STATUS leaves its step *waiting* (result status
-    "waiting", not an exception) and its dependents not started - unless the step's separate
-    scripts are among ``jobs``: they then run next.  A separate script whose main script found
-    it finished (exit status 0) is not run again."""
+    A main script that exits with WAITING_STATUS, or exits 0 leaving its ``<script>.waiting`` (the
+    step's 'exit 0' waiting mode), leaves its step *waiting* (result status "waiting", not an
+    exception) and its dependents not started - unless the step's separate scripts are among
+    ``jobs``: they then run next, and then the main script's job with ``again`` (its part after them),
+    whose exit decides.  A separate script whose main script found it finished (exit status 0) is not
+    run again, and neither is the main script then."""
     limit = max(0, int(parallel))
     marks = (limit != 1 and len(jobs) > 1) if step_marks is None else step_marks
     stop = cancel if cancel is not None else threading.Event()
@@ -386,6 +533,7 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     with_main = {j.node_id for j in jobs if j.role == "run" and j.node_id}
     separate_next = {j.node_id for j in jobs if j.role == "run-separate" and j.node_id}
     waited: Set[str] = set()  # steps whose main script waits for their separate scripts (they run next)
+    rerun: Set[str] = set()  # ... and that says so (not an older script): it runs again after them
 
     def state(i: int, value: str) -> None:
         if on_state is not None:
@@ -407,12 +555,31 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
         command = (f"CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']} " if env else "") + f"bash {rel}"
         t0 = time.monotonic()
         outcome, code, message = "failed", None, ""
+        steplog: Optional[StepLog] = None
         try:
             if job.role == "run-separate" and job.node_id in with_main and job.node_id not in waited:
                 line_fn(f"{rel} has already finished (its step's main script says so) - not run again")
                 outcome = "ok"
                 return
+            if job.again and job.node_id not in rerun:
+                line_fn(f"{rel}: not run again ("
+                        + (f"written by an older {PROJECT_ABBREV}, it cannot tell whether its separately run scripts "
+                           "have finished)" if job.node_id in waited else
+                           "it found its separately run scripts finished and ran to its end)"))
+                outcome = "ok"
+                return
             _drop_stop_mark(job)
+            steplog = StepLog(job.path, command, line_fn)
+            shown, shown_err = line_fn, err_fn
+
+            def line_fn(line: str, _show=shown) -> None:  # noqa: F811 - the output log gets every line too
+                steplog.write(line)
+                _show(line)
+
+            if shown_err is not None:
+                def err_fn(line: str, _show=shown_err) -> None:  # noqa: F811
+                    steplog.write(line)
+                    _show(line)
             with logged(project_path, f"{job.step:02d}", job.title, job.citations) as entry:
                 entry.command = command
                 entry.folder = os.path.dirname(job.path)
@@ -430,11 +597,15 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                     entry.output = output
                     entry.summary = f"exit status {code}"
                     main = job.role == "run" and bool(job.separate)
+                    # the 'exit 0' waiting mode: the script left <script>.waiting
+                    flagged = main and code == 0 and _left_waiting(job.path)
                     # a main script written by MDATK 0.0.8 or older "succeeds" whether or not production ran
-                    legacy = main and code == 0 and not _checks_separate(job.path)
-                    if main and (code == WAITING_STATUS or legacy):
-                        if job.node_id in separate_next:  # asked for: its separate scripts run next
-                            waited.add(job.node_id)
+                    legacy = main and code == 0 and not flagged and not _checks_separate(job.path)
+                    if main and (code == WAITING_STATUS or flagged or legacy):
+                        if job.node_id in separate_next and not job.again:  # asked for: its separate scripts
+                            waited.add(job.node_id)  # run next, then (unless an older script) this one again
+                            if not legacy:
+                                rerun.add(job.node_id)
                             entry.summary += " (its separately run scripts run next)"
                             outcome = "ok"
                         else:  # not a failure, but the step is not complete
@@ -464,6 +635,9 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
             fatal.append(exc)
             stop.set()
         finally:
+            if steplog is not None:
+                steplog.close(outcome, code, message,
+                              waits_next=job.role == "run" and not job.again and job.node_id in waited)
             with cond:  # always leave "running", or the scheduler would wait forever
                 status[i] = outcome
                 slots.give_back(grant)

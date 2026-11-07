@@ -24,7 +24,8 @@ from matplotlib.collections import LineCollection
 from ..selections import SelectionError
 from .coloring import frame_colors
 from .panels import Panel, register_panel
-from .residues import chain_names, one_letter, residue_rows, residue_shading, resnames, tag_rows, warn_once
+from .residues import (backbone_flags, chain_names, one_letter, residue_rows, residue_shading, resnames, tag_rows,
+                       warn_once)
 
 log = logging.getLogger(__name__)
 NOTE_ROW = 0.8  # height of the 'choose a smaller range' line, in cells
@@ -73,7 +74,8 @@ class _ResiduePanel(Panel):
         self.tr = tr
         self.rows = rows
         names = resnames(tr)
-        self.letters = [one_letter(names[r]) for r in rows]
+        flags = backbone_flags(tr)  # no nucleotide without a backbone atom (the detergent LDA)
+        self.letters = [one_letter(names[r], None if flags is None else bool(flags[r])) for r in rows]
         self.chains = chain_names(tr)[rows]
         self.resid = np.asarray(tr.arrays["resid"])[rows]
         self.shading = residue_shading(self.ctx, tr)

@@ -8,7 +8,7 @@ import time
 import pytest
 
 from mdatk.progress import Cancelled
-from mdatk.workflows.runner import ScriptFailed, ScriptJob, run_jobs
+from mdatk.workflows.runner import ScriptFailed, ScriptJob, run_jobs, run_script
 
 pytestmark = pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="needs bash")
 
@@ -329,3 +329,107 @@ def test_a_stopped_run_counts_as_partial(tmp_path):
     os.utime(jobs[0].stop_mark, (later - 60, later - 60))
     found = runstate.check_runs(Plan(wf, plan.root))[node.id]
     assert found.state == "done" and not found.stopped
+
+
+# ---------------------------------------------------------------------------
+# conda in scripts run from RNAdo (conda init sets PATH for interactive shells only)
+# ---------------------------------------------------------------------------
+
+CONDA_STAND_IN = """#!/bin/bash
+if [ "$1" = shell.bash ] && [ "$2" = hook ]; then
+  echo 'conda() { if [ "$1" = activate ]; then echo "activated $2"; fi; }'
+fi
+"""
+
+
+def _conda_script(tmp_path):
+    script = tmp_path / "s.sh"
+    script.write_text('set -e\neval "$(conda shell.bash hook)"\nconda activate AmberTools26\necho done\n')
+    return str(script)
+
+
+def test_a_script_finds_conda_that_is_not_on_path(tmp_path, monkeypatch):
+    # RNAdo started from the applications menu has no conda on PATH; a step with a conda environment
+    # failed with "conda: command not found" (exit status 127)
+    home = tmp_path / "home"
+    conda = home / "miniforge3" / "condabin" / "conda"
+    conda.parent.mkdir(parents=True)
+    conda.write_text(CONDA_STAND_IN)
+    conda.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "MAMBA_ROOT_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    lines = []
+    code, out = run_script(_conda_script(tmp_path), lines.append)
+    assert code == 0, out
+    assert "activated AmberTools26" in lines and "done" in lines
+    assert any("using " + str(conda) in line for line in lines)
+
+
+def test_without_conda_the_script_fails_with_a_hint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    for var in ("CONDA_EXE", "CONDA_PREFIX", "MAMBA_ROOT_PREFIX", "CONDA_ROOT"):
+        monkeypatch.delenv(var, raising=False)
+    import mdatk.cleaning.conda as cc
+    monkeypatch.setattr(cc, "COMMON_ROOTS", ())
+    lines = []
+    code, _out = run_script(_conda_script(tmp_path), lines.append)
+    assert code != 0
+    assert any(line.startswith("WARNING: the script uses conda") for line in lines)
+
+
+def test_scripts_without_conda_keep_their_environment(tmp_path):
+    from mdatk.workflows.runner import conda_on_path
+    script = tmp_path / "s.sh"
+    script.write_text("# conda activate is only mentioned here\necho hi\n")
+    assert conda_on_path(None, str(script)) is None
+
+
+# ---------------------------------------------------------------------------
+# the per-step output log (<script>.log)
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+STAMPED = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+
+
+def test_each_run_leaves_an_output_log_with_a_timestamped_end(tmp_path):
+    from mdatk.workflows.runner import DONE_FLAG, step_log_path
+    ok = tmp_path / "ok.sh"
+    ok.write_text('echo "stage 1"\necho "a warning" >&2\necho "stage 2"\n')
+    bad = tmp_path / "bad.sh"
+    bad.write_text('echo "starting"\nexit 3\n')
+    run_jobs([ScriptJob(1, "one", str(ok), node_id="a")], None, on_line=lambda _l: None,
+             on_stderr=lambda _l: None)
+    text = open(step_log_path(str(ok))).read().splitlines()
+    assert re.fullmatch(rf"==== ok\.sh - started {STAMPED} by MDATK \(bash ok\.sh, in .*\)", text[0])
+    body = text[1:-1]  # every line; each stream's in order (standard error is read alongside)
+    assert sorted(body) == ["a warning", "stage 1", "stage 2"]
+    assert body.index("stage 1") < body.index("stage 2")
+    assert re.fullmatch(rf"==== {DONE_FLAG} - {STAMPED} \(exit status 0\)", text[-1])
+    with pytest.raises(ScriptFailed):
+        run_jobs([ScriptJob(2, "two", str(bad), node_id="b")], None, on_line=lambda _l: None)
+    text = open(step_log_path(str(bad))).read().splitlines()
+    assert "starting" in text and DONE_FLAG not in "\n".join(text)
+    assert re.fullmatch(rf"==== Step failed - {STAMPED} \(exit status 3\): exit status 3", text[-1])
+    # the next run starts a new log
+    run_jobs([ScriptJob(1, "one", str(ok), node_id="a")], None, on_line=lambda _l: None)
+    assert open(step_log_path(str(ok))).read().count("started") == 1
+
+
+def test_a_stopped_step_says_so_in_its_output_log(tmp_path):
+    import threading as _th
+
+    from mdatk.workflows.runner import StepStops, step_log_path
+    script = tmp_path / "slow.sh"
+    script.write_text('echo "begun"\nsleep 20\n')
+    stops = StepStops()
+    _th.Timer(0.8, lambda: stops.stop("n")).start()
+    results = run_jobs([ScriptJob(1, "slow", str(script), node_id="n")], None, on_line=lambda _l: None,
+                       stops=stops)
+    assert results[0].status == "stopped"
+    last = open(step_log_path(str(script))).read().splitlines()[-1]
+    assert re.fullmatch(rf"==== Step stopped by the user - {STAMPED}", last)

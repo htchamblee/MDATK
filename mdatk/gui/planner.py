@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import copy
 import math
+import logging
 import os
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import gi
 
@@ -31,13 +32,14 @@ from ..projectfile import logged  # noqa: E402
 from ..workflows import TOOLS, runstate, supersede, tools_by_category  # noqa: E402
 from ..workflows.budget import (ALL_CORES, MAX_GPUS_LISTED, Budget, Resources, auto_cores,  # noqa: E402
                                 detected_gpus)
-from ..workflows.naming import new_stamp  # noqa: E402
+from ..workflows.naming import folder_tag_problem, new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
-                              connect, next_step, remove_node, step_title)
+                              connect, next_step, node_folder_tag, remove_node, step_title)
 from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .host import Host  # noqa: E402
 from .jobs import confirm_supersede  # noqa: E402
 from .wizard import LEVEL_COLORS, WizardWindow  # noqa: E402
@@ -53,6 +55,9 @@ PORT_H = 18
 PORT_R = 5.0
 SET_R = 9.0  # a collection port (the full set of N files of one kind, e.g. every decoy): a large, stacked dot
 GRID = 10
+EDGE_ZONE = 36  # px from the edge of the visible canvas where dragging scrolls it
+EDGE_SPEED = 24.0  # px per tick at the very edge (more beyond it)
+EDGE_TICK_MS = 30
 
 CATEGORY_COLORS = {
     "Planning": (0.45, 0.45, 0.47),
@@ -75,6 +80,17 @@ STATUS_COLORS = {"error": (0.75, 0.11, 0.16), "warning": (0.90, 0.60, 0.05), "in
 RUN_COLORS = {"done": (0.20, 0.65, 0.35), "partial": (0.90, 0.60, 0.05), "missing": (0.60, 0.60, 0.60),
               "none": (0.60, 0.60, 0.60)}
 
+FOLDER_TAG_TIP = (
+    "Added to the step's folder name: 'model12' makes 02_amber-build into 02_amber-build_model12, so the folder "
+    "says which branch or model the step belongs to, and a plan whose steps were renumbered can still be "
+    "matched to the folders it wrote (MANIFEST, mdatk workflow manifest). The step's title in logs and "
+    "messages shows it too (02 · Amber · system build · model12). ASCII letters and digits, with '-' between "
+    "them. File names do not change. Empty: the folder is <step>_<tool>, as before. Changing it changes the "
+    "folder the step writes into and looks in for earlier runs; files already written stay where they are. "
+    "Saved with the project.")
+
+log = logging.getLogger(__name__)
+
 
 def _rgb_hex(rgb) -> str:
     return "#{:02x}{:02x}{:02x}".format(*(int(c * 255) for c in rgb))
@@ -96,6 +112,9 @@ class PlannerCanvas(Gtk.DrawingArea):
         self.selected: Optional[str] = None  # node id
         self.selected_edge: Optional[int] = None
         self.drag: Optional[dict] = None
+        self._edge_scroll: Tuple[float, float] = (0.0, 0.0)  # px per tick while a drag is at the edge
+        self._edge_view: Tuple[float, float] = (0.0, 0.0)  # the pointer, in visible-area coordinates
+        self._edge_id: Optional[int] = None
         self.hover_port: Optional[Tuple[str, str, bool]] = None
         self.hover_stop = False  # the pointer is on a running step's stop button
         self.spin_phase = 0.0  # angle of the running-script spinner
@@ -290,11 +309,13 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.move_to(40, 84)
             cr.show_text("Drag from an output (right edge) to an input (left edge) to connect steps.")
             return False
+        moving = self.drag.get("edge") if self.drag else None
         for k, e in enumerate(self.workflow.edges):
-            self._draw_edge(cr, e, k == self.selected_edge)
+            if e is not moving:
+                self._draw_edge(cr, e, k == self.selected_edge)
         for n in self.workflow.nodes:
             self._draw_node(cr, n)
-        if self.drag and self.drag.get("mode") == "connect":
+        if self.drag and self.drag.get("mode") in ("connect", "rewire"):
             x0, y0 = self.drag["start"]
             x1, y1 = self.drag["pos"]
             cr.set_source_rgb(0.2, 0.2, 0.2)
@@ -406,12 +427,13 @@ class PlannerCanvas(Gtk.DrawingArea):
                 cr.set_line_width(2.2)
                 cr.stroke()
             title_x = bx + bw + 7
-        run = self.win.run_state.get(n.id)
+        run = self.win.mark_of(n.id)
         if run:
             self._draw_run_state(cr, run, n.x + w - 31, n.y + HEAD_H / 2, rgb)
         if run == "running":
             self._draw_stop_button(cr, n)
-        self._text(cr, step_title(n), title_x, n.y + 17, 11, True, (1, 1, 1),
+        # the folder tag is drawn as a badge below the title (it is in the step's title everywhere else)
+        self._text(cr, step_title(n, tag=False), title_x, n.y + 17, 11, True, (1, 1, 1),
                    n.x + w - (62 if run == "running" else 43 if run else 25) - title_x)
         step = self.win.plan.steps.get(n.id) if self.win.plan else None
         level = step.level() if step else "ok"
@@ -430,6 +452,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 desc = tool.label
         res = self.node_resources(n)
         badge_w = self._draw_badge(cr, res.badge(), n.x + w - 8, n.y + HEAD_H + 4) + 6 if res else 0
+        tag = node_folder_tag(n) if checkable(n) else ""  # a step that writes no files has no folder
+        if tag:  # the folder tag, left of the cores and GPUs, tinted like the header
+            tint = tuple(c + (1.0 - c) * 0.78 for c in rgb)
+            badge_w += self._draw_badge(cr, tag, n.x + w - 8 - badge_w, n.y + HEAD_H + 4, tint,
+                                        max_w=w * 0.5) + 6
         self._text(cr, desc, n.x + 9, n.y + HEAD_H + 14, 9.5, False, (0.35, 0.35, 0.35), w - 18 - badge_w)
         ins, outs = self.ports(n)
         connected_in = {e.input for e in self.workflow.edges if e.target == n.id}
@@ -475,15 +502,20 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.fill()
             self._text(cr, text, n.x + 23, fy + 3.5, 9.0, bool(n.adopted), (0.25, 0.25, 0.25), w - 32)
 
-    def _draw_badge(self, cr, text: str, right: float, top: float) -> float:
-        """The CPU cores and GPUs a step uses ('8c+1g'), right-aligned at ``right``; returns its width."""
+    def _draw_badge(self, cr, text: str, right: float, top: float, fill=(0.92, 0.92, 0.91),
+                    max_w: Optional[float] = None) -> float:
+        """A small label right-aligned at ``right``: the CPU cores and GPUs a step uses ('8c+1g'), or its
+        folder tag (at most ``max_w`` wide, shortened with '…'); returns its width."""
         cr.select_font_face("Sans", 0, 0)
         cr.set_font_size(8.5)
         width = cr.text_extents(text).x_advance + 8
+        limit = None  # the text fits
+        if max_w is not None and width > max_w:
+            width, limit = max_w, max_w - 8
         self._rounded(cr, right - width, top, width, 13, 4.0)
-        cr.set_source_rgb(0.92, 0.92, 0.91)
+        cr.set_source_rgb(*fill)
         cr.fill()
-        self._text(cr, text, right - 4, top + 9.5, 8.5, False, (0.30, 0.30, 0.30), align_right=True)
+        self._text(cr, text, right - 4, top + 9.5, 8.5, False, (0.30, 0.30, 0.30), limit, align_right=True)
         return width
 
     def _draw_stop_button(self, cr, n: PlanNode) -> None:
@@ -615,6 +647,11 @@ class PlannerCanvas(Gtk.DrawingArea):
             start = self.port_pos(n, p.name, output)
             self.drag = {"mode": "connect", "node": n.id, "port": p.name, "output": output,
                          "start": start, "pos": (x, y), "kind": p.kind}
+            edge = None if output else self.edge_into(n.id, p.name)
+            source = self.win.node(edge.source) if edge is not None else None
+            spos = self.port_pos(source, edge.output, True) if source is not None else None
+            if spos is not None:  # pick up the end of its connection: drop it on another input or step
+                self.drag.update(mode="rewire", edge=edge, start=spos, output=True)
             return True
         n = self.node_at(x, y)
         if n is not None:
@@ -660,20 +697,74 @@ class PlannerCanvas(Gtk.DrawingArea):
         if d["mode"] == "pan":
             self.win.scroller.get_hadjustment().set_value(d["h"] - (ev.x_root - d["ex"]))
             self.win.scroller.get_vadjustment().set_value(d["v"] - (ev.y_root - d["ey"]))
-        elif d["mode"] == "move":
+            return True
+        self._drag_to(x, y)
+        self._edge_check(ev.x, ev.y)
+        return True
+
+    def _drag_to(self, x: float, y: float) -> None:
+        """Move what is being dragged (a step, or the loose end of a connection) to model point (x, y)."""
+        d = self.drag
+        if d is None:
+            return
+        if d["mode"] == "move":
             n = self.win.node(d["node"])
             if n is not None:
                 n.x = max(0.0, round((x - d["dx"]) / GRID) * GRID)
                 n.y = max(0.0, round((y - d["dy"]) / GRID) * GRID)
                 d["moved"] = True
                 self.queue_draw()
-        elif d["mode"] == "connect":
+        elif d["mode"] in ("connect", "rewire"):
             d["pos"] = (x, y)
             self.queue_draw()
+
+    # ------------------------------------------------- scrolling at the edge
+    def _edge_check(self, ex: float, ey: float) -> None:
+        """While a step or a connection is dragged within EDGE_ZONE of the visible area's edge (or beyond
+        it), scroll that way, faster nearer and beyond the edge, until the pointer moves back or the drag
+        ends.  ``ex``, ``ey``: the pointer in canvas pixels."""
+        h, v = self.win.scroller.get_hadjustment(), self.win.scroller.get_vadjustment()
+        vx, vy = ex - h.get_value(), ey - v.get_value()
+
+        def speed(pos: float, size: float) -> float:
+            if size <= 3 * EDGE_ZONE:
+                return 0.0
+            if pos < EDGE_ZONE:
+                return -EDGE_SPEED * min(2.0, (EDGE_ZONE - pos) / EDGE_ZONE)
+            if pos > size - EDGE_ZONE:
+                return EDGE_SPEED * min(2.0, (pos - (size - EDGE_ZONE)) / EDGE_ZONE)
+            return 0.0
+
+        self._edge_view = (vx, vy)
+        self._edge_scroll = (speed(vx, h.get_page_size()), speed(vy, v.get_page_size()))
+        if self._edge_scroll != (0.0, 0.0) and self._edge_id is None:
+            self._edge_id = GLib.timeout_add(EDGE_TICK_MS, self._edge_tick)
+
+    def _edge_stop(self) -> None:
+        self._edge_scroll = (0.0, 0.0)
+        if self._edge_id is not None:
+            GLib.source_remove(self._edge_id)
+            self._edge_id = None
+
+    def _edge_tick(self) -> bool:
+        if self.drag is None or self.drag.get("mode") not in ("move", "connect", "rewire") \
+                or self._edge_scroll == (0.0, 0.0):
+            self._edge_id = None
+            return False
+        if self.drag.get("mode") == "move":
+            self.update_size()  # room beyond the step being moved, so the view can keep going
+        h, v = self.win.scroller.get_hadjustment(), self.win.scroller.get_vadjustment()
+        for adj, step in ((h, self._edge_scroll[0]), (v, self._edge_scroll[1])):
+            if step:
+                top = max(adj.get_lower(), adj.get_upper() - adj.get_page_size())
+                adj.set_value(min(top, max(adj.get_lower(), adj.get_value() + step)))
+        x, y = self.to_model(self._edge_view[0] + h.get_value(), self._edge_view[1] + v.get_value())
+        self._drag_to(x, y)
         return True
 
     def _on_release(self, _w, ev) -> bool:
         d, self.drag = self.drag, None
+        self._edge_stop()
         if d is None:
             return False
         x, y = self.to_model(ev.x, ev.y)
@@ -681,26 +772,111 @@ class PlannerCanvas(Gtk.DrawingArea):
             self.update_size()
             self.win.changed(resolve=False)
         elif d["mode"] == "connect":
-            hit = self.port_at(x, y)
-            if hit is not None and hit[2] != d["output"]:
-                n, p, _out = hit
-                if d["output"]:
-                    args = (d["node"], d["port"], n.id, p.name)
-                else:
-                    args = (n.id, p.name, d["node"], d["port"])
-                source = self.win.node(args[0])
-                before = dict(source.settings) if source is not None else {}
-                try:
-                    edge = connect(self.workflow, *args)
-                    self.win.set_status(f"Connected {edge.output} → {edge.input}")
-                    wizard = self.win.wizards.get(edge.source)
-                    if wizard is not None and source is not None and source.settings != before:
-                        wizard.reload()  # the connection switched on an option the output needs
-                    self.win.changed()
-                except (KeyError, ValueError) as exc:
-                    self.win.set_status(f"Cannot connect: {exc}", error=True)
+            self._drop_connection(d, x, y)
+            self.queue_draw()
+        elif d["mode"] == "rewire":
+            self._drop_moved_end(d, x, y)
             self.queue_draw()
         return True
+
+    def edge_into(self, node_id: str, port: str) -> Optional[PlanEdge]:
+        """The connection into input ``port`` of ``node_id`` (the last one made, for several)."""
+        found = [e for e in self.workflow.edges if e.target == node_id and e.input == port]
+        return found[-1] if found else None
+
+    def _free_inputs(self, n: PlanNode) -> List[str]:
+        """The inputs of ``n`` a dropped connection may take: those without a connection, and those that
+        take several."""
+        ins, _outs = self.ports(n)
+        return [p.name for p in ins if p.multiple or self.edge_into(n.id, p.name) is None]
+
+    def _connect(self, source: str, output: str, target: str, inputs: Sequence[str],
+                 drop: Optional[PlanEdge] = None) -> Optional[PlanEdge]:
+        """Connect ``source.output`` to the first of ``inputs`` of ``target`` that takes it, then remove
+        ``drop`` (the connection being moved).  Reports the result in the status line."""
+        node = self.win.node(source)
+        before = dict(node.settings) if node is not None else {}
+        error: Optional[Exception] = None
+        for name in inputs:
+            try:
+                edge = connect(self.workflow, source, output, target, name)
+            except (KeyError, ValueError) as exc:
+                error = error or exc
+                continue
+            if drop is not None and drop is not edge and drop in self.workflow.edges:
+                self.workflow.edges.remove(drop)
+            self.selected_edge = None
+            wizard = self.win.wizards.get(edge.source)
+            if wizard is not None and node is not None and node.settings != before:
+                wizard.reload()  # the connection switched on an option the output needs
+            self.win.changed()
+            self.win.set_status(("Moved the connection: " if drop is not None else "Connected ")
+                                + f"{edge.output} → {edge.input}")
+            return edge
+        target_node = self.win.node(target)
+        what = target_node.title if target_node is not None and target_node.title else "that step"
+        why = str(error) if error is not None and len(inputs) == 1 else (
+            f"{what} has no free input that takes it" + (f" ({error})" if error is not None else "")
+            + "; drop it on an input that has a connection to replace that one")
+        self.win.set_status(f"Cannot connect: {why}", error=True)
+        return None
+
+    def _drop_connection(self, d: dict, x: float, y: float) -> None:
+        """A new connection dropped at (x, y): on a port of the other side, or on a step (its first free
+        port that fits)."""
+        hit = self.port_at(x, y)
+        if hit is not None:
+            n, p, output = hit
+            if output == d["output"]:
+                return
+            if d["output"]:
+                self._connect(d["node"], d["port"], n.id, [p.name])
+            else:
+                self._connect(n.id, p.name, d["node"], [d["port"]])
+            return
+        n = self.node_at(x, y)
+        if n is None or n.id == d["node"]:
+            return
+        if d["output"]:
+            self._connect(d["node"], d["port"], n.id, self._free_inputs(n))
+            return
+        _ins, outs = self.ports(n)
+        for p in outs:  # the first output of the step that this input takes
+            try:
+                if self._connect_quiet(n.id, p.name, d["node"], d["port"]):
+                    return
+            except (KeyError, ValueError):
+                continue
+        self.win.set_status("Cannot connect: no output of that step fits this input", error=True)
+
+    def _connect_quiet(self, source: str, output: str, target: str, input: str) -> bool:
+        """Connect when the input takes the output (checked without changing the plan first)."""
+        src, dst = self.win.node(source), self.win.node(target)
+        if src is None or dst is None:
+            return False
+        outs = {p.name: p for p in self.ports(src)[1]}
+        ins = {p.name: p for p in self.ports(dst)[0]}
+        if output not in outs or input not in ins or not ins[input].accepts(outs[output].kind):
+            return False
+        return self._connect(source, output, target, [input]) is not None
+
+    def _drop_moved_end(self, d: dict, x: float, y: float) -> None:
+        """The end of an existing connection, picked up at its input, dropped at (x, y): onto another input
+        or a step (its first free input that fits) it moves there; onto an output that output feeds the
+        input instead (as a new connection would); anywhere else, or back where it was, nothing changes."""
+        e: PlanEdge = d["edge"]
+        hit = self.port_at(x, y)
+        if hit is not None:
+            n, p, output = hit
+            if output:
+                self._connect(n.id, p.name, e.target, [e.input])
+            elif (n.id, p.name) != (e.target, e.input):
+                self._connect(e.source, e.output, n.id, [p.name], drop=e)
+            return
+        n = self.node_at(x, y)
+        if n is None or n.id in (e.target, e.source):
+            return
+        self._connect(e.source, e.output, n.id, self._free_inputs(n), drop=e)
 
     def _on_scroll(self, _w, ev) -> bool:
         if not ev.state & Gdk.ModifierType.CONTROL_MASK:
@@ -766,8 +942,12 @@ class PlannerCanvas(Gtk.DrawingArea):
         else:
             k = self.edge_at(x, y)
             if k is not None:
+                # the connection alone is selected: a step selected before must not be deleted with it
+                self.selected = None
                 self.selected_edge = k
-                self._menu_item(menu, "Delete connection", self.win.delete_selected)
+                self.win.show_details(None, edge=k)
+                edge = self.workflow.edges[k]
+                self._menu_item(menu, "Delete connection", lambda: self.win.delete_edge(edge))
             else:
                 self._menu_item(menu, "Tick all steps", lambda: self.win.set_checked(
                     [m.id for m in self.workflow.nodes if checkable(m)]))
@@ -810,6 +990,7 @@ class PlannerPanel(Gtk.Box):
         self.checked: Set[str] = set()  # steps ticked for "Run selected" (not saved with the project)
         # node id -> queued | running | ok | failed | cancelled | skipped | waiting
         self.run_state: Dict[str, str] = {}
+        self._this_run: Set[str] = set()  # the steps of the latest run (their marks were reset)
         self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
         self._spin_id = 0
         self._closed = False
@@ -880,6 +1061,44 @@ class PlannerPanel(Gtk.Box):
         self._tokens += 1
         self._run_token = self._tokens
         self.changed()
+        GLib.idle_add(self._scan_after_load, self._run_token)
+
+    def _scan_after_load(self, token: int) -> bool:
+        if not self._closed and token == self._run_token:
+            self.scan_runs()
+        return False
+
+    def mark_of(self, node_id: str) -> Optional[str]:
+        """The state shown in a box's title bar: its script's state in this session's runs, else "ok" for a
+        complete run of the plan's current stamp found in its folder (or the run it uses), so a finished
+        step keeps its check mark after other runs and after RNAdo is restarted."""
+        state = self.run_state.get(node_id)
+        if state:
+            return state
+        run = self.prev_runs.get(node_id)
+        # a run in a folder that holds another step's files is not this step's (RunStatus.held)
+        if run is not None and run.state == "done" and (run.current or run.adopted) and not run.held:
+            return "ok"
+        return None
+
+    def scan_runs(self, node_ids: Optional[Sequence[str]] = None) -> Dict[str, runstate.RunStatus]:
+        """Look in the step folders for complete and partial runs, quietly (no log lines, no question):
+        when a project is opened and after a run.  Steps without outputs keep no footer."""
+        try:
+            plan = self.resolve()
+            if not plan.root or not os.path.isdir(plan.root):
+                return {}
+            runs = runstate.check_runs(plan, node_ids)
+        except Exception:  # noqa: BLE001 - a scan never breaks the planner
+            log.debug("scanning for previous runs failed", exc_info=True)
+            return {}
+        for nid, run in runs.items():
+            if run.state in ("done", "partial"):
+                self.prev_runs[nid] = run
+            elif node_ids is not None:
+                self.prev_runs.pop(nid, None)
+        self.changed(resolve=False)
+        return runs
 
     def changed(self, resolve: bool = True) -> None:
         self.checked &= {n.id for n in self.workflow.nodes if checkable(n)}  # deleted steps
@@ -914,7 +1133,9 @@ class PlannerPanel(Gtk.Box):
 
     # ------------------------------------------------------------ chrome
     def _toolbar(self) -> Gtk.Widget:
-        bar = Gtk.Box(spacing=6, margin=6)
+        # the editing tools on the left, selection, writing and running on the right; a narrow window puts
+        # the right group on a second line (W.flow_row) instead of growing wider than the screen
+        left, right = Gtk.Box(spacing=6), Gtk.Box(spacing=6)
         add = Gtk.MenuButton(label="Add step")
         add.set_tooltip_text("Add a box for one program (placed at the top left; drag it anywhere)")
         menu = Gtk.Menu()
@@ -930,7 +1151,7 @@ class PlannerPanel(Gtk.Box):
             menu.append(item)
         menu.show_all()
         add.set_popup(menu)
-        bar.pack_start(add, False, False, 0)
+        left.pack_start(add, False, False, 0)
         tmpl = Gtk.MenuButton(label="Templates")
         tmpl.set_tooltip_text("Add a pre-connected chain of steps")
         tmenu = Gtk.Menu()
@@ -940,53 +1161,68 @@ class PlannerPanel(Gtk.Box):
             tmenu.append(item)
         tmenu.show_all()
         tmpl.set_popup(tmenu)
-        bar.pack_start(tmpl, False, False, 0)
-        bar.pack_start(W.button("Delete", self.delete_selected, "Delete the selected box or connection (Del)",
+        left.pack_start(tmpl, False, False, 0)
+        left.pack_start(W.button("Delete", self.delete_selected, "Delete the selected box or connection (Del)",
                                 "edit-delete-symbolic"), False, False, 0)
-        bar.pack_start(W.button("Arrange", self.arrange, "Lay the boxes out left to right in plan order"),
+        left.pack_start(W.button("Arrange", self.arrange, "Lay the boxes out left to right in plan order"),
                        False, False, 0)
         for icon, tip, f in (("zoom-out-symbolic", "Zoom out (Ctrl+wheel)", 0.85),
                              ("zoom-in-symbolic", "Zoom in (Ctrl+wheel)", 1 / 0.85)):
             b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
             b.set_tooltip_text(tip)
             b.connect("clicked", lambda *_, f=f: self.canvas.set_zoom(self.canvas.zoom * f))
-            bar.pack_start(b, False, False, 0)
-        bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
-        bar.pack_start(W.button("Check previous runs", lambda: self.check_runs(None),
+            left.pack_start(b, False, False, 0)
+        left.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
+        left.pack_start(W.button("Check previous runs", lambda: self.check_runs(None),
                                 "Look in each step's folder for the output files of an earlier run (under "
                                 "the plan's time stamp, else an earlier one) and mark the step done, partial "
                                 "or missing. A step can then use the outputs it found: the steps after it "
                                 "read them, and it is not written or run again", "edit-find-symbolic"),
                        False, False, 0)
-        bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
+        right.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
         self.stop_button = W.button("Stop scripts", self.stop_scripts,
                                     "Stop every running script (the same as Cancel). The stop button on a "
                                     "running box stops only that step's script.", "process-stop-symbolic")
         self.stop_button.get_style_context().add_class("destructive-action")
         self.stop_button.set_sensitive(False)  # the host enables it while scripts run
-        bar.pack_end(self.stop_button, False, False, 0)
+        right.pack_end(self.stop_button, False, False, 0)
         self.run_selected_btn = W.button("Run selected steps", self.run_selected,
                                          "Write the ticked steps' files and run their main scripts in plan "
                                          "order (tick a step with the box in its title bar, Space, or the "
                                          "right-click menu; steps they read from are not run again)",
                                          "media-playback-start-symbolic")
-        bar.pack_end(self.run_selected_btn, False, False, 0)
-        bar.pack_end(W.button("Run all…", lambda: self.write(None, run=True),
+        right.pack_end(self.run_selected_btn, False, False, 0)
+        right.pack_end(W.button("Run all…", lambda: self.write(None, run=True),
                               "Write every step's files, then run the main scripts in plan order on this "
                               "computer (scripts marked 'run separately', e.g. production runs, are not "
                               "started); each run is logged in the project file", "media-playback-start-symbolic"),
                      False, False, 0)
+        self.write_selected_btn = W.button("Write selected steps", self.write_selected,
+                                           "Write the ticked steps' files without running them (tick a step "
+                                           "with the box in its title bar, Space, or the right-click menu)",
+                                           "document-save-symbolic")
+        right.pack_end(self.write_selected_btn, False, False, 0)
         write = W.button("Write all files", lambda: self.write(None),
                          "Write every step's files, a master script and a plan summary",
                          "document-save-symbolic")
         write.get_style_context().add_class("suggested-action")
-        bar.pack_end(write, False, False, 0)
-        return bar
+        right.pack_end(write, False, False, 0)
+        ticks = Gtk.Box()
+        ticks.get_style_context().add_class("linked")
+        self.select_all_btn = W.button("Select all steps", self.select_all_steps,
+                                       "Tick every step for 'Write selected steps' and 'Run selected steps' "
+                                       "(the boxes in the steps' title bars)", "edit-select-all-symbolic")
+        self.clear_selection_btn = W.button("Clear selection", self.clear_selection,
+                                            "Untick every step", "edit-clear-symbolic")
+        self.clear_selection_btn.set_sensitive(False)  # nothing ticked yet (_update_run_selected)
+        ticks.pack_start(self.select_all_btn, False, False, 0)
+        ticks.pack_start(self.clear_selection_btn, False, False, 0)
+        right.pack_end(ticks, False, False, 0)
+        return W.flow_row([(left, True, Gtk.Align.START), (right, False, Gtk.Align.END)])
 
     def _naming_bar(self) -> Gtk.Widget:
-        bar = Gtk.Box(spacing=6, margin=6)
-        bar.set_margin_top(0)
+        bar = Gtk.Box(spacing=6)  # the file names and the folder
         bar.pack_start(W.label("Project"), False, False, 0)
         self.project_entry = W.entry("project", "The <project> part of every file name", width=12)
         self.project_entry.set_hexpand(False)
@@ -1011,16 +1247,22 @@ class PlannerPanel(Gtk.Box):
             "asked first. Off: writing replaces the scripts and the next run the outputs. Saved with the "
             "project.")
         self.supersede_check.connect("toggled", self._on_naming)
+        self.supersede_check.get_child().set_width_chars(14)  # wrapped: two lines at most
         bar.pack_start(self.supersede_check, False, False, 0)
         bar.pack_start(W.label("Folder"), False, False, 0)
         self.folder_label = W.label("")
         self.folder_label.set_ellipsize(Pango.EllipsizeMode.START)
+        self.folder_label.set_width_chars(8)
+        self.folder_label.set_max_width_chars(20)  # a long path is shortened (wider when there is room)
         self.folder_label.set_hexpand(True)
         bar.pack_start(self.folder_label, True, True, 0)
         bar.pack_start(W.button("Change…", self.choose_folder, "Folder that receives the plan"), False,
                        False, 0)
-        bar.pack_start(self._budget_controls(), False, False, 0)
-        return bar
+        # a narrow window puts the budget on a line of its own (W.flow_row); the row's buttons and fields keep
+        # their height when a check-button label wraps
+        row = W.flow_row([(bar, True, Gtk.Align.FILL), (self._budget_controls(), False, Gtk.Align.END)])
+        row.set_margin_top(0)
+        return row
 
     def _budget_controls(self) -> Gtk.Widget:
         """CPU cores, GPUs and the most scripts at once for Run all / Run selected (saved with the plan)."""
@@ -1108,6 +1350,9 @@ class PlannerPanel(Gtk.Box):
         self.d_step = W.spin(1, 99, 1, 0, "Step number: the <step> part of file names and the folder")
         self.d_step.connect("value-changed", self._on_detail_edit)
         self.d_step_row = form.add("Step", self.d_step)
+        self.d_tag = W.entry("(none)", FOLDER_TAG_TIP, width=18)
+        self.d_tag.connect("changed", self._on_detail_edit)
+        form.add("Folder tag", self.d_tag)
         box.pack_start(form, False, False, 0)
         self.d_note = Gtk.TextView()
         self.d_note.set_wrap_mode(Gtk.WrapMode.WORD)
@@ -1184,9 +1429,10 @@ class PlannerPanel(Gtk.Box):
                     self.d_title.set_markup("<b>Nothing selected</b>")
                     self.d_desc.set_text("Select a box to see its files and checks. Double-click it to edit "
                                          "it in the wizard. Right-click the canvas to add steps.")
-                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_run, self.d_use,
-                          self.d_check, self.d_adopt, self.d_forget):
+                for w in (self.d_name, self.d_step, self.d_tag, self.d_wizard, self.d_write, self.d_run,
+                          self.d_use, self.d_check, self.d_adopt, self.d_forget):
                     w.set_sensitive(False)
+                self.d_tag.set_text("")
                 self.d_note_sw.hide()
                 self.d_files.set_text("")
                 self.d_res.set_text("")
@@ -1200,6 +1446,15 @@ class PlannerPanel(Gtk.Box):
             gen = bool(tool and tool.generates)
             self.d_step.set_sensitive(gen)
             self.d_step.set_value(max(1, n.step))
+            # a step that writes no files has no folder; one that has a tag all the same (from a project file
+            # written by a script) can have it cleared, which ends the check's warning
+            self.d_tag.set_sensitive(gen or bool(n.folder_tag.strip()))
+            if self.d_tag.get_text().strip() != n.folder_tag.strip():  # not while typing (the cursor)
+                self.d_tag.set_text(n.folder_tag)
+            bad = folder_tag_problem(n.folder_tag) if gen else ""
+            self.d_tag.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY,
+                                               "dialog-error-symbolic" if bad else None)
+            self.d_tag.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, bad or None)
             self.d_wizard.set_sensitive(bool(tool) and n.tool != "note")
             self.d_write.set_sensitive(gen)
             self.d_run.set_sensitive(gen)
@@ -1211,6 +1466,11 @@ class PlannerPanel(Gtk.Box):
                 self.d_note_sw.hide()
             step = self.plan.steps.get(n.id) if self.plan else None
             lines = []
+            if gen and step is not None and step.ctx is not None:
+                lines.append(f"Folder: {step.ctx.folder}/" if step.ctx.folder
+                             else "Folder: the plan folder (no step folders)")
+            elif tool is not None and n.tool != "note":
+                lines.append("No folder: this step writes no files")
             if step is not None and step.ctx is not None:
                 if step.ctx.inputs:
                     lines.append("Inputs:")
@@ -1227,8 +1487,8 @@ class PlannerPanel(Gtk.Box):
             self.d_prev.set_text(self._previous_run_text(n) if gen else "")
             run = self.prev_runs.get(n.id)
             self.d_check.set_sensitive(gen)
-            self.d_adopt.set_sensitive(bool(gen and run is not None and run.state == "done" and run.stamp
-                                            and not run.adopted))
+            # never for a run in a folder that holds another step's files (runstate.offered)
+            self.d_adopt.set_sensitive(bool(gen and run is not None and runstate.offered(run)))
             self.d_forget.set_sensitive(bool(gen and n.adopted))
             if step is not None:
                 for issue in step.issues:
@@ -1249,6 +1509,8 @@ class PlannerPanel(Gtk.Box):
         n.title = self.d_name.get_text().strip()
         if TOOLS.get(n.tool) and TOOLS[n.tool].generates:
             n.step = int(self.d_step.get_value())
+        if self.d_tag.get_sensitive():  # also a tag on a step that writes no files, so it can be cleared
+            n.folder_tag = self.d_tag.get_text().strip()
         if n.tool == "note":
             buf = self.d_note.get_buffer()
             n.settings["text"] = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
@@ -1273,9 +1535,37 @@ class PlannerPanel(Gtk.Box):
                 y = max(y, n.y + h + 30)
         return 40.0, round(y / GRID) * GRID
 
+    def _visible_spot(self, height: float = 140.0) -> Tuple[float, float]:
+        """A place for a new step in the visible part of the canvas: the first free one, row by row from
+        its top-left corner, else that corner (the plan's free spot below the left column while the canvas
+        has no size yet)."""
+        h, v = self.scroller.get_hadjustment(), self.scroller.get_vadjustment()
+        zoom = self.canvas.zoom
+        width, tall = h.get_page_size() / zoom, v.get_page_size() / zoom
+        if width < NODE_W or tall < 60:
+            return self._free_spot()
+        left, top = h.get_value() / zoom, v.get_value() / zoom
+        boxes = [(n.x, n.y) + self.canvas.node_size(n) for n in self.workflow.nodes]
+
+        def free(x: float, y: float) -> bool:
+            return all(x + NODE_W + 20 <= bx or bx + bw + 20 <= x
+                       or y + height + 20 <= by or by + bh + 20 <= y
+                       for bx, by, bw, bh in boxes)
+
+        snap = lambda value: round(value / GRID) * GRID  # noqa: E731
+        y = top + 30
+        while y + min(height, tall - 60) <= top + tall:
+            x = left + 30
+            while x + NODE_W <= left + width:
+                if free(snap(x), snap(y)):
+                    return float(snap(x)), float(snap(y))
+                x += 40
+            y += 40
+        return float(snap(left + 30)), float(snap(top + 30))
+
     def add_step(self, tool: str, x: Optional[float] = None, y: Optional[float] = None) -> PlanNode:
         if x is None or y is None:
-            x, y = self._free_spot()
+            x, y = self._visible_spot()
         settings = {}
         if tool in ("amber-build", "amber-md", "amber-restraints") and self.host.project.cleaning.conda_env:
             settings["conda_env"] = self.host.project.cleaning.conda_env
@@ -1285,7 +1575,7 @@ class PlannerPanel(Gtk.Box):
         return node
 
     def add_template(self, name: str) -> None:
-        x, y = self._free_spot()
+        x, y = self._visible_spot()
         nodes = apply_template(self.workflow, name, x, y)
         if self.host.project.cleaning.conda_env:
             for n in nodes:
@@ -1329,6 +1619,14 @@ class PlannerPanel(Gtk.Box):
             del self.workflow.edges[c.selected_edge]
             c.selected_edge = None
             self.show_details(None)
+        self.changed()
+
+    def delete_edge(self, edge: PlanEdge) -> None:
+        """Delete one connection (and nothing else)."""
+        if edge in self.workflow.edges:
+            self.workflow.edges.remove(edge)
+        self.canvas.selected_edge = None
+        self.show_details(None)
         self.changed()
 
     def arrange(self) -> None:
@@ -1419,22 +1717,26 @@ class PlannerPanel(Gtk.Box):
                           + ", ".join(readers) + " may read them. Wait for the scripts to finish, or cancel "
                           "them, then write again.", Gtk.MessageType.ERROR)
             return
-        if moving and not confirm_supersede(self.toplevel(), list(moving.values()), run):
+        choice = confirm_supersede(self.toplevel(), list(moving.values()), run) if moving else "move"
+        if choice is None:
             return
         try:
             with logged(self.host.project_path, "workflow write", "Generated the plan's files") as entry:
                 # only the runs listed above move: one that completed while the question was open (the
                 # runner works on) was neither listed nor checked for readers, so its step is not written
-                report = plan.write(node_ids, project_path=self.host.project_path, confirmed=set(moving))
+                report = plan.write(node_ids, project_path=self.host.project_path, confirmed=set(moving),
+                                    discard=choice == "delete")
                 entry.folder, entry.files = report.root, list(report.written)
                 entry.summary = f"{len(report.written)} file(s) written, {len(report.skipped)} step(s) skipped"
                 if report.superseded:
-                    entry.summary += f", {len(report.superseded)} completed run(s) moved aside"
+                    entry.summary += f", {len(report.superseded)} completed run(s) " + (
+                        "deleted" if choice == "delete" else "moved aside")
         except OSError as exc:
             self._message("Could not write the plan", str(exc), Gtk.MessageType.ERROR)
             return
         for nid in report.superseded:
-            self.prev_runs.pop(nid, None)  # that run is in superseded/ now
+            self.prev_runs.pop(nid, None)  # that run is in superseded/ now (or deleted)
+            self.run_state.pop(nid, None)
         self.changed()
         msg = f"Wrote {len(report.written)} files to {report.root}"
         if report.skipped:
@@ -1443,7 +1745,7 @@ class PlannerPanel(Gtk.Box):
             msg += f" ({len(report.kept)} steps use the outputs of an earlier run)"
         moved = [i for i in report.superseded.values() if not i.error]
         if moved:
-            msg += f" ({len(moved)} completed runs moved aside)"
+            msg += f" ({len(moved)} completed runs {'deleted' if moved[0].deleted else 'moved aside'})"
         self.set_status(msg)
         self.host.append_log("Planner: " + msg)
         self.log_superseded(report)
@@ -1457,6 +1759,12 @@ class PlannerPanel(Gtk.Box):
                           "Write again once no script reads it.", Gtk.MessageType.WARNING)
         if report.master:
             self.host.append_log(f"Master script: {report.master}")
+        if report.manifest:  # which folder is which step's: rewritten by every write
+            self.host.append_log(f"Manifest: {report.manifest}")
+        if report.records_error:  # bookkeeping only: the step files are written
+            self.host.append_log(f"Planner: WARNING: MANIFEST / MDATK_step.toml not written: "
+                                 f"{report.records_error}")
+            self.set_status(msg + "; MANIFEST / MDATK_step.toml not written (see the output)", error=True)
         if run:
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
             jobs = plan_jobs(plan, ok_ids)
@@ -1566,16 +1874,31 @@ class PlannerPanel(Gtk.Box):
         for nid, run in runs.items():
             self.host.append_log(f"  {plan.steps[nid].label}: {run.summary()}")
         self.changed(resolve=False)
-        offer = [n for n, r in runs.items() if r.state == "done" and r.stamp and not r.adopted]
+        # a complete run in a folder that holds another step's files is that step's (its summary above says
+        # whose): it is not offered (runstate.offered), and the question (or a warning) says why
+        offer = [n for n, r in runs.items() if runstate.offered(r)]
+        held = [n for n, r in runs.items() if r.held and r.state == "done" and not r.adopted]
+        others = ""
+        if held:
+            others = "\n".join(f"• {plan.steps[n].label}: {runs[n].held}" for n in held[:15])
+            if len(held) > 15:
+                others += f"\n… and {len(held) - 15} more"
+            others += ("\n\nThese folders hold the files another step wrote (their MDATK_step.toml says so), so "
+                       "their runs are not offered. Writing such a step puts its files beside them and moves the "
+                       "run aside as its own: give it a folder tag or another step number first.")
         if offer:
             text = "\n".join(f"• {plan.steps[n].label}: run {runs[n].stamp}, finished {runs[n].date}"
                              for n in offer[:15])
             if len(offer) > 15:
                 text += f"\n… and {len(offer) - 15} more"
-            if self._ask(f"Use the outputs of {len(offer)} finished run(s)?",
-                         text + "\n\nThe steps after them then read these files, and these steps are not "
-                                "written or run again (until 'Stop using it'). Saved with the project."):
+            text += ("\n\nThe steps after them then read these files, and these steps are not written or run "
+                     "again (until 'Stop using it'). Saved with the project.")
+            if others:
+                text += f"\n\nNot offered, {len(held)} run(s) that are not their steps' own:\n" + others
+            if self._ask(f"Use the outputs of {len(offer)} finished run(s)?", text):
                 self.adopt_runs(offer)
+        elif others:
+            self._message(f"{len(held)} run(s) found are not their steps' own", others, Gtk.MessageType.WARNING)
         return runs
 
     def adopt_runs(self, node_ids: List[str]) -> None:
@@ -1611,6 +1934,7 @@ class PlannerPanel(Gtk.Box):
         dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Run them again", Gtk.ResponseType.REJECT,
                         "Skip them", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
+        selectable_text(dlg)
         response = dlg.run()
         dlg.destroy()
         return {Gtk.ResponseType.OK: "skip", Gtk.ResponseType.REJECT: "rerun"}.get(response, "cancel")
@@ -1657,7 +1981,10 @@ class PlannerPanel(Gtk.Box):
         if not job.node_id or self.node(job.node_id) is None:
             return
         if state == "queued" and not any(v in ("queued", "running") for v in self.run_state.values()):
-            self.run_state.clear()
+            self._this_run = set()  # a new run: it resets the marks of its own steps only
+        if state == "queued" and job.node_id not in self._this_run:
+            self._this_run.add(job.node_id)
+            self.run_state.pop(job.node_id, None)
         prev = self.run_state.get(job.node_id)
         # a step with several scripts: keep 'failed' / 'stopped', do not fall back from running/ok to queued
         if prev in ("failed", "stopped") or (state == "queued" and prev is not None):
@@ -1673,6 +2000,8 @@ class PlannerPanel(Gtk.Box):
         for nid, st in list(self.run_state.items()):
             if st in ("queued", "running"):  # never started, or the run stopped
                 self.run_state[nid] = "cancelled"
+        if self._this_run:  # what the run left in the step folders (footers: done / partial)
+            self.scan_runs(sorted(self._this_run))
         self.canvas.queue_draw()
 
     def _spin_tick(self) -> bool:
@@ -1687,6 +2016,14 @@ class PlannerPanel(Gtk.Box):
         return False
 
     # ------------------------------------------------------- run selected
+    def select_all_steps(self) -> None:
+        """Tick every step that writes files (the tool bar's Select all steps; the canvas menu's Tick all steps)."""
+        self.set_checked([n.id for n in self.workflow.nodes if checkable(n)])
+
+    def clear_selection(self) -> None:
+        """Untick every step (the tool bar's Clear selection)."""
+        self.set_checked([])
+
     def toggle_checked(self, node_id: str) -> None:
         self.set_checked(self.checked ^ {node_id})
 
@@ -1700,12 +2037,22 @@ class PlannerPanel(Gtk.Box):
         return [n for n in plan.order if n in self.checked]
 
     def _update_run_selected(self) -> None:
-        btn = getattr(self, "run_selected_btn", None)
-        if btn is None:
-            return
         n = len(self.checked)
-        btn.set_label(f"Run selected steps ({n})" if n else "Run selected steps")
-        btn.set_sensitive(bool(n))
+        for attr, text in (("run_selected_btn", "Run selected steps"), ("write_selected_btn",
+                                                                       "Write selected steps")):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.set_label(f"{text} ({n})" if n else text)
+                btn.set_sensitive(bool(n))
+        if getattr(self, "clear_selection_btn", None) is not None:
+            self.clear_selection_btn.set_sensitive(bool(n))
+
+    def write_selected(self) -> None:
+        """Write the ticked steps' files (in plan order) without running them."""
+        self.resolve()
+        ids = self.selected_in_order()
+        if ids:
+            self.write(ids)
 
     def run_selected(self) -> None:
         self.resolve()
@@ -1737,6 +2084,7 @@ class PlannerPanel(Gtk.Box):
                                 message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.YES_NO,
                                 text=text)
         dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         ok = dlg.run() == Gtk.ResponseType.YES
         dlg.destroy()
         return ok
@@ -1746,6 +2094,7 @@ class PlannerPanel(Gtk.Box):
                                 buttons=Gtk.ButtonsType.CLOSE, text=text)
         if detail:
             dlg.format_secondary_text(detail)
+        selectable_text(dlg)
         dlg.run()
         dlg.destroy()
 

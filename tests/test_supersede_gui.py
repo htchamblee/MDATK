@@ -21,6 +21,7 @@ if not Gtk.init_check([])[0]:  # pragma: no cover
 from mdatk.config import Project  # noqa: E402
 from mdatk.projectfile import read_log  # noqa: E402
 from mdatk.workflows import runstate, supersede  # noqa: E402
+from mdatk.workflows.manifest import IDENTITY  # noqa: E402
 from mdatk.workflows.plan import connect  # noqa: E402
 from mdatk.workflows.userscript import DONE_TEXT  # noqa: E402
 
@@ -124,7 +125,9 @@ def test_write_all_asks_lists_and_logs_the_runs_it_moves(win, monkeypatch):
     assert len(asked) == 1
     [run] = runs_aside(folder)
     assert run.startswith(f"{stamp}_")
-    assert sorted(os.listdir(os.path.join(folder, "superseded", run))) == sorted(before + ["manifest.toml"])
+    run_files = [n for n in before if n != IDENTITY]  # the folder's identity file stays in the folder
+    assert sorted(os.listdir(os.path.join(folder, "superseded", run))) == sorted(run_files + ["manifest.toml"])
+    assert IDENTITY in os.listdir(folder)
     log = win.log.text()
     assert f"Planner: 01 · Custom script: moved its completed run {stamp} aside (4 files) to " \
            f"01_custom/superseded/{run}/" in log
@@ -240,3 +243,79 @@ def test_a_run_that_completes_during_the_question_is_neither_moved_nor_written(w
     assert asked[1][0] == "1 step(s) not written" and "02 · Custom script" in asked[1][1]
     assert "Planner: 02 · Custom script not written: its run completed after the question" in win.log.text()
     pl.run_state.clear()
+
+
+def test_the_question_can_delete_the_run_instead(win, monkeypatch):
+    from mdatk.gui.dialogtext import _buttons
+    from mdatk.gui.jobs import DELETE_RESPONSE
+
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings.update(script='echo a > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    pl.changed()
+    assert win.save_project()
+    pl.write(None)
+    stamp = win.project.workflow.stamp
+    folder = os.path.join(win.project.workflow_dir, "01_custom")
+    fake_run(pl.resolve(), a.id)
+    assert os.path.exists(os.path.join(folder, f"apt1_01_t_{stamp}.txt"))
+    buttons = []
+
+    def run(dlg):
+        found = []
+        _buttons(dlg, found)
+        buttons.extend(b.get_label() for b in found)
+        return DELETE_RESPONSE
+
+    monkeypatch.setattr(Gtk.MessageDialog, "run", run)
+    pl.write(None)
+    assert "Delete them and write" in buttons and "Move aside and write" in buttons
+    assert runs_aside(folder) == [] and not os.path.exists(os.path.join(folder, f"apt1_01_t_{stamp}.txt"))
+    assert os.path.exists(os.path.join(folder, f"apt1_01_custom_{stamp}.sh"))  # written again
+    assert f"Planner: 01 · Custom script: deleted its completed run {stamp} (4 files)" in win.log.text()
+    assert "1 completed runs deleted" in pl.status.get_text()
+    [entry] = [e for e in read_log(win.project_path) if e["step"] == supersede.LOG_STEP]
+    assert entry["title"] == "Deleted the completed run of 01 · Custom script"
+
+
+def test_check_marks_stay_after_other_runs_and_come_back_after_reopening(win, monkeypatch):
+    from mdatk.workflows.runner import ScriptJob
+
+    pl = win.planner
+    a = pl.add_step("user-script", 40, 40)
+    a.settings.update(script='echo a > "$MDATK_OUT_T"\n', outputs=[{"name": "t", "kind": "text"}])
+    b = pl.add_step("user-script", 40, 300)
+    b.settings.update(script="true\n")
+    pl.changed()
+    assert win.save_project()
+    pl.write(None)
+    token = pl._run_token
+    ja, jb = ScriptJob(1, "a", "/x/a.sh", node_id=a.id), ScriptJob(2, "b", "/x/b.sh", node_id=b.id)
+    # a run of step 1 ...
+    for state in ("queued", "running", "ok"):
+        pl._on_run_state(ja, state, token)
+    pl._on_run_finished(token)
+    assert pl.mark_of(a.id) == "ok"
+    # ... then a run of step 2: step 1 keeps its check mark (it was cleared by every new run)
+    for state in ("queued", "running", "failed"):
+        pl._on_run_state(jb, state, token)
+    pl._on_run_finished(token)
+    assert pl.mark_of(a.id) == "ok" and pl.mark_of(b.id) == "failed"
+    # running step 1 again resets only its own mark
+    pl._on_run_state(ja, "queued", token)
+    assert pl.mark_of(a.id) == "queued" and pl.mark_of(b.id) == "failed"
+    pl._on_run_finished(token)
+    # a completed run on disk shows the check mark after the project is opened again (scan, no question)
+    fake_run(pl.resolve(), a.id)
+    asked = answering(monkeypatch, Gtk.ResponseType.CANCEL)
+    monkeypatch.setattr(win, "_confirm_discard", lambda: True)
+    assert win.open_path(win.project_path)
+    pump(0.3)
+    a2, b2 = sorted(win.project.workflow.nodes, key=lambda n: n.step)
+    assert pl.mark_of(a2.id) == "ok" and pl.prev_runs[a2.id].state == "done"
+    assert pl.mark_of(b2.id) is None and b2.id not in pl.prev_runs  # nothing there: no footer
+    assert asked == []  # the scan asks nothing
+    # writing the step again moves that run aside: the mark goes with it
+    asked = answering(monkeypatch, Gtk.ResponseType.OK)
+    pl.write([a2.id])
+    assert pl.mark_of(a2.id) is None

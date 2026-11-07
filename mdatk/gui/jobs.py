@@ -12,6 +12,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk  # noqa: E402
 
 from ..progress import Cancelled  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .worker import Worker  # noqa: E402
 
 
@@ -113,7 +114,7 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
     scripts at once (0: no limit); ``budget``: the CPU cores and GPUs they share (None: not counted)."""
     lines = [f"• step {j.step:02d} ({j.title}): {os.path.basename(j.path)}"
              + (f" - {j.resources.text()}" if budget is not None else "") for j in jobs]
-    detail = "\n".join(lines[:20]) + (f"\n… and {len(lines) - 20} more" if len(lines) > 20 else "")
+    detail = "\n".join(lines)  # every script: a long list scrolls (mdatk.gui.dialogtext)
     if budget is not None and parallel != 1 and len(jobs) > 1:
         cap = f", at most {parallel} at a time" if parallel else ""
         detail += (f"\n\nScripts run side by side on this computer as long as they fit in {budget.text()}"
@@ -148,9 +149,11 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
         include = Gtk.CheckButton(label="Also run the scripts marked 'run separately' here, each after "
                                         "its step's main script")
         include.set_tooltip_text("For production runs that are meant for this computer rather than a "
-                                 "cluster queue; finished ones are not run again")
+                                 "cluster queue; finished ones are not run again. After them, the step's main "
+                                 "script runs again for the rest of the step (the stages after them)")
         dlg.get_message_area().pack_start(include, False, False, 0)
         include.show()
+    selectable_text(dlg)
     ok = dlg.run() == Gtk.ResponseType.OK
     chosen = list(with_separate) if ok and include is not None and include.get_active() else list(jobs)
     dlg.destroy()
@@ -160,30 +163,48 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
 SUPERSEDE_LIMIT = 12  # steps listed in the question (each with a few of its files)
 
 
-def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> bool:
+def confirm_supersede(parent: Optional[Gtk.Window], items: Sequence, run: bool = False) -> Optional[str]:
     """Ask before writing steps whose folders hold a completed run of the plan's stamp: that run moves
-    into the step's superseded/ folder first (mdatk.workflows.supersede; ``items`` are its
-    :class:`~mdatk.workflows.supersede.Supersede` records).  True to go on."""
+    into the step's superseded/ folder first, or is deleted (mdatk.workflows.supersede; ``items`` are its
+    :class:`~mdatk.workflows.supersede.Supersede` records).  "move" or "delete" to go on, None to cancel."""
     lines: List[str] = []
     for item in list(items)[:SUPERSEDE_LIMIT]:
         lines += item.lines(limit=4)
     if len(items) > SUPERSEDE_LIMIT:
         lines.append(f"… and {len(items) - SUPERSEDE_LIMIT} more step(s)")
+    held = [item for item in items if getattr(item, "held", "")]
+    if held:  # the folder's MDATK_step.toml names another step: the run would be filed as the wrong step's
+        lines += ["", f"{len(held)} of these folders hold the files of another step (\"not this step's run\" "
+                      "above): writing would put the step's files beside them and move that step's run aside as "
+                      "this step's. Cancel and give such a step a folder tag or another step number to keep the "
+                      "two apart; the run's manifest names the step that wrote it either way."]
     detail = ("\n".join(lines) + "\n\nWriting a step again moves its completed run - the outputs, the "
               "scripts and inputs that made them, and its logs - into the step's superseded/ folder "
               "(<time> is the time of writing), with a manifest, so the run stays repeatable. Steps that "
               "read these outputs need the steps to run again. Partial runs stay where they are. To keep a "
-              "run in place, cancel and let the step use it (Check previous runs, then Use this run).")
+              "run in place, cancel and let the step use it (Check previous runs, then Use this run).\n\n"
+              "A trial run not worth keeping can be deleted instead: the same files and folders are removed "
+              "for good, without a copy in superseded/.")
     verb = "write and run" if run else "write"
     dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.WARNING,
                             buttons=Gtk.ButtonsType.NONE,
                             text=f"Move the completed run(s) of {len(items)} step(s) aside and {verb} them?")
     dlg.format_secondary_text(detail)
-    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Move aside and " + verb, Gtk.ResponseType.OK)
+    dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Delete them and " + verb, DELETE_RESPONSE,
+                    "Move aside and " + verb, Gtk.ResponseType.OK)
+    delete = dlg.get_widget_for_response(DELETE_RESPONSE)
+    if delete is not None:
+        delete.get_style_context().add_class("destructive-action")
+        delete.set_tooltip_text("Delete the completed run(s) listed above instead of keeping them in "
+                                "superseded/ (cannot be undone)")
     dlg.set_default_response(Gtk.ResponseType.CANCEL)
-    ok = dlg.run() == Gtk.ResponseType.OK
+    selectable_text(dlg)
+    response = dlg.run()
     dlg.destroy()
-    return ok
+    return {Gtk.ResponseType.OK: "move", DELETE_RESPONSE: "delete"}.get(response)
+
+
+DELETE_RESPONSE = 2  # the confirmation's "Delete them and write" button
 
 
 def waiting_text(results: Sequence) -> str:

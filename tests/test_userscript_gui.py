@@ -56,4 +56,5 @@ def test_custom_script_in_palette_planner_and_wizard(main, tmp_path):
     wz.write_files()
     pump(0.3)
     folder = os.path.join(main.project.workflow_dir, "01_custom")
-    assert sorted(os.listdir(folder)) == sorted([f.name for f in wz.files])
+    # the step's files, and the identity file every write leaves in a step folder it writes into
+    assert sorted(os.listdir(folder)) == sorted([f.name for f in wz.files] + ["MDATK_step.toml"])

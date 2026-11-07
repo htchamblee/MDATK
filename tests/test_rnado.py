@@ -853,3 +853,73 @@ def test_a_start_watch_leaves_a_closed_analysis_window_alone(app, windows, tmp_p
     ok()
     failed("RNAdo ended right after it started")
     assert shown == []
+
+
+def test_open_drop_down_is_filled_before_it_opens(app, windows, tmp_path):
+    """The Open button's drop-down, in RNAdo and in the analysis window, opens at the size of its items (recent
+    projects, Browse…).  GTK pops a menu button's menu up before the button's toggled handlers run, so the menu
+    filled there opened as a 50 x 8 px grey box without items."""
+    from gi.repository import Gdk
+
+    from mdatk.projectfile import add_recent
+
+    first = project_file(tmp_path, "first.mdatk.toml")
+    add_recent(first)
+    wins = [rnado_window(app, windows), analysis_window(app, windows, first)]
+
+    def opened(win):
+        win.open_menu_button.set_active(True)
+        pump(0.3)
+        menu = win.open_menu
+        labels = [c.get_label() for c in menu.get_children()
+                  if isinstance(c, Gtk.MenuItem) and not isinstance(c, Gtk.SeparatorMenuItem)]
+        popup = menu.get_toplevel().get_window()
+        size = (popup.get_width(), popup.get_height())
+        win.open_menu_button.set_active(False)
+        pump(0.3)
+        return labels, size
+
+    for win in wins:
+        labels, (width, height) = opened(win)
+        assert "first.mdatk.toml" in labels and "Browse…" in labels
+        assert width >= 100 and height >= 60  # the items, not an empty box
+    # a project opened since is on the list the next time: the menu is filled when the pointer comes
+    second = project_file(tmp_path, "second.mdatk.toml")
+    add_recent(second)
+    for win in wins:
+        win.open_menu_button.emit("enter-notify-event", Gdk.Event.new(Gdk.EventType.ENTER_NOTIFY))
+        labels, (width, height) = opened(win)
+        assert labels[1:3] == ["second.mdatk.toml", "first.mdatk.toml"] and height >= 80
+
+
+def test_the_plan_rows_wrap_instead_of_stretching_or_widening_the_window(app, windows):
+    """A window narrower than the plan's two tool rows puts groups of them on further lines: the project row's
+    entries, spin buttons and buttons keep their height (they stretched to the height of the wrapped check-button
+    labels), and the rows no longer make the window wider than its default size."""
+    win = rnado_window(app, windows)
+    win.resize(1100, 900)
+    pump(0.5)
+    pl = win.planner
+    assert win.get_allocated_width() <= 1110 and win.get_preferred_width()[0] < 1150
+    for w in (pl.project_entry, pl.cores_spin, pl.parallel_spin, pl.gpus_combo, pl.select_all_btn,
+              pl.run_selected_btn):
+        assert w.get_allocated_height() <= w.get_preferred_height()[1] + 1, w
+
+
+def test_select_all_and_clear_selection_buttons(app, windows, tmp_path):
+    """Select all ticks every step that writes files (for Write / Run selected steps); Clear selection unticks them
+    and is greyed out while nothing is ticked."""
+    from mdatk.gui.planner import checkable
+
+    path = project_file(tmp_path, template="amber")
+    win = rnado_window(app, windows, path)
+    pl = win.planner
+    steps = {n.id for n in pl.workflow.nodes if checkable(n)}
+    assert len(steps) >= 3 and not pl.checked and not pl.clear_selection_btn.get_sensitive()
+    pl.select_all_btn.clicked()
+    assert pl.checked == steps and pl.clear_selection_btn.get_sensitive()
+    assert pl.run_selected_btn.get_label() == f"Run selected steps ({len(steps)})"
+    assert pl.write_selected_btn.get_label() == f"Write selected steps ({len(steps)})"
+    pl.clear_selection_btn.clicked()
+    assert not pl.checked and not pl.clear_selection_btn.get_sensitive()
+    assert pl.run_selected_btn.get_label() == "Run selected steps" and not pl.run_selected_btn.get_sensitive()

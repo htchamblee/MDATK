@@ -317,6 +317,39 @@ def test_l_rna_mutation_keeps_l_names_and_chirality(scheme, names):
     assert len(found) == 4 and all(k == WATSON_CRICK for *_x, k in found)
 
 
+def test_mutations_of_a_chimera_junction_keep_its_link_records():
+    """The LINK records of a 3'-3' chimera name the residues bonded to its PO2 bridge: mutating the base paired with
+    one of them changes that residue too (compensatory), and the records follow its new name, so the model check
+    still bonds the junction (two LINK bonds, no clash) and clean leaves the records alone.  A record that names an
+    atom of a replaced base the new base lacks (a platinum adduct on N7 of a G mutated to C) is dropped, with a
+    note; before, mutate left every record as it was."""
+    from mdatk import chimera
+    from mdatk import modelcheck as MC
+
+    src = chimera.build_chimera("D:GC 3'-3' L:GC")  # A: G C PO2, B: 0G 0C, C / D: their partners
+    text, notes = B.mutate(src, "C:1A")  # C:1 G pairs A:2 C, a junction residue
+    s = pt.read_pdb(text)
+    assert [(r.chain, r.resseq, r.name) for r in s.residues() if r.chain in "AC"] == [
+        ("A", 1, "G"), ("A", 2, "U"), ("A", 3, "PO2"), ("C", 1, "A"), ("C", 2, "C")]
+    assert [(k.first.resname, k.first.chain, k.first.resseq) for k in pt.link_records(s)] == [("U", "A", 2),
+                                                                                             ("PO2", "A", 3)]
+    assert "Rewrote 1 LINK record(s) for the new residue names, numbers or chain ids: A:2 U O3' - A:3 PO2 P" in notes
+    r = MC.check_clashes(s)
+    assert len(r.links) == 2 and r.links_unused == 0 and r.clashes == []
+    assert not any("LINK" in n for n in pt.clean(text).notes)
+    # an adduct on N7 of C:1 G (no ion: bonded), which a C does not have
+    t = pt.read_pdb(src)
+    n7 = next(a for r in t.residues() if (r.chain, r.resseq) == ("C", 1) for a in r.atoms if a.name == "N7")
+    pt_atom = pt.Atom("HETATM", "PT", "", f"   {n7.xyz[0] + 2.0:8.3f}{n7.xyz[1]:8.3f}{n7.xyz[2]:8.3f}  1.00  0.00",
+                      "PT")
+    t.segments.append([pt.Residue("PT", "X", 1, atoms=[pt_atom])])
+    t.header.append(pt.link_line(pt.LinkAtom("N7", "G", "C", 1), pt.LinkAtom("PT", "PT", "X", 1), 2.0))
+    text, notes = B.mutate(pt.write_pdb(t), "C:1C")  # and A:2 C -> G
+    assert "Dropped 1 LINK record(s) whose residue or atom was removed: C:1 G N7 - X:1 PT PT" in notes
+    assert [(k.first.resname, k.first.chain, k.first.resseq) for k in pt.link_records(pt.read_pdb(text))] == [
+        ("G", "A", 2), ("PO2", "A", 3)]
+
+
 def test_mutation_options_and_errors():
     src = B.build_helix("GGCAUCG")
     # explicit partner mutation: no compensation, mismatch warned
@@ -536,7 +569,7 @@ def test_builder_window_builds_and_writes_a_helix(main_window, tmp_path):
     entry = read_log(main_window.project_path)[-1]
     assert entry["step"] == "build helix" and str(out) in entry["files"]
     # the mutate page on the written helix, with the suggested output name
-    dlg.notebook.set_current_page(1)
+    dlg.set_page("mutate")
     assert dlg.page() == "mutate"
     dlg.mut_input.entry.set_text(str(out))
     assert dlg.mut_out.entry.get_text().endswith("gui_helix_mut.pdb")

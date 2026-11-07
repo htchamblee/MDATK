@@ -17,12 +17,20 @@ clashes
     H-bond itself, is the same contact seen from the next atom and is not counted either.  Atoms up to
     three bonds apart are left out: bonds come from the nucleotide templates, from distances within other
     residues and from the O3'-P link of consecutive nucleotides of a TER segment, never from residue
-    numbers, so neighbouring residues (stacking, sugar-base) and every chain are checked.  Waters and ions
-    are skipped unless asked for; ions are then checked against their first-shell distances (Mg2+-O 2.1 Å
-    is coordination, not a clash).  Hydrogens are never part of it: their positions differ between
-    programs, and the Arnott fiber helix (the builder's ideal A-form) already has H2'(i)...H6/H8(i+1) at
-    1.57-1.70 Å with its H2' placed from the sugar's own geometry - the C2'(i)...C8/C6(i+1) of the fiber
-    model is 3.5 Å - so smaller hydrogen radii would hide a geometry rather than fix a threshold.
+    numbers, so neighbouring residues (stacking, sugar-base) and every chain are checked.  The LINK records
+    (in the header, or after the coordinates: :func:`mdatk.pdbtools.link_records`) add the bonds the polymer
+    order does not imply (the structure builder's 3'-3' and 5'-5' chimeras: a PO2 phosphate bonded to the O3'
+    or O5' of two chains), reported with their lengths, a warning beyond ``link_fail``; an oxygen bonded
+    through one is an ester oxygen, no donor.  A record that names an atom the check leaves out (a water, an
+    ion, a hydrogen) or does not find is not used, nor one that names an ion when ions are checked: its
+    coordination is what the ion check measures; nor one to a symmetry mate (its two symmetry operators
+    differ: the second atom is in a copy of the model the crystal makes, not the atom of that name here).
+    Waters and ions are skipped unless asked for; ions are then checked against their first-shell
+    distances (Mg2+-O 2.1 Å is coordination, not a clash).  Hydrogens are never part of it: their
+    positions differ between programs, and the Arnott fiber helix (the builder's ideal A-form) already has
+    H2'(i)...H6/H8(i+1) at 1.57-1.70 Å with its H2' placed from the sugar's own geometry - the
+    C2'(i)...C8/C6(i+1) of the fiber model is 3.5 Å - so smaller hydrogen radii would hide a geometry
+    rather than fix a threshold.
 links
     Every O3'(i)-P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them (by name,
     whatever the distance): up to ``link_max`` (2.0 Å) a bond; from there to ``link_fail`` (3.0 Å) a
@@ -31,7 +39,8 @@ links
     the force field tleap loads: ``link_bond_from_files``), about 35 kcal/mol at 2.0 Å, 180 at 2.5 and 440
     at 3.0; longer than ``link_fail`` a break (the chain is usually in two pieces), shorter than
     ``link_min`` (1.4 Å) an overlap and a missing O3' or P an unmeasurable link, which fail.  Consecutive
-    P-P outside 5.0-7.5 Å are reported too.
+    P-P outside 5.0-7.5 Å are reported too, and so are the bonds of LINK records (matched as the clash check
+    matches them), a warning beyond ``link_fail`` (no gate).
 compaction
     End-to-end distance over contour length along C1' for loop segments, given as residue ranges or found
     as the residues unpaired in every connected dot-bracket (runs of three or more).  Below 0.20 a loop is
@@ -53,7 +62,8 @@ hydrogen contacts (reported only, never a gate or a filter; off unless asked for
     electron-cloud positions (C-H 0.97 Å, Reduce's default for X-ray), chosen from the model's median C-H;
     Probe's heavy-atom radii (C 1.70, N 1.55, O 1.40, P 1.80 Å); an overlap of 0.4 Å or more is a clash,
     a polar hydrogen and an acceptor may overlap by 0.6 Å (a hydrogen bond) before the excess counts; the
-    clashscore is clashes per 1000 atoms.  Pairs up to four bonds apart are left out.
+    clashscore is clashes per 1000 atoms.  Pairs up to four bonds apart are left out (LINK records
+    included, as in the clash check).
 
 Residues are addressed by chain, number and insertion code throughout; ranges use
 :func:`mdatk.pdbtools.parse_ranges` syntax ('A:7-12, B:25-34, C:58-63', 'C', ':5-9' for a blank chain,
@@ -129,8 +139,9 @@ HALIDES = frozenset({"CL", "BR", "I", "F"})  # anions: plain van der Waals conta
 # Heavy atoms that carry a donatable hydrogen, by base.  WHICH ring nitrogen donates depends on the base: G N1
 # and U N3 carry a hydrogen, A N1 and C N3 do not (unless protonated), and in the pyrimidines N1 is the
 # glycosidic nitrogen.  Every nucleotide adds O2' (RNA), and terminal hydroxyls O5' / O3' where there is no
-# phosphate / no following link.  Everything else in RNA is an acceptor (phosphate oxygens, the ester
-# O5'/O3'/O4', the carbonyls O2/O4/O6, the other ring nitrogens) or neither.
+# phosphate / no following link (and no LINK record bonds them: a 3'-3' or 5'-5' phosphate).  Everything else
+# in RNA is an acceptor (phosphate oxygens, the ester O5'/O3'/O4', the carbonyls O2/O4/O6, the other ring
+# nitrogens) or neither.
 DONORS_BY_BASE = {"A": ("N6",), "G": ("N1", "N2"), "C": ("N4",), "U": ("N3",), "T": ("N3",)}
 DONORS_UNKNOWN_BASE = ("N2", "N4", "N6")
 PROTONATED_DONOR = {"A": "N1", "C": "N3"}  # A+ (N1-H) and C+ (N3-H)
@@ -209,8 +220,10 @@ class QCSettings:
 
 # --- residues and atoms -------------------------------------------------------------------------------------
 
-def _atom_name(name: str) -> str:
-    name = name.replace("*", "'")
+def _atom_name(name: str, resname: str = "") -> str:
+    """The name the check knows an atom of residue ``resname`` by: the standard one (N9A of 0DA is N9:
+    :func:`mdatk.pdbtools.standard_atom_name`), the new spellings of old ones (O1P, C5M)."""
+    name = pdbtools.standard_atom_name(resname, name.replace("*", "'"))
     return _ATOM_ALIASES.get(name, name)
 
 
@@ -222,7 +235,7 @@ def residue_kind(res) -> Tuple[str, Optional[str]]:
         return "virtual", None
     nt = pdbtools.nucleotide(res, infer=True)
     if nt is not None:
-        return "nt", pdbtools.infer_base(a.name for a in res.atoms) or nt.base
+        return "nt", pdbtools.infer_base((a.name for a in res.atoms), res.name) or nt.base
     heavy = [a for a in res.atoms if not pdbtools.is_hydrogen(a, res.name)]
     if len(heavy) == 1:
         el = pdbtools.element_of(heavy[0], res.name)
@@ -253,6 +266,10 @@ class _Model:
         self.residues: List = []
         self.labels: List[str] = []  # residue labels
         self.bases: List[Optional[str]] = []  # base of each residue (None: not a nucleotide)
+        self.atom_index: List[Dict[str, int]] = []  # per residue: atom name -> atom (first altloc)
+        self.links: List[Tuple[int, int]] = []  # the bonds of LINK records, in record order
+        self.links_unused = 0  # LINK records not bonded (an atom not in this table, or an ion)
+        self.links_mates = 0  # LINK records to a symmetry mate: no bond of the model
 
     def add(self, name, el, xyz, res_index, role, donor) -> int:
         self.xyz.append(xyz)
@@ -281,7 +298,8 @@ def _close_enough(m: _Model, i: int, j: int) -> bool:
 
 def build_model(structure, settings: QCSettings, hydrogens: bool = False) -> _Model:
     """The atom table and bond graph of ``structure`` (first altloc of every atom): heavy atoms for the clash
-    check, with ``hydrogens`` the explicit hydrogens too (the hydrogen-contact check)."""
+    check, with ``hydrogens`` the explicit hydrogens too (the hydrogen-contact check); the bonds of its LINK
+    records last (:func:`_bond_link_records`)."""
     m = _Model()
     protonated = pdbtools.parse_ranges(settings.protonated or None)
     for seg in structure.segments:
@@ -294,7 +312,7 @@ def build_model(structure, settings: QCSettings, hydrogens: bool = False) -> _Mo
                     or (kind == "ion" and settings.ions != "check")):
                 prev_o3 = prev_c = None
                 continue
-            names = {_atom_name(a.name) for a in res.atoms}
+            names = {_atom_name(a.name, res.name) for a in res.atoms}
             linked_next = (k + 1 < len(seg) and kinds[k + 1][0] == "nt"
                            and any(_atom_name(a.name) == "P" for a in seg[k + 1].atoms))
             donors: Optional[Set[str]] = None  # None: every N/O may donate (water, ligands, amino acids)
@@ -311,9 +329,10 @@ def build_model(structure, settings: QCSettings, hydrogens: bool = False) -> _Mo
             m.labels.append(_residue_label(res))
             m.bases.append(base if kind == "nt" else None)
             index: Dict[str, int] = {}
+            m.atom_index.append(index)
             hs: List[int] = []
             for atom in res.atoms:
-                name = _atom_name(atom.name)
+                name = _atom_name(atom.name, res.name)
                 if name in index:
                     continue  # a later alternate location
                 h = pdbtools.is_hydrogen(atom, res.name)
@@ -360,7 +379,56 @@ def build_model(structure, settings: QCSettings, hydrogens: bool = False) -> _Mo
                 prev_o3 = None
             else:
                 prev_o3 = prev_c = None
+    _bond_link_records(m, structure)
     return m
+
+
+def _bond_link_records(m: _Model, structure) -> None:
+    """Bond the two atoms of every LINK record (in the header, or after the coordinates:
+    :func:`mdatk.pdbtools.link_records`) that are both in ``m``: the residue by chain, number, insertion code and
+    name (:meth:`mdatk.pdbtools.LinkAtom.matches`), the atom by name (its standard name, first alternate
+    location, as the table).  These are the bonds the polymer order does not imply - the O3'-P or O5'-P of the
+    structure builder's 3'-3' / 5'-5' phosphate (a PO2 residue bonded to two chains) - and without them the
+    check would take a 1.6 Å bond for a clash; with them the atoms up to three (hydrogens: four) bonds apart
+    through it are left out as for any other bond.  An oxygen bonded so to a heavy atom is an ester or ether
+    oxygen, no donor: the 3'-OH / 5'-OH that a chain end without a following link or 5' phosphate would have is
+    not there.  Not used, counted in ``m.links_unused``: records that name an atom the table does not have (a
+    water or ion left out, a hydrogen of the clash check, a residue or atom the model lacks), and those that
+    name an ion - LINK records of deposited structures often give a metal's coordination, which the ion check
+    measures against its first-shell distance and a bond would hide.  Not used either, counted in
+    ``m.links_mates``: records to a symmetry mate (:attr:`mdatk.pdbtools.LinkRecord.mate`), whose second atom
+    is in a copy of the model made by the crystal symmetry, not the atom of that name in the model."""
+    records = pdbtools.link_records(structure)
+    if not records:
+        return
+    by_id: Dict[Tuple[str, int, str], List[int]] = {}
+    for ri, res in enumerate(m.residues):
+        by_id.setdefault((res.chain, res.resseq, res.icode or ""), []).append(ri)
+
+    def find(end) -> Optional[int]:
+        name = _atom_name(end.name, end.resname)
+        for ri in by_id.get((end.chain, end.resseq, end.icode or ""), ()):
+            if end.matches(m.residues[ri]) and name in m.atom_index[ri]:
+                return m.atom_index[ri][name]
+        return None
+
+    seen: Set[Tuple[int, int]] = set()
+    for record in records:
+        if record.mate:
+            m.links_mates += 1
+            continue
+        i, j = find(record.first), find(record.second)
+        if i is None or j is None or i == j or "ion" in (m.role[i], m.role[j]):
+            m.links_unused += 1
+            continue
+        if (min(i, j), max(i, j)) in seen:
+            continue  # the same bond twice
+        seen.add((min(i, j), max(i, j)))
+        m.bond(i, j)
+        m.links.append((i, j))
+        for a, b in ((i, j), (j, i)):
+            if m.el[a] == "O" and m.role[b] == "heavy":
+                m.donor[a] = False
 
 
 def _bond_distances(m: _Model, i: int, cache: Dict[int, Dict[int, int]]) -> Dict[int, int]:
@@ -419,12 +487,23 @@ class Contact(NamedTuple):
     kind: str
 
 
+class LinkRecordBond(NamedTuple):
+    """A bond of a LINK record that the check used (both atoms in the model): atom labels ('A:3:O3'', 'A:4:P')
+    in the record's order and the length measured in the model (Å), not the one the record states."""
+    first: str
+    second: str
+    distance: float
+
+
 @dataclass
 class ClashResult:
     clashes: List[Contact] = field(default_factory=list)  # counted, largest overlap first
     hbond_contacts: List[Contact] = field(default_factory=list)  # H-bonded pairs inside contact: excused
     shadows: List[Contact] = field(default_factory=list)  # carbon contacts beside an H-bond, excused
     atoms: int = 0
+    links: List[LinkRecordBond] = field(default_factory=list)  # bonds of LINK records, in record order
+    links_unused: int = 0  # LINK records not used: an atom not in the model, or an ion
+    links_mates: int = 0  # LINK records to a symmetry mate: no bond of the model
 
     @property
     def short_hbonds(self) -> int:
@@ -433,6 +512,21 @@ class ClashResult:
     @property
     def worst(self) -> float:
         return self.clashes[0].overlap if self.clashes else 0.0
+
+
+def _link_bonds(m: _Model) -> List[LinkRecordBond]:
+    return [LinkRecordBond(m.label(i), m.label(j), round(math.dist(m.xyz[i], m.xyz[j]), 3)) for i, j in m.links]
+
+
+def link_record_bonds(structure, settings: Optional[QCSettings] = None
+                      ) -> Tuple[List[LinkRecordBond], int, int]:
+    """(bonds, records not used, records to symmetry mates) of the LINK records of ``structure``, matched as the
+    clash check matches them (:func:`_bond_link_records`; its atom table: waters and ions as ``settings``
+    say), for the links check."""
+    if not pdbtools.link_records(structure):
+        return [], 0, 0  # (no atom table to build)
+    m = build_model(structure, settings or QCSettings())
+    return _link_bonds(m), m.links_unused, m.links_mates
 
 
 def _ion_contact(el: str, other_el: str, other_role: str) -> float:
@@ -449,7 +543,8 @@ def check_clashes(structure, settings: Optional[QCSettings] = None) -> ClashResu
     left to :func:`check_hydrogen_contacts`."""
     st = settings or QCSettings()
     m = build_model(structure, st)
-    out = ClashResult(atoms=len(m.xyz))
+    out = ClashResult(atoms=len(m.xyz), links=_link_bonds(m), links_unused=m.links_unused,
+                      links_mates=m.links_mates)
     if not m.xyz:
         return out
     tol, lo, hi = st.clash_tol, st.hbond_min, st.hbond_max
@@ -626,6 +721,9 @@ class BackboneResult:
     pp: List[Link] = field(default_factory=list)  # P-P spacings outside the range
     pp_measured: int = 0
     bond: LinkBond = DEFAULT_LINK_BOND
+    link_bonds: List[LinkRecordBond] = field(default_factory=list)  # bonds of LINK records, in record order
+    link_records_unused: int = 0  # LINK records not used (as the clash check: an atom not in the model, an ion)
+    link_records_mates: int = 0  # LINK records to a symmetry mate: no bond of the model
 
     @property
     def problems(self) -> List[Link]:
@@ -650,11 +748,17 @@ class BackboneResult:
 
 def check_backbone(structure, link_min: float = LINK_RANGE[0], link_max: float = LINK_RANGE[1],
                    pp_min: float = PP_RANGE[0], pp_max: float = PP_RANGE[1], link_fail: float = LINK_FAIL,
-                   bond: Optional[LinkBond] = None) -> BackboneResult:
+                   bond: Optional[LinkBond] = None, settings: Optional[QCSettings] = None,
+                   linked: Optional[Tuple[List[LinkRecordBond], int, int]] = None) -> BackboneResult:
     """O3'(i)-P(i+1) of consecutive nucleotides within every TER segment (what tleap bonds, gaps in the
-    numbering included), with the strain of those beyond the limits, and consecutive P-P spacings."""
+    numbering included), with the strain of those beyond the limits, consecutive P-P spacings and the bonds of
+    the LINK records (:func:`link_record_bonds` with ``settings``, or ``linked`` as the clash check found
+    them): a chimera's 3'-3' / 5'-5' junction is no O3'(i)-P(i+1) link, so this is where it is measured."""
     bond = bond or DEFAULT_LINK_BOND
     out = BackboneResult(bond=bond)
+    bonds, out.link_records_unused, out.link_records_mates = (
+        linked if linked is not None else link_record_bonds(structure, settings))
+    out.link_bonds = list(bonds)
     for seg in structure.segments:
         prev = prev_xyz = None
         for res in seg:
@@ -1083,9 +1187,18 @@ def evaluate_gates(r: ModelReport, st: QCSettings) -> List[str]:
     return out
 
 
+def _measured_link_bonds(r: ModelReport) -> List[LinkRecordBond]:
+    """The LINK bonds of a report: the links check's, else the clash check's (the same matching), else none."""
+    if r.backbone is not None:
+        return r.backbone.link_bonds
+    return r.clashes.links if r.clashes is not None else []
+
+
 def evaluate_warnings(r: ModelReport, st: QCSettings) -> List[str]:
-    """What is reported against a model without failing it: links bonded under strain, sharp kinks that do
-    not gate."""
+    """What is reported against a model without failing it: links bonded under strain, LINK bonds (as the links
+    check or, without it, the clash check measured them) that are longer than the break length (the bond a
+    LINK record names is not there; no gate, so that a model passes or fails as it did before LINK records
+    were read), sharp kinks that do not gate."""
     out = []
     b = r.backbone
     if b is not None and b.strained:
@@ -1094,6 +1207,11 @@ def evaluate_warnings(r: ModelReport, st: QCSettings) -> List[str]:
                    + ", ".join(f"{k.first}-{k.second} {k.distance:.2f} A {k.strain:.0f}"
                                for k in b.strained[:4])
                    + (" ..." if len(b.strained) > 4 else "") + ")")
+    long = [k for k in _measured_link_bonds(r) if k.distance > st.link_fail]
+    if long:
+        out.append(f"{len(long)} LINK bond(s) longer than {st.link_fail:g} A ("
+                   + ", ".join(f"{k.first}-{k.second} {k.distance:.2f} A" for k in long[:4])
+                   + (" ..." if len(long) > 4 else "") + ")")
     if r.kinks is not None and r.kinks.flagged and not st.gate_kinks:
         out.append(f"{len(r.kinks.flagged)} sharp kink(s) below {st.kink_min:g} deg ("
                    + ", ".join(f"{k.residue} {k.angle:.0f}" for k in r.kinks.flagged[:6]) + ")")
@@ -1121,8 +1239,20 @@ def check_model(source, settings: Optional[QCSettings] = None, table: Optional[D
     if st.hydrogen_check:
         r.hydrogens = check_hydrogen_contacts(s, st)
     if "links" in st.checks:
+        c = r.clashes
         r.backbone = check_backbone(s, st.link_min, st.link_max, st.pp_min, st.pp_max, st.link_fail,
-                                    st.link_bond)
+                                    st.link_bond, st, (c.links, c.links_unused, c.links_mates) if c else None)
+    unused, mates = ((r.clashes.links_unused, r.clashes.links_mates) if r.clashes is not None else
+                     (r.backbone.link_records_unused, r.backbone.link_records_mates) if r.backbone is not None
+                     else (0, 0))
+    if unused:
+        r.notes.append(f"{unused} LINK record(s) not used as bonds: they name an atom the clash check leaves "
+                       "out (a water or ion unless asked for, a hydrogen) or does not find, or an ion, whose "
+                       "coordination the ion check measures")
+    if mates:
+        r.notes.append(f"{mates} LINK record(s) to a symmetry mate not used as bonds: their two symmetry operators "
+                       "differ, so the second atom is in a copy of the model made by the crystal symmetry, not the "
+                       "atom of that name in the model")
     if "kinks" in st.checks:
         r.kinks = check_kinks(s, st.kink_min, st.kink_allow)
     if "compaction" in st.checks:
@@ -1210,12 +1340,22 @@ def report_data(r: ModelReport, score_terms: Sequence[str] = ()) -> Dict[str, ob
         out["clashes"] = {"atoms": r.clashes.atoms, "count": len(r.clashes.clashes),
                           "list": [c._asdict() for c in r.clashes.clashes],
                           "hbond_contacts": len(r.clashes.hbond_contacts), "shadows": len(r.clashes.shadows)}
+        if r.clashes.links or r.clashes.links_unused or r.clashes.links_mates:  # (models without: as before)
+            out["clashes"]["link_bonds"] = [k._asdict() for k in r.clashes.links]
+            out["clashes"]["link_records_unused"] = r.clashes.links_unused
+            if r.clashes.links_mates:
+                out["clashes"]["link_records_mates"] = r.clashes.links_mates
     if r.backbone is not None:
         b = r.backbone
         out["links"] = {"count": len(b.links), "problems": [k._asdict() for k in b.problems],
                         "strained": [k._asdict() for k in b.strained], "strain": b.strain,
                         "bond": b.bond._asdict(), "worst": b.worst._asdict() if b.worst else None,
                         "pp_outside": [k._asdict() for k in b.pp]}
+        if b.link_bonds or b.link_records_unused or b.link_records_mates:  # (models without: as before)
+            out["links"]["link_bonds"] = [k._asdict() for k in b.link_bonds]
+            out["links"]["link_records_unused"] = b.link_records_unused
+            if b.link_records_mates:
+                out["links"]["link_records_mates"] = b.link_records_mates
     if r.compaction:
         out["compaction"] = [s._asdict() for s in r.compaction]
     if r.hands:
@@ -1254,6 +1394,19 @@ def _hydrogen_text(h: HydrogenResult, limit: int) -> List[str]:
     return out
 
 
+def _link_bond_text(bonds: Sequence[LinkRecordBond], st: QCSettings, limit: int) -> List[str]:
+    if not bonds:
+        return []
+    out = [f"  LINK bonds (from the LINK records; atoms up to three bonds apart through them are not checked): "
+           f"{len(bonds)}"]
+    for k in bonds[:limit]:
+        long = f" (longer than {st.link_fail:g} A)" if k.distance > st.link_fail else ""
+        out.append(f"      {k.first:<14s} - {k.second:<14s} {k.distance:.2f} A{long}")
+    if len(bonds) > limit:
+        out.append(f"      ... and {len(bonds) - limit} more")
+    return out
+
+
 def text_report(r: ModelReport, st: QCSettings, limit: int = 8) -> str:
     """Human-readable summary of one model."""
     out = [f"=== {r.path} ==="]
@@ -1276,6 +1429,7 @@ def text_report(r: ModelReport, st: QCSettings, limit: int = 8) -> str:
             out.append(f"  not counted: {len(c.hbond_contacts)} donor-acceptor contact(s) at hydrogen-bond "
                        f"distance ({st.hbond_min:g}-{st.hbond_max:g} A)"
                        + (f", {len(c.shadows)} carbon contact(s) beside one" if c.shadows else ""))
+        out += _link_bond_text(c.links, st, limit)
     b = r.backbone
     if b is not None:
         worst = b.worst
@@ -1293,6 +1447,8 @@ def text_report(r: ModelReport, st: QCSettings, limit: int = 8) -> str:
             strain = f"; strain {k.strain:.0f} kcal/mol" if k.strain is not None else ""
             out.append(f"      {k.first} -> {k.second}: {what} ({'P-P' if k.status == 'p-p' else k.status}"
                        f"{strain})")
+        if c is None:  # (with the clash check, its section lists them)
+            out += _link_bond_text(b.link_bonds, st, limit)
     if r.compaction:
         out.append("  compaction (end-to-end / contour along C1'):")
         for s in r.compaction:
@@ -1377,7 +1533,8 @@ def add_qc_arguments(p) -> None:
     for flag, value, what in (("--link-min", LINK_RANGE[0], "shortest O3'-P link"),
                               ("--link-max", LINK_RANGE[1], "longest O3'-P link that is not strained"),
                               ("--link-fail", LINK_FAIL, "longest O3'-P link that is not a break (between "
-                                                         "--link-max and this: a warning with its strain)"),
+                                                         "--link-max and this: a warning with its strain); "
+                                                         "a LINK record's bond longer than this: a warning"),
                               ("--pp-min", PP_RANGE[0], "shortest P-P spacing"),
                               ("--pp-max", PP_RANGE[1], "longest P-P spacing")):
         g.add_argument(flag, type=float, default=value, help=f"{what} (default {value})")

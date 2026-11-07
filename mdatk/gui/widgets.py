@@ -136,6 +136,39 @@ def set_combo_entry_items(w: Gtk.ComboBoxText, items: Sequence[str]) -> None:
     w.get_child().set_text(text)
 
 
+def centre_vertically(widget: Gtk.Widget) -> None:
+    """Centre ``widget`` (and, for a box, every widget in it) vertically: a tool-bar row is as tall as its tallest
+    item (a wrapped check-button label), and buttons, entries and spin buttons would otherwise stretch to it."""
+    widget.set_valign(Gtk.Align.CENTER)
+    if isinstance(widget, Gtk.Box):
+        for child in widget.get_children():
+            centre_vertically(child)
+
+
+def flow_row(groups: Sequence[Tuple[Gtk.Widget, bool, Gtk.Align]], margin: int = 6) -> Gtk.FlowBox:
+    """A tool bar made of ``groups`` (widget, expand, horizontal alignment) that puts a group on the next line when
+    the window is too narrow for all of them, instead of making the window wider than the screen (the row's
+    narrowest width is that of its widest group).  Every widget is centred vertically (centre_vertically); a
+    group that expands takes the room left on its line, one aligned to the end sits at the right edge."""
+    row = Gtk.FlowBox()
+    row.set_selection_mode(Gtk.SelectionMode.NONE)
+    row.set_homogeneous(False)
+    row.set_min_children_per_line(1)
+    row.set_max_children_per_line(len(groups))
+    row.set_column_spacing(12)
+    row.set_row_spacing(4)
+    for side in ("top", "bottom", "start", "end"):
+        getattr(row, f"set_margin_{side}")(margin)
+    for widget, expand, align in groups:
+        row.add(widget)
+        child = widget.get_parent()  # the Gtk.FlowBoxChild that holds the group
+        child.set_hexpand(expand)
+        child.set_halign(align)
+        child.set_can_focus(False)  # Tab moves between the buttons, not to the row's cells
+        centre_vertically(widget)
+    return row
+
+
 def wrap_child(button: Gtk.Button, chars: int = 48) -> None:
     """Let a check/radio button's label wrap so long texts fit the fixed-width side bar."""
     child = button.get_child()

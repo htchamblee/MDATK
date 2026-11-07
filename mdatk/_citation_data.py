@@ -935,6 +935,22 @@ REFERENCE_DATA = [
         "verified": 'pdf:db976374-Optimised_parameters_for_RNA_double-helices_1972.pdf',
     },
     {
+        "key": 'arnott1972dna',
+        "text": (
+            'Arnott S., Hukins D. W. L. Biochem. Biophys. Res. Commun. 1972, 47, 1504-1509. '
+            'doi:10.1016/0006-291X(72)90243-4'
+        ),
+        "bibtex": (
+            '@article{arnott1972dna,\n  author = {Arnott, S. and Hukins, D. W. L.},\n  title = {{Optimised '
+            'parameters for A-DNA and B-DNA}},\n  journal = {Biochemical and Biophysical Research '
+            'Communications},\n  year = {1972},\n  volume = {47},\n  pages = {1504--1509},\n  doi = '
+            '{10.1016/0006-291X(72)90243-4}\n}'
+        ),
+        "doi": '10.1016/0006-291X(72)90243-4',
+        "url": '',
+        "verified": 'memory',
+    },
+    {
         "key": 'liebschner2019phenix',
         "text": 'Liebschner D., Afonine P. V., Baker M. L., Bunkóczi G., Chen V. B., Croll T. I., Hintze B., Hung L.-W., Jain S., McCoy A. J., Moriarty N. W., Oeffner R. D., Poon B. K., Prisant M. G., Read R. J., Richardson J. S., Richardson D. C., Sammito M. D., Sobolev O. V., Stockwell D. H., Terwilliger T. C., Urzhumtsev A. G., Videau L. L., Williams C. J., Adams P. D. Acta Cryst. D 2019, 75, 861-877. doi:10.1107/S2059798319011471',
         "bibtex": '@article{liebschner2019phenix,\n  author = {Liebschner, D. and Afonine, P. V. and Baker, M. L. and Bunkóczi, G. and Chen, V. B. and Croll, T. I. and Hintze, B. and Hung, L.-W. and Jain, S. and McCoy, A. J. and Moriarty, N. W. and Oeffner, R. D. and Poon, B. K. and Prisant, M. G. and Read, R. J. and Richardson, J. S. and Richardson, D. C. and Sammito, M. D. and Sobolev, O. V. and Stockwell, D. H. and Terwilliger, T. C. and Urzhumtsev, A. G. and Videau, L. L. and Williams, C. J. and Adams, P. D.},\n  title = {{Macromolecular structure determination using X-rays, neutrons and electrons: recent developments in Phenix}},\n  journal = {Acta Crystallographica Section D},\n  year = {2019},\n  volume = {75},\n  pages = {861--877},\n  doi = {10.1107/S2059798319011471}\n}',
@@ -1404,6 +1420,12 @@ RESOURCE_DATA = [
         "name": 'Arnott A-RNA fiber model (MDATK helix builder)',
         "keys": ['arnott1972'],
         "note": "Monomer coordinates from AmberTools' dat/leap/parm/nucgen.dat ($ARNA).",
+    },
+    {
+        "id": 'arnott-bdna',
+        "name": 'Arnott B-DNA fiber model (MDATK helix builder)',
+        "keys": ['arnott1972dna'],
+        "note": "Monomer coordinates from AmberTools' dat/leap/parm/nucgen.dat ($ABDNA).",
     },
     {
         "id": 'phenix',

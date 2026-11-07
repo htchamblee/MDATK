@@ -28,14 +28,25 @@ _AMINO = {"ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLN": "Q"
           "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V", "HID": "H", "HIE": "H", "HIP": "H", "CYX": "C"}
 
 
-def one_letter(resname: str) -> str:
-    """Base letter of a nucleotide in any naming scheme (G5, RA, LG, 0A, DT ...), amino-acid code, else X."""
+def one_letter(resname: str, backbone: Optional[bool] = None) -> str:
+    """Base letter of a nucleotide in any naming scheme (G5, RA, LG, 0A, DT ...), amino-acid code, else X.
+
+    ``backbone``: whether the residue has a backbone atom (a primed atom or P; :func:`backbone_flags`).  A
+    residue without one is no nucleotide whatever its name parses as (the detergent LDA, a lanthanum ion LA);
+    None (not known, e.g. a trace cached before the flags were stored): the name decides."""
     from ..pdbtools import parse_residue_name
 
-    info = parse_residue_name(resname)
+    info = parse_residue_name(resname) if backbone is not False else None
     if info is not None:
         return info.base
     return _AMINO.get(resname.strip().upper(), "X")
+
+
+def backbone_flags(tr) -> Optional[np.ndarray]:
+    """Per trace row: whether the residue has a backbone atom (the guard of :func:`one_letter`); None for a
+    trace without the flags (cached by an older version)."""
+    flags = tr.arrays.get("backbone")
+    return None if flags is None else np.asarray(flags, dtype=bool)
 
 
 def chain_names(tr) -> np.ndarray:

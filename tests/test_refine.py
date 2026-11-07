@@ -247,6 +247,49 @@ def test_amber_style_and_cpptraj_names_are_flagged(tmp_path, tool):
     assert not messages(st, "warning")
 
 
+@pytest.mark.parametrize("tool", ["phenix-rsr", "coot-rsr"])
+def test_dna_names_l_dna_components_and_a_fix_that_works(tmp_path, tool):
+    """The CCD's L-DNA 0DA 0DC 0DG 0DT are known names (reported like 0A ...); DNA names the CCD does not have
+    (Amber's DA5 / DA3, MDATK's LDA ..., D names on L-DNA) get a fix that renames DNA: 'mdatk pdb clean'
+    renames RNA only, so its --scheme ccd would leave them as they are."""
+    from mdatk import builder
+    from mdatk import pdbtools as pt
+
+    program = "Phenix" if tool == "phenix-rsr" else "Coot"
+
+    def issues(name, text):
+        path = write(tmp_path, name, text)
+        return step(tool, {"resolution": 3.0}, {"model": path, "map": path})[1], path
+
+    st, _path = issues("ldna.pdb", builder.build_helix("GGCAT", chirality="L", na="dna"))
+    assert not messages(st, "warning")
+    assert f"0DA, 0DC, 0DG, 0DT are Chemical Component Dictionary entries; {program} reads them from its monomer " \
+           "library (connect dictionaries if yours lacks them)" in messages(st, "info")
+    rename = ("rename them to the CCD components DA, DC, DG, DT (L-DNA: 0DA, 0DC, 0DG, 0DT; no 5'/3' variants) "
+              "first: 'mdatk pdb clean' renames RNA only, and the structure builder writes these names with "
+              "Residue names 'CCD for Coot / Phenix' ('mdatk build ... --scheme ccd')")
+    for name, chirality, listed in (("ddna_amber.pdb", "D", "DG5 x1, DT3 x1, DA5 x1, DC3 x1"),
+                                    ("ldna_amber.pdb", "L", "LDG x2, LDC x2, LDG5 x1, LDA x1, LDT3 x1, LDA5 x1, "
+                                                            "LDT x1, LDC3 x1")):
+        st, path = issues(name, builder.build_helix("GGCAT", chirality=chirality, na="dna", scheme="amber"))
+        assert messages(st, "warning") == [f"{program} does not recognise the DNA residue names {listed} "
+                                           f"(Amber-style names); {rename}"]
+        before = [r.name for r in pt.read_pdb(path).residues()]
+        assert [r.name for r in pt.read_pdb(pt.clean(path, scheme="ccd").text).residues()] == before
+    # L-DNA with D names (the standard scheme's copy): restrained as D-DNA unless renamed
+    st, _path = issues("ldna_std.pdb", builder.build_helix("GGCAT", chirality="L", na="dna", scheme="standard"))
+    assert messages(st, "warning") == [f"10 DNA residues have L sugars but D names and would be restrained as D-DNA: "
+                                       f"A:1 DG, A:2 DG, A:3 DC, A:4 DA and 6 more; {rename}"]
+    # RNA names keep their own fix ('mdatk pdb clean --scheme ccd' renames them), DNA names theirs
+    rna = lrna_model(tmp_path, ("LG5", "LC", "LA3"), name="lrna_amber.pdb")
+    dna = builder.build_helix("GC", na="dna", scheme="amber", partner="none", chains="B")
+    st, _path = issues("hybrid.pdb", open(rna).read().replace("END\n", "") + dna)
+    warn = messages(st, "warning")
+    assert len(warn) == 2 and "LG5 x1" in warn[0] and warn[0].endswith("convert with 'mdatk pdb clean --scheme ccd' "
+                                                                       "first")
+    assert warn[1].startswith(f"{program} does not recognise the DNA residue names DG5 x1, DC3 x1 ")
+
+
 def test_model_from_a_step_and_lrna_builder_data():
     wf = WorkflowParams(project_name="apt1", stamp=STAMP)
     src = add_node(wf, "phenix-rsr", settings={"resolution": 3.0})

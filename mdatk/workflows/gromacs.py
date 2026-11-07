@@ -4,11 +4,12 @@ GROMACS 2024+ (workstation) or 2023.3 (cluster module)."""
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Dict, List, Tuple
 
 from .. import PROJECT_ABBREV, __version__
-from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
-                   script_header, separate_check, skip_when_done)
+from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, Tool, env_section, extra_lines, fortran_float,
+                   require_file, script_header, separate_check, skip_when_done, waiting_done, waiting_file)
 from .budget import ALL_CORES, Resources, env_gpus, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -142,8 +143,9 @@ class GromacsTool(Tool):
             Option("extra_mdrun", "Extra mdrun flags", "text", "", "", placeholder="-pin on"),
             Option("separate_production", "Separate production script", "bool", True,
                    "Production stages go into their own script."),
+            dataclasses.replace(WAITING_EXIT, requires={"separate_production": True}),
         ]),
-        env_section("module load GROMACS/2023.3-CUDA-11.8.0"),
+        env_section("module load GROMACS/2023.3-CUDA-11.8.0", [SEPARATE_CONDA]),
     ]
 
     def output_ports(self, s):
@@ -317,6 +319,23 @@ class GromacsTool(Tool):
                              ("convert",)))
         if s["maxwarn"] > 0:
             out.append(Issue("warning", f"-maxwarn {s['maxwarn']} hides grompp warnings", ("maxwarn",)))
+        if self._prod_split(s):  # the production script runs its stages one after the other, each from the last
+            prod = [bool(st["production"] and st["integrator"] != "steep") for st in stages]
+            seps = [k for k, x in enumerate(prod) if x]
+            between = [k for k in range(seps[0], seps[-1] + 1) if not prod[k]]
+            if between:
+                one = len(between) == 1
+                later = next(k for k in seps if k > between[0])
+                steep = [k for k in between if stages[k]["integrator"] == "steep"]
+                out.append(Issue("error", f"{'stage' if one else 'stages'} {', '.join(tags[k] for k in between)} "
+                                          f"{'runs' if one else 'run'} in the main script between production stages: "
+                                          f"stage {tags[later]} would start from a structure that the main script "
+                                          "writes only once the production script has finished, so neither could "
+                                          f"finish; make {'it a production stage' if one else 'them production stages'}"
+                                          f" or move {'it' if one else 'them'} before or after the production stages"
+                                          + (" (a minimisation always runs in the main script)" if steep else ""),
+                                 tuple(f"stages.{k}.{'integrator' if k in steep else 'production'}"
+                                       for k in between)))
         temps = {st["ref_t"] for st in stages if st["integrator"] != "steep"}
         if len(temps) > 1:
             out.append(Issue("warning", "stages use different temperatures: " +
@@ -389,20 +408,21 @@ class GromacsTool(Tool):
         prod_script = n("gromacs-prod", "sh")
         notes = [f"GROMACS {'2024+' if s['gmx_version'] == '2024' else '2023.3'}."]
 
-        def preamble(title: str, name: str) -> List[str]:
-            lines = script_header(title, ctx, s, name, notes)
+        def preamble(title: str, name: str, separate: bool = False) -> List[str]:
+            lines = script_header(title, ctx, s, name, notes, separate=separate)
             if s["gmx_version"] == "2023" and s["module"].strip():
                 lines += [f"module load {s['module'].strip()}", ""]
             return lines + [f'GMX="{s["gmx"].strip() or "gmx"}"', ""]
 
         main = preamble("GROMACS: conversion and MD stages", script)
         waiting: List[str] = []
+        flag = waiting_file(script) if self._prod_split(s) and s["waiting_exit"] == "file" else ""
         if self._prod_split(s):  # the main script must not report success while production has not run
             # (mdrun writes a stage's .gro last); without per-stage resume, the conversion and the stages
             # production started from are skipped once it has finished, so a re-run does not redo them
             done = [f"[ -s {n(tags[k], 'gro')} ]" for k, st in enumerate(s["stages"])
                     if st["production"] and st["integrator"] != "steep"]
-            head, waiting = separate_check(prod_script, done, "the production stages")
+            head, waiting = separate_check(prod_script, done, "the production stages", flag)
             main += head
         pre_start = len(main)
         need_posres = any(st["posres"] for st in s["stages"])
@@ -433,7 +453,7 @@ class GromacsTool(Tool):
             main += ["# Position restraints for the RNA (used by stages with define = -DPOSRES)",
                      f"python3 {posre} {top}", ""]
         prod_split = self._prod_split(s)
-        prod = preamble("GROMACS production", prod_script) if prod_split else main
+        prod = preamble("GROMACS production", prod_script, separate=True) if prod_split else main
         mdrun_flags = []
         if s["gpu"]:
             mdrun_flags.append("-nb gpu -pme gpu -bonded gpu")
@@ -476,7 +496,7 @@ class GromacsTool(Tool):
             if after:
                 main += waiting + after
                 waiting = []
-        main += waiting
+        main += waiting + waiting_done(flag)
         files.append(GeneratedFile(script, "\n".join(main), "run", "runs the GROMACS stages"))
         if prod_split:
             files.append(GeneratedFile(prod_script, "\n".join(prod), "run-separate", "production stages"))

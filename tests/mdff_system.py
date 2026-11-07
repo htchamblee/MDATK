@@ -242,7 +242,12 @@ def make_example(out: str) -> None:
     p.save(project_path)
     loaded = Project.load(project_path)
     plan = Plan(loaded.workflow, os.path.join(out, "generated"))
-    plan.write(["mdff"], master=False)
+    report = plan.write(["mdff"], master=False)
+    # what the folders are (MANIFEST, MDATK_step.toml) names this machine's paths and the time of writing:
+    # the shipped example leaves it out, so regenerating it gives the same files
+    for path in [report.manifest] + list(report.identity.values()):
+        if path:
+            os.remove(path)
     for root, _dirs, files in os.walk(os.path.join(out, "generated")):
         for f in files:  # absolute paths of this machine -> relative to the example folder
             path = os.path.join(root, f)

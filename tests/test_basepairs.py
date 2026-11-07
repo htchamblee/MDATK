@@ -8,6 +8,7 @@ import pytest
 
 from conftest import make_universe, micro_project, run_one
 from test_pdbtools import BACKBONE, BASES
+from mdatk import pdbtools as pt
 from mdatk.data import Dataset
 from mdatk.secstruct import OTHER, WATSON_CRICK, WOBBLE, PairDetector
 
@@ -184,6 +185,43 @@ def test_non_nucleotides_never_pair():
     assert PairDetector(names, index).detect(xyz).shape == (0, 3)
 
 
+def detergent(shift=(0.0, 0.0, 60.0)):
+    """The CCD's LDA (lauryldimethylamine N-oxide): N1 O1 CM1 CM2 C1-C12, no sugar, no phosphate."""
+    names = ["N1", "O1", "CM1", "CM2"] + [f"C{k}" for k in range(1, 13)]
+    return {n: np.array([1.4 * k, 0.0, 0.0]) + shift for k, n in enumerate(names)}
+
+
+def test_a_detergent_named_lda_is_no_nucleotide():
+    """LDA is MDATK's Amber-style name of an L-deoxyadenosine and the CCD code of a detergent with C2 / C4 / C6 and
+    N1: the engines take a nucleotide name only with a backbone atom (a primed atom or P), so the detergent is no
+    residue of barnaba's input and has no base; an L-DNA LDA is one."""
+    from mdatk.secstruct import BarnabaRunner, nucleotide_base
+
+    g, lda = nucleotide("G"), detergent()
+    names, index, _xyz = detector_input([("G", g), ("LDA", lda), ("LDA", nucleotide("A"))])
+    runner = BarnabaRunner(names, [list(i.items()) for i in index])
+    assert [(k, name) for k, name, _atoms in runner.residues] == [(0, "G"), (2, "DA")]
+    assert [nucleotide_base(n, i) for n, i in zip(names, index)] == ["G", None, "A"]
+
+
+def test_ccd_atom_names_are_read_as_the_standard_ones():
+    """0DA spells its adenine atoms its own way (N1A, N6A ...): the detector and the barnaba runner read them as
+    the standard names, so a 0DA pairs as a DA does and is written to barnaba as DA with N1, N6 ..."""
+    from mdatk.secstruct import BarnabaRunner
+
+    a = nucleotide("A")
+    t = partner(a, "A", "U")
+    own = {pt.component_atom_name("0DA", n): xyz for n, xyz in a.items()}
+    assert "N1A" in own and "N1" not in own
+    for first in (("DA", a), ("0DA", own)):
+        names, index, xyz = detector_input([first, ("0DT", t)])
+        assert PairDetector(names, index).detect(xyz).tolist() == [[0, 1, WATSON_CRICK]], first[0]
+    names, index, _xyz = detector_input([("0DA", own), ("0DT", t)])
+    written = {n for _k, _name, atoms in BarnabaRunner(names, [list(i.items()) for i in index]).residues
+               for n, _row in atoms}
+    assert {"N1", "N6", "N9"} <= written and not written & {"N1A", "N6A", "N9A"}
+
+
 # --- analysis ------------------------------------------------------------------------------------------
 
 def duplex_frames():
@@ -241,6 +279,31 @@ def test_l_rna_residues_pair():
     c = partner(g, "G", "C")
     u = universe([[("LG5", g), ("0C", c)]] * 2)
     res = run_one("basepairs", u, micro_project({"RNA": "1-2"}))
+    assert res.arrays["count"].tolist() == [1, 1]
+
+
+def test_the_analysis_and_the_sequence_panel_leave_a_detergent_named_lda_out(monkeypatch):
+    """A detergent named LDA among the structural-view residues: barnaba gets the nucleotides only (before, the
+    detergent was written as a DA), and the trace flags the residues with a backbone atom, so the sequence panel
+    shows the detergent as X, not A; a 0DA's own atom names are read as the standard ones."""
+    from mdatk.render.residues import backbone_flags, one_letter, resnames
+
+    calls = fake_barnaba(monkeypatch)
+    frames = [f + [("LDA", detergent())] for f in duplex_frames()]
+    u = universe(frames)
+    p = micro_project({"All": "1-5"})
+    p.analyses.basepairs.engine = "barnaba"
+    run_one("basepairs", u, p)
+    assert calls[0][1] == ["G_1_0", "A_2_0", "U_3_0", "C_4_0"]
+    trace = run_one("trace", u, p)
+    assert trace.arrays["backbone"].tolist() == [True, True, True, True, False]
+    flags = backbone_flags(trace)
+    assert [one_letter(n, bool(f)) for n, f in zip(resnames(trace), flags)] == ["G", "A", "U", "C", "X"]
+    # the builtin engine on a 0DA (atoms N1A, N6A ...) pairing a U
+    a = nucleotide("A")
+    own = {pt.component_atom_name("0DA", n): xyz for n, xyz in a.items()}
+    u = universe([[("0DA", own), ("U", partner(a, "A", "U"))]] * 2)
+    res = run_one("basepairs", u, micro_project({"NA": "1-2"}))
     assert res.arrays["count"].tolist() == [1, 1]
 
 

@@ -10,7 +10,8 @@
   each chain is refined in overlapping windows of residues.  Interactive refinement is left to the user.
 
 L-RNA models need restraint dictionaries for the 5'/3' variants 0A5/0A3 ... (planner step
-``restraint-dicts``); the checks name missing codes and residue names the programs will not recognise.
+``restraint-dicts``); L-DNA needs none (the CCD's 0DA 0DC 0DG 0DT have no such variants).  The checks name
+missing codes and residue names the programs will not recognise.
 Everything that may differ between program versions is kept in :data:`PHENIX_VERSIONS`,
 :data:`COOT_VERSIONS` and :data:`COOT_API`.
 """
@@ -103,11 +104,17 @@ COOT_API: Dict[str, Tuple[Tuple[str, ...], bool]] = {
     "exit": (("coot_real_exit",), False),
 }
 
-# Nucleotide names Phenix and Coot know from the Chemical Component Dictionary: D-RNA / DNA and the four
-# L-ribonucleotides.  The L 5'/3' variants (0A5, 0A3 ...) need restraint dictionaries.
+# Nucleotide names Phenix and Coot know from the Chemical Component Dictionary: D-RNA / DNA, the four
+# L-ribonucleotides and the four 2'-deoxy-L-ribonucleotides (L-DNA, which has no 5'/3' variants there).  The
+# L-RNA 5'/3' variants (0A5, 0A3 ...) need restraint dictionaries.
 CCD_NUCLEOTIDES = frozenset({"A", "C", "G", "U", "I", "N", "DA", "DC", "DG", "DT", "DI", "DN"})
 L_PARENTS = ("0A", "0C", "0G", "0U")
+L_DNA_PARENTS = ("0DA", "0DC", "0DG", "0DT")
 L_VARIANTS = tuple(p + t for p in L_PARENTS for t in "53")
+# 'mdatk pdb clean' renames RNA only: DNA residues get the CCD names from the builder or by hand
+DNA_FIX = ("rename them to the CCD components DA, DC, DG, DT (L-DNA: 0DA, 0DC, 0DG, 0DT; no 5'/3' variants) "
+           "first: 'mdatk pdb clean' renames RNA only, and the structure builder writes these names with "
+           "Residue names 'CCD for Coot / Phenix' ('mdatk build ... --scheme ccd')")
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +125,12 @@ L_VARIANTS = tuple(p + t for p in L_PARENTS for t in "53")
 @dataclass
 class ModelReport:
     """What the checks need to know about a model PDB file."""
-    l_parents: List[str] = field(default_factory=list)  # 0A/0C/0G/0U present
+    l_parents: List[str] = field(default_factory=list)  # 0A/0C/0G/0U and 0DA/0DC/0DG/0DT present
     l_variants: List[str] = field(default_factory=list)  # 0A5/0A3 ... present
-    foreign: Dict[str, int] = field(default_factory=dict)  # nucleotide names unknown to the CCD -> count
-    l_with_d_names: List[str] = field(default_factory=list)  # labels of L sugars named as D residues
+    foreign: Dict[str, int] = field(default_factory=dict)  # RNA nucleotide names unknown to the CCD -> count
+    foreign_dna: Dict[str, int] = field(default_factory=dict)  # DNA names unknown to the CCD (DA5, LDA ...)
+    l_with_d_names: List[str] = field(default_factory=list)  # labels of L ribose sugars named as D residues
+    l_dna_with_d_names: List[str] = field(default_factory=list)  # labels of L-DNA sugars named as D-DNA
     phosphate5: List[str] = field(default_factory=list)  # labels of 0A5 ... residues that keep a 5'-phosphate
     nucleotides: List[Tuple[str, int, str, str]] = field(default_factory=list)  # (chain, resseq, icode, base)
     residues: List[Tuple[str, int]] = field(default_factory=list)  # (chain, resseq) of every residue
@@ -178,19 +187,21 @@ def model_report(path: str) -> ModelReport:
             continue
         name = res.name.strip().upper()
         report.nucleotides.append((res.chain, res.resseq, res.icode.strip(), nt.base))
-        if name in L_PARENTS:
+        if name in L_PARENTS or name in L_DNA_PARENTS:
             report.l_parents.append(name)
         elif name in L_VARIANTS:
             report.l_variants.append(name)
             if name.endswith("5") and any(a.name in ("P", "OP1", "OP2", "OP3") for a in res.atoms):
                 report.phosphate5.append(res.label)
         elif name not in CCD_NUCLEOTIDES:
-            report.foreign[name] = report.foreign.get(name, 0) + 1
-        names_d[id(res)] = nt.chirality
+            names = report.foreign_dna if nt.sugar == "dna" else report.foreign
+            names[name] = names.get(name, 0) + 1
+        names_d[id(res)] = (nt.chirality, nt.sugar)
     pdbtools.assign_chirality(s, detect=True)
     for res in s.residues():
-        if names_d.get(id(res)) == "D" and res.chirality == "L":
-            report.l_with_d_names.append(res.label)
+        named, sugar = names_d.get(id(res), ("", ""))
+        if named == "D" and res.chirality == "L":
+            (report.l_dna_with_d_names if sugar == "dna" else report.l_with_d_names).append(res.label)
     report.l_parents = sorted(set(report.l_parents))
     report.l_variants = sorted(set(report.l_variants))
     _REPORTS[key] = report
@@ -242,8 +253,16 @@ def model_issues(s: Dict[str, Any], ctx: StepContext, program: str) -> List[Issu
     have_dicts = ctx.has("dictionaries")
     path = ctx.existing("model")
     if not path:
-        if not have_dicts and ctx.data("model").get("chirality") == "L":
-            out.append(Issue("warning", f"the model is L-RNA: {program} needs restraint dictionaries for its 5'/3' "
+        # the builder's port data: the hand (D, L or mixed: a D/L chimera has L residues too) and whether the model
+        # has L-RNA ('l_rna'; L-DNA needs no dictionaries), the hand alone for a producer that does not say
+        data = ctx.data("model")
+        hand = data.get("chirality")
+        if not have_dicts and data.get("l_rna", hand in ("L", "mixed")):
+            if hand == "L" and data.get("build", "helix") == "helix":
+                what = "is L-RNA"
+            else:
+                what = "has L-RNA residues" + (" (a D/L chimera)" if hand == "mixed" else "")
+            out.append(Issue("warning", f"the model {what}: {program} needs restraint dictionaries for its 5'/3' "
                                         "variants (0A5/0A3 ...) - connect a 'restraint-dicts' step",
                              ("input:dictionaries",)))
         elif ctx.value("model").source:
@@ -261,10 +280,18 @@ def model_issues(s: Dict[str, Any], ctx: StepContext, program: str) -> List[Issu
         names = [f"{n} x{c}" for n, c in sorted(report.foreign.items(), key=lambda kv: -kv[1])]
         out.append(Issue("warning", f"{program} does not recognise the residue names {_listing(names)} "
                                     f"(Amber-style names); {fix}", ("input:model",)))
+    if report.foreign_dna:
+        names = [f"{n} x{c}" for n, c in sorted(report.foreign_dna.items(), key=lambda kv: -kv[1])]
+        out.append(Issue("warning", f"{program} does not recognise the DNA residue names {_listing(names)} "
+                                    f"(Amber-style names); {DNA_FIX}", ("input:model",)))
     if report.l_with_d_names:
         out.append(Issue("warning", f"{len(report.l_with_d_names)} residues have L sugars but D names (e.g. "
                                     f"cpptraj output) and would be restrained as D: "
                                     f"{_listing(report.l_with_d_names, 4)}; {fix}", ("input:model",)))
+    if report.l_dna_with_d_names:
+        out.append(Issue("warning", f"{len(report.l_dna_with_d_names)} DNA residues have L sugars but D names and "
+                                    f"would be restrained as D-DNA: {_listing(report.l_dna_with_d_names, 4)}; "
+                                    f"{DNA_FIX}", ("input:model",)))
     if report.phosphate5:
         out.append(Issue("warning", f"5'-terminal residues named as 5'-OH variants carry a phosphate: "
                                     f"{_listing(report.phosphate5, 4)}; the 0A5 ... dictionaries have no "
