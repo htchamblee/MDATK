@@ -1534,7 +1534,9 @@ The checks:
   true/false word is no label: no dry copy, no output;
 - **warnings:** a production stage on Auto without frames (`production stage without trajectory
   output (ntwx=0)`, with the stage the *Trajectory* output carries instead, or `the step passes no
-  trajectory on`); a ramp on a continued run that does not start at the temp0 the
+  trajectory on`); with Auto on every stage, the last MD stages without frames, so that an earlier
+  stage goes out (`stage relax1 writes no trajectory frames (ntwx=0), so the 'Trajectory' output
+  carries stage cool1 instead`); a ramp on a continued run that does not start at the temp0 the
   previous MD stage ended at, for the first stage the input restart's when an Amber MD step wrote it (`stage
   heat: the ramp starts at tempi = 310 K, but stage eq ended at 300 K`; when that temperature is not known, a
   heating ramp gets `a ramp from tempi on a continued run starts below the current temperature` and a

@@ -319,11 +319,26 @@ def test_export_follows_production_unless_set():
     # the trajectory goes out from its script's stage, wherever that runs
     _p, st = md_step([eq, dict(prod, separate="no")])
     assert st.outputs["trajectory"].data["stages"] == ["prod"]
-    # Yes without frames: an error (as a dry label without frames), and no other stage takes its place
+    # Yes without frames: an error (as a dry label without frames), and no other stage takes its place; the fix it
+    # offers is not Auto, which would bring back the fallback below
     _p, st = md_step([dict(eq, export="yes", ntwx=0), dict(prod, production=False)])
     assert "trajectory" not in st.outputs and not st.ok
-    assert any(m.startswith("stage eq: its trajectory is to be passed on ('Pass the trajectory on': Yes), but it "
-                            "writes none (ntwx=0)") for m in messages(st, "error"))
+    assert "stage eq: its trajectory is to be passed on ('Pass the trajectory on': Yes), but it writes none " \
+           "(ntwx=0): set ntwx above 0, or 'Pass the trajectory on' to No" in messages(st, "error")
+    # Auto everywhere, the last MD stages without frames: an earlier stage goes out (as in 0.0.12), and is named
+    _p, st = md_step(anneal(relax1={"ntwx": 0}))
+    assert st.outputs["trajectory"].data["stages"] == ["cool1"] and st.ok
+    assert "stage relax1 writes no trajectory frames (ntwx=0), so the 'Trajectory' output carries stage cool1 " \
+           "instead: set ntwx above 0, or say with 'Pass the trajectory on' which stage goes out (No on every " \
+           "stage: none)" in messages(st, "warning")
+    _p, st = md_step(anneal(cool1={"ntwx": 0}, relax1={"ntwx": 0}))
+    assert st.outputs["trajectory"].data["stages"] == ["hold1"]
+    assert any(m.startswith("stages cool1, relax1 write no trajectory frames (ntwx=0), so the 'Trajectory' output "
+                            "carries stage hold1 instead") for m in messages(st, "warning"))
+    # ... but not when the stage that goes out is the last MD stage (a minimisation after it writes no frames)
+    for stages in ([eq, md("prod")], [eq, md("prod"), dict(name="min", kind="min")], anneal()):
+        _p, st = md_step(stages)
+        assert not any("no trajectory frames" in m for m in messages(st)), messages(st)
     # a production stage on Auto without frames: warned as in 0.0.12, which passed on the last MD stage with a
     # trajectory instead; the warning names it
     _p, st = md_step(anneal(relax1={"production": True, "ntwx": 0}))

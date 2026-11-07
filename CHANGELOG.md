@@ -75,7 +75,10 @@ the notes below.
   No on an annealing cycle's relaxation never passes on its cooling ramp instead. Yes on a stage with
   ntwx = 0 is an error, and the warning for a production stage without frames names the stage the
   output carries instead (`stage relax1: production stage without trajectory output (ntwx=0): the
-  'Trajectory' output carries stage cool1 instead`, or `the step passes no trajectory on`). *Dry final PDB* is
+  'Trajectory' output carries stage cool1 instead`, or `the step passes no trajectory on`). With Auto
+  everywhere, a warning also says when the last MD stages write no frames and an earlier stage goes out
+  in their place (`stage relax1 writes no trajectory frames (ntwx=0), so the 'Trajectory' output
+  carries stage cool1 instead`); the scripts are as before. *Dry final PDB* is
   offered only when some stage runs in the main script, *Dry topology* and *Dry trajectory* only when such
   a file is written, so the outputs offered and the files written agree: a step whose every stage runs
   separately no longer offers a dry PDB it never writes. *Final restart* records the temp0 of the last

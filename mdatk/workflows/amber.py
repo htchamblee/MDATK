@@ -2128,9 +2128,11 @@ class AmberMDTool(Tool):
                                  (key + "tempi",)))
             export = self._choice(st, "export")
             if st["ntwx"] == 0 and export == "yes":
+                # (not 'or Auto': with Auto everywhere and no production stage with frames, the last MD stage with
+                # frames would go out in its place, an annealing cycle's cooling ramp instead of its relaxation)
                 out.append(Issue("error", f"{label}: its trajectory is to be passed on ('Pass the trajectory on': "
                                           "Yes), but it writes none (ntwx=0): set ntwx above 0, or 'Pass the "
-                                          "trajectory on' to Auto or No", (key + "ntwx", key + "export")))
+                                          "trajectory on' to No", (key + "ntwx", key + "export")))
             elif st["ntwx"] == 0 and export == "auto" and st["production"]:
                 no_frames.append(k)  # warned below, with what goes out instead
             dry = self.dry_label(st)
@@ -2173,6 +2175,18 @@ class AmberMDTool(Tool):
                        if roles.exported else ": the step passes no trajectory on")
             out.append(Issue("warning", f"stage {tags[k]}: production stage without trajectory output (ntwx=0)"
                              + instead, (f"stages.{k}.ntwx",)))
+        # the fallback of Auto everywhere passes on an earlier stage when the last MD stages write no frames: say
+        # so (scripts are unchanged; a production stage without frames above already names it)
+        md_stages = [j for j, x in enumerate(stages) if x["kind"] == "md"]
+        if roles.exported and not asked and not no_frames and roles.exported[-1] != md_stages[-1]:
+            fell = roles.exported[-1]
+            later = [j for j in md_stages if j > fell]
+            out.append(Issue("warning", f"{_stage_list([tags[j] for j in later])} "
+                                        f"{'writes' if len(later) == 1 else 'write'} no trajectory frames "
+                                        f"(ntwx=0), so the 'Trajectory' output carries stage {tags[fell]} "
+                                        "instead: set ntwx above 0, or say with 'Pass the trajectory on' which "
+                                        "stage goes out (No on every stage: none)",
+                             tuple(f"stages.{j}.ntwx" for j in later) + (f"stages.{fell}.export",)))
         files: Dict[str, List[str]] = {}  # dry trajectory file tag -> the labels that write it
         for dry in roles.dry:  # (a label the check refuses is none)
             files.setdefault(sanitize_tag(f"dry-{dry}"), []).append(dry)
