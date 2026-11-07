@@ -239,6 +239,31 @@ def scheme_name(base: str, chirality: str, terminal: str, scheme: str, sugar: st
     raise PDBError(f"unknown residue name scheme {scheme!r} (choose from {', '.join(SCHEMES)})")
 
 
+# Atom names of the CCD's L-deoxyribonucleotide components that differ from the standard (PDB v3) names of the
+# same atoms: 0DA keeps old names for its adenine (N9A ..., the amino hydrogens HN61 / HN62), 0DT calls its
+# methyl carbon C5M (wwPDB CCD, checked in the CCP4 monomer library and in ParmEd's CCD templates).  0DC and 0DG
+# use the standard names.  A residue written under one of these names carries the component's atom names, so
+# that Coot / Phenix find every atom in the dictionary; MDATK reads them back as the standard names.
+CCD_ATOM_NAMES: Dict[str, Dict[str, str]] = {
+    "0DA": {"N9": "N9A", "C8": "C8A", "N7": "N7A", "C5": "C5A", "C6": "C6A", "N6": "N6A", "N1": "N1A",
+            "C2": "C2A", "N3": "N3A", "C4": "C4A", "H8": "H8A", "H2": "H2A", "H61": "HN61", "H62": "HN62"},
+    "0DT": {"C7": "C5M"},
+}
+_CCD_STANDARD_NAMES = {res: {v: k for k, v in names.items()} for res, names in CCD_ATOM_NAMES.items()}
+
+
+def component_atom_name(resname: str, name: str) -> str:
+    """The name of standard atom ``name`` in the residue ``resname`` (a CCD component's own spelling, e.g. N9A in
+    0DA; every other residue: ``name`` unchanged)."""
+    return CCD_ATOM_NAMES.get(resname.strip().upper(), {}).get(name, name)
+
+
+def standard_atom_name(resname: str, name: str) -> str:
+    """The standard (PDB v3) name of atom ``name`` of residue ``resname``: the inverse of
+    :func:`component_atom_name` (N9A of 0DA -> N9, C5M of 0DT -> C7; every other atom unchanged)."""
+    return _CCD_STANDARD_NAMES.get(resname.strip().upper(), {}).get(name, name)
+
+
 def _nucleotide(res: Residue) -> Optional[ResidueName]:
     """Name-based recognition, guarded by backbone atoms so that e.g. a lanthanum ion 'LA' is not RNA."""
     info = parse_residue_name(res.name)
