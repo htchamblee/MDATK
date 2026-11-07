@@ -781,12 +781,17 @@ def cmd_workflow_write(args) -> int:
         print("error: the plan has errors (fix them or use --force to write the other steps)", file=sys.stderr)
         return 1
     if args.dry_run:  # what would be written, and which completed runs would move aside first
+        from .workflows.manifest import IDENTITY, MANIFEST
         moving = supersede.pending(plan, ids)
         _print_superseded(moving.values(), args.quiet, dry_run=True)
         targets = [n for n in (ids if ids is not None else plan.order) if not plan.steps[n].adopted]
+        generated = plan.generate(targets)
         files = [os.path.join(plan.root, plan.steps[n].ctx.from_own(f.name))
-                 for n, fs in plan.generate(targets).items() for f in fs]
+                 for n, fs in generated.items() for f in fs]
+        records = [os.path.join(plan.root, plan.steps[n].ctx.folder, IDENTITY)
+                   for n, fs in generated.items() if fs and plan.steps[n].ctx.folder]
         out = {"folder": plan.root, "dry_run": True, "write": files,
+               "records": [os.path.join(plan.root, MANIFEST)] + records,
                "superseded": [i.plain() for i in moving.values()]}
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
@@ -805,7 +810,7 @@ def cmd_workflow_write(args) -> int:
         stamp = project.workflow.stamp  # remember it so later writes keep the same names
         _edit_project_workflow(args.params, lambda wf: setattr(wf, "stamp", stamp))
     out = {"folder": report.root, "written": report.written, "skipped": report.skipped,
-           "master": report.master, "summary": report.summary}
+           "master": report.master, "summary": report.summary, "manifest": report.manifest}
     if report.kept:  # steps that use the outputs of an earlier run: not written
         out["kept"] = report.kept
     if report.superseded:  # completed runs moved aside before their steps were written
@@ -887,6 +892,30 @@ def cmd_workflow_status(args) -> int:
         print(f"{len(offer)} step(s) have a complete run they do not use yet: --adopt lets them use it "
               "(they are then not written or run again)")
     return 0
+
+
+def cmd_workflow_manifest(args) -> int:
+    """The plan's steps against the step folders of an existing tree (by default the plan folder): which
+    folder holds which step's files, by the identity file each write leaves in a step folder (node id,
+    then folder tag, then title) or by the folder tag in a folder's name.  1 when a step's folder holds
+    another step's files (writing that step would put its files beside them)."""
+    from .workflows.manifest import manifest_text, match
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    if args.table:  # what a write puts into <plan folder>/MANIFEST
+        sys.stdout.write(manifest_text(plan))
+        return 0
+    tree = os.path.abspath(args.tree) if args.tree else plan.root
+    if not os.path.isdir(tree):
+        raise ValueError(f"{tree} is not a folder" + ("" if args.tree else
+                                                      " (nothing written yet; --tree names another one)"))
+    result = match(plan, tree)
+    if args.json:
+        print(json.dumps(result.plain(), indent=2, ensure_ascii=False))
+    else:
+        print(result.text())
+    return 1 if result.conflicts else 0
 
 
 def _parallel(args, project) -> int:
@@ -1362,6 +1391,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="stop using earlier runs (all steps, or --step): they are written and run again")
     w.add_argument("--json", action="store_true", help="print the result as JSON")
     w.set_defaults(func=cmd_workflow_status)
+    w = wsub.add_parser("manifest", help="match the plan's steps to the step folders of an output tree (e.g. "
+                                         "one written before the steps were renumbered): by the MDATK_step.toml "
+                                         "every write leaves in a step folder (node id, folder tag, title) or "
+                                         "the folder tag in a folder's name. Exit status 1 when a step's folder "
+                                         "holds another step's files")
+    naming(w)
+    w.add_argument("--tree", metavar="DIR", help="the output tree (default: the plan folder)")
+    w.add_argument("--table", action="store_true",
+                   help="print the plan's MANIFEST instead (one line per step: step, folder, node id, type, "
+                        "title, folder tag, input files), as 'workflow write' writes it into the plan folder")
+    w.add_argument("--json", action="store_true", help="print the result as JSON")
+    w.set_defaults(func=cmd_workflow_manifest)
     w = wsub.add_parser("generate", help="stand-alone wizard: write one step's files")
     w.add_argument("tool", help="step type (see: mdatk workflow tools)")
     naming(w)
@@ -1398,7 +1439,8 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 RNADO_TOOLS = ("wizard", "pdb", "builder")  # mdatk.gui.launch.TOOLS (that module stays free of the CLI)
-WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "generate", "template", "restraints")
+WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "manifest", "generate", "template",
+                    "restraints")
 
 
 def rnado_gui_parser() -> argparse.ArgumentParser:

@@ -4,8 +4,16 @@ A plan is a directed graph stored in :class:`mdatk.config.WorkflowParams`.
 Resolving it walks the steps in dependency order, hands every step the file
 names its upstream steps will produce, runs the step's logic checks and
 collects the names of its own outputs.  Writing it generates every step's
-files into ``<plan folder>/<step>_<tool>/`` plus a master script and a
-Markdown summary named ``<project>_00_plan_<stamp>.{sh,md}``.
+files into ``<plan folder>/<step>_<tool>/`` (``<step>_<tool>_<folder tag>/``
+for a step with a folder tag) plus a master script and a Markdown summary
+named ``<project>_00_plan_<stamp>.{sh,md}``, and records what the folders are:
+``MANIFEST`` and each written folder's ``MDATK_step.toml``
+(:mod:`mdatk.workflows.manifest`).  Steps that write no files (notes, existing
+files, the analysis box) have no folder.
+
+Step numbers are stored with each step and never change on their own: a new
+step gets the next free number (:func:`next_step`) and a template's steps are
+numbered after the existing ones.
 """
 
 from __future__ import annotations
@@ -20,7 +28,8 @@ from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 from .. import PROJECT_ABBREV, __version__
 from ..config import PlanEdge, PlanNode, WorkflowParams
 from .base import PortValue, StepContext, Tool
-from .naming import file_name, new_stamp, sanitize_project, step_label
+from .naming import (file_name, folder_tag_problem, new_stamp, sanitize_project, sanitize_tag, step_folder,
+                     step_label)
 from .registry import TOOLS
 from .schema import GeneratedFile, Issue, Port, errors, guess_kind, kind_label
 
@@ -70,14 +79,39 @@ class WriteReport:
     late: List[str] = field(default_factory=list)
     master: str = ""
     summary: str = ""
+    # what the folders are (mdatk.workflows.manifest), not in ``written``: the plan folder's MANIFEST ("": not
+    # written, e.g. by the stand-alone wizard) and node id -> the MDATK_step.toml of each folder written into
+    manifest: str = ""
+    identity: Dict[str, str] = field(default_factory=dict)
+
+
+def node_title(node: PlanNode) -> str:
+    """The title on the step's box: its own, else its type's label."""
+    tool = TOOLS.get(node.tool)
+    return node.title or (tool.label if tool else node.tool)
 
 
 def step_title(node: PlanNode) -> str:
     tool = TOOLS.get(node.tool)
-    title = node.title or (tool.label if tool else node.tool)
+    title = node_title(node)
     if tool is not None and not tool.generates:
         return title
     return f"{step_label(node.step)} · {title}"
+
+
+def node_folder_tag(node: PlanNode) -> str:
+    """The step's folder tag as it is used ("": none)."""
+    return (node.folder_tag or "").strip()
+
+
+def node_folder(workflow: WorkflowParams, node: PlanNode) -> str:
+    """Plan-relative folder of the step's files: ``<step>_<tool>`` with its folder tag added,
+    ``<step>_<tool>_<folder tag>``; "" for the plan folder (a plan without step folders) and for a step that
+    writes no files (it has no folder)."""
+    tool = TOOLS.get(node.tool)
+    if not workflow.step_folders or tool is None or not tool.generates:
+        return ""
+    return step_folder(node.step, tool.tag, node_folder_tag(node))
 
 
 def new_node_id(workflow: WorkflowParams) -> str:
@@ -175,13 +209,16 @@ def _port(ports: Sequence[Port], name: str) -> Optional[Port]:
 
 
 class Plan:
-    """A resolved plan.  ``root`` is the plan folder (needed for writing)."""
+    """A resolved plan.  ``root`` is the plan folder (needed for writing).  ``standalone``: the stand-alone
+    wizard's one-step plan (:func:`single_step_plan`), which is not the plan of its folder, so writing it
+    leaves the folder's MANIFEST alone."""
 
     def __init__(self, workflow: WorkflowParams, root: str = "", groups: Optional[Sequence] = None,
-                 stamp: Optional[str] = None):
+                 stamp: Optional[str] = None, standalone: bool = False):
         self.workflow = workflow
         self.root = os.path.abspath(root) if root else ""
         self.groups = list(groups or [])
+        self.standalone = standalone
         if stamp is None:
             stamp = (workflow.stamp or new_stamp()) if workflow.use_stamp else ""
         self.stamp = stamp
@@ -314,6 +351,9 @@ class Plan:
                                                   "choose a file", (f"input:{port.name}",)))
         step.ctx = StepContext(self.project, node.step, self.stamp, tool.tag, inputs, self.root,
                                self.workflow.step_folders, step.label, node.id, self.groups)
+        # the context names every step's folder <step>_<tool>: a step's folder carries its folder tag, and a
+        # step that writes no files has none
+        step.ctx.folder = node_folder(self.workflow, node)
         if tool.generates and node.step < 1:
             step.issues.append(Issue("error", "step numbers start at 1"))
         try:
@@ -350,18 +390,60 @@ class Plan:
             step.issues.append(Issue("info", f"uses the outputs of its run of {stamp}: not written or run "
                                              "again"))
 
+    def _name_key(self, step: ResolvedStep) -> Tuple:
+        """Steps with one key write into one folder with the same file names: the step number and type, and
+        in step folders the folder tag (in any case: two names that differ only in case are one folder on a
+        case-insensitive file system)."""
+        key: Tuple = (step.node.step, step.tool.tag)
+        if self.workflow.step_folders:
+            tag = node_folder_tag(step.node)
+            key += (sanitize_tag(tag).lower() if tag else "",)
+        return key
+
+    def _check_folder_tag(self, step: ResolvedStep) -> None:
+        tag = node_folder_tag(step.node)
+        if not tag:
+            return
+        where = ("folder_tag",)
+        if not step.tool.generates:
+            step.issues.append(Issue("warning", f"folder tag {tag!r}: this step writes no files, so it has no "
+                                                "folder and the tag is not used", where))
+            return
+        problem = folder_tag_problem(tag)
+        if problem:
+            step.issues.append(Issue("error", f"{problem}; it is added to the step's folder name", where))
+        elif not self.workflow.step_folders:
+            step.issues.append(Issue("info", f"folder tag {tag!r}: the plan writes no step folders, so the tag "
+                                             "names no folder (MANIFEST lists it)", where))
+
     def _check_steps_and_names(self) -> None:
-        seen: Dict[Tuple[int, str], str] = {}
+        seen: Dict[Tuple, str] = {}
         for nid in self.order:
             step = self.steps[nid]
-            if step.tool is None or not step.tool.generates:
+            if step.tool is None:
                 continue
-            key = (step.node.step, step.tool.tag)
+            self._check_folder_tag(step)
+            if not step.tool.generates:
+                continue
+            key = self._name_key(step)
             if key in seen:
                 other = self.steps[seen[key]]
-                step.issues.append(Issue("error", f"{step.label} and {other.label} would write into the "
-                                                  "same folder with the same names: give one of them "
-                                                  "another step number"))
+                mine, theirs = step.ctx.folder, other.ctx.folder
+                tagged = self.workflow.step_folders and node_folder_tag(step.node)
+                if tagged and mine != theirs:  # folder tags that differ only in case
+                    step.issues.append(Issue("error", f"{step.label} and {other.label} would write into "
+                                                      f"{mine}/ and {theirs}/, one folder on a file system "
+                                                      "that ignores case (macOS, Windows): give one of them "
+                                                      "another folder tag", ("folder_tag",)))
+                elif tagged:
+                    step.issues.append(Issue("error", f"{step.label} and {other.label} would write into the "
+                                                      f"same folder {mine}/ with the same names: give one of "
+                                                      "them another folder tag or step number",
+                                             ("folder_tag",)))
+                else:
+                    step.issues.append(Issue("error", f"{step.label} and {other.label} would write into the "
+                                                      "same folder with the same names: give one of them "
+                                                      "another step number"))
             seen[key] = nid
         self._check_shared_outputs()
         numbers: Dict[int, List[str]] = {}
@@ -392,7 +474,7 @@ class Plan:
                     if os.path.isabs(path) or path in passed or os.path.dirname(path) != step.ctx.folder:
                         continue  # not written by this step
                     first = self.steps[claimed.setdefault(path, nid)]
-                    if first is step or (first.node.step, first.tool.tag) == (step.node.step, step.tool.tag):
+                    if first is step or self._name_key(first) == self._name_key(step):
                         continue  # the same step, or a pair already reported as writing the same names
                     step.issues.append(Issue("error", f"output '{port}': {path} is also written by "
                                                       f"{first.label}; give one of them another file name"))
@@ -438,7 +520,13 @@ class Plan:
         caller listed (:func:`mdatk.workflows.supersede.pending`) before asking; another step whose run has
         completed since is neither moved nor written (``late``), since nobody was asked about it and a
         running step may be reading it (None: every run may move).  ``discard``: delete those runs instead
-        of moving them aside (:func:`mdatk.workflows.supersede.delete`; cannot be undone)."""
+        of moving them aside (:func:`mdatk.workflows.supersede.delete`; cannot be undone).
+
+        Every write also records what the folders are (:mod:`mdatk.workflows.manifest`): the plan folder's
+        ``MANIFEST`` lists every step of the plan (not for the stand-alone wizard's plan), and each step
+        folder that files were written into gets its ``MDATK_step.toml``; they are reported in
+        ``manifest`` and ``identity``, not in ``written``."""
+        from .manifest import write_records
         from .supersede import candidate, move_aside
 
         if not self.root:
@@ -460,7 +548,8 @@ class Plan:
                     report.skipped[nid] = f"{rel} is also written by {self.steps[paths[rel]].label}"
                 paths.setdefault(rel, nid)
         move = self.workflow.supersede_runs if supersede is None else supersede
-        when = _dt.datetime.now()  # one time for the runs moved by this write
+        when = _dt.datetime.now()  # one time for the runs moved by this write (and its records)
+        into: List[str] = []  # the steps whose files were written
         for nid, files in generated.items():
             if nid in report.skipped:
                 continue
@@ -485,6 +574,8 @@ class Plan:
                 path = os.path.join(self.root, ctx.from_own(f.name))
                 _write_text(path, f.content, f.executable)
                 report.written.append(path)
+            if files:
+                into.append(nid)
         if self.workflow.use_stamp and not self.workflow.stamp:
             self.workflow.stamp = self.stamp
         if master and node_ids is None:
@@ -493,6 +584,7 @@ class Plan:
             report.summary = os.path.join(self.root, file_name(self.project, 0, "plan", self.stamp, "md"))
             _write_text(report.summary, self.summary_text(), False)
             report.written += [report.master, report.summary]
+        report.manifest, report.identity = write_records(self, into, when)
         return report
 
     def master_script(self) -> str:
@@ -623,7 +715,7 @@ def single_step_plan(workflow: WorkflowParams, node: PlanNode, root: str = "",
                           use_stamp=workflow.use_stamp, out_dir=workflow.out_dir,
                           step_folders=workflow.step_folders, supersede_runs=workflow.supersede_runs,
                           nodes=[node], edges=[])
-    plan = Plan(solo, root, groups)
+    plan = Plan(solo, root, groups, standalone=True)
     return plan
 
 

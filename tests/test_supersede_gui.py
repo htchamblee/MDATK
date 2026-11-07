@@ -21,6 +21,7 @@ if not Gtk.init_check([])[0]:  # pragma: no cover
 from mdatk.config import Project  # noqa: E402
 from mdatk.projectfile import read_log  # noqa: E402
 from mdatk.workflows import runstate, supersede  # noqa: E402
+from mdatk.workflows.manifest import IDENTITY  # noqa: E402
 from mdatk.workflows.plan import connect  # noqa: E402
 from mdatk.workflows.userscript import DONE_TEXT  # noqa: E402
 
@@ -124,7 +125,9 @@ def test_write_all_asks_lists_and_logs_the_runs_it_moves(win, monkeypatch):
     assert len(asked) == 1
     [run] = runs_aside(folder)
     assert run.startswith(f"{stamp}_")
-    assert sorted(os.listdir(os.path.join(folder, "superseded", run))) == sorted(before + ["manifest.toml"])
+    run_files = [n for n in before if n != IDENTITY]  # the folder's identity file stays in the folder
+    assert sorted(os.listdir(os.path.join(folder, "superseded", run))) == sorted(run_files + ["manifest.toml"])
+    assert IDENTITY in os.listdir(folder)
     log = win.log.text()
     assert f"Planner: 01 · Custom script: moved its completed run {stamp} aside (4 files) to " \
            f"01_custom/superseded/{run}/" in log

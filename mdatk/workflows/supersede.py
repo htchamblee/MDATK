@@ -243,10 +243,12 @@ def run_files(plan, node_id: str, stamp: str) -> Tuple[List[str], List[str]]:
 
 def _store(plan, step) -> str:
     """Plan-relative folder of the step's superseded runs: <step folder>/superseded, or in a plan without
-    step folders superseded/<NN>_<tag> (the steps share the plan folder)."""
+    step folders superseded/<NN>_<tag> (the steps share the plan folder; <NN>_<tag>_<folder tag> for a step
+    with a folder tag)."""
     if step.ctx.folder:
         return posixpath.join(step.ctx.folder, SUPERSEDED)
-    return posixpath.join(SUPERSEDED, step_folder(step.node.step, step.tool.tag))
+    return posixpath.join(SUPERSEDED, step_folder(step.node.step, step.tool.tag,
+                                                  (step.node.folder_tag or "").strip()))
 
 
 def candidate(plan, node_id: str) -> Optional[Supersede]:

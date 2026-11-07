@@ -10,6 +10,7 @@ from mdatk.config import Project, WorkflowParams
 from mdatk.projectfile import read_log
 from mdatk.tomlio import load as load_toml
 from mdatk.workflows import runstate, supersede
+from mdatk.workflows.manifest import IDENTITY
 from mdatk.workflows.plan import Plan, add_node, apply_template, connect
 from mdatk.workflows.userscript import DONE_TEXT
 
@@ -190,8 +191,9 @@ def test_stamp_free_custom_outputs_move_with_their_marker(tmp_path):
     assert tree(target) == {"result.txt", "go.sh", f"run_01_custom_{OLD}.sh", f"run_01_custom_{OLD}.done",
                             "manifest.toml"}
     assert open(os.path.join(target, "result.txt")).read() == "hi\n"
+    # the folder's identity file is no part of a run: it stays
     assert tree(folder) - {p for p in tree(folder) if p.startswith("superseded/")} == {
-        "go.sh", f"run_01_custom_{OLD}.sh", "other.txt"}
+        "go.sh", f"run_01_custom_{OLD}.sh", "other.txt", IDENTITY}
 
 
 def test_a_plan_without_time_stamps_or_step_folders(tmp_path):
@@ -384,7 +386,7 @@ def test_a_failed_move_puts_everything_back_and_skips_the_step(tmp_path, monkeyp
     fake_run(plan, b.id, OLD)
     one = os.path.join(root, "01_custom")
     before = {n: open(os.path.join(one, n)).read() for n in tree(one)}
-    assert len(before) == 4  # output, marker, the script's copy, the run script
+    assert len(before) == 5  # output, marker, the script's copy, the run script, the folder's MDATK_step.toml
     a.settings["script"] = 'echo changed > "$MDATK_OUT_T"\n'  # the step's new script differs
     plan = Plan(wf, root)
     real = os.rename
@@ -437,7 +439,7 @@ def test_cli_write_dry_run_then_write_and_the_step_log(tmp_path, capsys):
     assert data["dry_run"] and any(f.endswith(f"run_02_custom_{OLD}.sh") for f in data["write"])
     [sup] = data["superseded"]
     assert (sup["step"], sup["stamp"], sup["to"]) == (1, OLD, f"01_custom/superseded/{OLD}_<time>")
-    assert sorted(sup["files"]) == sorted(before)
+    assert sorted(sup["files"]) == sorted(before - {IDENTITY})  # the folder's identity file stays
     assert f"would move 01 · Custom script: completed run {OLD}" in out.err
     assert f"  run_01_t_{OLD}.txt" in out.err
     assert tree(one) == before
@@ -458,8 +460,8 @@ def test_cli_write_dry_run_then_write_and_the_step_log(tmp_path, capsys):
     write = [e for e in read_log(proj) if e["step"] == "workflow write"][-1]
     assert write["summary"].endswith("1 completed run(s) moved aside")
     assert os.path.exists(os.path.join(wf.out_dir, sup["to"], f"run_01_t_{OLD}.txt"))
-    assert sorted(tree(one)) == sorted([f"run_01_custom_{OLD}.sh", f"run_01_script_{OLD}.sh"] +
-                                       [f"{sup['to'][len('01_custom/'):]}/{n}" for n in before] +
+    assert sorted(tree(one)) == sorted([f"run_01_custom_{OLD}.sh", f"run_01_script_{OLD}.sh", IDENTITY] +
+                                       [f"{sup['to'][len('01_custom/'):]}/{n}" for n in before - {IDENTITY}] +
                                        [f"{sup['to'][len('01_custom/'):]}/manifest.toml"])
 
 

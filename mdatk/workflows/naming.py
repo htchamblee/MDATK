@@ -15,6 +15,12 @@ for example ``apt1_03_tleap_20261015-1432.parm7``:
     one time stamp per plan (``%Y%m%d-%H%M``); it is fixed the first time
     files are written so later re-generations keep matching names.  Plans can
     switch it off.
+
+Each step writes into its own folder ``<step>_<tool>`` (e.g. ``03_amber-build``).  A step may carry a folder
+tag (``PlanNode.folder_tag``, letters, digits and hyphens), which is added to its folder name:
+``03_amber-build_model12``.  File names do not carry it: :func:`parse_name` reads exactly the four parts
+above, and the tag is in the folder name and in the ``MDATK_step.toml`` identity file instead
+(:mod:`mdatk.workflows.manifest`).
 """
 
 from __future__ import annotations
@@ -59,8 +65,32 @@ def file_name(project: str, step: int, tag: str, stamp: str = "", ext: str = "")
     return f"{name}.{ext}" if ext else name
 
 
-def step_folder(step: int, tag: str) -> str:
-    return f"{step_label(step)}_{sanitize_tag(tag)}"
+def step_folder(step: int, tag: str, folder_tag: str = "") -> str:
+    """``<step>_<tag>`` (``03_amber-build``), with a folder tag ``<step>_<tag>_<folder tag>``
+    (``03_amber-build_model12``)."""
+    name = f"{step_label(step)}_{sanitize_tag(tag)}"
+    return f"{name}_{sanitize_tag(folder_tag)}" if (folder_tag or "").strip() else name
+
+
+def folder_tag_problem(tag: str) -> str:
+    """Why ``tag`` cannot be a step's folder tag ("" when it can, or is empty): only letters, digits and
+    inner hyphens, the characters :func:`sanitize_tag` keeps, so the folder name splits unambiguously."""
+    tag = (tag or "").strip()
+    if not tag or sanitize_tag(tag) == tag:
+        return ""
+    fixed = _TAG_BAD.sub("-", tag).strip("-")
+    return (f"folder tag {tag!r}: use letters, digits and '-' only"
+            + (f" (e.g. {fixed!r})" if fixed else ""))
+
+
+_FOLDER = re.compile(r"^(?P<step>\d{2,})_(?P<tag>[A-Za-z0-9-]+)(?:_(?P<folder_tag>[A-Za-z0-9-]+))?$")
+
+
+def parse_folder(name: str) -> Optional[Dict[str, str]]:
+    """Split a step folder name (:func:`step_folder`) into ``step``, ``tag`` and ``folder_tag`` ("" when it
+    has none); None if ``name`` is not one."""
+    m = _FOLDER.match(name)
+    return {k: (v or "") for k, v in m.groupdict().items()} if m else None
 
 
 _NAME = re.compile(r"^(?P<project>.+)_(?P<step>\d{2,})_(?P<tag>[A-Za-z0-9-]+)"

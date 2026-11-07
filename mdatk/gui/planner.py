@@ -32,9 +32,9 @@ from ..projectfile import logged  # noqa: E402
 from ..workflows import TOOLS, runstate, supersede, tools_by_category  # noqa: E402
 from ..workflows.budget import (ALL_CORES, MAX_GPUS_LISTED, Budget, Resources, auto_cores,  # noqa: E402
                                 detected_gpus)
-from ..workflows.naming import new_stamp  # noqa: E402
+from ..workflows.naming import folder_tag_problem, new_stamp  # noqa: E402
 from ..workflows.plan import (TEMPLATES, Plan, add_node, analysis_inputs, apply_template,  # noqa: E402
-                              connect, next_step, remove_node, step_title)
+                              connect, next_step, node_folder_tag, remove_node, step_title)
 from ..workflows.runner import plan_jobs, separate_scripts  # noqa: E402
 from ..workflows.schema import Port, kind_label  # noqa: E402
 from . import desktop  # noqa: E402
@@ -79,6 +79,14 @@ STATUS_COLORS = {"error": (0.75, 0.11, 0.16), "warning": (0.90, 0.60, 0.05), "in
                  "ok": (0.20, 0.65, 0.35)}
 RUN_COLORS = {"done": (0.20, 0.65, 0.35), "partial": (0.90, 0.60, 0.05), "missing": (0.60, 0.60, 0.60),
               "none": (0.60, 0.60, 0.60)}
+
+FOLDER_TAG_TIP = (
+    "Added to the step's folder name: 'model12' makes 02_amber-build into 02_amber-build_model12, so the folder "
+    "says which branch or model the step belongs to, and a plan whose steps were renumbered can still be "
+    "matched to the folders it wrote (MANIFEST, mdatk workflow manifest). Letters, digits and '-'. File names "
+    "do not change. Empty: the folder is <step>_<tool>, as before. Changing it changes the folder the step "
+    "writes into and looks in for earlier runs; files already written stay where they are. Saved with the "
+    "project.")
 
 log = logging.getLogger(__name__)
 
@@ -442,6 +450,11 @@ class PlannerCanvas(Gtk.DrawingArea):
                 desc = tool.label
         res = self.node_resources(n)
         badge_w = self._draw_badge(cr, res.badge(), n.x + w - 8, n.y + HEAD_H + 4) + 6 if res else 0
+        tag = node_folder_tag(n) if checkable(n) else ""  # a step that writes no files has no folder
+        if tag:  # the folder tag, left of the cores and GPUs, tinted like the header
+            tint = tuple(c + (1.0 - c) * 0.78 for c in rgb)
+            badge_w += self._draw_badge(cr, tag, n.x + w - 8 - badge_w, n.y + HEAD_H + 4, tint,
+                                        max_w=w * 0.5) + 6
         self._text(cr, desc, n.x + 9, n.y + HEAD_H + 14, 9.5, False, (0.35, 0.35, 0.35), w - 18 - badge_w)
         ins, outs = self.ports(n)
         connected_in = {e.input for e in self.workflow.edges if e.target == n.id}
@@ -487,15 +500,20 @@ class PlannerCanvas(Gtk.DrawingArea):
             cr.fill()
             self._text(cr, text, n.x + 23, fy + 3.5, 9.0, bool(n.adopted), (0.25, 0.25, 0.25), w - 32)
 
-    def _draw_badge(self, cr, text: str, right: float, top: float) -> float:
-        """The CPU cores and GPUs a step uses ('8c+1g'), right-aligned at ``right``; returns its width."""
+    def _draw_badge(self, cr, text: str, right: float, top: float, fill=(0.92, 0.92, 0.91),
+                    max_w: Optional[float] = None) -> float:
+        """A small label right-aligned at ``right``: the CPU cores and GPUs a step uses ('8c+1g'), or its
+        folder tag (at most ``max_w`` wide, shortened with '…'); returns its width."""
         cr.select_font_face("Sans", 0, 0)
         cr.set_font_size(8.5)
         width = cr.text_extents(text).x_advance + 8
+        limit = None  # the text fits
+        if max_w is not None and width > max_w:
+            width, limit = max_w, max_w - 8
         self._rounded(cr, right - width, top, width, 13, 4.0)
-        cr.set_source_rgb(0.92, 0.92, 0.91)
+        cr.set_source_rgb(*fill)
         cr.fill()
-        self._text(cr, text, right - 4, top + 9.5, 8.5, False, (0.30, 0.30, 0.30), align_right=True)
+        self._text(cr, text, right - 4, top + 9.5, 8.5, False, (0.30, 0.30, 0.30), limit, align_right=True)
         return width
 
     def _draw_stop_button(self, cr, n: PlanNode) -> None:
@@ -1329,6 +1347,9 @@ class PlannerPanel(Gtk.Box):
         self.d_step = W.spin(1, 99, 1, 0, "Step number: the <step> part of file names and the folder")
         self.d_step.connect("value-changed", self._on_detail_edit)
         self.d_step_row = form.add("Step", self.d_step)
+        self.d_tag = W.entry("(none)", FOLDER_TAG_TIP, width=18)
+        self.d_tag.connect("changed", self._on_detail_edit)
+        form.add("Folder tag", self.d_tag)
         box.pack_start(form, False, False, 0)
         self.d_note = Gtk.TextView()
         self.d_note.set_wrap_mode(Gtk.WrapMode.WORD)
@@ -1405,9 +1426,10 @@ class PlannerPanel(Gtk.Box):
                     self.d_title.set_markup("<b>Nothing selected</b>")
                     self.d_desc.set_text("Select a box to see its files and checks. Double-click it to edit "
                                          "it in the wizard. Right-click the canvas to add steps.")
-                for w in (self.d_name, self.d_step, self.d_wizard, self.d_write, self.d_run, self.d_use,
-                          self.d_check, self.d_adopt, self.d_forget):
+                for w in (self.d_name, self.d_step, self.d_tag, self.d_wizard, self.d_write, self.d_run,
+                          self.d_use, self.d_check, self.d_adopt, self.d_forget):
                     w.set_sensitive(False)
+                self.d_tag.set_text("")
                 self.d_note_sw.hide()
                 self.d_files.set_text("")
                 self.d_res.set_text("")
@@ -1421,6 +1443,13 @@ class PlannerPanel(Gtk.Box):
             gen = bool(tool and tool.generates)
             self.d_step.set_sensitive(gen)
             self.d_step.set_value(max(1, n.step))
+            self.d_tag.set_sensitive(gen)  # a step that writes no files has no folder
+            if self.d_tag.get_text().strip() != n.folder_tag.strip():  # not while typing (the cursor)
+                self.d_tag.set_text(n.folder_tag)
+            bad = folder_tag_problem(n.folder_tag) if gen else ""
+            self.d_tag.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY,
+                                               "dialog-error-symbolic" if bad else None)
+            self.d_tag.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, bad or None)
             self.d_wizard.set_sensitive(bool(tool) and n.tool != "note")
             self.d_write.set_sensitive(gen)
             self.d_run.set_sensitive(gen)
@@ -1432,6 +1461,11 @@ class PlannerPanel(Gtk.Box):
                 self.d_note_sw.hide()
             step = self.plan.steps.get(n.id) if self.plan else None
             lines = []
+            if gen and step is not None and step.ctx is not None:
+                lines.append(f"Folder: {step.ctx.folder}/" if step.ctx.folder
+                             else "Folder: the plan folder (no step folders)")
+            elif tool is not None and n.tool != "note":
+                lines.append("No folder: this step writes no files")
             if step is not None and step.ctx is not None:
                 if step.ctx.inputs:
                     lines.append("Inputs:")
@@ -1470,6 +1504,7 @@ class PlannerPanel(Gtk.Box):
         n.title = self.d_name.get_text().strip()
         if TOOLS.get(n.tool) and TOOLS[n.tool].generates:
             n.step = int(self.d_step.get_value())
+            n.folder_tag = self.d_tag.get_text().strip()
         if n.tool == "note":
             buf = self.d_note.get_buffer()
             n.settings["text"] = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
@@ -1718,6 +1753,8 @@ class PlannerPanel(Gtk.Box):
                           "Write again once no script reads it.", Gtk.MessageType.WARNING)
         if report.master:
             self.host.append_log(f"Master script: {report.master}")
+        if report.manifest:  # which folder is which step's: rewritten by every write
+            self.host.append_log(f"Manifest: {report.manifest}")
         if run:
             ok_ids = [n for n in (node_ids if node_ids is not None else plan.order) if n not in report.skipped]
             jobs = plan_jobs(plan, ok_ids)
