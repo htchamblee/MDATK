@@ -149,7 +149,8 @@ def confirm_run(parent: Optional[Gtk.Window], jobs: Sequence, separate: Sequence
         include = Gtk.CheckButton(label="Also run the scripts marked 'run separately' here, each after "
                                         "its step's main script")
         include.set_tooltip_text("For production runs that are meant for this computer rather than a "
-                                 "cluster queue; finished ones are not run again")
+                                 "cluster queue; finished ones are not run again. After them, the step's main "
+                                 "script runs again for the rest of the step (the stages after them)")
         dlg.get_message_area().pack_start(include, False, False, 0)
         include.show()
     selectable_text(dlg)

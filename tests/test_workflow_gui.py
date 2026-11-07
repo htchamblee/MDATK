@@ -219,6 +219,36 @@ def test_wizard_stage_editor(main):
     assert len(wz.node.settings["stages"]) == n
 
 
+def test_wizard_stage_editor_offers_the_dry_and_script_options_of_md_stages(main):
+    main.open_wizard("amber-md")
+    wz = main.wizard
+    pump()
+    editor = wz.forms["stages"]
+    new = ("separate", "export", "dry", "dry_pdb")
+    editor.select(0)  # a minimisation stage: MD-only options hidden
+    pump(0.1)
+    assert not any(editor.form.rows[key][1].get_visible() for key in new)
+    k = next(i for i, rec in enumerate(editor.records) if rec["kind"] == "md")
+    editor.select(k)
+    pump(0.1)
+    assert all(editor.form.rows[key][1].get_visible() for key in new)
+    assert "pdb_" in editor.form.rows["dry"][1].get_tooltip_text()  # the reserved labels are named
+    editor.form.rows["separate"][4]("yes")
+    editor.form.rows["dry"][4]("bad label")
+    pump(0.6)
+    rec = wz.node.settings["stages"][k]
+    assert (rec["separate"], rec["dry"]) == ("yes", "bad label")
+
+    def dry_errors():
+        return [r.issue for r in wz.issue_list.get_children()
+                if getattr(r, "issue", None) and "dry label" in r.issue.message]
+
+    assert dry_errors() and all(f"stages.{k}.dry" in i.keys for i in dry_errors())
+    editor.form.rows["dry"][4]("relax1")
+    pump(0.6)
+    assert wz.node.settings["stages"][k]["dry"] == "relax1" and not dry_errors()
+
+
 def test_planner_template_connect_and_write(main, tmp_path):
     pl = main.planner
     pump()
@@ -552,7 +582,9 @@ def test_planner_check_previous_runs_adopt_and_run_selected(main, tmp_path):
     pl.run_selected()
     jobs, separate, kw = calls[-1]
     assert [j.node_id for j in jobs] == [md.id] and len(separate) == 1
-    assert [(j.node_id, j.role) for j in kw["with_separate"]] == [(md.id, "run"), (md.id, "run-separate")]
+    # with the separate scripts: then the main script again (its part after them)
+    assert [(j.node_id, j.role, j.again) for j in kw["with_separate"]] == [
+        (md.id, "run", False), (md.id, "run-separate", False), (md.id, "run", True)]
     assert not os.path.exists(os.path.join(main.project.workflow_dir, "01_amber-build",
                                            f"apt1_01_amber-build_{main.project.workflow.stamp}.sh"))
     pl._adopted_choice = lambda _text, _detail: "cancel"

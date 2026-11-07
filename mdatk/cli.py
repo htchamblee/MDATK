@@ -1335,7 +1335,7 @@ def build_parser() -> argparse.ArgumentParser:
     budget_args(w, "with --run: ")
     w.add_argument("--include-separate", action="store_true",
                    help="with --run: also run the scripts marked 'run separately' (e.g. production), each "
-                        "after its step's main script")
+                        "after its step's main script, which then runs again for the rest of the step")
     w.set_defaults(func=cmd_workflow_write)
     w = wsub.add_parser("run", help="run the plan's main scripts (already written), each when the steps it "
                                     "reads from succeeded; each run is logged in the project file. A step "
@@ -1348,7 +1348,8 @@ def build_parser() -> argparse.ArgumentParser:
     budget_args(w)
     w.add_argument("--include-separate", action="store_true",
                    help="also run the scripts marked 'run separately' (e.g. production runs meant for a "
-                        "cluster), each after its step's main script and before the steps that read from it")
+                        "cluster), each after its step's main script, which then runs again for the rest of the "
+                        "step, and before the steps that read from it")
     w.set_defaults(func=cmd_workflow_run)
     w = wsub.add_parser("status", help="look in each step's folder for the output files of earlier runs "
                                        "(under the plan's time stamp or an earlier one): done, partial or "
