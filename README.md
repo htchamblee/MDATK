@@ -1478,7 +1478,7 @@ pass on only the frames meant for analysis:
 |---|---|---|
 | *Production stage* (`production`) | off / on | the shorthand the Auto settings below follow: the separate script (with the step's *Separate production script*), the *Trajectory* output, and with the step's *Dry, imaged production trajectory* the dry production trajectory `dry-prod.nc` |
 | *Run in the separate script* (`separate`) | Auto / Yes / No | which script runs the stage. Auto: the separate script when it is a production stage and *Separate production script* is on; Yes: the separate script, whatever those say; No: the main script |
-| *Pass the trajectory on* (`export`) | Auto / Yes / No | whether its trajectory goes out on *Trajectory* to analysis and VMD steps. Auto: when it is a production stage (when no stage goes out, the last MD stage with a trajectory and Auto here does, as before); No: never |
+| *Pass the trajectory on* (`export`) | Auto / Yes / No | whether its trajectory goes out on *Trajectory* to analysis and VMD steps. Auto: when it is a production stage (with Auto on every stage and no production stage with frames, the last MD stage with a trajectory goes out, as before); Yes: always (it needs ntwx > 0); No: never. Once a stage says Yes or No, no other stage goes out in place of the ones asked for |
 | *Dry trajectory label* (`dry`) | a label; empty: none | right after the stage, cpptraj images its trajectory (`autoimage`), strips the step's *Strip mask (trajectory)* and writes `<project>_<step>_dry-<label>.nc`, an output of its own (`dry_<label>`); the stages with one label are concatenated in stage order into one file, made after the last of them; `prod` joins `dry-prod.nc` |
 | *Dry PDB of its last frame* (`dry_pdb`) | off / on | right after the stage, cpptraj strips the step's *Strip mask* from its final restart into `<project>_<step>_dry-<stage>.pdb`, an output of its own (`dry_pdb_<stage>`); needs no trajectory frames |
 
@@ -1528,10 +1528,13 @@ The checks:
   `topology`, `trajectory` and `pdb_…` (the names of the step's other dry outputs); a label that reads as
   true or false (`false`, `no`, `off` …); two labels that would write one file (`_` becomes `-` in file
   names, so `hot_1` and `hot-1`, or `prod_` beside the dry production trajectory); a dry copy that would
-  write a stage's own trajectory (the label `relax` beside a stage named `dry-relax`). A label refused for
-  its characters, as reserved or as a true/false word is no label: no dry copy, no output;
-- **warnings:** *Pass the trajectory on: Yes* on a stage without frames (`its trajectory is to be passed
-  on, but it writes none (ntwx=0)`); a ramp on a continued run that does not start at the temp0 the
+  write a stage's own trajectory (the label `relax` beside a stage named `dry-relax`); *Pass the
+  trajectory on: Yes* on a stage without frames (`its trajectory is to be passed on ('Pass the trajectory
+  on': Yes), but it writes none (ntwx=0)`). A label refused for its characters, as reserved or as a
+  true/false word is no label: no dry copy, no output;
+- **warnings:** a production stage on Auto without frames (`production stage without trajectory
+  output (ntwx=0)`, with the stage the *Trajectory* output carries instead, or `the step passes no
+  trajectory on`); a ramp on a continued run that does not start at the temp0 the
   previous MD stage ended at, for the first stage the input restart's when an Amber MD step wrote it (`stage
   heat: the ramp starts at tempi = 310 K, but stage eq ended at 300 K`; when that temperature is not known, a
   heating ramp gets `a ramp from tempi on a continued run starts below the current temperature` and a

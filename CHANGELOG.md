@@ -69,9 +69,13 @@ the notes below.
   without a word, and the production stages of the GROMACS step. A separate script that runs stages other
   than production stages is titled *Amber MD stages run separately*, and its waiting line says "the
   separately run stages".
-- **The outputs follow the stage options.** *Trajectory* carries the stages passed on (data `stages`;
-  without any, the last MD stage with a trajectory whose *Pass the trajectory on* is Auto, as before; a
-  stage set to No never goes out, and Yes on a stage with ntwx = 0 is a warning). *Dry final PDB* is
+- **The outputs follow the stage options.** *Trajectory* carries the stages passed on (data `stages`).
+  With *Pass the trajectory on* on Auto everywhere and no production stage with frames it carries the last
+  MD stage with a trajectory, as before; once a stage says Yes or No, only the stages asked for go out, so
+  No on an annealing cycle's relaxation never passes on its cooling ramp instead. Yes on a stage with
+  ntwx = 0 is an error, and the warning for a production stage without frames names the stage the
+  output carries instead (`stage relax1: production stage without trajectory output (ntwx=0): the
+  'Trajectory' output carries stage cool1 instead`, or `the step passes no trajectory on`). *Dry final PDB* is
   offered only when some stage runs in the main script, *Dry topology* and *Dry trajectory* only when such
   a file is written, so the outputs offered and the files written agree: a step whose every stage runs
   separately no longer offers a dry PDB it never writes. *Final restart* records the temp0 of the last

@@ -304,17 +304,41 @@ def test_export_follows_production_unless_set():
     assert st.outputs["trajectory"].data == {"stages": ["prod"]}
     _p, st = md_step([dict(eq, export="yes"), prod])
     assert st.outputs["trajectory"].data["stages"] == ["eq", "prod"]
-    # No on the production stage: as when no stage is a production stage, the last one with Auto goes out
-    _p, st = md_step([eq, dict(prod, export="no")])
-    assert st.outputs["trajectory"].data["stages"] == ["eq"]
-    _p, st = md_step([dict(eq, export="no"), dict(prod, export="no")])
-    assert "trajectory" not in st.outputs and "trajectory" not in [p.name for p in tool.output_ports(st.settings)]
+    # without a production stage, Auto everywhere: the last MD stage with a trajectory goes out, as before
+    _p, st = md_step([eq, md("prod")])
+    assert st.outputs["trajectory"].data["stages"] == ["prod"]
+    # No on the production stage: no other stage goes out in its place (once a stage says Yes or No, only what
+    # the stages say goes out)
+    for stages in ([eq, dict(prod, export="no")], [dict(eq, export="no"), dict(prod, export="no")]):
+        _p, st = md_step(stages)
+        assert "trajectory" not in st.outputs
+        assert "trajectory" not in [p.name for p in tool.output_ports(st.settings)]
+    # the annealing cycle: the relaxation says No, so the cooling ramp before it does not go out instead
+    _p, st = md_step(anneal(relax1={"export": "no"}))
+    assert "trajectory" not in st.outputs and st.ok, st.issues
     # the trajectory goes out from its script's stage, wherever that runs
     _p, st = md_step([eq, dict(prod, separate="no")])
     assert st.outputs["trajectory"].data["stages"] == ["prod"]
-    # Yes without frames: warned
-    _p, st = md_step([dict(eq, export="yes", ntwx=0), prod])
-    assert any("stage eq: its trajectory is to be passed on, but it writes none" in m for m in messages(st, "warning"))
+    # Yes without frames: an error (as a dry label without frames), and no other stage takes its place
+    _p, st = md_step([dict(eq, export="yes", ntwx=0), dict(prod, production=False)])
+    assert "trajectory" not in st.outputs and not st.ok
+    assert any(m.startswith("stage eq: its trajectory is to be passed on ('Pass the trajectory on': Yes), but it "
+                            "writes none (ntwx=0)") for m in messages(st, "error"))
+    # a production stage on Auto without frames: warned as in 0.0.12, which passed on the last MD stage with a
+    # trajectory instead; the warning names it
+    _p, st = md_step(anneal(relax1={"production": True, "ntwx": 0}))
+    assert st.outputs["trajectory"].data["stages"] == ["cool1"]
+    assert "stage relax1: production stage without trajectory output (ntwx=0): the 'Trajectory' output carries " \
+           "stage cool1 instead" in messages(st, "warning")
+    # ... or that nothing goes out, once another stage says No
+    _p, st = md_step(anneal(cool1={"export": "no"}, relax1={"production": True, "ntwx": 0}))
+    assert "trajectory" not in st.outputs
+    assert "stage relax1: production stage without trajectory output (ntwx=0): the step passes no trajectory on" \
+           in messages(st, "warning")
+    # ... and plainly when another production stage's trajectory goes out
+    _p, st = md_step([dict(eq, production=True, ntwx=0), prod])
+    assert st.outputs["trajectory"].data["stages"] == ["prod"]
+    assert "stage eq: production stage without trajectory output (ntwx=0)" in messages(st, "warning")
 
 
 def between_errors(st):

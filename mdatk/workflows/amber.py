@@ -1773,9 +1773,11 @@ STAGE_OPTIONS = [
            "between two of them is an error).", choices=_AUTO_YES_NO, requires=_MD_KIND),
     Option("export", "Pass the trajectory on", "choice", "auto",
            "Whether the stage's trajectory goes out on the step's 'Trajectory' output to analysis / "
-           "visualisation steps. Auto: when it is a 'Production stage' (when no stage's trajectory goes out, "
-           "the last MD stage with a trajectory and Auto here does). Yes / No: always / never, whatever "
-           "'Production stage' says.", choices=_AUTO_YES_NO, requires=_MD_KIND),
+           "visualisation steps. Auto: when it is a 'Production stage' (with Auto on every stage and no "
+           "production stage with frames, the last MD stage with a trajectory goes out, as before). Yes / No: "
+           "always / never, whatever 'Production stage' says; once a stage says Yes or No, no other stage goes "
+           "out in place of the ones asked for. Yes needs trajectory frames (ntwx > 0).",
+           choices=_AUTO_YES_NO, requires=_MD_KIND),
     Option("dry", "Dry trajectory label", "text", "",
            "A label of letters, digits, '-' and '_' (empty: none): cpptraj autoimages this stage's trajectory, "
            "strips the step's 'Strip mask (trajectory)' and writes <project>_<step>_dry-<label>.nc (and the dry "
@@ -1947,7 +1949,9 @@ class AmberMDTool(Tool):
         """What each stage does besides running.  'Production stage' is the shorthand the Auto settings
         follow: separate script (with the step's 'Separate production script'), trajectory passed on, and
         with the step's 'Dry, imaged production trajectory' dried into dry-prod.nc unless the stage has a dry
-        label of its own (the label 'prod' joins that file).  A label the check refuses (invalid characters,
+        label of its own (the label 'prod' joins that file).  With 'Pass the trajectory on' on Auto everywhere
+        and no production stage with frames, the last MD stage with a trajectory goes out (as before); once a
+        stage says Yes or No, only the stages asked for do.  A label the check refuses (invalid characters,
         reserved, a true/false word) is no label: its output would take the name of one of the step's own."""
         stages = s.get("stages", [])
         separate = []
@@ -1956,10 +1960,13 @@ class AmberMDTool(Tool):
             separate.append(bool(s.get("separate_production") and st.get("production")) if mode == "auto"
                             else mode == "yes")
         traj = [k for k, st in enumerate(stages) if st.get("kind") == "md" and st.get("ntwx", 0) > 0]
-        exported = [k for k in traj if (stages[k].get("production") if self._choice(stages[k], "export") == "auto"
-                                        else self._choice(stages[k], "export") == "yes")]
-        if not exported:  # as before: the last MD stage with a trajectory (unless it says No)
-            exported = [k for k in traj if self._choice(stages[k], "export") == "auto"][-1:]
+        export = [self._choice(st, "export") for st in stages]
+        exported = [k for k in traj if (stages[k].get("production") if export[k] == "auto" else export[k] == "yes")]
+        if not exported and all(e == "auto" for e in export):
+            # as before: the last MD stage with a trajectory.  Once a stage says Yes or No, only the stages that say
+            # Yes and the production stages on Auto go out: a stage nobody asked for (a hot stage of an annealing
+            # cycle whose relaxation says No) never takes their place
+            exported = traj[-1:]
         dry: Dict[str, List[int]] = {}
         for k in traj:
             label = self.dry_label(stages[k])
@@ -2063,6 +2070,7 @@ class AmberMDTool(Tool):
         crd = ctx.data("coordinates")
         prev_temp = crd.get("temp0") if crd.get("velocities", s["input_velocities"]) else None
         prev_name = "the input restart"
+        no_frames = []  # production stages on Auto without trajectory frames
         for k, st in enumerate(stages):
             key = f"stages.{k}."
             label = f"stage {tags[k]}"
@@ -2119,10 +2127,12 @@ class AmberMDTool(Tool):
                 out.append(Issue("info", f"{label}: tempi is ignored when velocities are continued",
                                  (key + "tempi",)))
             export = self._choice(st, "export")
-            if st["ntwx"] == 0 and (st["production"] if export == "auto" else export == "yes"):
-                out.append(Issue("warning", f"{label}: production stage without trajectory output (ntwx=0)"
-                                 if st["production"] else f"{label}: its trajectory is to be passed on, but it "
-                                 "writes none (ntwx=0)", (key + "ntwx",)))
+            if st["ntwx"] == 0 and export == "yes":
+                out.append(Issue("error", f"{label}: its trajectory is to be passed on ('Pass the trajectory on': "
+                                          "Yes), but it writes none (ntwx=0): set ntwx above 0, or 'Pass the "
+                                          "trajectory on' to Auto or No", (key + "ntwx", key + "export")))
+            elif st["ntwx"] == 0 and export == "auto" and st["production"]:
+                no_frames.append(k)  # warned below, with what goes out instead
             dry = self.dry_label(st)
             if dry:
                 problem = dry_label_problem(dry)
@@ -2154,6 +2164,15 @@ class AmberMDTool(Tool):
                 out.append(Issue("warning", f"{label}: extra &cntrl settings override generated ones: "
                                             f"{', '.join(dup)}", (key + "extra_cntrl",)))
         roles = self.roles(s)
+        # a production stage without frames: say what the 'Trajectory' output carries instead (0.0.12 passed on
+        # the last MD stage with a trajectory, which it still does when every stage's 'Pass the trajectory on'
+        # is Auto)
+        asked = [j for j in roles.exported if stages[j]["production"] or self._choice(stages[j], "export") == "yes"]
+        for k in no_frames:
+            instead = ("" if asked else f": the 'Trajectory' output carries stage {tags[roles.exported[0]]} instead"
+                       if roles.exported else ": the step passes no trajectory on")
+            out.append(Issue("warning", f"stage {tags[k]}: production stage without trajectory output (ntwx=0)"
+                             + instead, (f"stages.{k}.ntwx",)))
         files: Dict[str, List[str]] = {}  # dry trajectory file tag -> the labels that write it
         for dry in roles.dry:  # (a label the check refuses is none)
             files.setdefault(sanitize_tag(f"dry-{dry}"), []).append(dry)
