@@ -1112,7 +1112,9 @@ class PlannerPanel(Gtk.Box):
 
     # ------------------------------------------------------------ chrome
     def _toolbar(self) -> Gtk.Widget:
-        bar = Gtk.Box(spacing=6, margin=6)
+        # the editing tools on the left, selection, writing and running on the right; a narrow window puts
+        # the right group on a second line (W.flow_row) instead of growing wider than the screen
+        left, right = Gtk.Box(spacing=6), Gtk.Box(spacing=6)
         add = Gtk.MenuButton(label="Add step")
         add.set_tooltip_text("Add a box for one program (placed at the top left; drag it anywhere)")
         menu = Gtk.Menu()
@@ -1128,7 +1130,7 @@ class PlannerPanel(Gtk.Box):
             menu.append(item)
         menu.show_all()
         add.set_popup(menu)
-        bar.pack_start(add, False, False, 0)
+        left.pack_start(add, False, False, 0)
         tmpl = Gtk.MenuButton(label="Templates")
         tmpl.set_tooltip_text("Add a pre-connected chain of steps")
         tmenu = Gtk.Menu()
@@ -1138,39 +1140,39 @@ class PlannerPanel(Gtk.Box):
             tmenu.append(item)
         tmenu.show_all()
         tmpl.set_popup(tmenu)
-        bar.pack_start(tmpl, False, False, 0)
-        bar.pack_start(W.button("Delete", self.delete_selected, "Delete the selected box or connection (Del)",
+        left.pack_start(tmpl, False, False, 0)
+        left.pack_start(W.button("Delete", self.delete_selected, "Delete the selected box or connection (Del)",
                                 "edit-delete-symbolic"), False, False, 0)
-        bar.pack_start(W.button("Arrange", self.arrange, "Lay the boxes out left to right in plan order"),
+        left.pack_start(W.button("Arrange", self.arrange, "Lay the boxes out left to right in plan order"),
                        False, False, 0)
         for icon, tip, f in (("zoom-out-symbolic", "Zoom out (Ctrl+wheel)", 0.85),
                              ("zoom-in-symbolic", "Zoom in (Ctrl+wheel)", 1 / 0.85)):
             b = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
             b.set_tooltip_text(tip)
             b.connect("clicked", lambda *_, f=f: self.canvas.set_zoom(self.canvas.zoom * f))
-            bar.pack_start(b, False, False, 0)
-        bar.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
-        bar.pack_start(W.button("Check previous runs", lambda: self.check_runs(None),
+            left.pack_start(b, False, False, 0)
+        left.pack_start(W.button("Fit", self.fit, "Zoom so that the whole plan is visible"), False, False, 0)
+        left.pack_start(W.button("Check previous runs", lambda: self.check_runs(None),
                                 "Look in each step's folder for the output files of an earlier run (under "
                                 "the plan's time stamp, else an earlier one) and mark the step done, partial "
                                 "or missing. A step can then use the outputs it found: the steps after it "
                                 "read them, and it is not written or run again", "edit-find-symbolic"),
                        False, False, 0)
-        bar.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
+        right.pack_end(W.button("Open folder", self.open_folder, "Open the plan folder", "folder-open-symbolic"),
                      False, False, 0)
         self.stop_button = W.button("Stop scripts", self.stop_scripts,
                                     "Stop every running script (the same as Cancel). The stop button on a "
                                     "running box stops only that step's script.", "process-stop-symbolic")
         self.stop_button.get_style_context().add_class("destructive-action")
         self.stop_button.set_sensitive(False)  # the host enables it while scripts run
-        bar.pack_end(self.stop_button, False, False, 0)
+        right.pack_end(self.stop_button, False, False, 0)
         self.run_selected_btn = W.button("Run selected steps", self.run_selected,
                                          "Write the ticked steps' files and run their main scripts in plan "
                                          "order (tick a step with the box in its title bar, Space, or the "
                                          "right-click menu; steps they read from are not run again)",
                                          "media-playback-start-symbolic")
-        bar.pack_end(self.run_selected_btn, False, False, 0)
-        bar.pack_end(W.button("Run all…", lambda: self.write(None, run=True),
+        right.pack_end(self.run_selected_btn, False, False, 0)
+        right.pack_end(W.button("Run all…", lambda: self.write(None, run=True),
                               "Write every step's files, then run the main scripts in plan order on this "
                               "computer (scripts marked 'run separately', e.g. production runs, are not "
                               "started); each run is logged in the project file", "media-playback-start-symbolic"),
@@ -1179,17 +1181,27 @@ class PlannerPanel(Gtk.Box):
                                            "Write the ticked steps' files without running them (tick a step "
                                            "with the box in its title bar, Space, or the right-click menu)",
                                            "document-save-symbolic")
-        bar.pack_end(self.write_selected_btn, False, False, 0)
+        right.pack_end(self.write_selected_btn, False, False, 0)
         write = W.button("Write all files", lambda: self.write(None),
                          "Write every step's files, a master script and a plan summary",
                          "document-save-symbolic")
         write.get_style_context().add_class("suggested-action")
-        bar.pack_end(write, False, False, 0)
-        return bar
+        right.pack_end(write, False, False, 0)
+        ticks = Gtk.Box()
+        ticks.get_style_context().add_class("linked")
+        self.select_all_btn = W.button("Select all", self.select_all_steps,
+                                       "Tick every step for 'Write selected steps' and 'Run selected steps' "
+                                       "(the boxes in the steps' title bars)", "edit-select-all-symbolic")
+        self.clear_selection_btn = W.button("Clear selection", self.clear_selection,
+                                            "Untick every step", "edit-clear-symbolic")
+        self.clear_selection_btn.set_sensitive(False)  # nothing ticked yet (_update_run_selected)
+        ticks.pack_start(self.select_all_btn, False, False, 0)
+        ticks.pack_start(self.clear_selection_btn, False, False, 0)
+        right.pack_end(ticks, False, False, 0)
+        return W.flow_row([(left, True, Gtk.Align.START), (right, False, Gtk.Align.END)])
 
     def _naming_bar(self) -> Gtk.Widget:
-        bar = Gtk.Box(spacing=6, margin=6)
-        bar.set_margin_top(0)
+        bar = Gtk.Box(spacing=6)  # the file names and the folder
         bar.pack_start(W.label("Project"), False, False, 0)
         self.project_entry = W.entry("project", "The <project> part of every file name", width=12)
         self.project_entry.set_hexpand(False)
@@ -1214,16 +1226,22 @@ class PlannerPanel(Gtk.Box):
             "asked first. Off: writing replaces the scripts and the next run the outputs. Saved with the "
             "project.")
         self.supersede_check.connect("toggled", self._on_naming)
+        self.supersede_check.get_child().set_width_chars(14)  # wrapped: two lines at most
         bar.pack_start(self.supersede_check, False, False, 0)
         bar.pack_start(W.label("Folder"), False, False, 0)
         self.folder_label = W.label("")
         self.folder_label.set_ellipsize(Pango.EllipsizeMode.START)
+        self.folder_label.set_width_chars(8)
+        self.folder_label.set_max_width_chars(20)  # a long path is shortened (wider when there is room)
         self.folder_label.set_hexpand(True)
         bar.pack_start(self.folder_label, True, True, 0)
         bar.pack_start(W.button("Change…", self.choose_folder, "Folder that receives the plan"), False,
                        False, 0)
-        bar.pack_start(self._budget_controls(), False, False, 0)
-        return bar
+        # a narrow window puts the budget on a line of its own (W.flow_row); the row's buttons and fields keep
+        # their height when a check-button label wraps
+        row = W.flow_row([(bar, True, Gtk.Align.FILL), (self._budget_controls(), False, Gtk.Align.END)])
+        row.set_margin_top(0)
+        return row
 
     def _budget_controls(self) -> Gtk.Widget:
         """CPU cores, GPUs and the most scripts at once for Run all / Run selected (saved with the plan)."""
@@ -1936,6 +1954,14 @@ class PlannerPanel(Gtk.Box):
         return False
 
     # ------------------------------------------------------- run selected
+    def select_all_steps(self) -> None:
+        """Tick every step that writes files (the tool bar's Select all; the canvas menu's Tick all steps)."""
+        self.set_checked([n.id for n in self.workflow.nodes if checkable(n)])
+
+    def clear_selection(self) -> None:
+        """Untick every step (the tool bar's Clear selection)."""
+        self.set_checked([])
+
     def toggle_checked(self, node_id: str) -> None:
         self.set_checked(self.checked ^ {node_id})
 
@@ -1956,6 +1982,8 @@ class PlannerPanel(Gtk.Box):
             if btn is not None:
                 btn.set_label(f"{text} ({n})" if n else text)
                 btn.set_sensitive(bool(n))
+        if getattr(self, "clear_selection_btn", None) is not None:
+            self.clear_selection_btn.set_sensitive(bool(n))
 
     def write_selected(self) -> None:
         """Write the ticked steps' files (in plan order) without running them."""

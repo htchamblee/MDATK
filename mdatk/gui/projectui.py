@@ -272,6 +272,22 @@ def ask_unsaved(parent: Optional[Gtk.Window], what: str, detail: str = "") -> st
     return {Gtk.ResponseType.ACCEPT: "save", Gtk.ResponseType.REJECT: "discard"}.get(response, "cancel")
 
 
+def keep_open_menu_filled(button: Gtk.MenuButton, menu: Gtk.Menu, fill: Callable[[], None]) -> None:
+    """Fill the Open button's drop-down before it opens.  GTK pops a menu button's menu up before the button's
+    'toggled' handlers run, and a menu filled there keeps the size it had empty: a small grey box without items.
+    So the menu is filled now, again when the pointer reaches or presses the button (before the popup, with the
+    recent projects of that moment), and after it closes (for a popup from the keyboard)."""
+    def refresh(*_args) -> bool:
+        if not button.get_active():  # the menu is open while its button is pressed in: never refill it then
+            fill()
+        return False  # the event goes on to the button; one call when run from GLib.idle_add
+
+    fill()
+    button.connect("enter-notify-event", refresh)
+    button.connect("button-press-event", refresh)
+    button.connect("toggled", lambda b: b.get_active() or GLib.idle_add(refresh))  # the menu closed
+
+
 def fill_open_menu(menu: Gtk.Menu, open_path: Callable[[str], None],
                    items: Sequence[Tuple[str, Callable[[], None], str]]) -> None:
     """The open drop-down: recent projects, then ``items`` (label, callback, tooltip)."""

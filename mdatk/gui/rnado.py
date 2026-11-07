@@ -40,8 +40,8 @@ from .jobs import JobControl, confirm_run, waiting_text  # noqa: E402
 from .logpanel import LogPanel  # noqa: E402
 from .planner import PlannerPanel, checkable  # noqa: E402
 from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, ask_unsaved, change_bar,  # noqa: E402
-                        choose_project, choose_save_path, fill_open_menu, group_renames, rename_groups_in,
-                        renamed_data, workflow_data)
+                        choose_project, choose_save_path, fill_open_menu, group_renames,
+                        keep_open_menu_filled, rename_groups_in, renamed_data, workflow_data)
 from .worker import call_soon  # noqa: E402
 from .dialogtext import selectable_text  # noqa: E402
 
@@ -155,7 +155,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                                                                      Gtk.IconSize.BUTTON))
         self.open_menu_button.set_tooltip_text("Recent projects, or browse")
         self.open_menu_button.set_popup(self.open_menu)
-        self.open_menu_button.connect("toggled", lambda b: b.get_active() and self._fill_open_menu())
+        keep_open_menu_filled(self.open_menu_button, self.open_menu, self._fill_open_menu)
         open_box.pack_start(self.open_menu_button, False, False, 0)
         hb.pack_start(open_box)
         hb.pack_start(W.button("Close", self.close_project, "Close the project and return to an empty, "

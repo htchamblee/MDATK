@@ -50,7 +50,8 @@ from .canvas import FigureCanvas  # noqa: E402
 from .jobs import JobControl  # noqa: E402
 from .problemview import ProblemView  # noqa: E402
 from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
-                        choose_save_path, fill_open_menu, other_data, renamed_workflow)
+                        choose_save_path, fill_open_menu, keep_open_menu_filled, other_data,
+                        renamed_workflow)
 from .worker import call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.open_menu_button.set_image(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON))
         self.open_menu_button.set_tooltip_text("Recent projects, the demo project, or browse")
         self.open_menu_button.set_popup(self.open_menu)
-        self.open_menu_button.connect("toggled", lambda b: b.get_active() and self._fill_open_menu())
+        keep_open_menu_filled(self.open_menu_button, self.open_menu, self._fill_open_menu)
         open_box.pack_start(self.open_menu_button, False, False, 0)
         hb.pack_start(open_box)
         hb.pack_start(W.button("Save", self.save_project, "Save the project (Ctrl+S)",
