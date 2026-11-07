@@ -14,6 +14,180 @@ the notes below.
 
 ## Unreleased
 
+### Amber MD: per-stage dry trajectories, the production stage unbundled
+
+- ***Production stage* is split into four stage options** (MD stages; those of a minimisation stage are
+  ignored), so that a chained protocol can run on the cluster as a whole and still pass on only the frames
+  meant for analysis: *Run in the separate script* (`separate`: Auto / Yes / No), *Pass the trajectory on*
+  (`export`: Auto / Yes / No), *Dry trajectory label* (`dry`) and *Dry PDB of its last frame* (`dry_pdb`).
+  Auto follows *Production stage* as before (the separate script with the step's *Separate production
+  script*, the *Trajectory* output, and with *Dry, imaged production trajectory* `dry-prod.nc`); Yes and
+  No override it for the stage, Yes also with *Separate production script* off. An annealing cycle in one
+  node (heat1 300 → 340 K, hold1 at 340 K, cool1 340 → 300 K, relax1 at 300 K) with *Run in the separate
+  script: Yes* on all four stages has its four pmemd runs in the separate script and none in the main
+  script; with *Pass the trajectory on* and a dry label on relax1 only, only the 300 K frames go out and are
+  dried. With *Separate production script* on and every production stage set to No, an info says that
+  everything runs in one script.
+- **Dry trajectory labels.** cpptraj images (`autoimage`) the trajectory of a stage with a label and strips
+  *Strip mask (trajectory)* into `<project>_<step>_dry-<label>.nc` right after the stage's last segment,
+  in the script that runs the stage. Stages that share a label are concatenated in stage order, every
+  segment, into one file made after the last of them; each label is an output of its own (`dry_<label>`:
+  *Dry trajectory relax1* for the label relax1 of stage relax1, *Dry trajectory relax (relax1, relax2)*
+  for a label of two stages; data: its stages and label), and the first dry trajectory of each script
+  writes the dry topology (`<project>_<step>_dry.parm7`). The label `prod` joins the step's dry production
+  trajectory. A label holds letters, digits, `-` and `_` (`_` becomes `-` in the file name: `relax_1`
+  writes `dry-relax-1.nc`, output `dry_relax_1`). Check errors: a label on a stage without trajectory
+  frames (ntwx = 0), other characters, the reserved `pdb`, `topology`, `trajectory` and `pdb_…` (the
+  names of the step's other dry outputs), a word that reads as true or false (`false`, `no`, `off` …), two
+  labels that would write one file (`hot_1` and `hot-1`; `prod_` beside the dry production trajectory) and
+  a dry copy that would write a stage's own trajectory (the label `relax` beside a stage named
+  `dry-relax`). Labels refused for their characters, as reserved or as true/false words are no labels: no
+  dry copy, no output.
+- **A dry PDB of any MD stage's last frame**: `<project>_<step>_dry-<stage>.pdb`, stripped of *Strip mask*
+  from the stage's final restart right after the stage, with an output of its own (`dry_pdb_<stage>`, *Dry
+  PDB of heat1*), e.g. the structure at the top of a heating ramp. It needs no trajectory frames. The
+  step's *Dry PDB before production* still strips the last restart of the main script into `dry.pdb`.
+- **Stage dry copies are written as `<file>.part` and renamed once complete**, so a copy cut off by the
+  stop button or a wall-time limit never counts as made: the main script, whose waiting check also tests
+  the dry copies the separate script makes, keeps waiting, and *Check previous runs* calls the run partial.
+  The main script's stages before the separate script are not run again once it has finished, so their
+  dry copies come after that part, each made when one of its stages' pmemd ran (`STAGES_RAN=1` right after
+  pmemd) or when it is missing (asked for later) or older than the output of one of its stages
+  (`dry_out_of_date`); a dry production trajectory of such stages is made the same way.
+- ***Dry, imaged production trajectory* keeps its meaning**: one `dry-prod.nc` of the production stages
+  with a trajectory, now only those without a dry label of their own, plus the stages labelled `prod`.
+  Steps that use none of the new options are written as before (`tests/test_golden.py` unchanged; the
+  0.0.12 scripts of a `dry_traj` step, with and without the separate script, pinned by hash):
+  `dry-prod.nc` and `dry.pdb` keep the lines 0.0.12 wrote where 0.0.12 wrote them, without `.part`.
+- **The separately run stages must follow one another.** A stage of the main script between two of them
+  is an error, as the later one would start from a restart that the main script writes only after the
+  separate script: `stage hold1 runs in the main script between stages of the separate script: stage cool1
+  would start from a restart that the main script writes only once the separate script has finished, so
+  neither could finish; set 'Run in the separate script' to Yes for it, or move it before or after the
+  separately run stages` (a minimisation, which always runs in the main script, can only move). The same
+  error now covers *Production stage* on stages that are not next to each other, which 0.0.12 wrote
+  without a word, and the production stages of the GROMACS step. A separate script that runs stages other
+  than production stages is titled *Amber MD stages run separately*, and its waiting line says "the
+  separately run stages".
+- **The outputs follow the stage options.** *Trajectory* carries the stages passed on (data `stages`;
+  without any, the last MD stage with a trajectory whose *Pass the trajectory on* is Auto, as before; a
+  stage set to No never goes out, and Yes on a stage with ntwx = 0 is a warning). *Dry final PDB* is
+  offered only when some stage runs in the main script, *Dry topology* and *Dry trajectory* only when such
+  a file is written, so the outputs offered and the files written agree: a step whose every stage runs
+  separately no longer offers a dry PDB it never writes. *Final restart* records the temp0 of the last
+  stage when that is an MD stage, for the ramp check of the Amber MD step it feeds.
+- ***While the separate script has not finished***, a new option of the Amber MD step and of the GROMACS
+  step with *Separate production script*: *Exit status 75* (as before) or *Exit 0 + .waiting file*. In
+  the second mode the main script writes its WAITING line into `<main script>.waiting` and exits 0, so a
+  batch chain (`sbatch --dependency=afterok`) is not cancelled; the file is removed when the script starts
+  and when it finishes. RNAdo and `mdatk workflow run` report the step as waiting either way and do not
+  start the steps after it (`workflow run` still exits with 75), and the plan's master script stops after
+  such a step with exit status 0: `if [ -e "<script>.waiting" ]; then echo "WAITING: <script> waits for
+  its separately run script; run that, then this script again" >&2; exit 0; fi`.
+- **The main script runs again after its separate scripts.** With *Also run the scripts marked 'run
+  separately'* (`--include-separate`) a step's separate scripts run after its main script, and then the
+  main script once more for the rest of the step (the stages after the separate ones, the dry copies made
+  at its end, the `.waiting` file removed), before the steps that read from it. It does not run again when
+  its first run found the separate scripts finished, nor when it was written before the waiting check; a
+  line says why.
+- **Ramp warnings know the temperature a stage starts from.** The warning for a ramp on a continued run
+  compares tempi with the temp0 of the previous MD stage, for the first stage with that of the input
+  restart when an Amber MD step wrote it: none when they match (a heating ramp from 300 K after a 300 K
+  equilibration, a cooling ramp from the temperature held before it), `stage heat: the ramp starts at tempi
+  = 310 K, but stage eq ended at 300 K` (or `… but the input restart ended at 300 K`) when they differ,
+  for heating and cooling ramps alike. When that temperature is not known, a heating ramp gets the old
+  warning (`a ramp from tempi on a continued run starts below the current temperature`) and a cooling ramp
+  none. *MD stages use different temperatures* is not given when every change of temp0 is a ramp from the
+  previous stage's temp0 (after an Amber MD step that ended at 300 K, the annealing cycle above checks
+  without a warning), and *tempi is ignored when velocities are continued* is no longer given for a ramp,
+  which starts at tempi.
+- **Project files** save the stage keys `separate`, `export` (`"auto"`, `"yes"`, `"no"`), `dry` and
+  `dry_pdb` and the step's `waiting_exit` (`"status"`, `"file"`) with their comments. Written by hand, `dry
+  = true` names the label after the stage (`false`: none), and `separate` / `export` = true / false read
+  as Yes / No.
+
+### Planner: folder tags, a record of the step folders
+
+- **Folder tags.** A step can carry a folder tag (*Folder tag* in the details pane, after *Title* and
+  *Step*; `folder_tag` of a `[[workflow.nodes]]` entry, saved only when set), which is added to its folder
+  name: `03_amber-md_model12/` instead of `03_amber-md/`. Parallel branches of one plan no longer write
+  into `01_amber-build/`, `04_amber-build/` … with nothing on disk saying which model is which, and a
+  branch added later changes the folders of no other branch. The box shows the tag as a badge tinted like
+  its header, left of its cores and GPUs; the step's title carries it in logs, messages, the step log, the
+  master script, the summary and `workflow status` (`03 · production model12 · model12`), so steps that
+  share a number can be told apart. ASCII letters and digits, with `-` only between them: another
+  character is a check error that suggests a tag (`folder tag 'model 12': use ASCII letters and digits,
+  with '-' only between them (e.g. 'model-12'); it is added to the step's folder name`), and so are two
+  steps that would write into one folder (`… would write into the same folder 99_amber-restraints_Model13/
+  with the same names: give one of them another folder tag or step number`), also through tags that differ
+  only in case (`… would write into 09_amber-md_Model13/ and 09_amber-md_model13/, one folder on a file
+  system that ignores case (macOS, Windows): give one of them another folder tag`). A tag on a step that
+  writes no files is a warning (the entry, otherwise greyed out for such a step, stays editable so the tag
+  can be cleared), and in a plan without step folders an info (the tag then names only the folder its
+  completed runs move into, `superseded/03_amber-md_model12/`). File names keep their four parts,
+  `<project>_<step>_<tool>_<time>.<ext>`, which the readers of earlier runs, the stamp globs of custom
+  scripts and the run audit's `farfar2-rNN` log names rely on. Changing a tag changes the folder the step
+  writes into and looks in for earlier runs; files already written stay where they are. Untagged steps
+  keep their folders and messages, and a project without tags is saved as before.
+- **Steps that write no files have no folder** (existing files, notes, the MDATK analysis box; MDATK never
+  created one for them): the details pane says *No folder: this step writes no files*, for the other steps
+  *Folder: 03_amber-md_model12/* (*the plan folder (no step folders)* without step folders).
+- **Every write records what the folders are.** `mdatk workflow write` and every write of the plan in
+  RNAdo (the planner logs `Manifest: <path>`) rewrite `<plan folder>/MANIFEST` from the plan, also when
+  only some steps are written: a tab-separated table under the header line `step folder node tool title
+  folder_tag inputs holds`, one line per step in plan order (notes left out, `-` for an empty cell):
+  number and folder (`-` for a step that writes no files, `.` in a plan without step folders), node id,
+  step type, title, folder tag, the input files (`port=path`, joined by `; `; an existing file's line names
+  its file) and what the step's folder holds (`this step`, or `this step (node id only)` when only the node
+  id says so; the step its `MDATK_step.toml` names instead, e.g. `n4 'production model12' (step 03,
+  written 2026-11-07 21:21)`; `unknown (no MDATK_step.toml)`; `-`). Each step folder a
+  write puts files into gets `MDATK_step.toml` (format `mdatk-step-folder`, commented): the MDATK version,
+  the time of writing, the project, step number, folder, node id, type, title, label, folder tag and time
+  stamp. It is not part of the step's runs: it stays when a completed run moves aside, and the run's
+  `manifest.toml` keeps what it said under `[written_by]`. The stand-alone wizard (`workflow generate`)
+  leaves MANIFEST alone, and a plan without step folders gets no identity files. Neither record is in
+  `WriteReport.written` (`WriteReport.manifest`, `.identity`), so the golden test sees the same files; the
+  JSON of `workflow write` gains `manifest`, that of `--dry-run` `records`. A record that cannot be written
+  gives a warning (`WARNING  MANIFEST / MDATK_step.toml not written: …`, `records_error` in the JSON), not
+  a failed write. The namd_mdff example generator leaves both out (this machine's paths, the time of
+  writing), so the shipped example regenerates unchanged.
+- **`mdatk workflow manifest -p PROJECT [--tree DIR] [--table] [--json]`** (`rnado manifest`) matches the
+  plan's steps to the step folders of an output tree (default: the plan folder) and to the runs moved into
+  their `superseded/`. A folder belongs to the one step of the plan with the type and folder tag its
+  `MDATK_step.toml` names, else to the one with its type, folder tag and title (titles count where both
+  have one; another project name means another plan's files). The node id only confirms that, or tells
+  apart steps that agree on all of these (*by node id only*, with a note), as a plan made again from
+  scratch numbers its ids afresh. A folder without `MDATK_step.toml` belongs to the one step with its type
+  and the folder tag in its name. Records that disagree (the identity file and the folder's name, the
+  folder tag and the title, the node id and the rest) pick no step. Each step is `this step's`, `not there;
+  its files are in 03_amber-md_model12/ (step 03, by folder tag)`, `holds another step's files: …, now 09 ·
+  production model12`, `holds files no step can be told for: …` or `there, without MDATK_step.toml`; the
+  folders of no step follow, and the exit status is 1 when a step's folder holds another step's files or
+  files no step can be told for. `--json` for scripts (per step `state`, `matched_by`, `node_id_agrees`,
+  `doubt`, `owner`, `differs`; `conflicts`, `by_node_id_only`); `--table` prints the MANIFEST a write of
+  every step would leave. A plan made again with two branches put in front (twelve steps renumbered, node
+  ids afresh) finds every old folder: tagged steps by folder tag, untagged ones by title, and the six steps
+  that took over the old numbers are reported as writing into folders that hold another step's files.
+- **The planner checks the folders before it writes.** Each resolve reads every step folder's
+  `MDATK_step.toml`; a step whose folder holds another step's files, or files no step can be told for,
+  gets a warning: `03_amber-md/ holds the files of 03 · production model12 (node n4, written …), now 09 ·
+  production model12: writing this step puts its files beside them and moves a completed run there aside
+  as this step's; give it a folder tag or another step number` (a step renamed since it was written: `…, or,
+  if it is that step under a new title, write it again`). *Check previous runs* and `workflow status`
+  report such a run as `not this step's run: …` and do not offer it: no tick on the box, *Use this run*
+  greyed out, `workflow status --adopt` refuses it with a line (`--json`: `held`). The question before
+  runs move aside, the CLI's lines and the step log say whose run it is.
+- **Step ids are never given out twice**: a new step's id follows the highest one given out so far, which
+  the project file keeps (`[workflow] last_node`, saved once a step is added; old files load and save
+  unchanged). Step numbers never change on their own: a new step gets the number after the highest one in
+  the plan (the numbers of deleted last steps come back) and a template's steps are numbered after the
+  existing ones.
+- **`--step` of `workflow write`, `run` and `status`** takes a step number (every step with it), a step
+  folder (`03_amber-md_model12`) or a node id (`n4`).
+- **Header comments of the TOML files MDATK writes** put each line of a header item on a comment line of
+  its own, control characters replaced: a step title with a line break made a moved run's
+  `manifest.toml` invalid TOML (and would have done the same to `MDATK_step.toml`).
+
 ### RNAdo window
 
 - **Select all steps and Clear selection.** Two new buttons in the plan's tool bar, before *Write all
