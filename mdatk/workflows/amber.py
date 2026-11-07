@@ -632,9 +632,12 @@ class AmberBuildTool(Tool):
 
     @staticmethod
     def _has_l(s, ctx) -> bool:
-        """Whether the structure is known to have L residues: forced ranges, a structure from the builder of hand
-        L (an L helix, a chimera of L segments) or mixed (a D/L chimera), or an existing input PDB with L sugars."""
-        if s["lrna_ranges"].strip() or ctx.data("structure").get("chirality") in ("L", "mixed"):
+        """Whether the structure is known to have L-RNA residues: forced ranges, a structure from the builder with
+        L-RNA (port data 'l_rna': an L-RNA helix, a chimera with L-RNA segments; a producer that does not say:
+        the hand L or mixed), or an existing input PDB with L sugars of RNA.  L-DNA does not count: the L-RNA
+        library has no units for it."""
+        data = ctx.data("structure")
+        if s["lrna_ranges"].strip() or data.get("l_rna", data.get("chirality") in ("L", "mixed")):
             return True
         path = ctx.existing("structure")
         if not path:
@@ -644,7 +647,7 @@ class AmberBuildTool(Tool):
             pdbtools.assign_chirality(struct, detect=True, l_ranges=None)
         except (OSError, pdbtools.PDBError):
             return False
-        return any(r.chirality == "L" for r in struct.residues())
+        return any(r.chirality == "L" and pdbtools.nucleotide(r).sugar != "dna" for r in struct.residues())
 
     def lrna_generated(self, s, ctx) -> bool:
         """Whether the build writes its own L-RNA library (LRNA.lib + frcmod.lrna)."""

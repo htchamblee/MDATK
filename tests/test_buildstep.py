@@ -1,13 +1,16 @@
 """The structure builder's planner step (mdatk.workflows.buildstep) with B-form DNA helices and D/L chimeras: the
 options (one set of residue-name options for both builds, projects written before load as they were), checks,
 ports, port data, descriptions, citations and generated files; RNA command lines as before, the chimera design
-passed through bash unchanged; the steps that read the builder's hand ('mixed' for a chimera of both hands); and
-the generated scripts run with the local Python."""
+passed through bash unchanged, a first chain id '-' as one word; the steps that read the builder's hand ('mixed'
+for a chimera of both hands) and whether it has L-RNA (L-DNA needs no L-RNA dictionaries or library); and the
+generated scripts run with the local Python."""
 
 import os
 import subprocess
 import sys
 
+from mdatk import builder as B
+from mdatk import chimera as C
 from mdatk import pdbtools as pt
 from mdatk.config import WorkflowParams
 from mdatk.workflows import TOOLS
@@ -119,7 +122,12 @@ def test_dna_helix_command_checks_ports_data_describe_and_files():
     single = settings(sequence="GGCAT", nucleic_acid="dna", partner_mode="none")
     assert [p.name for p in TOOL.output_ports(single)] == ["pdb"] and list(TOOL.output_values(single, CTX)) == ["pdb"]
     values = TOOL.output_values(s, CTX)
-    assert values["pdb"].paths == [CTX.own("helix", "pdb")] and values["pdb"].data == {"chirality": "L"}
+    assert values["pdb"].paths == [CTX.own("helix", "pdb")]
+    assert values["pdb"].data == {"chirality": "L", "l_rna": False, "build": "helix"}  # L, but no L-RNA
+    assert TOOL.output_values(settings(sequence="GGCAU", chirality="L"), CTX)["pdb"].data == {
+        "chirality": "L", "l_rna": True, "build": "helix"}
+    assert TOOL.output_values(settings(sequence="GGCAU"), CTX)["pdb"].data == {"chirality": "D", "l_rna": False,
+                                                                               "build": "helix"}
     model = values["secstruct"].data["rna_model"]
     assert model.split(model.dotbracket) == "((((( )))))" and model.sequence == "GGCAUAUGCC"
     wobble = TOOL.ss_model(settings(sequence="GGCAT", nucleic_acid="dna", partner_mode="explicit", partner="AAGTC"))
@@ -146,12 +154,21 @@ def test_chimera_ports_data_describe_citations_and_files():
     assert TOOL.input_ports(s) == [] and [p.name for p in TOOL.output_ports(s)] == ["pdb"]
     values = TOOL.output_values(s, CTX)
     assert list(values) == ["pdb"] and values["pdb"].paths == [CTX.own("chimera", "pdb")]
-    assert values["pdb"].data == {"chirality": "mixed"} and TOOL.chimera_hand(s) == "mixed"
-    for design, hand in (("D-RNA:GGC 3'-5' D-DNA:GCC", "D"), ("L:GC 3'-3' L-DNA:GC/none", "L"),
-                         ("D:GC 5'-5' L:GC", "mixed"), ("L:GC 3'-5' L:GC 3'-3' D:A", "mixed")):
-        assert TOOL.output_values(settings(mode="chimera", design=design), CTX)["pdb"].data == {"chirality": hand}
+    assert values["pdb"].data == {"chirality": "mixed", "l_rna": True, "build": "chimera"}
+    assert TOOL.chimera_hand(s) == "mixed"
+    # the hand, and whether an L segment is RNA (L-DNA needs no L-RNA dictionaries or library)
+    for design, na, hand, l_rna in (("D-RNA:GGC 3'-5' D-DNA:GCC", "rna", "D", False),
+                                    ("L:GC 3'-3' L-DNA:GC/none", "rna", "L", True),
+                                    ("L:GC 3'-3' L-DNA:GC/none", "dna", "L", False),
+                                    ("D:GC 5'-5' L:GC", "rna", "mixed", True),
+                                    ("D-RNA:GC 3'-5' L-DNA:GC", "rna", "mixed", False),
+                                    ("L:GC 3'-5' L:GC 3'-3' D:A", "rna", "mixed", True)):
+        assert TOOL.output_values(settings(mode="chimera", design=design, chimera_na=na), CTX)["pdb"].data == {
+            "chirality": hand, "l_rna": l_rna, "build": "chimera"}, design
     for design in ("", "D:GC 3'-5'", "D:GX 3'-5' L:GC"):  # no hand while the design does not parse
         assert TOOL.output_values(settings(mode="chimera", design=design), CTX)["pdb"].data == {}
+    for mode in ("mutate", "fit"):  # the hands of a connected model are not known before it is read
+        assert TOOL.output_values(settings(mode=mode, design=DESIGN), CTX)["pdb"].data == {}
     # describe: the strand as the design reads it
     assert TOOL.describe(s) == "chimera 5'-D-RNA(6)-p-L-RNA(6)-3'"
     assert TOOL.describe(settings(mode="chimera", design="D:GC 3'-3' L:GC", chimera_na="dna")) == \
@@ -176,7 +193,7 @@ def test_chimera_ports_data_describe_citations_and_files():
     assert proc.returncode == 0, proc.stderr
 
 
-def test_chimera_checks_on_the_design_and_the_chain_ids():
+def test_chimera_checks_on_the_design_and_the_chain_ids(monkeypatch):
     assert issues(mode="chimera") == [("error", f"enter the design, e.g. {DESIGN}", ("design",))]
     found = issues(mode="chimera", design=DESIGN)
     assert ("info", "5'-D-RNA(6)-p-L-RNA(6)-3': 2 segments, 1 link(s) (3'-5')", ("design",)) in found
@@ -197,23 +214,33 @@ def test_chimera_checks_on_the_design_and_the_chain_ids():
     assert any(lvl == "warning" and keys == ("design",) and "mismatched pairs" in m for lvl, m, keys in found)
     assert not errors(mode="chimera", design="D:GC 3'-5' L:GC", chimera_na="dna")
     assert any("(DNA: A, C, G, T)" in m for m in errors(mode="chimera", design="D:GX 3'-5' L:GC", chimera_na="dna"))
-    # chain ids: one per chain the design writes (strand 1 split at bridges, then the partners)
+    # chain ids: one per chain the design writes (strand 1 split at bridges, then the partners), checked by
+    # mdatk.chimera.check_chimera, as 'mdatk build chimera' and the RNAdo window check them (the same messages)
     assert not errors(mode="chimera", design=DESIGN, chimera_chains="A,B,C")
     assert not errors(mode="chimera", design=DESIGN, chimera_chains=" P, Q ,R ")
-    count = ("error", "chain ids: the design writes 3 chains (strand 1 split at 3'-3' / 5'-5' links, then the partner "
-                      "strands): 3 single characters, e.g. A,B,C", ("chimera_chains",))
-    assert count in issues(mode="chimera", design=DESIGN, chimera_chains="A,B")
-    assert count in issues(mode="chimera", design=DESIGN, chimera_chains="AB,C,D")
-    assert count in issues(mode="chimera", design=DESIGN, chimera_chains="A,,B,C")
-    assert ("error", "chain ids: the 3 chains need different ids, e.g. A,B,C", ("chimera_chains",)) in issues(
-        mode="chimera", design=DESIGN, chimera_chains="A,A,B")
+    what = ("the design writes 3 chains (the strand-1 chains between bridges in design order, then the partner "
+            "strands in segment order)")
+    for chains, message in (("A,B", f"chains: {what}; 2 chain id(s) given"),
+                            ("A,,B,C", f"chains: {what}; 4 chain id(s) given"),
+                            ("AB,C,D", "chains: chain ids must be single characters, got 'AB', 'C', 'D'"),
+                            ("A,A,B", "chains: every chain needs its own id, got A, A, B")):
+        found = issues(mode="chimera", design=DESIGN, chimera_chains=chains)
+        assert [i for i in found if i[0] == "error"] == [("error", message, ("chimera_chains",))], chains
+        assert [i for i in found if i[0] != "error"] == issues(mode="chimera", design=DESIGN)  # the design's info
+        assert C.check_chimera(DESIGN, chains=chains.replace(" ", "")) == [("error", message)]
     bridge = "D:GC 3'-3' L:GC"
-    assert any("the design writes 4 chains" in m and m.endswith("e.g. A,B,C,D")
+    assert any("the design writes 4 chains" in m and m.endswith("3 chain id(s) given")
                for m in errors(mode="chimera", design=bridge, chimera_chains="A,B,C"))
     assert not errors(mode="chimera", design=bridge, chimera_chains="W,X,Y,Z")
     assert not errors(mode="chimera", design="D:GC/none 3'-3' L:GC/none", chimera_chains="W,X")
     assert errors(mode="chimera", design="D:GX 3'-5' L:GC", chimera_chains="A") == [
         "segment 1 sequence: invalid letter(s) X (RNA: A, C, G, U)"]  # no chain check of a design with errors
+    # the step keeps no rule of its own: the chimera module's check decides, given the ids the command passes
+    real, calls = C.check_chimera, []
+    monkeypatch.setattr(C, "check_chimera", lambda *a, **kw: calls.append(kw.get("chains")) or real(*a, **kw))
+    assert not errors(mode="chimera", design=DESIGN, chimera_chains=" P, Q ,R ")
+    assert calls == [None, "P,Q,R"] and "--chains P,Q,R " in TOOL.command(
+        settings(mode="chimera", design=DESIGN, chimera_chains=" P, Q ,R "), CTX)
     # the Amber 5' units, for a chimera too; nothing of the chimera in the other modes
     amber = ("warning", "the Amber 5' units have no 5'-phosphate; tleap cannot type it", ("phosphate5", "scheme"))
     assert amber in issues(mode="chimera", design=DESIGN, scheme="amber", phosphate5=True)
@@ -244,8 +271,10 @@ def test_chimera_command_line_and_the_design_through_bash(tmp_path):
 
 # --- the steps that read the builder's hand ------------------------------------------------------------
 
-def _fed(tmp_path, builder_settings, tool, port, settings=None, with_map=False):
-    """A plan of the builder feeding ``tool`` (its input ``port``); returns that step and its tool."""
+def _fed(tmp_path, builder_settings, tool, port, settings=None, with_map=False, model=None, folder="plan"):
+    """A plan of the builder feeding ``tool`` (its input ``port``) in ``tmp_path/folder``; returns that step and
+    its tool.  ``model``: PDB text written as the builder's output first (the model exists, as after its
+    script ran)."""
     wf = WorkflowParams(project_name="apt1", stamp="20261106-1200")
     built = add_node(wf, "structure-builder", settings=builder_settings)
     step = add_node(wf, tool, settings=settings or {})
@@ -253,38 +282,130 @@ def _fed(tmp_path, builder_settings, tool, port, settings=None, with_map=False):
     if with_map:
         emap = add_node(wf, "input-file", settings={"path": str(tmp_path / "x.mrc"), "kind": "map"})
         connect(wf, emap.id, "file", step.id, "map")
-    plan = Plan(wf, str(tmp_path / "plan"))
+    root = str(tmp_path / folder)
+    plan = Plan(wf, root)
+    if model is not None:
+        path = os.path.join(root, plan.steps[built.id].outputs["pdb"].path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(model)
+        plan = Plan(wf, root)
     return plan.steps[step.id], TOOLS[tool]
 
 
-def test_mixed_chimeras_need_l_dictionaries_an_l_library_and_no_single_hand(tmp_path):
-    mixed, d_chimera = {"mode": "chimera", "design": DESIGN}, {"mode": "chimera", "design": "D:GGC 3'-5' D-DNA:GCC"}
-    l_helix = {"sequence": "GGCAUC", "chirality": "L"}
-    # refinement: restraint dictionaries for the L residues of a mixed chimera, as for an L helix
-    for builder_settings, start in ((mixed, "the model has L residues (a D/L chimera): Phenix needs restraint "
-                                            "dictionaries"),
-                                    (l_helix, "the model is L-RNA: Phenix needs restraint dictionaries"),
-                                    (d_chimera, None)):
-        st, _tool = _fed(tmp_path, builder_settings, "phenix-rsr", "model", {"resolution": 3.5}, with_map=True)
-        dicts = [i.message for i in st.issues if "restraint dictionaries" in i.message]
-        assert dicts == ([] if start is None else [f"{start} for its 5'/3' variants (0A5/0A3 ...) - connect a "
-                                                   "'restraint-dicts' step"]), (builder_settings, st.issues)
-    # the Amber build: a mixed chimera has L residues (the generated L-RNA library), a D chimera none
-    for builder_settings, has_l in ((mixed, True), (l_helix, True), (d_chimera, False)):
-        st, amber = _fed(tmp_path, builder_settings, "amber-build", "structure")
-        assert amber.lrna_generated(st.settings, st.ctx) is has_l, builder_settings
-    # the model check: no single hand expected of a mixed chimera (reported until the model exists)
-    st, check = _fed(tmp_path, mixed, "model-check", "models")
+MIXED = {"mode": "chimera", "design": DESIGN}
+D_CHIMERA = {"mode": "chimera", "design": "D:GGC 3'-5' D-DNA:GCC"}
+L_HELIX = {"sequence": "GGCAUC", "chirality": "L"}
+L_DNA_HELIX = {"sequence": "GGCAT", "nucleic_acid": "dna", "chirality": "L", "scheme": "ccd"}
+L_DNA_CHIMERA = {"mode": "chimera", "design": "L-DNA:GC 3'-3' L-DNA:GC"}
+MIXED_L_DNA = {"mode": "chimera", "design": "D-RNA:GC 3'-5' L-DNA:GC"}
+L_CHIMERA = {"mode": "chimera", "design": "L:GC 3'-5' L-DNA:GC"}  # L-RNA and L-DNA
+
+
+def _dict_warnings(st):
+    return [i.message for i in st.issues if "restraint dictionaries" in i.message]
+
+
+def test_steps_fed_by_the_builder_ask_for_l_rna_dictionaries_and_library_only_with_l_rna(tmp_path):
+    """The L-RNA restraint dictionaries (0A5/0A3 ...) and Amber's generated L-RNA library are asked for when the
+    builder's model has L-RNA residues (port data 'l_rna'): L-DNA needs neither (0DA ... are CCD entries)."""
+    tail = " for its 5'/3' variants (0A5/0A3 ...) - connect a 'restraint-dicts' step"
+    for k, (builder_settings, start, has_l_rna) in enumerate((
+            (MIXED, "the model has L-RNA residues (a D/L chimera): {} needs restraint dictionaries", True),
+            (L_HELIX, "the model is L-RNA: {} needs restraint dictionaries", True),
+            (L_CHIMERA, "the model has L-RNA residues: {} needs restraint dictionaries", True),
+            (D_CHIMERA, None, False), (L_DNA_HELIX, None, False), (L_DNA_CHIMERA, None, False),
+            (MIXED_L_DNA, None, False))):
+        for tool, program in (("phenix-rsr", "Phenix"), ("coot-rsr", "Coot")):
+            st, _tool = _fed(tmp_path, builder_settings, tool, "model", {"resolution": 3.5} if tool == "phenix-rsr"
+                             else {}, with_map=True, folder=f"p{k}")
+            expected = [] if start is None else [start.format(program) + tail]
+            assert _dict_warnings(st) == expected, (builder_settings, st.issues)
+            if start is None:  # the names are checked once the model exists
+                assert any("residue names are checked once the model exists" in i.message for i in st.issues)
+        st, amber = _fed(tmp_path, builder_settings, "amber-build", "structure", folder=f"p{k}")
+        assert amber.lrna_generated(st.settings, st.ctx) is has_l_rna, builder_settings
+        assert ("lrna" in amber.step_resources(st.settings, st.ctx)) is has_l_rna  # Dudek & Trylska's L-RNA types
+
+
+def test_the_builders_l_dna_model_is_read_as_ccd_names_and_no_l_rna(tmp_path):
+    """Once the model exists: the CCD's L-DNA 0DA 0DC 0DG 0DT are known names (no 'not recognised' warning whose
+    fix would do nothing), and the Amber build generates no L-RNA library for them."""
+    model = B.build_helix("GGCAT", chirality="L", na="dna", scheme="ccd")
+    for tool, program in (("phenix-rsr", "Phenix"), ("coot-rsr", "Coot")):
+        st, _tool = _fed(tmp_path, L_DNA_HELIX, tool, "model", {"resolution": 3.5} if tool == "phenix-rsr" else {},
+                         with_map=True, model=model, folder=tool)
+        assert not [i for i in st.issues if i.level == "warning" and "model" in " ".join(i.keys)], st.issues
+        assert ("info", f"0DA, 0DC, 0DG, 0DT are Chemical Component Dictionary entries; {program} reads them from "
+                        "its monomer library (connect dictionaries if yours lacks them)") in [
+            (i.level, i.message) for i in st.issues]
+    # the mixed chimera's model: D-RNA names and the L-DNA components, nothing to rename
+    st, _tool = _fed(tmp_path, MIXED_L_DNA, "phenix-rsr", "model", {"resolution": 3.5}, with_map=True,
+                     model=C.build_chimera(MIXED_L_DNA["design"]), folder="mixed")
+    assert not [i for i in st.issues if i.level == "warning" and "model" in " ".join(i.keys)], st.issues
+    assert ("info", "0DC, 0DG are Chemical Component Dictionary entries; Phenix reads them from its monomer library "
+                    "(connect dictionaries if yours lacks them)") in [(i.level, i.message) for i in st.issues]
+    st, amber = _fed(tmp_path, L_DNA_HELIX, "amber-build", "structure", model=model, folder="amber")
+    assert st.ctx.existing("structure") and not amber.lrna_generated(st.settings, st.ctx)
+    # an L-RNA model from the same plan: the library as before
+    st, amber = _fed(tmp_path, L_HELIX, "amber-build", "structure", model=B.build_helix("GGCAUC", chirality="L"),
+                     folder="amber-lrna")
+    assert st.ctx.existing("structure") and amber.lrna_generated(st.settings, st.ctx)
+
+
+def test_a_producer_that_does_not_say_l_rna_falls_back_to_the_hand(tmp_path):
+    """Port data without 'l_rna' (a producer that gives the hand only): L and mixed count as L-RNA, as before."""
+    from mdatk.workflows import refine
+    from mdatk.workflows.base import PortValue
+
+    amber = TOOLS["amber-build"]
+    for data, l_rna, what in (({"chirality": "L"}, True, "is L-RNA"),
+                              ({"chirality": "mixed"}, True, "has L-RNA residues (a D/L chimera)"),
+                              ({"chirality": "D"}, False, ""), ({}, False, ""),
+                              ({"chirality": "L", "l_rna": False}, False, ""),
+                              ({"chirality": "mixed", "l_rna": True, "build": "chimera"}, True,
+                               "has L-RNA residues (a D/L chimera)"),
+                              ({"chirality": "L", "l_rna": True, "build": "chimera"}, True, "has L-RNA residues")):
+        missing = str(tmp_path / "not-yet.pdb")
+        model = PortValue([missing], "pdb", dict(data), source="b1")
+        ctx = StepContext("p", 2, "s", "phenix-rsr", inputs={"model": model}, root=str(tmp_path))
+        found = [i.message for i in refine.model_issues(TOOLS["phenix-rsr"].normalise({}), ctx, "Phenix")
+                 if "restraint dictionaries" in i.message]
+        assert found == ([f"the model {what}: Phenix needs restraint dictionaries for its 5'/3' variants (0A5/0A3 "
+                          "...) - connect a 'restraint-dicts' step"] if l_rna else []), data
+        actx = StepContext("p", 2, "s", "amber-build", inputs={"structure": model}, root=str(tmp_path))
+        assert amber._has_l(amber.normalise({}), actx) is l_rna, data
+
+
+def test_the_model_check_expects_the_builders_hand_from_its_port_data(tmp_path):
+    """The hand of every residue of the builder's helix or one-hand chimera, before the model exists: named
+    for what is built, 'from' it (nothing is measured yet); measured on the model once it exists."""
+    st, check = _fed(tmp_path, MIXED, "model-check", "models")  # no single hand of a mixed chimera
     assert check.expected_hands(st.settings, st.ctx) == ("", "", "")
     assert any(i.message.startswith("no model exists yet to measure the hands on") for i in st.issues)
     args = check.arguments(st.settings, st.ctx)
     assert not [a for a in args if a.startswith(("--expect-l", "--expect-d"))]
-    for builder_settings, expected in (({"mode": "chimera", "design": "L:GC 3'-3' L-DNA:GC"},
-                                        ("*", "", "the builder's L helix")),
-                                       (d_chimera, ("", "*", "the builder's D helix")),
-                                       (l_helix, ("*", "", "the builder's L helix"))):
-        st, check = _fed(tmp_path, builder_settings, "model-check", "models")
+    for k, (builder_settings, expected, info) in enumerate((
+            (L_DNA_CHIMERA, ("*", "", "the builder's L chimera"), "expected hands from the builder's L chimera: L *"),
+            (D_CHIMERA, ("", "*", "the builder's D chimera"), "expected hands from the builder's D chimera: D *"),
+            (L_HELIX, ("*", "", "the builder's L helix"), "expected hands from the builder's L helix: L *"),
+            (L_DNA_HELIX, ("*", "", "the builder's L helix"), "expected hands from the builder's L helix: L *"))):
+        st, check = _fed(tmp_path, builder_settings, "model-check", "models", folder=f"m{k}")
         assert check.expected_hands(st.settings, st.ctx) == expected
+        assert ("info", info) in [(i.level, i.message) for i in st.issues], st.issues
+        assert not any("as measured on" in i.message for i in st.issues)
+    # the model exists: measured on it
+    st, check = _fed(tmp_path, L_HELIX, "model-check", "models", model=B.build_helix("GGCAUC", chirality="L"),
+                     folder="built")
+    name = os.path.basename(st.ctx.value("models").path)
+    assert name == "apt1_01_helix_20261106-1200.pdb"
+    assert check.expected_hands(st.settings, st.ctx) == ("A:1-6, B:1-6", "", name)
+    assert ("info", f"expected hands as measured on {name}: L A:1-6, B:1-6") in [(i.level, i.message)
+                                                                                for i in st.issues]
+    # another producer's hand without the 'build' key: 'model'
+    from mdatk.workflows.base import PortValue
+    ctx = StepContext("p", 2, "s", "check", inputs={"models": PortValue(["x.pdb"], "pdb", {"chirality": "D"})})
+    assert check.builder_hands(ctx) == ("", "*", "the builder's D model")
 
 
 # --- the generated scripts, run ------------------------------------------------------------------------
@@ -309,7 +430,7 @@ def _run_step(tmp_path, node_settings):
 def test_the_generated_chimera_script_builds_the_design(tmp_path):
     st, pdb = _run_step(tmp_path, {"mode": "chimera", "design": "D-RNA:GC 3'-5' L-RNA:GC",
                                    "chimera_chains": "P,Q,R", "scheme": "amber"})
-    assert st.outputs["pdb"].data == {"chirality": "mixed"}
+    assert st.outputs["pdb"].data == {"chirality": "mixed", "l_rna": True, "build": "chimera"}
     with open(pdb, encoding="utf-8") as fh:
         text = fh.read()
     assert text.startswith("REMARK 951 MDATK CHIMERA 5'-D-RNA(2)-p-L-RNA(2)-3'\n")
@@ -331,3 +452,30 @@ def test_the_generated_dna_helix_script_builds_b_dna(tmp_path):
         assert fh.readline().startswith("REMARK 951 MDATK IDEAL B-FORM DNA")
     with open(os.path.join(os.path.dirname(pdb), st.ctx.name("helix", "secstruct")), encoding="utf-8") as fh:
         assert fh.read() == "((((( )))))\nggcat atgcc\n"
+
+
+def test_a_first_chain_id_dash_is_one_word_and_the_scripts_build(tmp_path):
+    """argparse reads a value that starts with '-' as an option ('--chains -,B,C': 'expected one argument'): such
+    a value is written --chains=VALUE, as --start; every other command line keeps its two words (pinned by
+    test_rna_command_lines_are_as_before and test_chimera_command_line_and_the_design_through_bash)."""
+    helix, chim = CTX.name("helix", "pdb"), CTX.name("chimera", "pdb")
+    assert TOOL.command(settings(sequence="GGCAU", chains="-,B"), CTX) == (
+        f"python3 -m mdatk build helix --seq GGCAU --partner auto --chirality D --chains=-,B --start=1,1 -o {helix}")
+    assert TOOL.command(settings(sequence="GGCAT", nucleic_acid="dna", chains=" -, B"), CTX) == (
+        "python3 -m mdatk build helix --seq GGCAT --partner auto --na dna --chirality D --chains=-,B --start=1,1 "
+        f"-o {helix}")
+    assert " --chains A,- --start=1,1 " in TOOL.command(settings(sequence="GGCAU", chains="A,-"), CTX)
+    design = "D:GC 3'-5' L:GC"
+    assert TOOL.command(settings(mode="chimera", design=design, chimera_chains=" -, B,C"), CTX) == (
+        "python3 -m mdatk build chimera --design 'D:GC 3'\"'\"'-5'\"'\"' L:GC' --chains=-,B,C -o " + chim)
+    # a quoted value stays one word
+    s = settings(mode="chimera", design=design, chimera_chains="-,$,'", python="printf '%s\\n'")
+    proc = subprocess.run(["bash", "-c", TOOL.command(s, CTX)], capture_output=True, encoding="utf-8", check=True,
+                          cwd=str(tmp_path))
+    assert proc.stdout.split("\n") == ["-m", "mdatk", "build", "chimera", "--design", design, "--chains=-,$,'", "-o",
+                                       chim, ""]
+    # the scripts run and write the chains asked for (the check accepts '-', as the CLI and the window do)
+    st, pdb = _run_step(tmp_path / "helix", {"sequence": "GGCAU", "chains": "-,B"})
+    assert pt.read_pdb(pdb).chain_ids() == ["-", "B"]
+    st, pdb = _run_step(tmp_path / "chimera", {"mode": "chimera", "design": design, "chimera_chains": "-,B,C"})
+    assert pt.read_pdb(pdb).chain_ids() == ["-", "B", "C"]

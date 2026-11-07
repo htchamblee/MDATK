@@ -10,6 +10,7 @@ the other pairings show a busy bar.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 from typing import Optional
 
@@ -23,6 +24,7 @@ from ..citations import keys_for  # noqa: E402
 from ..progress import Cancelled  # noqa: E402
 from ..projectfile import logged  # noqa: E402
 from . import widgets as W  # noqa: E402
+from .dialogtext import selectable_text  # noqa: E402
 from .host import Host  # noqa: E402
 
 PDB_FILES = ("PDB files", ["*.pdb", "*.ent"])
@@ -73,10 +75,19 @@ DESIGN_HELP = ("SEGMENT LINK SEGMENT [LINK SEGMENT …]\n"
                "D:GAUC/none 5'-5' L-DNA:GATC  (3'-D-RNA(4)-5'p5'-L-DNA(4)-3')")
 
 
+def design_digest(segments, links) -> str:
+    """Six hex digits of a parsed chimera design: the hands, nucleic acids, sequences and partners of its
+    segments and its links, so that designs of one layout differ, and one design typed two ways ('D:GC',
+    'D-RNA:gc/auto') does not."""
+    parts = [f"{seg.kind}:{seg.sequence}/{seg.partner or 'none'}" for seg in segments]
+    text = " ".join([parts[0]] + [f"{link} {part}" for link, part in zip(links, parts[1:])])
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:6]
+
+
 def chimera_file_name(design: str, na: str = "rna") -> str:
-    """The suggested file of a chimera, named after its segments and links: 'chimera_D-RNA6_p_L-RNA6.pdb' for
-    D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC, 'chimera_D-DNA5_3p3_L-DNA5.pdb' for a 3'-3' bridge ('' when the design
-    does not read)."""
+    """The suggested file of a chimera, named after its segments and links and a digest of the design
+    (:func:`design_digest`): 'chimera_D-RNA6_p_L-RNA6_<digest>.pdb' for D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC,
+    'chimera_D-DNA5_3p3_L-DNA5_<digest>.pdb' for a 3'-3' bridge ('' when the design does not read)."""
     try:
         segments, links, _notes = chimera.parse_design(design, na)
     except builder.BuildError:
@@ -84,7 +95,22 @@ def chimera_file_name(design: str, na: str = "rna") -> str:
     words = [f"{segments[0].kind}{len(segments[0].sequence)}"]
     for link, seg in zip(links, segments[1:]):
         words += ["p" if link not in chimera.BRIDGES else f"{link[0]}p{link[0]}", f"{seg.kind}{len(seg.sequence)}"]
-    return "chimera_" + "_".join(words) + ".pdb"
+    return "chimera_" + "_".join(words + [design_digest(segments, links)]) + ".pdb"
+
+
+def chimera_log_line(opts: dict) -> str:
+    """The first line of a chimera build's step-log summary: the design as typed (on one line) and the options
+    that shape the model, so that the log can rebuild it (the title, as 'mdatk build chimera' logs it, names
+    no sequences)."""
+    parts = [f"default nucleic acid {opts['na'].upper()}", f"chains {opts['chains'] or 'A, B, C ...'}",
+             f"residue names {opts['scheme'] or 'default'}"]
+    if not opts["terminals"]:
+        parts.append("no terminal names")
+    if opts["phosphate5"]:
+        parts.append("5'-phosphate")
+    if opts["hydrogens"]:
+        parts.append("hydrogens")
+    return f"Design: {' '.join(opts['design'].split())} ({'; '.join(parts)})"
 
 
 def _relabel(combo: Gtk.ComboBoxText, items) -> None:
@@ -421,7 +447,9 @@ class BuilderWindow(Gtk.Window):
     def _show(self, text: str) -> None:
         self.report.get_buffer().set_text(text)
 
-    def _output(self, chooser, source: str = "") -> Optional[str]:
+    def _output(self, chooser, source: str = "", page: str = "") -> Optional[str]:
+        """The output file of ``page``; a file the window suggested (:meth:`_suggest`) that exists is replaced
+        only when the user says so (the browse dialog asks the same of a file chosen there)."""
         out = chooser.entry.get_text().strip()
         if not out:
             self._show("Choose an output file.")
@@ -429,7 +457,23 @@ class BuilderWindow(Gtk.Window):
         if source and os.path.abspath(out) == os.path.abspath(source):
             self._show("The output must not overwrite the input file.")
             return None
+        if page and out == self._auto.get(page) and os.path.exists(out) and not self._ask_replace(out):
+            self._show(f"Nothing written: {out} exists. Choose another output file, or Write PDB again and "
+                       "replace it.")
+            return None
         return out
+
+    def _ask_replace(self, path: str) -> bool:
+        """Yes / No: replace ``path``, an existing file the window suggested as the output?"""
+        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                buttons=Gtk.ButtonsType.YES_NO, text=f"Replace {os.path.basename(path)}?")
+        dlg.format_secondary_text(f"The suggested output file {path} exists already (an earlier build?). Yes "
+                                  "replaces it; No writes nothing, so that you can choose another file.")
+        dlg.set_default_response(Gtk.ResponseType.NO)
+        selectable_text(dlg)
+        ok = dlg.run() == Gtk.ResponseType.YES
+        dlg.destroy()
+        return ok
 
     def _input(self, chooser, what: str) -> Optional[str]:
         path = chooser.entry.get_text().strip()
@@ -444,10 +488,10 @@ class BuilderWindow(Gtk.Window):
             msgs = builder.check_helix(opts["sequence"], opts["partner"], opts["pairing"], opts["triplex"],
                                        opts["third"], na=opts["na"])
             self._show("\n".join(f"{level.upper()}: {text}" for level, text in msgs))
-        elif self.page() == "chimera":
+        elif self.page() == "chimera":  # the chain ids too, by the rule of the build (and of the planner step)
             opts = self.chimera_options()
             msgs = chimera.check_chimera(opts["design"], opts["na"], hydrogens=opts["hydrogens"],
-                                         phosphate5=opts["phosphate5"])
+                                         phosphate5=opts["phosphate5"], chains=opts["chains"])
             self._show("\n".join(f"{level.upper()}: {text}" for level, text in msgs))
         elif self.page() == "mutate":
             path = self._input(self.mut_input, "input PDB")
@@ -545,7 +589,7 @@ class BuilderWindow(Gtk.Window):
         self._log(f"Structure builder: wrote {out}")
 
     def run_chimera(self) -> None:
-        out = self._output(self.chim_out)
+        out = self._output(self.chim_out, page="chimera")
         if not out:
             return
         opts = self.chimera_options()
@@ -563,7 +607,7 @@ class BuilderWindow(Gtk.Window):
                 with open(out, "w", encoding="utf-8") as fh:
                     fh.write(text)
                 entry.files = [out]
-                entry.summary = "\n".join(notes)
+                entry.summary = "\n".join([chimera_log_line(opts)] + notes)  # the design, then the notes
                 entry.citations = keys_for([FIBERS[na] for na in chimera.nucleic_acids(opts["design"], opts["na"])])
             return out, notes
 
@@ -586,7 +630,7 @@ class BuilderWindow(Gtk.Window):
         path = self._input(self.mut_input, "input PDB")
         if not path:
             return
-        out = self._output(self.mut_out, path)
+        out = self._output(self.mut_out, path, page="mutate")
         if not out:
             return
         spec = self.mutations.get_text().strip()
@@ -611,7 +655,7 @@ class BuilderWindow(Gtk.Window):
         mpath = path and self._input(self.fit_map, "density map")
         if not path or not mpath:
             return
-        out = self._output(self.fit_out, path)
+        out = self._output(self.fit_out, path, page="fit")
         if not out:
             return
         resolution, search, step = self.resolution.get_value(), self.search.get_active_id(), self.step.get_value()

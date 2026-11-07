@@ -233,13 +233,23 @@ class StructureBuilderTool(Tool):
         hands = {seg.chirality for seg in design[0]}
         return hands.pop() if len(hands) == 1 else "mixed"
 
-    def output_values(self, s, ctx):
-        data = {}
+    def model_data(self, s) -> dict:
+        """What the steps fed by the PDB port know of the model before it exists (its port data): 'chirality'
+        (D or L, of every residue; 'mixed' for a chimera of both hands), 'l_rna' (whether it has L-RNA residues:
+        the L residues that need the L-RNA restraint dictionaries and Amber's L-RNA library; L-DNA needs neither)
+        and 'build' ('helix' or 'chimera').  Empty for the other modes and while a chimera design does not
+        parse."""
         if s["mode"] == "helix":
-            data = {"chirality": s["chirality"]}
-        elif s["mode"] == "chimera":
-            hand = self.chimera_hand(s)
-            data = {"chirality": hand} if hand else {}
+            return {"chirality": s["chirality"], "l_rna": s["chirality"] == "L" and self._na(s) == "rna",
+                    "build": "helix"}
+        design = self._chimera(s) if s["mode"] == "chimera" else None
+        if design is None:
+            return {}
+        return {"chirality": self.chimera_hand(s),
+                "l_rna": any(seg.chirality == "L" and seg.na == "rna" for seg in design[0]), "build": "chimera"}
+
+    def output_values(self, s, ctx):
+        data = self.model_data(s)
         out = {"pdb": PortValue([ctx.own(self._out_tag(s), "pdb")], "pdb", data)}
         model = self.ss_model(s)
         if model is not None:
@@ -352,30 +362,25 @@ class StructureBuilderTool(Tool):
                           ("phosphate5", "scheme"))]
         return []
 
+    @staticmethod
+    def _chimera_chains(s) -> str:
+        """The chain ids of a chimera as the command passes them ('' for A, B, C ...): whitespace dropped."""
+        return "".join(s["chimera_chains"].split())
+
     def _check_chimera(self, s) -> List[Issue]:
-        """The builder's checks of the design (on the design option), then the chain ids against the chains the
-        design writes."""
+        """The builder's checks of the design (on the design option), then of the chain ids against the chains
+        the design writes: :func:`mdatk.chimera.check_chimera`, the rule of 'mdatk build chimera' and of the
+        RNAdo window."""
         text = self._design(s)
         if not text:
             return [Issue("error", f"enter the design, e.g. {DESIGN_EXAMPLE}", ("design",))]
-        out = [Issue(level, message, ("design",)) for level, message in
-               chimera.check_chimera(text, s["chimera_na"], s["hydrogens"], s["phosphate5"])]
-        design = self._chimera(s)
-        given = "".join(s["chimera_chains"].split())
-        if design is None or not given or any(i.level == "error" for i in out):
-            return out
-        segments, links = design
-        # the strand-1 runs between bridges, then the partner strands (mdatk.chimera)
-        count = 1 + sum(link in chimera.BRIDGES for link in links) + sum(seg.partner is not None for seg in segments)
-        ids = given.split(",")
-        example = ",".join(pdbtools.CHAIN_IDS[:count])
-        if len(ids) != count or any(len(c) != 1 for c in ids):
-            out.append(Issue("error", f"chain ids: the design writes {count} chains (strand 1 split at 3'-3' / 5'-5' "
-                                      f"links, then the partner strands): {count} single characters, e.g. "
-                                      f"{example}", ("chimera_chains",)))
-        elif len(set(ids)) != len(ids):
-            out.append(Issue("error", f"chain ids: the {count} chains need different ids, e.g. {example}",
-                             ("chimera_chains",)))
+        args = (text, s["chimera_na"], s["hydrogens"], s["phosphate5"])
+        out = [Issue(level, message, ("design",)) for level, message in chimera.check_chimera(*args)]
+        chains = self._chimera_chains(s)
+        if chains and not any(i.level == "error" for i in out):
+            # the design reads: an error now is the chain ids' (checked last, after the design)
+            out += [Issue(level, message, ("chimera_chains",))
+                    for level, message in chimera.check_chimera(*args, chains=chains) if level == "error"]
         return out
 
     def _check_residues(self, s, path) -> List[Issue]:
@@ -415,6 +420,12 @@ class StructureBuilderTool(Tool):
             words.append("--hydrogens")
         return words
 
+    @staticmethod
+    def _option(flag: str, value: str) -> List[str]:
+        """``flag value`` as two words, or one word ``flag=value`` for a value that starts with '-', which
+        argparse would read as an option (a chain id '-'; as --start below)."""
+        return [f"{flag}={shell_quote(value)}"] if value.startswith("-") else [flag, shell_quote(value)]
+
     def command(self, s, ctx) -> str:
         out = ctx.name(self._out_tag(s), "pdb")
         q = shell_quote
@@ -423,7 +434,7 @@ class StructureBuilderTool(Tool):
                                      "--partner", q(self._partner(s).strip())]
             if self._na(s) == "dna":  # the flag only for DNA: RNA command lines stay as they were
                 words += ["--na", "dna"]
-            words += ["--chirality", s["chirality"], "--chains", q(s["chains"].replace(" ", ""))]
+            words += ["--chirality", s["chirality"]] + self._option("--chains", s["chains"].replace(" ", ""))
             if self._pairing(s) != "wc":
                 words += ["--pairing", self._pairing(s)]
             if self._triplex(s):
@@ -438,9 +449,9 @@ class StructureBuilderTool(Tool):
             words = self.mdatk(s) + ["build", "chimera", "--design", q(self._design(s))]
             if s["chimera_na"] == "dna":
                 words += ["--na", "dna"]
-            chains = "".join(s["chimera_chains"].split())
+            chains = self._chimera_chains(s)
             if chains:
-                words += ["--chains", q(chains)]
+                words += self._option("--chains", chains)
             words += self._name_flags(s)
         elif s["mode"] == "mutate":
             words = self.mdatk(s) + ["build", "mutate", q(ctx.inp("pdb")), q(s["mutations"].strip())]

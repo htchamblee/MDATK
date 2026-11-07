@@ -310,8 +310,8 @@ class ModelCheckTool(Tool):
     def expected_hands(self, s, ctx) -> Tuple[str, str, str]:
         """(expected L, expected D, where they come from) - typed ranges, or (automatic) the hands measured on
         the first connected model that exists, or the builder's hand of every residue (a D or L helix; a chimera
-        of one hand).  A chimera of both hands ('mixed') has no hand for every residue: its hands are measured
-        once the model exists, and reported, not checked, before."""
+        of one hand: :meth:`builder_hands`).  A chimera of both hands ('mixed') has no hand for every residue:
+        its hands are measured once the model exists, and reported, not checked, before."""
         if s["hands"] == "none":
             return "", "", ""
         if s["hands"] == "ranges":
@@ -326,12 +326,19 @@ class ModelCheckTool(Tool):
             l_res = [r.residue for r in rows if r.call == "L"]
             d_res = [r.residue for r in rows if r.call == "D"]
             return pdbtools.ranges_text(l_res), pdbtools.ranges_text(d_res), os.path.basename(full)
-        hand = ctx.data("models").get("chirality")
-        if hand == "L":
-            return "*", "", "the builder's L helix"
-        if hand == "D":
-            return "", "*", "the builder's D helix"
-        return "", "", ""  # 'mixed' (a D/L chimera) or not known
+        return self.builder_hands(ctx) or ("", "", "")  # nothing for 'mixed' (a D/L chimera) or not known
+
+    @staticmethod
+    def builder_hands(ctx) -> Optional[Tuple[str, str, str]]:
+        """(expected L, expected D, source) from the builder's port data before its model exists: every residue
+        of its D or L model ('build': 'helix' or 'chimera', the source "the builder's L chimera"); None for a
+        chimera of both hands and for models whose hands no step promises."""
+        data = ctx.data("models")
+        hand, build = data.get("chirality"), data.get("build")
+        if hand not in ("D", "L"):
+            return None
+        source = f"the builder's {hand} {build if build in ('helix', 'chimera') else 'model'}"
+        return ("*", "", source) if hand == "L" else ("", "*", source)
 
     def check(self, s, ctx):
         out: List[Issue] = []
@@ -389,7 +396,9 @@ class ModelCheckTool(Tool):
                 out.append(Issue("info", "no model exists yet to measure the hands on: they are reported, "
                                          "not checked (choose Ranges to type them)", ("hands",)))
             elif s["hands"] == "auto":
-                out.append(Issue("info", f"expected hands as measured on {source}: "
+                # measured on a model file, or (no model yet) what the builder builds: nothing is measured then
+                how = "from" if (exp_l, exp_d, source) == self.builder_hands(ctx) else "as measured on"
+                out.append(Issue("info", f"expected hands {how} {source}: "
                                          + "; ".join(t for t in (f"L {exp_l}" if exp_l else "",
                                                                   f"D {exp_d}" if exp_d else "") if t),
                                  ("hands",)))
