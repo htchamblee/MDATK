@@ -64,6 +64,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   - [Base-pair annotation](#base-pair-annotation)
   - [Model checks](#model-checks)
 - [Structure builder](#structure-builder)
+  - [D/L chimeras](#dl-chimeras)
 - [Restraint dictionaries, real-space refinement and MDFF](#restraint-dictionaries-real-space-refinement-and-mdff)
   - [Restraint dictionaries for L-RNA (Coot / Phenix)](#restraint-dictionaries-for-l-rna-coot--phenix)
   - [Real-space refinement (Phenix / Coot)](#real-space-refinement-phenix--coot)
@@ -380,10 +381,13 @@ seconds is reported in the analysis window.
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
   the citations of the plan and *Export BibTeX…*).
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
-  previous runs*, *Write all files*, *Write selected steps*, *Run all…*, *Run selected steps*, *Stop
-  scripts*, *Open folder*), the naming bar (project name, *Time stamp*, *New stamp*, *Step folders*, *Move completed runs aside*,
-  the plan folder and *Change…*, then *CPU cores*, *GPUs* and *At once* for running steps), the canvas
-  and the details pane of the selected box (see [The plan](#the-plan) and [Running steps](#running-steps)).
+  previous runs*, *Select all steps*, *Clear selection*, *Write all files*, *Write selected steps*, *Run
+  all…*, *Run selected steps*, *Stop scripts*, *Open folder*), the naming bar (project name, *Time
+  stamp*, *New stamp*, *Step folders*, *Move completed runs aside*, the plan folder and *Change…*, then
+  *CPU cores*, *GPUs* and *At once* for running steps), the canvas and the details pane of the selected
+  box (see [The plan](#the-plan) and [Running steps](#running-steps)). In a window narrower than these
+  rows, the toolbar's buttons from *Select all steps* on and the naming bar's *CPU cores*, *GPUs* and *At
+  once* go onto a line of their own instead of widening the window.
 - **Output log panel:** drag its edge to resize it; the arrow or Ctrl+L folds it away, and a run
   unfolds it. It shows the planner's messages (files written, completed runs moved aside with their files,
   previous runs checked, runs used or dropped), MDATK's warnings, and every line the scripts print, marked
@@ -817,11 +821,12 @@ centres the later steps check, goes to none of them). *Write all files* writes e
 that runs the steps in order, and a Markdown summary of the plan.
 
 Each step box has a check box in its title bar (also Space on the selected box, or the right-click
-menu; *Tick all steps* / *Untick all steps* on the canvas): *Write selected steps (N)* writes only the
-ticked steps' files, and *Run selected steps (N)* writes them and runs their main scripts in plan order,
-whatever order you ticked them in. Steps they
-read from are not written or run again, so their outputs must exist already. The ticks are not saved
-with the project.
+menu): *Select all steps* in the toolbar (*Tick all steps* on the canvas) ticks every step that writes
+files and *Clear selection* (*Untick all steps*) unticks them, greyed out while nothing is ticked.
+*Write selected steps (N)* writes only the ticked steps' files, and *Run selected steps (N)* writes them
+and runs their main scripts in plan order, whatever order you ticked them in. Steps they read from are
+not written or run again, so their outputs must exist already. The ticks are not saved with the
+project.
 
 The plan is saved in the project file (`workflow` section), so one file holds the plan and the analysis
 settings. The analysis window's *Use the plan's files* (Input & cleaning, also in its *RNAdo* menu) puts
@@ -1056,7 +1061,7 @@ mdatk workflow write -p plan.mdatk.toml --delete-old-runs   # deleted  03 · Amb
 | **Amber · MD stages** | one mdin per stage and the run scripts | see below |
 | **GROMACS · MD** | ParmEd (or acpype) conversion, RNA position restraints, mdp files, grompp / mdrun scripts | 2024+ (workstation) or 2023.3 (cluster module `GROMACS/2023.3-CUDA-11.8.0`) |
 | **VMD** | Tcl script + start script | one representation per residue group in the MDATK colours (chain groups keep to their chain), bases as licorice, Mg²⁺ spheres, frame alignment, smoothing, snapshot or movie (Tachyon + ffmpeg) |
-| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build` (the step's *Python*; from the Linux AppImage, the AppImage itself): ideal A-form helix (D or L), base mutations with compensatory partners, or a rigid-body fit into a map | see [Structure builder](#structure-builder) |
+| **Structure builder (MDATK)** | a script calling `python3 -m mdatk build` (the step's *Python*; from the Linux AppImage, the AppImage itself): ideal A-form RNA or B-form DNA helix (D or L), a D/L chimera of such helices, base mutations with compensatory partners, or a rigid-body fit into a map | the PDB tells the steps it feeds its hand (D, L, or mixed for a chimera of both) and whether it has L-RNA; see [Structure builder](#structure-builder) and [D/L chimeras](#dl-chimeras) |
 | **Restraint dictionaries · acedrg / eLBOW** | per residue code a SMILES file, the acedrg or phenix.elbow call and MDATK's renaming to the model's atom names | L-RNA 5'/3' variants (0A5, 0G3 …) for Coot and Phenix; see [Restraint dictionaries](#restraint-dictionaries-for-l-rna-coot--phenix) |
 | **Phenix · real-space refinement** | `phenix.real_space_refine` script (1.21 / 2.x), optional base-pair `.eff` from a dot-bracket or the model's REMARK 950 annotation | see [Real-space refinement](#real-space-refinement-phenix--coot) |
 | **Coot · real-space refinement (batch)** | headless Coot 0.9 / 1.x script refining each chain in overlapping windows | see [Real-space refinement](#real-space-refinement-phenix--coot) |
@@ -1132,11 +1137,12 @@ libraries that map chain ends with `addPdbResMap` (plain LG, as `to_lrna.sh` wro
   mirrored phases the dihedral energy of an 8-bp duplex is off by about 3 kcal/mol.
 - **My own files.** The libraries and parameters listed under *Force field* (Dudek & Trylska's
   `nucleic12_LRNA.lib` + `parm10_LRNA.dat`, or your own `LRNA.lib` + `frcmod.LRNA`).
-- **Automatic** (default). Generated when the structure is known to have L residues when the plan is
-  made (an existing input PDB, *Force L for*, or an L helix straight from the builder), the force field
-  is OL3 or OL3 + CP, and no own L-RNA files are listed or loaded (extra libraries, a parameter file
-  defining LD / LH / LE, or load commands in the leap fields); own files otherwise. For a structure
-  that an earlier step makes (mutation, fitting, FARFAR2 …), choose *Generated by MDATK*.
+- **Automatic** (default). Generated when the structure is known to have L-RNA residues when the plan is
+  made (an existing input PDB with L-RNA residues, *Force L for*, or an L-RNA helix or a chimera with
+  L-RNA segments straight from the builder; L-DNA does not count, the library has no units for it), the
+  force field is OL3 or OL3 + CP, and no own L-RNA files are listed or loaded (extra libraries, a
+  parameter file defining LD / LH / LE, or load commands in the leap fields); own files otherwise. For a
+  structure that an earlier step makes (mutation, fitting, FARFAR2 …), choose *Generated by MDATK*.
 
 The generator refuses a parameter set with a dihedral or improper whose phase is not 0° / 180° and
 contains none of the twinned types (e.g. a 2′-OH torsion from an extra frcmod): the generated library
@@ -1697,18 +1703,28 @@ keeps coordinates, occupancies and B-factors verbatim:
   programs that read standard RNA only and ignore chirality, such as DSSR; ChimeraX's Q-score reads L
   names as they are and needs no copy; a warning says that the names no longer record the hand, so the
   copy is never meant for tleap, refinement or name-based analyses). Any of these, plus common aliases
-  (RA, G5, ADE …), is recognised on input; DNA and unknown residues pass through. *5′/3′ terminal names*
-  can be switched off.
+  (RA, G5, ADE …) and the DNA names of the [structure builder](#structure-builder) (DA …, the CCD's
+  L-DNA 0DA 0DC 0DG 0DT, MDATK's Amber-style LDA, LDA5, LDA3, LDAN …), is recognised on input; DNA and
+  unknown residues pass through (the PDB tools rename RNA only; the builder names DNA in every scheme). A
+  name alone is no nucleotide: the readers that see the atoms want a backbone atom (a primed name or P),
+  so the CCD's detergent LDA, the ligand LDT and the ions LA, LU and RA are not taken for nucleotides.
+  0DA and 0DT are written with their CCD components' own atom names (0DA: N9A, C8A … HN61, HN62; 0DT:
+  C5M) and read back as the standard ones (N9, C8 … C7). *5′/3′ terminal names* can be switched off.
 - **Hydrogens and Rosetta's virtual residues**: `--strip-h` removes hydrogens (element column, else the
   name), `--drop-virtual` the VRT / XXX residues Rosetta writes into density-scored models (no atoms of
   the molecule: tleap cannot type them, and a map-model score would read them as atoms).
 - **CONECT** records are stripped by default (until final deposition processing).
 - **LINK records** (bonds the polymer order does not imply, such as the PO2 phosphate of the builder's
   3′–3′ and 5′–5′ chimeras) follow their residues through every renaming, renumbering, chain change and
-  removal, so that the model check, which finds a record's atoms by chain, number, insertion code and
-  residue name, still bonds them: only the residue columns of a record are rewritten, a record whose residue
-  or atom was removed is dropped, and one that names no atom of the model is kept as it was, each with a
-  note. LINK lines after the coordinates are read and followed where they are.
+  removal (and `mdatk build mutate`), so that the model check, which finds a record's atoms by chain,
+  number, insertion code and residue name, still bonds them: only the residue columns of a record are
+  rewritten (and an atom name where a residue is renamed to or from 0DA / 0DT, whose atoms have names of
+  their own), a record whose residue or atom was removed is dropped, and one that names no atom of the
+  model is kept as it was, each with a note; a warning names an end that now shares its id with an
+  earlier residue (chains combined without renumbering). LINK lines after the coordinates are read and
+  followed where they are. A chain end that a LINK record bonds to another residue through its O3′, or
+  its P / O5′ (a chimera's junction; not its own 5′-phosphate residue, water, an ion or a symmetry mate),
+  keeps the internal name, as the builder names it (A, LA at a 3′–3′ bridge, not A3, LA3), with a note.
 - **5′ phosphates**: `--strip-5p` (window: *Remove 5′-terminal phosphates*, ticked automatically for
   the Amber scheme) removes P/OP1/OP2/OP3 from every chain's 5′ nucleotide, as Amber's 5′ units
   (G5, LG5 …) expect; a residue with hydrogens gets HO5′ where the phosphorus was. A phosphate that a LINK
@@ -1717,7 +1733,10 @@ keeps coordinates, occupancies and B-factors verbatim:
   reference (e.g. the structure the topology was built from), from a list per TER segment, or as
   A, B, C …; split chains per TER segment or at a residue (new ids); combine chains; sort them.
 - **Numbering**: continuous across chains (default) or restarting per chain, optional start number
-  and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked).
+  and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked). Residues made
+  only of phosphate atoms (a chimera's PO2 bridge, a lone 5′-phosphate) are left out of the sequences, as
+  in `mdatk pdb check`, and SEQRES names have three characters: a four-character nucleotide name
+  (MDATK's LDA5, LDG3 …) is written as its CCD component (0DA, 0DG …), any other long name as UNK.
 
 `mdatk pdb check` also measures every sugar: `--expect-l` / `--expect-d RANGES` give the hands
 expected (`C:45-73`, `A,B`, `*:45-73` for every chain), `--strict` exits with status 1 when a residue
@@ -1791,13 +1810,17 @@ chain, number and insertion code, and every range is written as for the PDB tool
   (the PO2 phosphate of the builder's 3′–3′ and 5′–5′ chimeras): they are listed with their lengths,
   with a warning beyond `--link-fail`, and an oxygen bonded through one (the bridge's O3′ / O5′) is no
   hydroxyl donor; a record that names an atom the check leaves out, or an ion (its coordination is what
-  `--ions check` measures), is not used. Waters and ions are skipped unless asked for (`--waters`,
-  `--ions check`: ions against their first-shell distances, so Mg²⁺–O at 2.1 Å is coordination).
+  `--ions check` measures), is not used, nor is one to a symmetry mate (its two symmetry operators
+  differ: the second atom is in a copy of the model that the crystal makes), each counted in a note.
+  Records after the coordinates count too, and the PDB tools keep every record in step with the residues
+  they rename, renumber or re-chain (see [PDB clean-up](#pdb-clean-up)). Waters and ions are skipped
+  unless asked for (`--waters`, `--ions check`: ions against their first-shell distances, so Mg²⁺–O at
+  2.1 Å is coordination).
   Hydrogens are never part of it: their positions differ between programs, and the builder's ideal
-  A-form helix (the Arnott fiber) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
+  A-form helix (the Arnott fibre) already has H2′(i)…H6/H8(i+1) at 1.57–1.70 Å. That H2′ is placed
   from the sugar's own geometry (1.09 Å from C2′, within 5° of the exact tetrahedral direction from C1′,
   C3′ and O2′; putting it exactly there moves the contact by under 0.03 Å): the short contact is the
-  fiber model's C2′(i)…C8/C6(i+1) of 3.5 Å, so smaller hydrogen radii would hide a geometry rather than
+  fibre model's C2′(i)…C8/C6(i+1) of 3.5 Å, so smaller hydrogen radii would hide a geometry rather than
   fix a threshold.
 - **Hydrogen contacts** (`--hydrogen-check`, off by default; reported in a section and columns of their
   own, `h_atoms h_clashes h_worst_overlap h_clashscore h_radii`, and never a gate or a filter): the
@@ -1808,7 +1831,7 @@ chain, number and insertion code, and every range is written as for the PDB tool
   (`--hydrogen-radii auto|nuclear|ecloud`); heavy atoms C 1.70, N 1.55, O 1.40, P 1.80 Å. An overlap
   of 0.4 Å or more is a clash; a polar hydrogen may overlap an acceptor by 0.6 Å (a hydrogen bond,
   Probe's `-HBRegular`) before the excess counts; pairs up to four bonds apart are left out; the
-  clashscore is clashes per 1000 atoms. On the fiber helix this flags every H2′(i)…H6/H8(i+1).
+  clashscore is clashes per 1000 atoms. On the fibre helix this flags every H2′(i)…H6/H8(i+1).
 - **Backbone**: O3′(i)–P(i+1) of consecutive nucleotides within each TER segment, as tleap bonds them
   (by name, whatever the distance): up to 2.0 Å a bond (`--link-max`); from 2.0 to 3.0 Å
   (`--link-fail`) a strained bond, a warning that gives the strain the first minimisation has to relax,
@@ -1819,7 +1842,9 @@ chain, number and insertion code, and every range is written as for the PDB tool
   longer than 3.0 Å a break (the chain is usually in two pieces), shorter than 1.4 Å an overlap, a
   missing atom an unmeasurable link, which fail the links gate. Report columns `strained_links` and
   `link_strain` (kcal/mol, every link outside the limits); consecutive P–P outside 5.0–7.5 Å are
-  reported.
+  reported. The bonds of LINK records (matched as the clash check matches them) are measured here too,
+  so `--checks links` alone lists them and warns of one longer than `--link-fail` (`2 LINK bond(s) longer
+  than 3 A (…)`: a broken junction), never a gate (JSON `links.link_bonds`).
 - **Loop compaction**: end-to-end distance over contour length along C1′ for `--segments` and for the
   runs of three or more residues unpaired in every `--secstruct` file given (two registers of one
   sequence, say: a segment that is a hairpin in one and a strand in the other is left out). Below 0.20
@@ -1883,7 +1908,9 @@ so the next step finds every file it was planned with: with *report* and *stop* 
 (inputs that were empty slots, decoys the set did not list) are empty slots too. *Kinks* and
 *Report hydrogen contacts* set the checks above. *Expected hands* is automatic by default: the hands
 measured on the first connected model when the plan is written (when it exists then; of a set of decoys
-the first it lists once its step has run), or the hand of a builder helix; *Ranges* takes them typed.
+the first it lists once its step has run), or the hand of a builder helix or of a builder chimera of one
+hand ("expected hands from the builder's L chimera"; a D/L chimera has no single hand, so until its model
+exists when the plan is written its hands are reported, not checked); *Ranges* takes them typed.
 Its script copies MDATK's PDB tools and model checks into the step folder, so the machine that runs it
 needs `python3` only, and removes the outputs of an earlier run
 first, so a check that fails leaves nothing that looks finished. This replaces `model_sanity.py`,
@@ -1910,21 +1937,74 @@ partner, from the builtin engine, Barnaba or DSSR.
 
 *Structure builder* in RNAdo's header bar (or *RNAdo → Structure builder: open in RNAdo…* in the
 analysis window), `mdatk build` and the planner step *Structure builder (MDATK)* make starting
-structures without external programs.
+structures without external programs: ideal A-form RNA and B-form DNA helices of either hand, D/L
+chimeras of such helices ([below](#dl-chimeras)), base mutations and rigid-body fits into a density map.
+The window has a page for each (*Ideal helix*, *Chimera*, *Mutate*, *Fit to map*): *Check* validates
+the inputs of the first three without writing anything, *Write PDB* builds and writes (it asks before it
+replaces an existing file that the window suggested), and the two long jobs, the junction fits of a
+chimera and the density fit, run in the background with a progress bar and stop with *Cancel* (nothing
+is written, and the step log records the build as cancelled).
 
 **Ideal helices.** An A-form RNA duplex (Watson-Crick complement, or an explicit partner 5'→3' of the
-same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fiber
+same length with mismatches / G·U wobbles) or a single strand. Every nucleotide is the Arnott A-RNA fibre
 monomer (the `$ARNA` table of AmberTools' `dat/leap/parm/nucgen.dat`, embedded in MDATK): C3'-endo
 sugars, χ ≈ −166°, 11 bp per turn (twist 32.7°, rise 2.81 Å), Watson-Crick pairs with C1'–C1' 10.9 Å and
-O3'–P 1.59 Å. The **L** helix is the exact mirror image (left-handed, L-nucleotides) with L names from
-the PDB clean-up schemes: by default A/C/G/U and 0A/0C/0G/0U (all ATOM, no terminal variants), or
-`--scheme amber` (LA5 … LU3), `ccd`, `rosetta`, `pdb`. Chains start with a 5'-OH unless
-`--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by default). G·U pairs get an
-approximate wobble geometry (bases turned in their plane about C1'); other mismatches keep the
-Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre at the origin.
+O3'–P 1.59 Å. The **L** helix is the exact mirror image (left-handed, L-nucleotides) with the L names of
+the chosen scheme (*Residue names* below; by default 0A/0C/0G/0U, all ATOM, no terminal variants).
+Chains start with a 5'-OH unless `--phosphate5`; `--hydrogens` adds all hydrogens (heavy atoms only by
+default). G·U pairs get an approximate wobble geometry (bases turned in their plane about C1'); other
+mismatches keep the Watson-Crick frame and colliding bases are reported. The helix axis is z, the centre
+at the origin.
 
-**Other pairings, parallel duplexes and triplexes.** `--pairing` (*Pairing* in the builder window and
-in the planner step) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form
+**B-form DNA.** `--na dna` (*Nucleic acid: DNA (B-form)* in the window and in the planner step) builds
+DNA with the same options: Watson-Crick duplexes (mismatches and G·T wobbles in an explicit partner) and
+single strands; the other pairings and the triplexes below are RNA only. U is read as T. Every nucleotide
+is the Arnott B-DNA fibre monomer (Arnott & Hukins 1972, which every DNA build cites; the `$ABDNA` table
+of the same `nucgen.dat`, embedded) on NAB's B-DNA screw, with the axis and dyad of the A-RNA helix:
+C3'-exo sugars (pseudorotation phase 192°), χ ≈ −98°, 10 bp per turn (twist 36.0°, rise 3.38 Å),
+Watson-Crick pairs with C1'–C1' 10.9 Å and O3'–P 1.60 Å. As published, its backbone (ε 155°, ζ −95°)
+puts OP2 of every nucleotide 2.69 Å from C2' of the one before (1.91 Å from its H2''), a heavy-atom clash
+of the [model check](#model-checks) at every step. The builder therefore turns P, OP1 and OP2 by 6° about
+the line O3'(i−1)–O5'(i), a crankshaft that keeps both bonds of the phosphodiester, the O3'–P–O5' angle
+and the PO2 group: C2'(i)–OP2(i+1) becomes 2.88 Å, C3'–O3'–P 123.2° and P–O5'–C5' 115.9° (published
+119.4° / 118.8°; 2.9 and 3.1 standard deviations from the targets of Parkinson et al. 1996), ε 155°,
+ζ −91°, α −53°, β −143°. 6° is the smallest whole turn that keeps every heavy-atom contact of the
+phosphate 0.05 Å outside the clash distance; the 10° that would also clear H2''–OP2 for the hydrogen
+check makes both angles validation outliers (5.1 and 4.4 standard deviations). A note and `REMARK 951
+PHOSPHATE TURNED 6 DEG ABOUT O3'-O5'` say so. The model check finds no heavy-atom clash in Watson-Crick
+duplexes, single strands and G·T wobbles of either hand; its hydrogen contacts, which only report (as
+for the A-form RNA), list H2''(i)…OP2(i+1) at 2.11 Å, the fibre model's own H1'(i)…H5'(i+1) at 1.84 Å
+and, before a thymine, its methyl 1.94 Å from H2'' and 2.47–2.48 Å from C6 / C8 of the 5' neighbour.
+With `--hydrogens` the 2'-deoxyribose carries H2' and H2'' as IUPAC and Amber's DNA libraries name them
+(H2'' cis to O3' and to H1', 2.27 Å from it; H2' trans to O3') and thymine a staggered methyl (H71–H73
+on C7). G·T pairs of an explicit partner are wobbles, turned in their plane like the G·U ones but kept
+clear of the sugars and the neighbours (G O6–T N3 2.73 Å, G N1–T O2 3.14 Å).
+
+**Residue names.** `--scheme` (*Residue names*) names every residue for its nucleic acid and hand, with
+the schemes of the [PDB clean-up](#pdb-clean-up); the records are ATOM but for the L residues of `pdb`:
+
+| `--scheme` | D-RNA | L-RNA | D-DNA | L-DNA |
+|---|---|---|---|---|
+| default, `rosetta` | A C G U | 0A 0C 0G 0U | DA DC DG DT | 0DA 0DC 0DG 0DT |
+| `amber` | A …; A5 / A3, one residue AN | LA …; LA5 / LA3, one residue LA5 | DA …; DA5 / DA3, DAN | LDA …; LDA5 / LDA3, LDAN |
+| `ccd` | A … | 0A …; 0A5 / 0A3 | DA … | 0DA … |
+| `pdb` | A … | 0A … (HETATM) | DA … | 0DA … (HETATM) |
+| `standard` | A … | A … (the hand is lost) | DA … | DA … (the hand is lost) |
+
+The Amber names are the units of AmberTools' RNA and DNA libraries and of Dudek & Trylska's
+`nucleic12_LRNA.lib`; LDA … are MDATK's own names in the same pattern, since AmberTools ships no L-DNA
+library (a note says that tleap needs units of these names). The CCD has no 5'/3' variants of DNA, so
+*5'/3' terminal names* matter for DNA in the `amber` scheme only; 0A5 / 0A3 are no CCD entries either (a
+5' end that keeps its phosphate is named after the component, 0A). 0DA, 0DC, 0DG and 0DT are the CCD's
+2'-deoxy-L-ribonucleotides, and two of them spell some atoms their own way: 0DA its adenine N9A, C8A,
+N7A … (H8A, H2A, HN61, HN62), 0DT its methyl carbon C5M. MDATK writes these names for every residue
+named 0DA / 0DT, so that Coot and Phenix find every atom in the dictionary, and reads them back as the
+standard names (N9, C8 … C7; a file that has the standard names there is read the same, with a note);
+LDA … have the standard names. The PDB clean-up reads every name of the table but renames RNA only:
+`mdatk pdb clean --scheme …` keeps DNA names, so the builder names DNA itself.
+
+**Other pairings, parallel duplexes and triplexes** (RNA). `--pairing` (*Pairing* in the builder window
+and in the planner step) chooses the base-pair geometry of the duplex; `wc` (the default) is the A-form
 duplex above, unchanged. The Leontis-Westhof rules fix the strand orientation:
 
 | `--pairing` | pairs (strand 1 · strand 2) | strands | Leontis-Westhof |
@@ -1978,7 +2058,11 @@ they are, the residue keeps its name scheme, chirality and terminal variant (LG5
 G5 → C5) and record type. Hydrogens of the old base are dropped (the new base has heavy atoms only).
 With *compensatory* mutations (default) every mutated base that is Watson-Crick / G·U paired in the
 input (builtin pair detection) gets its partner changed to the complement unless the partner is mutated
-explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed.
+explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed. A DNA
+residue gets the base of the B-DNA monomer (A, C, G, T; U is read as T, and T on an RNA residue is an
+error) and keeps its name pattern (DA5 → DT5, 0DA → 0DT, LDT3 → LDA3); its partner gets the DNA
+complement (`--wobble`: G·T), and a partner of the other nucleic acid is left as it is, with a note.
+LINK records (the junctions of a [chimera](#dl-chimeras)) follow the renamed residues.
 
 **Rigid-body fit.** The density-map fit of `mdatk density fit` (global search: rotations × FFT
 translations, then local refinement; or local refinement of the model as placed) applied to a PDB
@@ -1990,14 +2074,160 @@ mdatk build helix --seq GGCAUCGAUGCC -o helix.pdb                      # D duple
 mdatk build helix --seq GGCAU --chirality L --scheme amber --hydrogens -o lhelix.pdb
 mdatk build helix --seq GGCAU --partner AAGCU -o wobble.pdb            # G·U + A·A mismatch
 mdatk build helix --seq GGACU --partner none --chains C --start 45 -o strand.pdb
+mdatk build helix --seq GATCGTACGT --na dna -o bdna.pdb                # B-form DNA duplex, DA/DC/DG/DT
+mdatk build helix --seq GGCAT --na dna --chirality L --scheme amber --hydrogens -o ldna.pdb  # LDG5 … LDT3
+mdatk build helix --seq GGCAT --na dna --partner ATGTC -o gt.pdb       # one G·T wobble
 mdatk build mutate lhelix.pdb "A:2C, B:3G" [--no-compensatory] [--wobble] -o mutant.pdb
 mdatk build fit model.pdb map.mrc --resolution 4 [--search local] [--step 30] -o fitted.pdb
 ```
 
-Add `-p project.mdatk.toml` to log the step (the fit logs its correlation). The planner step writes a
-short script calling `python3 -m mdatk build …` (the step's *Python*, which must be able to import
-MDATK; with the default `python3`, a step written from the Linux AppImage calls the AppImage itself);
-its inputs are the model (mutate, fit) and the map (fit), its output the PDB.
+Add `-p project.mdatk.toml` to log the step (the fit logs its correlation; a helix or a chimera cites the
+Arnott fibre model of each nucleic acid it holds and, for the other pairings, PDB 4JRD). The planner
+step writes a short script calling `python3 -m mdatk build …` (the step's *Python*, which must be able
+to import MDATK; with the default `python3`, a step written from the Linux AppImage calls the AppImage
+itself). Its modes are *Ideal helix* (*Nucleic acid* RNA or DNA; *Pairing* and *Triplex* for RNA only),
+*D/L chimera*, *Mutate bases* and *Fit into a density map*; the residue names, terminal names,
+5'-phosphate and hydrogens of a helix or a chimera are on its page *Names & atoms*. A chain id that
+starts with `-` is written as one word (`--chains=-,B`), so that argparse does not take it for an
+option. Its inputs are the model (mutate, fit) and the map (fit), its outputs the PDB and, for a
+Watson-Crick duplex of RNA or DNA, the secondary structure (DNA's T is read as U there: A·T and G·T have
+the hydrogen-bond atoms of A·U and G·U that the restraint steps use; the `.secstruct` file keeps the T).
+The PDB tells the steps it feeds the hand of what was built (D, L, or mixed for a chimera of both hands)
+and whether it has L-RNA residues: the model check expects that hand (a mixed chimera has none, so its
+hands are reported, not checked, until its model exists when the plan is written), and the refinement
+steps ask for L-RNA restraint dictionaries and the Amber build generates its L-RNA library only for
+L-RNA (L-DNA needs neither). The Amber build loads RNA
+force fields only: DNA needs a DNA force field as well (e.g. `source leaprc.DNA.OL15` under *Leap
+commands before parameter files*), and L-DNA residue units of MDATK's names LDA … (AmberTools has none,
+and the generated L-RNA library has no L-DNA units either).
+
+### D/L chimeras
+
+`mdatk build chimera --design "…"` (the *Chimera* page of the window, the mode *D/L chimera* of the
+planner step) joins ideal helices of the builder, each of its own hand and nucleic acid, through strand
+1: by phosphodiesters (3'-5', 5'-3') or by a phosphate that bridges two 3' or two 5' ends (3'-3',
+5'-5'). A design is one line of tokens separated by spaces, `SEGMENT LINK SEGMENT [LINK SEGMENT …]`:
+
+- a **segment** is `HAND[-NA]:SEQUENCE[/PARTNER]`: `HAND` D or L; `NA` RNA or DNA, in either case
+  (without it the segment takes `--na`, the *Default nucleic acid*, RNA unless set); `SEQUENCE` strand 1 of
+  the segment 5'→3' (RNA reads T as U, DNA U as T, with a note); `PARTNER` `auto` or nothing (the
+  Watson-Crick complement: an A-form RNA or B-form DNA duplex), `none` or `-` (a single strand) or the
+  partner strand 5'→3' of the same length (mismatches and G·U / G·T wobbles are allowed and reported);
+- a **link** is `3'-5'`, `5'-3'`, `3'-3'` or `5'-5'` (also written `3-5`, `35` or `3'5'`, typographic
+  primes too). Its first end is the free end of the strand built so far: segment 1 is read 5'→3' unless
+  the first link starts at 5'; after a link that ends at 3' (`3'-3'`, `5'-3'`) the next segment is read
+  3'→5', so that its free end is its 5' end, and after one that ends at 5' it is read 5'→3'. A link at
+  the wrong end is an error that says why and which links fit: `link 2 (5'-3') starts at a 5' end, but
+  the free end of segment 2 (L-RNA:GCC, read 5'->3' after link 1 3'-5') is its 3' end: use 3'-5' or
+  3'-3'`.
+
+| design | the strand as the notes write it | chains |
+|---|---|---|
+| `D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC` | `5'-D-RNA(6)-p-L-RNA(6)-3'`: a D and an L duplex on one strand 1 | 3 |
+| `D-DNA:GGCAT 3'-3' L-DNA:GGCAT` | `5'-D-DNA(5)-3'p3'-L-DNA(5)-5'`: two 3' ends bonded to one phosphate | 4 |
+| `D:GAUC/none 5'-5' L-DNA:GATC` | `3'-D-RNA(4)-5'p5'-L-DNA(4)-3'`: an RNA single strand and an L-DNA duplex | 3 |
+| `D-RNA:GGCC 3'-5' D-DNA:GGCC` | `5'-D-RNA(4)-p-D-DNA(4)-3'`: RNA and DNA of one hand | 3 |
+| `D:GG 5'-3' L:CC 5'-5' D:AA` | `3'-D-RNA(2)-p-L-RNA(2)-5'p5'-D-RNA(2)-3'`: three segments | 5 |
+
+**The junction fit.** Every segment is the builder's ideal helix (or single strand) of its nucleic acid
+and hand; segment 1 stays where the builder puts it, and every next one is placed as a rigid body on the
+structure built so far: O–P 1.60 Å, C–O–P 119.7° and O–P–O 104° (the targets of the builder's backbone
+closure, Parkinson et al. 1996), the end pairs stacked 3.6 Å apart (a weak wish at a bridge, where the
+ends meet head to head). The residue that carries the P of a phosphodiester gets its OP1 and OP2 rebuilt
+from P, O3' and O5' in every step of the fit, as the builder builds a phosphate (P–OP 1.485 Å, OP1–P–OP2
+119.6°, so O3'–P–OP about 108°; OP1 named by the residue's hand), so that the O3' cannot land on an OP
+or invert the P. When that residue is DNA, its γ and β may turn as well, pulled back towards the B-form;
+an RNA one stays rigid. A 3'-3' or 5'-5' link adds a free phosphorus bonded to both O3' (O5'), with OP1
+and OP2 built the same way. Contacts are scored for the pairs four or more bonds apart through the
+junction, with the segments' hydrogens whether or not they are written (so the heavy atoms do not depend
+on `--hydrogens`): heavy atoms 3.2 Å from every atom already placed, 3.0 Å four or five bonds apart
+(3.2 Å between two DNA residues), never closer than the model check's clash distance plus 0.1 Å (C–C
+3.1, P–C 3.2 Å); hydrogens 2.1 Å from hydrogens and 2.4 Å from heavy atoms; a bridge 2.9 Å from every
+atom but the two oxygens it is bonded to and their carbons. 18 turns about the axis of the previous
+segment × 2 tilts (7 for a turning or bridged link) are fitted to the junction terms, and the 8 lowest in
+the full cost, one per pose, are refitted with the contacts. The design and its mirror image (every hand
+flipped) are both fitted, and the lower cost is written, as it is or as the exact mirror image, so a
+design and its twin give exact mirror images, hydrogens included. The two fits take seconds per junction
+(the examples below 2–6 s each, start-up included); the RNAdo window keeps the fits of the last 64
+designs, so building one again with other names or hydrogens refits nothing. With `--phosphate5` a
+partner strand's 5' end at a junction keeps a 5'-OH (its phosphate would stand in the way of the next
+segment's end pair). A junction is no minimised geometry: these are **starting models to be
+minimised** (`REMARK 951 RIGID-BODY JUNCTION: MINIMISE BEFORE PRODUCTION`).
+
+**Output.** Strand 1 is split into chains at the bridges, each written 5'→3' (a segment read 3'→5' is
+written 5'→3' like any chain, so consecutive residues of a chain are always O3'(i)–P(i+1) linked); the
+partner strands follow in segment order. Chains are A, B, C … (`--chains`, *Chain ids*: one id per
+chain), residues are numbered from 1 in each. A bridging phosphate is a residue PO2 (P, OP1, OP2;
+HETATM, ATOM in the `standard` scheme) written as a TER segment of its own after the run before it, with
+that run's chain id and the number after its last residue, so that FASTA and SEQRES leave it out; LINK
+records give its two O–P bonds and CONECT records its four bonds. Every residue is named for its hand
+and nucleic acid in the chosen scheme (the table above), with terminal variants at the free strand ends
+only: the residues bonded through a junction get internal names, OP3 (`--phosphate5`) goes on free 5'
+ends only, HO5' / HO3' (`--hydrogens`) on free hydroxyl ends. The model is centred on its heavy atoms; a
+design too long for the PDB coordinate columns (2000 Å for a centred model) is refused before any fit.
+The header names the strand, every segment and every junction (`--scheme amber`):
+
+```text
+REMARK 951 MDATK CHIMERA 5'-D-DNA(5)-3'p3'-L-DNA(5)-5'
+REMARK 951 SEGMENT 1 A:1-5 D-DNA B-FORM, PARTNER C:1-5, GGCAT
+REMARK 951 SEGMENT 2 B:1-5 L-DNA B-FORM, PARTNER D:1-5, GGCAT
+REMARK 951 JUNCTION 1 3'-3' A:5:O3'-A:6:P-B:5:O3' (PO2): O-P 1.60/1.60 A, C3'-O3'-P 121.8/121.0, …
+REMARK 951 RIGID-BODY JUNCTION: MINIMISE BEFORE PRODUCTION
+LINK         O3'  DT A   5                 P   PO2 A   6     1555   1555  1.60
+LINK         P   PO2 A   6                 O3' LDT B   5     1555   1555  1.60
+…
+TER     102       DT A   5
+HETATM  103  P   PO2 A   6       4.900  -5.404  -0.305  1.00  0.00           P
+…
+TER     106      PO2 A   6
+```
+
+**Notes.** For every junction its bonds and angles (for a phosphodiester O3'–P–OP1 / OP2 too), the γ / β
+turns of a DNA residue, how far apart the end pairs are, the closest heavy-atom contact between the
+segments, that of a hydrogen (`--hydrogens`) and that of the bridging phosphate; which fit was written
+(the design's own or its twin's mirror image, with both costs); the pairs, mismatches and wobbles of
+every segment; the names; the turned B-DNA phosphates when there is DNA; the size. A junction of the written
+model that misses its targets (an O–P bond by more than 0.05 Å, an angle by more than 10°, a
+phosphodiester's end pairs more than 2.5 Å beyond the stacking, a pair more than 0.1 Å inside its
+contact distance) gets a `WARNING: junction k (link) did not close: …` note with the numbers and the fit
+cost: `D:GC 3'-5' L:A 3'-5' D:GC`, whose one-pair segment cannot stack, warns of end pairs 6.87 Å apart.
+*Check* and the planner's checks read the design without fitting it: the strand, the pairs of every
+segment, the atom count, the chain ids and the errors.
+
+**Amber.** tleap has no unit for PO2 and does not read LINK records. With `--scheme amber` the notes say
+what it needs: a PO2 unit (P, OP1, OP2; MDATK writes none) loaded before `loadpdb`, and after it the
+`bond` commands for the LINK atoms, written for a unit `m = loadpdb …` with the residues numbered as
+tleap numbers them, in file order across the chains (`bond m.6.P m.5.O3' (A:6 P - A:5 O3'); bond
+m.6.P m.11.O3' (A:6 P - B:5 O3')` for the example above). The residues bonded to a 5'-5' bridge have
+internal names but no phosphate of their own, so their units must not add one (tleap adds the atoms a
+unit has and the file lacks), and L-DNA needs units of MDATK's names LDA … (AmberTools has no L-DNA
+library). The bond commands follow tleap's syntax and were not run with tleap here. The Amber build
+step does not handle a bridge for you: its PDB preparation keeps no LINK records. It keeps the PO2
+itself (*Remove 5′-terminal phosphates* removes the 5'-phosphates of nucleotides only), so tleap stops
+at a PO2 it has no unit for instead of building the two strands unconnected; list a PO2 unit under
+*Extra residue libraries* and put the bond commands, for the unit `mol`, under *Leap commands after
+loadpdb* (not tried with tleap either).
+
+The [model check](#model-checks) bonds the LINK records, so the 1.6 Å bonds of a bridge are no clashes,
+and the [PDB tools](#pdb-clean-up) keep the records in step with the residues when they rename,
+renumber or re-chain them, and name LINK-bonded chain ends as the builder does (`mdatk pdb clean`
+strips the CONECT records by default; the LINK records stay). The window's *Chimera* page has the design
+(its tooltip gives the grammar and three of the examples), the default nucleic acid, the chain ids, the
+names and atoms, and an output named after the design next to the project file
+(`chimera_D-RNA6_p_L-RNA6_c1e9cc.pdb`, `chimera_D-DNA5_3p3_L-DNA5_882f20.pdb`: the segments, the links
+and six hex digits of the design, so that two designs of one layout get two files) until you choose
+your own. *Check* reports wrong chain ids as the command line and the planner step do, and the step-log
+entry is the command line's (`build chimera`, *Chimera* and the strand, the notes, the citations), its
+summary led by the design and the options (`Design: D:GC 3'-3' L:GC (default nucleic acid RNA; chains
+P,Q,R,S; residue names amber)`). The planner step's mode has no inputs and writes the PDB only (no
+secondary structure); its *Chain ids* are checked against the chains the design writes.
+
+```bash
+mdatk build chimera --design "D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC" -o dl_rna.pdb
+mdatk build chimera --design "D-DNA:GGCAT 3'-3' L-DNA:GGCAT" --scheme amber -o dl_dna_33.pdb
+mdatk build chimera --design "D:GAUC/none 5'-5' L-DNA:GATC" --hydrogens --chains P,Q,R -o mixed.pdb
+mdatk build chimera --na dna --design "D:GGCAT 3'-5' L:ATGCC" -o dna_35.pdb   # the segments are DNA
+```
 
 ## Restraint dictionaries, real-space refinement and MDFF
 
@@ -2076,7 +2306,13 @@ Checks: a missing model / map / resolution, a resolution outside 1–20 Å, map 
 L-RNA 5'/3' variants (0A5, 0G3 …) without restraint dictionaries (the CCD defines only 0A/0C/0G/0U),
 dictionaries that miss a code of the model, Amber-style names (LA/LA5, A5/A3) and L sugars with D names
 (cpptraj output) that Phenix and Coot would not recognise or would restrain as D - convert those with
-`mdatk pdb clean --scheme ccd` first.
+`mdatk pdb clean --scheme ccd` first. L-DNA needs no dictionaries: 0DA, 0DC, 0DG and 0DT are CCD
+entries without 5'/3' variants (an info line says so). DNA names the CCD lacks (DA5 / DA3, LDA …) and
+L-DNA sugars with D-DNA names get a warning of their own, with a fix that works: rename them to DA, DC,
+DG, DT (L-DNA: 0DA, 0DC, 0DG, 0DT), since `mdatk pdb clean` renames RNA only, or build them with
+*Residue names: CCD for Coot / Phenix* (`--scheme ccd`). Before the model exists, the builder's port
+data say whether it will have L-RNA: only then are the dictionaries asked for ("the model is L-RNA",
+"the model has L-RNA residues (a D/L chimera)").
 
 ```bash
 mdatk workflow generate phenix-rsr -i model=model_ccd.pdb -i map=emd_1234.map \
@@ -2198,7 +2434,7 @@ VMD and writes its own restraints:
   (C1′ O4′ N C2′, C2′ C1′ O2′ C3′, C3′ C2′ O3′ C4′, C4′ C3′ O4′ C5′), default
   200 kcal/mol/rad². N is the base atom bonded to C1′: N9 or N1, or C5 for C-nucleosides such as
   pseudouridine.
-  - The targets come from the C3'-endo Arnott A-RNA fiber nucleotide of MDATK's helix builder:
+  - The targets come from the C3'-endo Arnott A-RNA fibre nucleotide of MDATK's helix builder:
     −35.0°, +40.0°, +38.3° and +33.3° for D residues, and the mirror image (opposite signs) for L
     residues.
   - Each residue's hand comes from its name (LA/LC/LG/LU and terminal forms, CCD 0A…) and must
@@ -2449,7 +2685,10 @@ are used. The citations appear
   (BibTeX)…*, and in RNAdo's *About RNAdo* (the plan), with *Export BibTeX…*.
 
 The reference data live in `mdatk/_citation_data.py`; each entry records where its details were
-checked (the paper's PDF, the project's own citation file, or a reference list).
+checked (the paper's PDF, the project's own citation file, or a reference list), or that they are from
+memory: so is all of Arnott & Hukins 1972 (*Optimised parameters for A-DNA and B-DNA*, Biochem.
+Biophys. Res. Commun. 47, 1504–1509; `arnott1972dna`), the B-DNA fibre model of the structure builder,
+which DNA helices and chimeras with DNA segments cite.
 
 ## Command line reference
 
@@ -2504,7 +2743,7 @@ mdatk workflow restraints --top PARM7 --sequence SEQ --dotbracket DB [--wobble] 
 mdatk pdb check|clean|to-lrna|annotate|qc   (see PDB clean-up and Model checks)
 mdatk pdb check|clean|to-lrna|annotate|interface   (see PDB clean-up, Decoy interfaces)
 mdatk decoys census|clusters|support   interfaces of an ensemble of models (see Decoy interfaces)
-mdatk build helix|mutate|fit       (see Structure builder)
+mdatk build helix|chimera|mutate|fit   (see Structure builder, D/L chimeras)
 mdatk dict list|smiles|finish|pubchem   (see Restraint dictionaries; only 'pubchem' uses the network)
 mdatk rosetta scores SILENT|DIR ... [--term T] [--max T=X] [--tsv OUT] [--extracted DIR] [--legacy-index N]
 mdatk rosetta audit ROOT ... [--pair C=T] [--pair-suffix S] [--controlled RANGES] [--allow=-FLAG]
@@ -2603,7 +2842,10 @@ mdatk/
   pipeline.py        clean -> analyse (cached) -> outputs; shared by GUI and CLI
   pdbtools.py        PDB hygiene (ChimeraX repair, L-RNA detection and names, chains, numbering)
   annotate.py        REMARK 950 base-pair / stacking / dot-bracket annotation
-  builder.py         structure builder: ideal and non-canonical helices (D / L), mutations, map fits
+  builder.py         structure builder: ideal A-form RNA (also non-canonical pairings, triplexes) and
+                     B-form DNA helices (D / L), mutations, map fits
+  chimera.py         D/L chimeras of the builder's helices: designs, junction fits, PO2 bridges with
+                     LINK / CONECT records
   dictionaries.py    restraint dictionaries for L-RNA residues (SMILES, renaming, PubChem lookup)
   citations.py       per-use citations (data in _citation_data.py)
   workflows/         script generators: schema.py (option schemas, shared with the wizard),
@@ -2746,8 +2988,15 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   contacts (e.g. reverse-wc twist ≈ 22°, rise ≈ 4.2 Å; triplex rise ≈ 5 Å, so stacked bases are
   ≈ 4.4 Å apart), and some backbone torsions are unusual. Minimise or restrain them before production
   MD; long sequences take a few seconds per 10 nt to build.
-- Ideal helices are starting models: hydrogens, OP3 and G·U wobble placements are idealised, and a
-  self-complementary duplex fitted into a map may come out with its strands swapped.
+- Ideal helices are starting models: hydrogens, OP3 and G·U (DNA: G·T) wobble placements are idealised,
+  the B-DNA phosphates are turned 6° from the fibre model (C3′–O3′–P and P–O5′–C5′ about 3 standard
+  deviations off their targets), and a self-complementary duplex fitted into a map may come out with its
+  strands swapped.
+- D/L chimeras are ideal helices joined by rigid-body fits: the bonds and angles at a junction are on
+  target, but its torsions (ζ, α) are not restrained and its stacking is what the fit found, so minimise
+  them before production. For tleap they need a PO2 unit and `bond` commands, DNA a DNA force field and
+  L-DNA residue units of their own, none of which the Amber build step provides (its PDB preparation
+  keeps a bridging PO2 but no LINK records; see [D/L chimeras](#dl-chimeras)).
 - Dual-axis plots are available because they are useful for juxtaposing e.g. contacts with
   another metric, but two y scales on one plot invite reading a correlation into an arbitrary
   alignment; prefer two stacked time-series panels when in doubt.

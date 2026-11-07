@@ -1189,7 +1189,7 @@ class PlannerPanel(Gtk.Box):
         right.pack_end(write, False, False, 0)
         ticks = Gtk.Box()
         ticks.get_style_context().add_class("linked")
-        self.select_all_btn = W.button("Select all", self.select_all_steps,
+        self.select_all_btn = W.button("Select all steps", self.select_all_steps,
                                        "Tick every step for 'Write selected steps' and 'Run selected steps' "
                                        "(the boxes in the steps' title bars)", "edit-select-all-symbolic")
         self.clear_selection_btn = W.button("Clear selection", self.clear_selection,
@@ -1955,7 +1955,7 @@ class PlannerPanel(Gtk.Box):
 
     # ------------------------------------------------------- run selected
     def select_all_steps(self) -> None:
-        """Tick every step that writes files (the tool bar's Select all; the canvas menu's Tick all steps)."""
+        """Tick every step that writes files (the tool bar's Select all steps; the canvas menu's Tick all steps)."""
         self.set_checked([n.id for n in self.workflow.nodes if checkable(n)])
 
     def clear_selection(self) -> None:

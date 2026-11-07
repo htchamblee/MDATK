@@ -788,12 +788,13 @@ def _link_free_runs():
     return out
 
 
-# recorded at d07a5ef, before LINK records followed the residues
+# recorded at d07a5ef, before LINK records followed the residues; the hybrid / dna runs again for the note
+# that counts the DNA residues a scheme leaves alone (their text and FASTA unchanged)
 LINK_FREE_D07A5EF = {
-    "hybrid amber": "03f7589cabdaac9f", "hybrid ccd": "59073daf87d78b1a", "hybrid rosetta": "2ebb9c0a56d3cd1a",
-    "hybrid pdb": "c7b9038737181096", "hybrid standard": "25f9c8192b6998d0", "dna amber": "ed4bbe0a34da2096",
-    "dna ccd": "50c0d91d28b574d2", "dna rosetta": "945cbb9dafb03b8e", "dna pdb": "2fe4081b30b15cf6",
-    "dna standard": "c6432fadfcf7f038", "decoy for tleap": "87bfeb0cd803d26a", "standard copy": "3048c24ee1b4231f",
+    "hybrid amber": "166c08d608ae46c4", "hybrid ccd": "ad8c89cddcdc2e2d", "hybrid rosetta": "04e5606ee42d0444",
+    "hybrid pdb": "08545968a09afa38", "hybrid standard": "817bde655397b53d", "dna amber": "c543fcfa301a019b",
+    "dna ccd": "0c4fbc5438cc9fd0", "dna rosetta": "586c830c027827ac", "dna pdb": "00b0be3357e1b25e",
+    "dna standard": "f170839826985ecf", "decoy for tleap": "87bfeb0cd803d26a", "standard copy": "3048c24ee1b4231f",
     "chains from a reference": "8f3dbea8a58cfe5c", "chains assigned, split, sorted": "b2b2e4858e35d9da",
     "chain list, combined": "79a0bedefebae9dd", "segments split, ordered": "e5e7485a629abea8",
     "gaps kept": "57773d327c46120a", "lone phosphate": "dcaebfe3cfc99b46", "to-lrna": "09483c3997e10797",
@@ -1282,25 +1283,26 @@ def test_sequences_leave_out_residues_made_only_of_phosphate_atoms():
 
 
 def test_seqres_names_have_three_characters():
-    """SEQRES has three columns per residue name: MDATK's four-character Amber-style L-DNA names (LDG5, LDA3,
-    LDTN ...) are written as their CCD components (0DG ...), any other long name as UNK, each with a note; the
-    names of the residues themselves do not change."""
+    """SEQRES has three columns per residue name: MDATK's Amber-style L-DNA names (LDG5, LDA, LDA3, LDTN ...; the
+    CCD's LDA and LDT are other compounds) are written as their CCD components (0DG, 0DA ...), any other long name
+    as UNK, each with a note; the names of the residues themselves do not change."""
     text = builder.build_helix("GACTGACTGACTGA", na="dna", chirality="L", scheme="amber")
     r = pt.clean(text, seqres=True)
     lines = [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")]
-    assert lines[0] == "SEQRES   1 A   14  0DG LDA LDC LDT LDG LDA LDC LDT LDG LDA LDC LDT LDG"
+    assert lines[0] == "SEQRES   1 A   14  0DG 0DA 0DC 0DT 0DG 0DA 0DC 0DT 0DG 0DA 0DC 0DT 0DG"
     assert lines[1] == "SEQRES   2 A   14  0DA"
-    assert lines[2].endswith("  0DT LDC LDA LDG LDT LDC LDA LDG LDT LDC LDA LDG LDT") and lines[3].endswith("  0DC")
+    assert lines[2].endswith("  0DT 0DC 0DA 0DG 0DT 0DC 0DA 0DG 0DT 0DC 0DA 0DG 0DT") and lines[3].endswith("  0DC")
     for ln in lines:  # every name in its columns 20-22, 24-26 ...
         names = ln[19:].split()
         assert [ln[19 + 4 * k:22 + 4 * k].strip() for k in range(len(names))] == names
-    assert ("SEQRES names have three characters: wrote the CCD components of the four-character names LDA3->0DA x1, "
-            "LDC3->0DC x1, LDG5->0DG x1, LDT5->0DT x1") in r.notes
+    assert ("SEQRES names are the CCD's three-character ones: wrote the CCD components of MDATK's Amber-style L-DNA "
+            "names and of other four-character names LDA->0DA x6, LDA3->0DA x1, LDC->0DC x6, LDC3->0DC x1, "
+            "LDG->0DG x6, LDG5->0DG x1, LDT->0DT x6, LDT5->0DT x1") in r.notes
     assert {res.name for res in r.structure.residues()} >= {"LDG5", "LDA3", "LDT5", "LDC3"}
     s = pt.read_pdb(text)
     s.segments[0][1].name = "LIGX"
     r = pt.clean(pt.write_pdb(s), seqres=True)
-    assert [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")][0][19:30] == "0DG UNK LDC"
+    assert [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")][0][19:30] == "0DG UNK 0DC"
     assert "WARNING: SEQRES names have three characters: wrote UNK for the residue name(s) of A:2 LIGX" in r.notes
 
 
@@ -1430,3 +1432,16 @@ def test_analyses_of_0da_files_and_of_the_same_model_named_lda_agree():
     mutated = [builder.mutate(t, "A:2G")[0] for t in (ccd, amber)]
     assert [ln[30:54] for ln in mutated[0].splitlines() if ln.startswith("ATOM")] == [
         ln[30:54] for ln in mutated[1].splitlines() if ln.startswith("ATOM")]
+
+
+def test_dna_kept_by_a_scheme_gets_a_note_of_its_own():
+    """The PDB tools rename RNA only: DNA residues keep their names with a note that counts them, and a file of DNA
+    alone no longer reads 'Residue names already follow the ... scheme'."""
+    for chirality in ("D", "L"):
+        r = pt.clean(builder.build_helix("GACT", na="dna", chirality=chirality), scheme="amber")
+        assert ("8 DNA residue(s) keep their names: the PDB tools rename RNA only (the structure builder writes DNA in "
+                "every scheme)") in r.notes
+        assert not any(n.startswith("Residue names already follow") for n in r.notes)
+    rna = pt.clean(builder.build_helix("GACU"), scheme="rosetta")
+    assert "Residue names already follow the rosetta scheme" in rna.notes
+    assert not any("DNA residue(s) keep their names" in n for n in rna.notes)

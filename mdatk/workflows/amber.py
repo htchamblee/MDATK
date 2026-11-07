@@ -759,12 +759,19 @@ class AmberBuildTool(Tool):
             except (OSError, pdbtools.PDBError) as exc:
                 out.append(Issue("warning", f"could not check the input PDB: {exc}", ("lrna",)))
                 return out
-            n_l = sum(1 for r in struct.residues() if r.chirality == "L")
+            hands = [pdbtools.nucleotide(r) for r in struct.residues() if r.chirality == "L"]
+            n_ldna = sum(1 for nt in hands if nt is not None and nt.sugar == "dna")
+            n_l = len(hands) - n_ldna  # L-RNA: the residues the L-RNA library is for
             for note in notes:
                 if note.startswith("WARNING:"):
                     out.append(Issue("warning", note[len("WARNING:"):].strip(), ("lrna_ranges",)))
-            if n_l:
+            if n_l or n_ldna:
                 out.append(Issue("info", f"{os.path.basename(path)}: {notes[0]}", ("lrna",)))
+            if n_ldna:
+                out.append(Issue("warning", f"{os.path.basename(path)}: {n_ldna} L-DNA residue(s): the L-RNA "
+                                            "library has no units for them and AmberTools no L-DNA library; "
+                                            "list your own (units named as MDATK's Amber scheme: LDA, LDA5, LDA3 "
+                                            "...) under Force field", ("extra_libs",)))
         elif s["lrna_ranges"].strip():
             n_l = 1
         if self.lrna_generated(s, ctx):

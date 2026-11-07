@@ -1385,6 +1385,7 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     changes = Counter()
     term_mismatch, phosphate, single_l, kept_phosphate, plain_l, l_dna = [], [], [], [], [], []
     junctions, bonded_o5 = [], []
+    kept_dna = seen = 0  # DNA residues the scheme leaves alone; nucleotides it names
     for seg in structure.segments:
         terms, plain = _terminals(seg, structure, links)
         for res in seg:
@@ -1393,7 +1394,9 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                 continue
             is_dna = nt.sugar == "dna"
             if is_dna and not (dna and nt.base in "ACGT"):
+                kept_dna += 1
                 continue
+            seen += 1
             chir = res.chirality or nt.chirality
             has_p = any(a.name == "P" for a in res.atoms)
             # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself (a single
@@ -1434,8 +1437,12 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
     if changes:
         summary = ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(changes.items(), key=lambda kv: -kv[1]))
         notes.append(f"Renamed {sum(changes.values())} residues to the {scheme} scheme: {summary}")
-    else:
+    elif seen or not kept_dna:
         notes.append(f"Residue names already follow the {scheme} scheme")
+    if kept_dna:
+        notes.append(f"{kept_dna} DNA residue(s) keep their names: " + (
+            "no name in the scheme for their base" if dna else
+            "the PDB tools rename RNA only (the structure builder writes DNA in every scheme)"))
     if term_mismatch:
         notes.append("Terminal names that are not at a segment end (missing TER?): "
                      + _listing(term_mismatch))
@@ -1838,7 +1845,10 @@ def _seqres_names(structure: Structure) -> Tuple[Dict[str, List[str]], List[str]
         names = []
         for res in residues:
             name = res.name.strip()
-            if len(name) > 3:
+            nt = _nucleotide(res)
+            # MDATK's Amber-style L-DNA names (LDA ...): in the CCD, LDA and LDT are other compounds
+            amber_l_dna = nt is not None and nt.sugar == "dna" and nt.chirality == "L" and name.upper()[:2] == "LD"
+            if len(name) > 3 or amber_l_dna:
                 info = parse_residue_name(name)
                 if info is not None:
                     new = scheme_name(info.base, info.chirality, "", "ccd", info.sugar)
@@ -1851,7 +1861,8 @@ def _seqres_names(structure: Structure) -> Tuple[Dict[str, List[str]], List[str]
         out[chain] = names
     notes = []
     if mapped:
-        notes.append("SEQRES names have three characters: wrote the CCD components of the four-character names "
+        notes.append("SEQRES names are the CCD's three-character ones: wrote the CCD components of MDATK's Amber-style "
+                     "L-DNA names and of other four-character names "
                      + ", ".join(f"{a}->{b} x{n}" for (a, b), n in sorted(mapped.items())))
     if unknown:
         notes.append("WARNING: SEQRES names have three characters: wrote UNK for the residue name(s) of "

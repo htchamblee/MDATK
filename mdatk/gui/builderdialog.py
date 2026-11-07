@@ -300,8 +300,9 @@ class BuilderWindow(Gtk.Window):
                               "rigid-body fit of the next segment (O3'-P "
                               f"{chimera.LINK_BOND:.2f} Å, the end pairs stacked, no clashes), the design and its "
                               "mirror image both fitted (seconds per junction): a starting model, minimise before "
-                              "production. 3'-3' and 5'-5' links write a bridging phosphate PO2 (HETATM) with LINK "
-                              "and CONECT records, and strand 1 is split into chains there."), False, False, 0)
+                              "production. 3'-3' and 5'-5' links write a bridging phosphate PO2 as a group of its "
+                              "own (a TER segment; HETATM, ATOM in the standard scheme) with LINK and CONECT "
+                              "records, and strand 1 is split into chains there."), False, False, 0)
         return W.scrolled(box)
 
     def _mutate_page(self) -> Gtk.Widget:

@@ -3,9 +3,11 @@
 tleap rebuilds hydrogens from its residue templates and expects 5'-terminal
 nucleotides without a phosphate, a TER record between chains, and residue
 names it knows.  This keeps the first MODEL only, drops hydrogens, the
-phosphate atoms of every chain's first residue and (optionally) waters and
+phosphate atoms of every chain's first nucleotide and (optionally) waters and
 Rosetta's virtual residues, and writes TER records at chain changes and
-residue-number gaps.
+residue-number gaps.  A residue made of phosphate atoms alone (a chimera's
+PO2 bridge, a phosphate ion) is kept: tleap then names it instead of
+building the strands it joined as unconnected ones.
 """
 
 from __future__ import annotations
@@ -30,8 +32,21 @@ def is_hydrogen(line):
     return name.upper().startswith(("H", "D"))
 
 
+def nucleotide_keys(lines):
+    """(chain, residue number + insertion code) of the residues with sugar atoms (a primed name)."""
+    keys = set()
+    for line in lines:
+        if line.startswith("ENDMDL"):
+            break
+        if line[:6] in ("ATOM  ", "HETATM") and ("'" in line[12:16] or "*" in line[12:16]):
+            keys.add((line[21:22], line[22:27]))
+    return keys
+
+
 def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, rename=True,
             drop_virtual=False):
+    lines = list(lines)
+    nucleotides = nucleotide_keys(lines)  # only these lose a 5'-phosphate
     out = []
     prev_key = None
     prev_chain = None
@@ -80,7 +95,7 @@ def prepare(lines, strip_h=True, strip_5p=True, gap_ter=True, strip_water=True, 
             stats["hydrogens"] += 1
             continue
         name = line[12:16].strip()
-        if strip_5p and first_residue and name.upper() in PHOSPHATE:
+        if strip_5p and first_residue and name.upper() in PHOSPHATE and key in nucleotides:
             stats["phosphates"] += 1
             continue
         if rename and resname.upper() in RESNAMES:

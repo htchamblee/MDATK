@@ -1225,3 +1225,21 @@ def test_scripts_run_by_mdatk_have_mdatk_local(tmp_path):
     lines = []
     assert run_script(str(script), lines.append)[0] == 0
     assert lines == ["local=1"]
+
+
+def test_prep_pdb_keeps_a_phosphate_only_residue():
+    """--strip-5p removes the 5'-phosphate of each chain's first nucleotide only: a residue made of phosphate atoms
+    alone (a chimera's PO2 bridge in its TER segment, a phosphate ion) stays, so tleap names it instead of building
+    the strands it joins unconnected."""
+    from mdatk import chimera, pdbtools
+
+    text = chimera.build_chimera("D:GC 3'-3' L:GC", phosphate5=True)
+    s = pdbtools.read_pdb(text)
+    po2 = [r for r in s.residues() if r.name.strip() == "PO2"]
+    assert len(po2) == 1 and {a.name for a in po2[0].atoms} == {"P", "OP1", "OP2"}
+    lines, stats = prep_pdb.prepare(text.splitlines())
+    kept = [ln for ln in lines if ln[17:20] == "PO2"]
+    assert len(kept) == 3
+    firsts = [ln for ln in lines if ln.startswith(("ATOM", "HETATM")) and ln[22:26].strip() == "1"]
+    assert not any(ln[12:16].strip() in ("P", "OP1", "OP2", "OP3") for ln in firsts)  # the strands' 5' ends
+    assert stats["phosphates"] > 0

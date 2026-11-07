@@ -291,10 +291,12 @@ def _ligand_builds(tmp_path):
 
 # _ligand_builds() at a3b572c; the helpers that every case writes the same.  0.0.12: the two helpers that
 # copy library code (mdatk.pdbtools, scripts/prep_pdb.py) grew, as tests/test_golden.py lists (last: the
-# empty slots of a model check, with their reason); the build scripts, leap / ParmEd inputs and messages
+# empty slots of a model check, with their reason; then DNA and L-DNA names, LINK records that follow the
+# residues, the CCD's 0DA / 0DT atom names, and prep keeping a phosphate-only residue such as a chimera's
+# PO2 bridge); the build scripts, leap / ParmEd inputs and messages
 # are those of a3b572c
 _LIGAND_SAME = {"check.py": "9b3c751ac12a", "cp-lib.py": "c34fff6d74b5", "parmed.in": "19a1cbd00ec2",
-                "pdbtools.py": "bcce5332cd83", "prep.py": "09a5c2ac6959"}
+                "pdbtools.py": "cf30cdeded26", "prep.py": "a377a5917762"}
 LIGAND_BUILDS_A3B572C = {
     "helix": dict(_LIGAND_SAME, **{":issues": "6a48b36ce705", "amber-build.sh": "6afa8ca98cf5",
                                    "tleap.leap": "74b75b71fbec"}),
@@ -418,3 +420,19 @@ def test_declared_l_residues_reach_the_planner_and_the_script(tmp_path):
     cfg["chirality"]["l_residues"] = None
     with pytest.raises(nm.PrepError, match="named as D but its sugar has L geometry"):
         nm.prep(cfg, write=False)
+
+
+def test_an_l_dna_input_is_no_l_rna(tmp_path):
+    """An existing L-DNA structure is no L-RNA: no 'L-RNA residues need their library' error, but a warning that
+    the generated L-RNA library has no L-DNA units (MDATK's Amber names LDA ... need a library of one's own)."""
+    from mdatk import builder
+
+    (tmp_path / "l.pdb").write_text(builder.build_helix("GACT", na="dna", chirality="L", scheme="amber"))
+    s = TOOLS["amber-build"].normalise({"water": "tip3p", "lrna": True, "lrna_library": "own"})
+    node = PlanNode(id="b", tool="amber-build", step=1, settings=s, files={"structure": str(tmp_path / "l.pdb")})
+    st = Plan(WorkflowParams(project_name="apt1", stamp="20261015-1432", nodes=[node]), str(tmp_path / "p")).steps["b"]
+    messages = [(i.level, i.message) for i in st.issues]
+    assert not any("L-RNA residues need their library" in m for _lv, m in messages), messages
+    assert ("warning", "l.pdb: 8 L-DNA residue(s): the L-RNA library has no units for them and AmberTools no L-DNA "
+                       "library; list your own (units named as MDATK's Amber scheme: LDA, LDA5, LDA3 ...) under "
+                       "Force field") in messages
