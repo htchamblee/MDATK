@@ -319,6 +319,23 @@ class GromacsTool(Tool):
                              ("convert",)))
         if s["maxwarn"] > 0:
             out.append(Issue("warning", f"-maxwarn {s['maxwarn']} hides grompp warnings", ("maxwarn",)))
+        if self._prod_split(s):  # the production script runs its stages one after the other, each from the last
+            prod = [bool(st["production"] and st["integrator"] != "steep") for st in stages]
+            seps = [k for k, x in enumerate(prod) if x]
+            between = [k for k in range(seps[0], seps[-1] + 1) if not prod[k]]
+            if between:
+                one = len(between) == 1
+                later = next(k for k in seps if k > between[0])
+                steep = [k for k in between if stages[k]["integrator"] == "steep"]
+                out.append(Issue("error", f"{'stage' if one else 'stages'} {', '.join(tags[k] for k in between)} "
+                                          f"{'runs' if one else 'run'} in the main script between production stages: "
+                                          f"stage {tags[later]} would start from a structure that the main script "
+                                          "writes only once the production script has finished, so neither could "
+                                          f"finish; make {'it a production stage' if one else 'them production stages'}"
+                                          f" or move {'it' if one else 'them'} before or after the production stages"
+                                          + (" (a minimisation always runs in the main script)" if steep else ""),
+                                 tuple(f"stages.{k}.{'integrator' if k in steep else 'production'}"
+                                       for k in between)))
         temps = {st["ref_t"] for st in stages if st["integrator"] != "steep"}
         if len(temps) > 1:
             out.append(Issue("warning", "stages use different temperatures: " +

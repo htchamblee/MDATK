@@ -582,7 +582,9 @@ def test_planner_check_previous_runs_adopt_and_run_selected(main, tmp_path):
     pl.run_selected()
     jobs, separate, kw = calls[-1]
     assert [j.node_id for j in jobs] == [md.id] and len(separate) == 1
-    assert [(j.node_id, j.role) for j in kw["with_separate"]] == [(md.id, "run"), (md.id, "run-separate")]
+    # with the separate scripts: then the main script again (its part after them)
+    assert [(j.node_id, j.role, j.again) for j in kw["with_separate"]] == [
+        (md.id, "run", False), (md.id, "run-separate", False), (md.id, "run", True)]
     assert not os.path.exists(os.path.join(main.project.workflow_dir, "01_amber-build",
                                            f"apt1_01_amber-build_{main.project.workflow.stamp}.sh"))
     pl._adopted_choice = lambda _text, _detail: "cancel"

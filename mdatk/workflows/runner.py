@@ -4,7 +4,8 @@ Generated scripts are meant to be reviewed and normally run by hand.  On
 request, MDATK runs each step's main scripts (role ``run``) with ``bash``, streams
 their output to a callback and appends one entry per script to the project file's
 step log.  Scripts marked "run separately" (production runs meant for a cluster
-queue, long sampling runs) are started only when asked for (``include_separate``).
+queue, long sampling runs) are started only when asked for (``include_separate``),
+after their step's main script, which then runs once more for the rest of the step.
 The main script of a step that has such a script exits with
 :data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished (or, in the step's
 'exit 0' waiting mode, exits 0 leaving ``<script>.waiting`` beside itself): the step
@@ -139,6 +140,9 @@ class ScriptJob:
     role: str = "run"  # "run-separate": one of those, run on request after its step's main script
     resources: Resources = Resources()  # what one run of the step uses (Tool.run_resources)
     stop_mark: str = ""  # the note a stopped run leaves (absolute; runstate.stop_mark; "": none)
+    # role "run": the main script once more, after its step's separate scripts (plan_jobs with
+    # include_separate), for its part after them and its end; it runs only when its first run waited for them
+    again: bool = False
 
     def waiting_message(self) -> str:
         names = ", ".join(os.path.basename(p) for p in self.separate) or "a separately run script"
@@ -157,8 +161,10 @@ class ScriptResult:
 def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
               include_separate: bool = False) -> List[ScriptJob]:
     """The main scripts of the plan's steps, in plan order (written or not); with ``include_separate``
-    each step's scripts marked 'run separately' follow its main scripts.  Steps that use the outputs of an
-    earlier run (``PlanNode.adopted``) have no jobs: they are not run again."""
+    each step's scripts marked 'run separately' follow its main scripts, and then its main scripts once more
+    (``ScriptJob.again``: the stages after the separate ones, the dry copies made at the end, the end of the
+    'exit 0' waiting mode).  Steps that use the outputs of an earlier run (``PlanNode.adopted``) have no jobs:
+    they are not run again."""
     from ..citations import step_citations
     from .plan import generate_step
 
@@ -192,11 +198,14 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
         except Exception:  # noqa: BLE001 - a generator bug: one core (the planner shows the settings' issues)
             needs = Resources()
         mark = os.path.join(plan.root, stop_mark(step.ctx)) if plan.root and step.ctx is not None else ""
-        for role in ("run", "run-separate") if include_separate else ("run",):
+        passes = [("run", False)]
+        if include_separate and separate:  # then its separate scripts, then its main scripts again
+            passes += [("run-separate", False), ("run", True)]
+        for role, again in passes:
             for f in step.files:
                 if f.role == role:
                     jobs.append(ScriptJob(step.node.step, step.label, path[f.name], step_citations(step), nid,
-                                          after, separate, role, needs, mark))
+                                          after, separate, role, needs, mark, again))
     return jobs
 
 
@@ -509,8 +518,9 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     A main script that exits with WAITING_STATUS, or exits 0 leaving its ``<script>.waiting`` (the
     step's 'exit 0' waiting mode), leaves its step *waiting* (result status "waiting", not an
     exception) and its dependents not started - unless the step's separate scripts are among
-    ``jobs``: they then run next.  A separate script whose main script found
-    it finished (exit status 0) is not run again."""
+    ``jobs``: they then run next, and then the main script's job with ``again`` (its part after them),
+    whose exit decides.  A separate script whose main script found it finished (exit status 0) is not
+    run again, and neither is the main script then."""
     limit = max(0, int(parallel))
     marks = (limit != 1 and len(jobs) > 1) if step_marks is None else step_marks
     stop = cancel if cancel is not None else threading.Event()
@@ -523,6 +533,7 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     with_main = {j.node_id for j in jobs if j.role == "run" and j.node_id}
     separate_next = {j.node_id for j in jobs if j.role == "run-separate" and j.node_id}
     waited: Set[str] = set()  # steps whose main script waits for their separate scripts (they run next)
+    rerun: Set[str] = set()  # ... and that says so (not an older script): it runs again after them
 
     def state(i: int, value: str) -> None:
         if on_state is not None:
@@ -548,6 +559,13 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
         try:
             if job.role == "run-separate" and job.node_id in with_main and job.node_id not in waited:
                 line_fn(f"{rel} has already finished (its step's main script says so) - not run again")
+                outcome = "ok"
+                return
+            if job.again and job.node_id not in rerun:
+                line_fn(f"{rel}: not run again ("
+                        + (f"written by an older {PROJECT_ABBREV}, it cannot tell whether its separately run scripts "
+                           "have finished)" if job.node_id in waited else
+                           "it found its separately run scripts finished and ran to its end)"))
                 outcome = "ok"
                 return
             _drop_stop_mark(job)
@@ -584,8 +602,10 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                     # a main script written by MDATK 0.0.8 or older "succeeds" whether or not production ran
                     legacy = main and code == 0 and not flagged and not _checks_separate(job.path)
                     if main and (code == WAITING_STATUS or flagged or legacy):
-                        if job.node_id in separate_next:  # asked for: its separate scripts run next
-                            waited.add(job.node_id)
+                        if job.node_id in separate_next and not job.again:  # asked for: its separate scripts
+                            waited.add(job.node_id)  # run next, then (unless an older script) this one again
+                            if not legacy:
+                                rerun.add(job.node_id)
                             entry.summary += " (its separately run scripts run next)"
                             outcome = "ok"
                         else:  # not a failure, but the step is not complete
@@ -617,7 +637,7 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
         finally:
             if steplog is not None:
                 steplog.close(outcome, code, message,
-                              waits_next=job.role == "run" and job.node_id in waited)
+                              waits_next=job.role == "run" and not job.again and job.node_id in waited)
             with cond:  # always leave "running", or the scheduler would wait forever
                 status[i] = outcome
                 slots.give_back(grant)
