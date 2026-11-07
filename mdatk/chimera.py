@@ -14,43 +14,60 @@ Design (:func:`parse_design`)
     5'-D-DNA-3'p3'-L-DNA-5' (:func:`describe`), "D-RNA:GGCC 3'-5' D-DNA:GGCC" an RNA-DNA strand of one hand.
 
 Geometry (the junction fit)
-    Every segment is the builder's ideal helix (or single strand) of its nucleic acid and hand, and the fit
-    moves heavy atoms only: hydrogens, when asked for, are carried with their atoms.  Segment 1 stays where the
-    builder puts it (helix axis z); every next segment is placed as a rigid body on the structure built so
-    far.  A 3'-5' / 5'-3' link is a phosphodiester (the 5'-side residue keeps P, OP1 and OP2, no OP3): O3'-P
-    1.60 Å, C3'-O3'-P 119.7 and O3'-P-O5' 104 degrees (the targets of the builder's backbone closure,
-    Parkinson et al. 1996); when the residue that carries the P is DNA, its gamma (about C4'-C5': O5', H5',
-    H5'' and everything beyond O5') and beta (about C5'-O5': P and everything beyond it) may turn as well,
-    pulled back to the B-form by a prior of 0.3 per radian, and an RNA one stays rigid.  For a 5'-3' link that
-    residue is the 5' end of the structure built so far, whose turning atoms then belong to the junction.  A
-    3'-3' / 5'-5' link adds a free phosphorus bonded to both O3' (O5'): O-P 1.60 Å on both sides, C-O-P 119.7
-    and O-P-O 104 degrees, OP1 / OP2 1.48 Å from P, 112 degrees apart, opposite the two ester oxygens.  The
-    end pair of the new segment (its junction residue and that residue's partner; the residue alone in a
-    single strand) stacks on the end pair of the structure so far, centroids 3.6 Å apart (a strong wish for
-    a phosphodiester, a weak one for the head-to-head ends of a bridge); the O-P bonds are stiffer than
-    either wish.  Heavy atoms of the new segment stay 3.2 Å from every atom already placed (CLASH), except
-    bonded, 1-3 and 1-4 pairs through the junction; pairs four or five bonds apart through it are allowed
-    3.0 Å (CLOSE; both residues DNA: 3.2 Å).  Atoms that a gamma / beta turn moves come no closer to the rest
-    of their own segment than in the ideal helix (or 3.2 Å).  A bridge stays 2.9 Å from every atom but the two
-    oxygens it is bonded to and their carbons (BRIDGE_CLASH).  The fit: many starts (18 turns about the helix
-    axis of the previous segment times 2 tilts, 7 for a turning or bridged link), least squares of the
-    junction terms alone, then the 8 starts lowest in the full cost (junction and contacts) at their solution,
-    one per pose, refitted with the contacts (atom pairs within reach, refreshed when the atoms move); the
-    closure of the scratch models of MDATK's first D/L chimeras, generalised to every link and segment.  The
-    design and its mirror image (every hand flipped) are both fitted and the lower cost is written, as it is
-    or as its exact mirror image (x -> -x, the bridging oxygens keeping their names), so a design and its twin
-    give exact mirror images.
+    Every segment is the builder's ideal helix (or single strand) of its nucleic acid and hand.  Segment 1
+    stays where the builder puts it (helix axis z); every next segment is placed as a rigid body on the
+    structure built so far.  A 3'-5' / 5'-3' link is a phosphodiester: O3'-P 1.60 Å, C3'-O3'-P 119.7 and
+    O3'-P-O5' 104 degrees (the targets of the builder's backbone closure, Parkinson et al. 1996).  The residue
+    that carries the P (its 5' end, no OP3) gets its OP1 / OP2 rebuilt in every step of the fit from P, O3' and
+    O5', as the builder rebuilds a phosphate (``builder._GEOM``: P-OP 1.485 Å, OP1-P-OP2 119.6 degrees in the
+    plane that bisects O3'-P-O5', away from both, so O3'-P-OP about 108 degrees; OP1 named by the residue's
+    hand: vol(P; O3', O5', OP1) is positive for a D and negative for an L residue, as in the builder's helices).
+    When the residue that carries the P is DNA, its gamma (about C4'-C5': O5', H5', H5'' and everything beyond
+    O5') and beta (about C5'-O5': P and everything beyond it) may turn as well, pulled back to the B-form by a
+    prior of 0.3 per radian, and an RNA one stays rigid.  For a 5'-3' link that residue is the 5' end of the
+    structure built so far, whose turning atoms and phosphate oxygens then belong to the junction.  A 3'-3' /
+    5'-5' link adds a free phosphorus bonded to both O3' (O5'): O-P 1.60 Å on both sides, C-O-P 119.7 and O-P-O
+    104 degrees, OP1 / OP2 built the same way opposite the two ester oxygens (OP1 on the side of
+    (O(a) - P) x (O(b) - P)).  The end pair of the new segment (its junction residue and that residue's partner;
+    the residue alone in a single strand) stacks on the end pair of the structure so far, centroids 3.6 Å
+    apart (a strong wish for a phosphodiester, a weak one for the head-to-head ends of a bridge); the O-P
+    bonds are stiffer than either wish.  Contacts, the segments' hydrogens included whether or not the model
+    has them (so the heavy atoms do not depend on that option), for pairs four or more bonds apart through the
+    junction: heavy atoms of the new segment stay 3.2 Å from every atom already placed (CLASH), 3.0 Å for
+    pairs four or five bonds apart through it (CLOSE; both residues DNA: 3.2 Å), and never closer than the
+    model check's clash distance plus 0.1 Å (QC_MARGIN: ``modelcheck.VDW`` of the two elements less
+    ``modelcheck.CLASH_TOL``, so C-C 3.1, P-C 3.2 Å); hydrogens 2.1 Å from hydrogens and 2.4 Å from heavy
+    atoms (``builder.CONTACT_FIT`` hh / hx).  Atoms that a gamma / beta turn or the phosphate rebuild moves come
+    no closer to the rest of their own segment than in the ideal helix (or those distances).  A bridge stays
+    2.9 Å from every atom but the two oxygens it is bonded to and their carbons (BRIDGE_CLASH; four bonds or
+    more from it, at least the model check's distance plus the margin).  The fit: many starts (18 turns about
+    the helix axis of the previous segment times 2 tilts, 7 for a turning or bridged link), least squares of
+    the junction terms alone, then the 8 starts lowest in the full cost (junction and contacts) at their
+    solution, one per pose, refitted with the contacts (atom pairs within reach, refreshed when the atoms
+    move); the closure of the scratch models of MDATK's first D/L chimeras, generalised to every link and
+    segment.  The design and its mirror image (every hand flipped) are both fitted and the lower cost is
+    written, as it is or as its exact mirror image (x -> -x, the bridging oxygens keeping their names), so a
+    design and its twin give exact mirror images.  Every junction of the written model is then compared with
+    its targets (``CLOSED``: the O-P bonds within 0.05 Å, the angles within 10 degrees, a phosphodiester's end
+    pairs within 2.5 Å of the stacking, no pair four or more bonds apart more than 0.1 Å inside its contact
+    distance); one that misses any is named in a WARNING note with the numbers and the fit cost.
 
 Output (:func:`build_chimera`)
     Strand 1 is split into runs at the bridging links; each run is one chain written 5'->3' (a segment read
     3'->5' is written 5'->3' like any chain), so consecutive residues of a chain are always O3'(i)-P(i+1)
     linked.  Chains: the runs in design order, then the partner strands in segment order (A, B, C ...);
-    residues numbered from 1 in each chain.  A bridging phosphate is a HETATM residue PO2 (P, OP1, OP2)
-    appended to the chain of the run before it, with a LINK record and CONECT records for each of its two O-P
-    bonds.  Residue names follow each residue's hand and nucleic acid in the chosen scheme; terminal variants
-    only at free strand ends (the residues bonded through a junction get internal names), OP3 only on free 5'
-    ends with ``phosphate5``, HO5' / HO3' only on free hydroxyl ends.  The REMARK 951 header names the design,
-    the segments and the junctions.  These are starting models: minimise before production.
+    residues numbered from 1 in each chain (:func:`chain_count`).  A bridging phosphate is a HETATM residue PO2
+    (P, OP1, OP2; ATOM in the standard scheme) written as a TER segment of its own after the run before it,
+    with that run's chain id and the number after its last residue, so that sequences (SEQRES, FASTA) leave it
+    out; LINK records for its two O-P bonds and CONECT records for its four bonds.  Residue names follow each
+    residue's hand and nucleic acid in the chosen scheme (the atoms of the CCD's 0DA / 0DT with the
+    components' own names, :func:`mdatk.pdbtools.component_atom_name`); terminal variants only at free strand
+    ends (the residues bonded through a junction get internal names), OP3 only on free 5' ends with
+    ``phosphate5`` (not on a partner strand's 5' end at a junction, which would point at the next segment's end
+    pair: it keeps a 5'-OH), HO5' / HO3' only on free hydroxyl ends.  The model is centred on its heavy atoms (the
+    middle of their bounding box at the origin); :func:`check_chimera` reports a design too long for the PDB
+    coordinate columns before any fit.  The REMARK 951 header names the design, the segments and the
+    junctions.  These are starting models: minimise before production.
 
 Everything runs locally; nothing here calls an external program.
 """
@@ -61,13 +78,14 @@ import math
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from . import builder, pdbtools
 from .builder import BuildError
-from .modelcheck import template_bonds
+from .modelcheck import CLASH_TOL, VDW, template_bonds
 from .pdbtools import Atom, Residue, Structure
 
 LINK_KINDS = ("3'-5'", "5'-3'", "3'-3'", "5'-5'")
@@ -77,12 +95,21 @@ HANDS = ("D", "L")
 LINK_BOND = 1.60  # Å, O3'-P of a phosphodiester, O-P of both bonds of a bridge
 C_O_P = 119.7  # degrees, C3'-O3'-P (a 5'-5' bridge: C5'-O5'-P)
 O_P_O = 104.0  # degrees, O3'-P-O5' (bridges: O3'-P-O3', O5'-P-O5')
+O_P_OP = 109.5  # degrees, O3'-P-OP1 / OP2 of the builder's ideal helices (the rebuilt phosphate: about 108)
 STACK = 3.6  # Å, centroids of the two end pairs
 CLASH = 3.2  # Å, heavy atoms of a new segment from every atom already placed
 CLOSE = {"rna": 3.0, "dna": 3.2}  # Å, pairs four or five bonds apart through the junction (DNA: both sides DNA)
 BRIDGE_CLASH = 2.9  # Å, a bridging phosphate from every atom but its two oxygens and their carbons
-OP_BOND = 1.48  # Å, P-OP1 / P-OP2 of a bridge
-OP_HALF_ANGLE = 56.0  # degrees, half the OP1-P-OP2 angle of a bridge (112)
+QC_MARGIN = 0.1  # Å beyond the model check's clash distance (modelcheck.VDW, CLASH_TOL) of pairs >= 4 bonds apart
+H_CONTACT = {"hh": builder.CONTACT_FIT["hh"], "hx": builder.CONTACT_FIT["hx"]}  # Å, H-H and H-heavy contacts
+OP_BOND = builder._GEOM["P-OP"]  # Å, P-OP1 / P-OP2 of a rebuilt phosphate (a bridge, a junction's P residue)
+OP_ANGLE = builder._GEOM["OP-P-OP"]  # degrees, OP1-P-OP2 of a rebuilt phosphate
+# a junction of the written model off its targets by more than this is named in a WARNING note: Å for the O-P
+# bonds, degrees for the angles, Å beyond STACK for the end pairs of a phosphodiester (an ideal helix puts a
+# single-strand end 4.0-5.2 Å from the next pair), Å inside the contact distance of a pair four or more bonds apart
+# (the model check's clash distance for C-C pairs four or five bonds apart and every pair with a P)
+CLOSED = {"bond": 0.05, "angle": 10.0, "stack": 2.5, "contact": 0.1}
+PDB_REACH = 999.999  # Å: the PDB coordinate columns (8.3f) hold -999.999 .. 9999.999: a centred model reaches this
 FLEX_PRIOR = 0.3  # per radian of a gamma / beta turn (DNA phosphodiesters)
 SPINS = tuple(float(a) for a in range(0, 360, 20))  # degrees about the helix axis of the previous segment
 TILTS_RIGID = (0.0, 180.0)  # degrees about x: a rigid phosphodiester
@@ -92,8 +119,9 @@ MAX_NFEV = (300, 600)  # function evaluations of the two phases
 MAX_ATOMS = 99_999  # atoms and TER records: the PDB serial field, so that the CONECT records stay unambiguous
 # weights: per Å or radian of the junction terms, per Å of a contact.  The O3'-P of a phosphodiester is as stiff
 # as a bridge's O-P bonds (the first chimeras weighted it 1 per Å: a D/L B-DNA junction then stretched it to
-# 1.7-1.8 Å for its stacking wish; the A-form RNA ones closed anyway)
-_W_LINK = (10.0, 2.0, 2.0)  # O3'-P, C3'-O3'-P, O3'-P-O5'
+# 1.7-1.8 Å for its stacking wish; the A-form RNA ones closed anyway), and so are its angles: at 2 per radian a
+# junction that cannot stack gave up 12-25 degrees of C3'-O3'-P or O3'-P-O5' for it, at 4 it gives up the stacking
+_W_LINK = (10.0, 4.0, 4.0)  # O3'-P, C3'-O3'-P, O3'-P-O5'
 _W_BRIDGE = (10.0, 4.0, 4.0)  # both O-P, both C-O-P, O-P-O
 _W_STACK = {"link": 0.5, "bridge": 0.15}  # head-to-head ends of a bridge: stacking is a wish
 _W_CONTACT = 3.0
@@ -106,6 +134,13 @@ _BACKBONE = frozenset({"P", "OP1", "OP2", "OP3", "O5'", "C5'", "C4'", "O4'", "C3
 _GAMMA = ("O5'", "H5'", "H5''", "P", "OP1", "OP2", "OP3")  # substituents of C5' but C4', and beyond O5'
 _BETA = ("P", "OP1", "OP2", "OP3")  # P and beyond
 _FAR = 99  # bond separation of atoms not reached by a search
+_ELEMENTS = {"C": 0, "N": 1, "O": 2, "P": 3, "H": 4}  # element codes of the contact model (others: as carbon)
+_H = _ELEMENTS["H"]
+_RADII = np.array([VDW[e] for e in _ELEMENTS])
+# the closest a pair of heavy atoms (codes) four or more bonds apart may come in a fit: the model check's clash
+# distance (it counts a pair VDW[a] + VDW[b] - CLASH_TOL or closer) plus QC_MARGIN
+_QC_LIMIT = _RADII[:, None] + _RADII[None, :] - CLASH_TOL + QC_MARGIN
+_REACH = max(CLASH, max(CLOSE.values()), BRIDGE_CLASH, float(_QC_LIMIT[:4, :4].max()), *H_CONTACT.values())
 
 Progress = Optional[Callable[[float, str], None]]
 Cancel = Optional[Callable[[], bool]]
@@ -264,6 +299,14 @@ def describe(design, na: str = "rna") -> str:
     return "-".join(out)
 
 
+def _partner_end5(end3: str) -> str:
+    """The 5' end of a segment's partner strand: 'nick' where it faces a junction (it pairs with strand 1's 3' end,
+    so it does when that end is bonded), 'free' otherwise.  A nick end keeps a 5'-OH even with ``phosphate5``: a
+    phosphate there points at the next segment's end pair, where the stacking puts it in the way (a one base
+    pair segment between two of them could not close)."""
+    return "nick" if end3 == "bonded" else "free"
+
+
 def _ends(links: Sequence[str], read: Sequence[bool], k: int) -> Tuple[str, str]:
     """(5' end, 3' end) of strand 1 of segment ``k``: 5' 'free', 'p' (it carries the P of a phosphodiester)
     or 'bridge' (its O5' is bonded to a bridging phosphate); 3' 'free' or 'bonded'."""
@@ -289,11 +332,13 @@ def _atom_count(segments: Sequence[Segment], links: Sequence[str], hydrogens: bo
     total = 3 * sum(link in BRIDGES for link in links)
     for k, seg in enumerate(segments):
         end5, end3 = _ends(links, read, k)
-        strands = [(seg.sequence, end5, end3)] + ([(seg.partner, "free", "free")] if seg.partner else [])
+        strands = [(seg.sequence, end5, end3)] + ([(seg.partner, _partner_end5(end3), "free")] if seg.partner else [])
         for seq, e5, e3 in strands:
             total += sum(len(builder.template(b, hydrogens, seg.na)) for b in seq)
             if e5 == "free":
                 total += 1 if phosphate5 else -3 + int(hydrogens)  # OP3, or a 5'-OH (HO5')
+            elif e5 == "nick":
+                total += -3 + int(hydrogens)  # a 5'-OH even with phosphate5
             elif e5 == "bridge":
                 total -= 3
             if e3 == "free" and hydrogens:
@@ -305,14 +350,67 @@ def _chain_count(segments: Sequence[Segment], links: Sequence[str]) -> int:
     return 1 + sum(link in BRIDGES for link in links) + sum(s.partner is not None for s in segments)
 
 
-def check_chimera(text: str, na: str = "rna", hydrogens: bool = False, phosphate5: bool = False
+def chain_count(design, na: str = "rna") -> int:
+    """The chains a design writes (the chain ids ``chains`` of :func:`build_chimera` must name): the strand-1 runs
+    between the 3'-3' / 5'-5' links, then the partner strands.  A bridge's PO2 is a TER segment of its own with
+    the chain id of the run before it, so it adds none.  ``design``: as :func:`build_chimera` takes it; raises
+    :class:`BuildError` for a design that does not parse."""
+    segments, links = _design(design, na)
+    return _chain_count(segments, links)
+
+
+def _ter_count(segments: Sequence[Segment], links: Sequence[str]) -> int:
+    """TER records of the model: one per chain and one per PO2 segment."""
+    return _chain_count(segments, links) + sum(link in BRIDGES for link in links)
+
+
+@lru_cache(maxsize=None)
+def _level_span(na: str, paired: bool) -> float:
+    """Å along the helix axis of one level of a segment (a base pair or a nucleotide), hydrogens and a
+    5'-phosphate included: a segment of n levels spans this plus n - 1 rises."""
+    s = pdbtools.read_pdb(builder.build_helix("G", "auto" if paired else "none", na=na, hydrogens=True,
+                                              phosphate5=True))
+    z = [a.xyz[2] for r in s.residues() for a in r.atoms]
+    return float(max(z) - min(z))
+
+
+def _extent(segments: Sequence[Segment], links: Sequence[str]) -> float:
+    """Å from end to end of the chimera with its segments stacked in a straight line (more than a fit gives):
+    every segment's span along its axis, and per junction 12 Å for the end pairs (a bridge's may lie 11 Å
+    apart)."""
+    out = 12.0 * len(links)
+    for seg in segments:
+        rise = builder.DNA_RISE if seg.na == "dna" else builder.RISE
+        out += (len(seg.sequence) - 1) * rise + _level_span(seg.na, seg.partner is not None)
+    return out
+
+
+def _check_extent(segments: Sequence[Segment], links: Sequence[str]) -> None:
+    extent = _extent(segments, links)
+    if extent > 2.0 * (PDB_REACH - 1.0):
+        raise BuildError(f"too long: the segments end to end reach about {extent:.0f} Å, and a PDB file holds "
+                         f"{2.0 * PDB_REACH:.0f} Å of a model centred at the origin (coordinates from -999.999 Å): "
+                         "shorten the segments")
+
+
+def _check_chains(chains, count: int) -> None:
+    if chains is not None and not (isinstance(chains, str) and not chains.strip()):
+        _chain_ids(chains, count)
+
+
+def check_chimera(text: str, na: str = "rna", hydrogens: bool = False, phosphate5: bool = False, chains=None
                   ) -> List[Tuple[str, str]]:
     """Design-level messages [(level, text)] (levels 'error', 'warning', 'info'), as
-    :func:`mdatk.builder.check_helix`: the design as read, the base pairs of every segment, the size."""
+    :func:`mdatk.builder.check_helix`: the design as read, the base pairs of every segment, the size and the
+    extent (a model too long for the PDB coordinate columns is an error before any fit).  ``chains``: chain ids
+    as :func:`build_chimera` takes them (None or '': A, B, C ...), checked with the same rule (one single
+    character per chain of :func:`chain_count`, all different)."""
     try:
         segments, links, notes = parse_design(text, na)
         atoms = _atom_count(segments, links, hydrogens, phosphate5)
-        _check_size(atoms, _chain_count(segments, links))
+        _check_size(atoms, _ter_count(segments, links), _chain_count(segments, links))
+        _check_extent(segments, links)
+        _check_chains(chains, _chain_count(segments, links))
     except BuildError as exc:
         return [("error", str(exc))]
     out = [("info", f"{describe((segments, links))}: {len(segments)} segments, {len(links)} link(s) "
@@ -339,9 +437,9 @@ def _pair_messages(seg: Segment) -> List[Tuple[str, str]]:
     return out
 
 
-def _check_size(atoms: int, chains: int) -> None:
-    if atoms + chains > MAX_ATOMS:
-        raise BuildError(f"too many atoms: {atoms} atoms and {chains} TER records do not fit the {MAX_ATOMS} serial "
+def _check_size(atoms: int, ters: int, chains: int) -> None:
+    if atoms + ters > MAX_ATOMS:
+        raise BuildError(f"too many atoms: {atoms} atoms and {ters} TER records do not fit the {MAX_ATOMS} serial "
                          "numbers of a PDB file (the CONECT records of the bridges need them unambiguous)")
     if chains > len(pdbtools.CHAIN_IDS):
         raise BuildError(f"too many chains: {chains} (at most {len(pdbtools.CHAIN_IDS)} chain ids)")
@@ -365,36 +463,42 @@ class _Res:
         return self.xyz[self.names.index(name)]
 
 
-def _segment_residues(k: int, seg: Segment, ends: Tuple[str, str], hydrogens: bool, phosphate5: bool
-                      ) -> List[List[_Res]]:
-    """The strands of segment ``k`` as the builder makes them (its helix frame: axis z, centred on the heavy atoms,
-    so that a build with and without hydrogens shares it), with the junction ends: a 5' end that carries the P
-    of a phosphodiester keeps P, OP1, OP2 (no OP3), a bridged 5' end has none (and no HO5'), a bonded 3' end no
-    HO3'; free ends as asked for (``phosphate5``: P, OP1, OP2, OP3; otherwise a 5'-OH)."""
-    kw = dict(chirality=seg.chirality, na=seg.na, hydrogens=hydrogens, center=False)
+def _segment_residues(k: int, seg: Segment, ends: Tuple[str, str], phosphate5: bool) -> List[List[_Res]]:
+    """The strands of segment ``k`` as the builder makes them, hydrogens included, atoms by their standard names
+    (its helix frame: axis z, centred on the heavy atoms), with the junction ends: a 5' end that carries the P of
+    a phosphodiester keeps P, OP1, OP2 (no OP3), a bridged 5' end has none (and no HO5'), a bonded 3' end no
+    HO3', the partner's 5' end at a junction a 5'-OH (:func:`_partner_end5`); free ends as asked for
+    (``phosphate5``: P, OP1, OP2, OP3; otherwise a 5'-OH with the HO5' the builder gives one).  One build with
+    every 5'-phosphate, centred by the builder (a long segment fits the PDB columns); the 5'-OH ends drop theirs."""
     partner = seg.partner if seg.partner is not None else "none"
-    with_p = pdbtools.read_pdb(builder.build_helix(seg.sequence, partner, phosphate5=True, **kw))
-    plain = pdbtools.read_pdb(builder.build_helix(seg.sequence, partner, phosphate5=False, **kw))
+    built = pdbtools.read_pdb(builder.build_helix(seg.sequence, partner, seg.chirality, na=seg.na, hydrogens=True,
+                                                  phosphate5=True))
     end5, end3 = ends
     strands: List[List[_Res]] = []
-    for si, (res_p, res_plain) in enumerate(zip(with_p.segments, plain.segments)):
+    for si, residues in enumerate(built.segments):
         seq = seg.sequence if si == 0 else seg.partner
         out = []
-        for j, (rp, rh) in enumerate(zip(res_p, res_plain)):
-            e5 = (end5 if si == 0 else "free") if j == 0 else None
-            e3 = (end3 if si == 0 else "free") if j == len(res_plain) - 1 else None
-            source, drop = rh, set()
-            if e5 == "free" and phosphate5:
-                source = rp
-            elif e5 == "p":
-                source, drop = rp, {"OP3"}
-            elif e5 == "bridge":
-                drop = {"HO5'"}
+        for j, res in enumerate(residues):
+            e5 = (end5 if si == 0 else _partner_end5(end3)) if j == 0 else None
+            e3 = (end3 if si == 0 else "free") if j == len(residues) - 1 else None
+            hydroxyl = e5 == "nick" or (e5 == "free" and not phosphate5)  # a 5'-OH
+            drop = set()
+            if e5 == "p":
+                drop = {"OP3"}
+            elif e5 == "bridge" or hydroxyl:
+                drop = {"P", "OP1", "OP2", "OP3"}
             if e3 == "bonded":
                 drop.add("HO3'")
-            atoms = [a for a in source.atoms if a.name not in drop]
-            out.append(_Res(k, si, j, seq[j], seg.chirality, seg.na, [a.name for a in atoms],
-                            np.array([a.xyz for a in atoms], dtype=np.float64)))
+            atoms = [(pdbtools.standard_atom_name(res.name, a.name), np.array(a.xyz, dtype=np.float64))
+                     for a in res.atoms]
+            atoms = [(name, xyz) for name, xyz in atoms if name not in drop]
+            if hydroxyl:  # HO5' as builder._strand_residue places it, before HO3'
+                at = dict(atoms)
+                ho5 = builder._place(at["C4'"], at["C5'"], at["O5'"], builder.BOND_H["oh"], 109.5, 180.0)
+                where = next((i for i, (name, _x) in enumerate(atoms) if name == "HO3'"), len(atoms))
+                atoms.insert(where, ("HO5'", ho5))
+            out.append(_Res(k, si, j, seq[j], seg.chirality, seg.na, [name for name, _x in atoms],
+                            np.array([xyz for _n, xyz in atoms], dtype=np.float64)))
         strands.append(out)
     heavy = np.vstack([r.xyz[[not n.startswith("H") for n in r.names]] for st in strands for r in st])
     mid = 0.5 * (heavy[:, 2].min() + heavy[:, 2].max())
@@ -404,8 +508,23 @@ def _segment_residues(k: int, seg: Segment, ends: Tuple[str, str], hydrogens: bo
     return strands
 
 
+def _heavy_only(strands: List[List[_Res]]) -> None:
+    """Drop the hydrogens of built strands (in place)."""
+    for st in strands:
+        for r in st:
+            keep = [i for i, n in enumerate(r.names) if not n.startswith("H")]
+            r.names = [r.names[i] for i in keep]
+            r.xyz = r.xyz[keep]
+
+
+def _codes(names: Sequence[str]) -> np.ndarray:
+    """Element codes (``_ELEMENTS``) of atom names."""
+    return np.array([_ELEMENTS.get(builder._element(n), 0) for n in names], dtype=np.int64)
+
+
 class _Part:
-    """The heavy atoms of one segment (its local frame) with their bond graph, for the fit."""
+    """The atoms of one segment (its local frame), hydrogens included when it has them, with their bond graph
+    (each hydrogen bonded to the nearest heavy atom of its residue), for the fit and the reports."""
 
     def __init__(self, k: int, strands: List[List[_Res]]):
         self.k = k
@@ -416,25 +535,37 @@ class _Part:
         for st in strands:
             for r in st:
                 for name, xyz in zip(r.names, r.xyz):
-                    if not name.startswith("H"):
-                        self.keys.append((k, r.strand, r.index, name))
-                        rows.append(xyz)
-        self.local = np.array(rows, dtype=np.float64)
+                    self.keys.append((k, r.strand, r.index, name))
+                    rows.append(xyz)
+        self.local = np.array(rows, dtype=np.float64).reshape(-1, 3)
+        self.code = _codes([key[3] for key in self.keys])
         self.index = {key[1:]: i for i, key in enumerate(self.keys)}
         self.adj: List[List[int]] = [[] for _ in self.keys]
         for st in strands:
             for r in st:
                 for a, b in template_bonds(r.base):
                     self._bond((r.strand, r.index, a), (r.strand, r.index, b))
+                self._bond_hydrogens(r)
             for r1, r2 in zip(st, st[1:]):
                 self._bond((r1.strand, r1.index, "O3'"), (r2.strand, r2.index, "P"))
-        self.centre = self.local.mean(axis=0)  # the rotation centre of a rigid placement
-        self.span = float(self.local[:, 2].max() - self.local[:, 2].min())
+        heavy = self.local[self.code != _H]
+        self.centre = heavy.mean(axis=0)  # the rotation centre of a rigid placement
+        self.span = float(heavy[:, 2].max() - heavy[:, 2].min())
         self.base_rows = {}
         for st in strands:
             for r in st:
                 self.base_rows[(r.strand, r.index)] = [self.index[(r.strand, r.index, n)] for n in r.names
                                                        if not n.startswith("H") and n not in _BACKBONE]
+
+    def _bond_hydrogens(self, r: _Res) -> None:
+        hyd = [i for i, n in enumerate(r.names) if n.startswith("H")]
+        heavy = [i for i, n in enumerate(r.names) if not n.startswith("H")]
+        if not hyd or not heavy:
+            return
+        d = np.linalg.norm(r.xyz[hyd][:, None] - r.xyz[heavy][None], axis=-1)
+        for h, row in zip(hyd, d):
+            if row.min() < 1.35:
+                self._bond((r.strand, r.index, r.names[h]), (r.strand, r.index, r.names[heavy[int(np.argmin(row))]]))
 
     def _bond(self, a, b) -> None:
         i, j = self.index.get(a), self.index.get(b)
@@ -493,17 +624,44 @@ def _angles(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
     return np.arccos(np.clip((u * v).sum(axis=-1) / (_norms(u) * _norms(v)), -1.0, 1.0))
 
 
-def _bridge_oxygens(oa: np.ndarray, ob: np.ndarray, p: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """OP1 / OP2 of a phosphate at ``p`` bonded to ``oa`` and ``ob`` (points (3,) or (B, 3)): 1.48 Å from P, 112
-    degrees apart in the plane that bisects O-P-O, pointing away from both ester oxygens (OP1 on the side of
-    (P - oa) x (P - ob))."""
-    u = (p - oa) / _norms(p - oa)[..., None] + (p - ob) / _norms(p - ob)[..., None]
-    u = u / _norms(u)[..., None]
-    n = builder._cross(p - oa, p - ob)
+def _phosphate_oxygens(oa: np.ndarray, ob: np.ndarray, p: np.ndarray, sign: float = 1.0
+                       ) -> Tuple[np.ndarray, np.ndarray]:
+    """OP1 / OP2 of a phosphate at ``p`` bonded to the ester oxygens ``oa`` and ``ob`` (points (3,) or (B, 3)),
+    as :func:`mdatk.builder._phosphate_oxygens` rebuilds one: OP_BOND from P, OP_ANGLE apart in the plane that
+    bisects oa-P-ob, pointing away from both.  ``sign`` +1: OP1 on the side of (oa - P) x (ob - P), the OP1 of a
+    D nucleotide for oa = O3' (of the residue before) and ob = O5' (vol(P; O3', O5', OP1) > 0), and of a
+    bridge; -1: the other side (an L nucleotide)."""
+    u1 = (oa - p) / _norms(oa - p)[..., None]
+    u2 = (ob - p) / _norms(ob - p)[..., None]
+    bis = -(u1 + u2)
+    bis = bis / _norms(bis)[..., None]
+    n = builder._cross(u1, u2)
     n = n / _norms(n)[..., None]
-    half = math.radians(OP_HALF_ANGLE)
-    return (p + OP_BOND * (math.cos(half) * u + math.sin(half) * n),
-            p + OP_BOND * (math.cos(half) * u - math.sin(half) * n))
+    half = math.radians(OP_ANGLE / 2.0)
+    along, across = OP_BOND * math.cos(half), sign * OP_BOND * math.sin(half)
+    return p + along * bis + across * n, p + along * bis - across * n
+
+
+def _contact_limits(sep: np.ndarray, ca: np.ndarray, cb: np.ndarray, close: float) -> np.ndarray:
+    """Contact distances (Å; NaN: not scored) of atom pairs ``sep`` bonds apart through a junction with the
+    element codes ``ca`` and ``cb``: heavy atoms ``close`` (four or five bonds) or CLASH (six or more), at least
+    the model check's clash distance plus QC_MARGIN; H-H and H-heavy pairs H_CONTACT; pairs up to three bonds
+    apart are not scored."""
+    sep, ca, cb = np.asarray(sep), np.asarray(ca), np.asarray(cb)
+    ha, hb = ca == _H, cb == _H
+    heavy = np.maximum(np.where(sep >= 6, CLASH, close), _QC_LIMIT[ca, cb])
+    out = np.where(ha & hb, H_CONTACT["hh"], np.where(ha | hb, H_CONTACT["hx"], heavy))
+    return np.where(sep <= 3, np.nan, out)
+
+
+def _bridge_limits(bsep: np.ndarray, cb: np.ndarray, cx: np.ndarray) -> np.ndarray:
+    """Contact distances of the atoms of a bridge (P, OP1, OP2: codes ``cb``) and atoms ``bsep`` bonds from them
+    (codes ``cx``): not scored up to two bonds; heavy atoms BRIDGE_CLASH, from four bonds at least the model
+    check's clash distance plus QC_MARGIN; hydrogens H-heavy from four bonds."""
+    bsep, cb, cx = np.asarray(bsep), np.asarray(cb), np.asarray(cx)
+    heavy = np.where(bsep >= 4, np.maximum(BRIDGE_CLASH, _QC_LIMIT[cb, cx]), BRIDGE_CLASH)
+    out = np.where(cx == _H, np.where(bsep >= 4, H_CONTACT["hx"], np.nan), heavy)
+    return np.where(bsep <= 2, np.nan, out)
 
 
 _STEP = float(np.finfo(np.float64).eps) ** 0.5
@@ -525,20 +683,22 @@ def _dihedral(a, b, c, d) -> float:
 # --- the structure built so far -------------------------------------------------------------------------
 
 class _Placed:
-    """Heavy atoms placed so far (world frame) with their bond graph; keys (segment, strand, index, name) for
-    nucleotides, ('PO2', junction, name) for a bridge."""
+    """Atoms placed so far (world frame; hydrogens included when the parts have them) with their bond graph and
+    element codes; keys (segment, strand, index, name) for nucleotides, ('PO2', junction, name) for a bridge."""
 
     def __init__(self):
         self.xyz = np.zeros((0, 3))
         self.keys: List[tuple] = []
         self.adj: List[List[int]] = []
         self.index: Dict[tuple, int] = {}
+        self.code = np.zeros(0, dtype=np.int64)
 
     def add(self, keys: Sequence[tuple], xyz: np.ndarray, adj: Sequence[Sequence[int]] = ()) -> int:
         off = len(self.keys)
         self.xyz = np.vstack([self.xyz, np.asarray(xyz, dtype=np.float64).reshape(-1, 3)])
         self.keys += list(keys)
         self.adj += [[off + j for j in nb] for nb in adj] if adj else [[] for _ in keys]
+        self.code = np.concatenate([self.code, _codes([key[-1] for key in keys])])
         for i, key in enumerate(keys):
             self.index[key] = off + i
         return off
@@ -552,20 +712,25 @@ class _Placed:
 @dataclass
 class _Report:
     """What a junction looks like in the written model (distances in Å, angles in degrees)."""
-    bonds: List[Tuple[str, str, float]]  # (atom key a, atom key b, length) as keys of _Placed
-    angles: List[Tuple[str, float]]  # (label, degrees)
+    bonds: List[Tuple[tuple, tuple, float]]  # (atom key a, atom key b, length) as keys of _Placed
+    angles: List[Tuple[str, float, float]]  # (label, degrees, target)
     stack: float
     contact: Tuple[float, tuple, tuple]  # closest heavy-atom contact between the segments: (distance, key, key)
+    contact_h: Optional[Tuple[float, tuple, tuple]] = None  # ... with a hydrogen (a model with hydrogens)
     bridge_contact: Optional[Tuple[float, tuple, tuple]] = None
+    # the heavy-atom pair farthest inside its contact distance (the fit's): (excess, distance, limit, key, key)
+    worst: Optional[Tuple[float, float, float, tuple, tuple]] = None
     flex: Optional[Tuple[float, float, float, float]] = None  # gamma turn, beta turn, gamma, beta (degrees)
     flexed: Optional[tuple] = None  # (segment, strand, index) of the residue whose gamma / beta turned
 
 
 class _Junction:
-    """The fit of segment ``j + 1`` onto the structure built so far (``placed``) through link ``j``."""
+    """The fit of segment ``j + 1`` onto the structure built so far (``placed``) through link ``j``; ``nas`` and
+    ``hands``: the nucleic acids and hands of the two segments."""
 
     def __init__(self, j: int, link: str, placed: _Placed, prev: _Part, new: _Part, read: Sequence[bool],
-                 frame: Tuple[np.ndarray, np.ndarray, np.ndarray], nas: Tuple[str, str]):
+                 frame: Tuple[np.ndarray, np.ndarray, np.ndarray], nas: Tuple[str, str],
+                 hands: Tuple[str, str] = ("D", "D")):
         self.j, self.link, self.placed, self.prev, self.new = j, link, placed, prev, new
         self.bridge = link in BRIDGES
         self.ia = prev.n - 1 if read[j] else 0  # junction residue of the previous segment (strand 1)
@@ -573,12 +738,18 @@ class _Junction:
         ka = lambda name: placed.index[(prev.k, 0, self.ia, name)]  # noqa: E731
         kb = lambda name: new.index[(0, self.ib, name)]  # noqa: E731
         self.close = CLOSE["dna" if nas == ("dna", "dna") else "rna"]
+        self.flex: Optional[str] = None
+        self.p_side: Optional[str] = None
+        self.gamma_rows: List[int] = []
+        self.beta_rows: List[int] = []
+        # rows that the fit moves within their own segment (the gamma / beta turn, the rebuilt phosphate oxygens):
+        # rows of placed for a 5'-3' link (p_side 'a'), of the new segment for a 3'-5' link
+        self.own_rows: List[int] = []
         # which side carries what
         if self.bridge:
             o, c = ("O3'", "C3'") if link == "3'-3'" else ("O5'", "C5'")
             self.oa, self.ca, self.ob, self.cb = ka(o), ka(c), kb(o), kb(c)
             self.ja, self.jb, self.span_bonds = self.oa, self.ob, 2
-            self.flex = None
         else:
             p_side = "b" if link == "3'-5'" else "a"
             get = kb if p_side == "b" else ka
@@ -586,15 +757,17 @@ class _Junction:
             self.p_side = p_side
             self.o3, self.c3 = other("O3'"), other("C3'")
             self.p, self.o5, self.c5, self.c4 = get("P"), get("O5'"), get("C5'"), get("C4'")
+            self.op = (get("OP1"), get("OP2"))
             self.ja, self.jb = (self.o3, self.p) if p_side == "b" else (self.p, self.o3)
             self.span_bonds = 1
-            p_na = nas[1] if p_side == "b" else nas[0]
+            p_na, p_hand = (nas[1], hands[1]) if p_side == "b" else (nas[0], hands[0])
+            self.op_sign = 1.0 if p_hand == "D" else -1.0  # OP1 / OP2 named by the hand of the residue with the P
             self.flex = p_side if p_na == "dna" else None  # an RNA phosphodiester stays rigid
-            if self.flex:  # the residue that carries the P: (table, its row keys)
-                table, res = ((new.index, (0, self.ib)) if self.flex == "b" else
-                              (placed.index, (prev.k, 0, self.ia)))
+            table, res = (new.index, (0, self.ib)) if p_side == "b" else (placed.index, (prev.k, 0, self.ia))
+            if self.flex:  # the residue that carries the P
                 self.gamma_rows = [table[res + (n,)] for n in _GAMMA if res + (n,) in table]
                 self.beta_rows = [table[res + (n,)] for n in _BETA if res + (n,) in table]
+            self.own_rows = sorted(set(self.gamma_rows) | set(self.op))
         # the frame of the previous segment: the start places the new one beyond its free end
         rot_prev, centre_prev, shift_prev = frame
         self.rot_prev = rot_prev
@@ -608,31 +781,38 @@ class _Junction:
                                                   for rows in prev.pair_rows(self.ia)])
         self.stack_rows = new.pair_rows(self.ib)
         self.stack2_local = _pair_centroid(new.local, self.stack_rows)
-        # the contacts: static atoms (all placed but the turning ones of a 5'-3' link), mobile atoms
+        # the contacts: static atoms (all placed but the ones a 5'-3' link moves), mobile atoms
         nf = len(placed.keys)
-        self.flex_fixed = list(self.gamma_rows) if self.flex == "a" else []
+        self.side_rows = list(self.own_rows) if self.p_side == "a" else []  # rows of placed that move
+        self.side_index = {row: k for k, row in enumerate(self.side_rows)}
         static = np.ones(nf, dtype=bool)
-        static[self.flex_fixed] = False
+        static[self.side_rows] = False
         self.static_rows = np.nonzero(static)[0]
         from scipy.spatial import cKDTree
         self.tree = cKDTree(placed.xyz[self.static_rows])
         self.d_fixed = _separations(placed.adj, self.ja, nf)
         self.d_new = _separations(new.adj, self.jb, len(new.keys))
         nm = len(new.keys)
-        self.n_mobile = nm + len(self.flex_fixed) + (3 if self.bridge else 0)
-        # per mobile row: what it is (0 new segment, 1 turning atom of the structure so far, 2 bridge P, 3 OP)
+        self.n_mobile = nm + len(self.side_rows) + (3 if self.bridge else 0)
+        # per mobile row: what it is (0 new segment, 1 moving atom of the structure so far, 2 bridge P, 3 OP) and
+        # its element code
         self.kind = np.zeros(self.n_mobile, dtype=np.int64)
-        self.kind[nm:nm + len(self.flex_fixed)] = 1
+        self.kind[nm:nm + len(self.side_rows)] = 1
+        bridge_codes = [_ELEMENTS["P"], _ELEMENTS["O"], _ELEMENTS["O"]] if self.bridge else []
+        self.code = np.concatenate([new.code, placed.code[self.side_rows], np.array(bridge_codes, dtype=np.int64)])
         if self.bridge:
             self.kind[-3] = 2
             self.kind[-2:] = 3
-        self.within: Dict[int, np.ndarray] = {}  # bond separations of turning atoms from their own side
-        if self.flex == "a":
-            for i in self.flex_fixed:
+        self.within: Dict[int, np.ndarray] = {}  # bond separations of the moving atoms within their own side
+        if self.p_side == "a":
+            for i in self.side_rows:
                 self.within[i] = _separations(placed.adj, i, nf)
-        elif self.flex == "b":
-            for i in self.gamma_rows:
+        elif self.p_side == "b":
+            for i in self.own_rows:
                 self.within[i] = _separations(new.adj, i, nm)
+        # the mobile rows that do not move with the new segment as a rigid body (``_special``)
+        self.special_rows = (np.array(self.own_rows, dtype=np.int64) if self.p_side == "b" else
+                             np.arange(nm, self.n_mobile, dtype=np.int64))
         self.evaluations = 0
         self.cancel: Cancel = None
 
@@ -718,70 +898,123 @@ class _Junction:
         return out
 
     def mobile(self, X: np.ndarray) -> np.ndarray:
-        """Every atom the fit moves (B, N, 3): the new segment, then the turning atoms of the structure so far
-        (5'-3') or the bridge (P, OP1, OP2)."""
+        """Every atom the fit moves (B, N, 3): the new segment, then the moving atoms of the structure so far
+        (5'-3') or the bridge (P, OP1, OP2).  A phosphodiester's P residue turns its gamma / beta (DNA) and gets
+        its OP1 / OP2 rebuilt from P, O3' and O5' (``_phosphate_oxygens``)."""
+        moved = self._moved(X, self.new.local)
+        rows, special = self._special(X)
+        if self.p_side == "b":
+            moved[:, rows] = special
+            return moved
+        return np.concatenate([moved, special], axis=1)
+
+    def mobile_rows(self, X: np.ndarray, plan) -> np.ndarray:
+        """``mobile(X)[:, rows]`` for the rows of a ``plan`` (``_plan``), moving only those: the refits score the
+        pairs near the junction, a small part of a long segment."""
+        rows, rigid, at, found = plan
+        y = np.empty((len(X), len(rows), 3))
+        y[:, rigid] = self._moved(X, self.new.local[rows[rigid]])
+        if len(at):
+            y[:, at] = self._special(X)[1][:, found]
+        return y
+
+    def _special(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """The mobile rows that do not move with the new segment as a rigid body, and their places (B, s, 3): a 3'-5'
+        link's turning rows and rebuilt phosphate oxygens of the new segment, a 5'-3' link's of the structure so far
+        (rows after the new segment's), or the bridge (P, OP1, OP2)."""
         new, xyz = self.new, self.placed.xyz
-        moved = self._moved(X, new.local)
-        if self.flex == "b":
-            return self._turn(moved, moved[:, self.c4], moved[:, self.c5], self.gamma_rows, self.beta_rows, X)
-        if self.flex == "a":
-            rows = self.flex_fixed
-            local = {r: k for k, r in enumerate(rows)}
-            b = len(X)
-            turned = self._turn(np.broadcast_to(xyz[rows], (b, len(rows), 3)), np.broadcast_to(xyz[self.c4], (b, 3)),
-                                np.broadcast_to(xyz[self.c5], (b, 3)), [local[r] for r in self.gamma_rows],
-                                [local[r] for r in self.beta_rows], X)
-            return np.concatenate([moved, turned], axis=1)
         if self.bridge:
             p = X[:, 6:9]
-            op1, op2 = _bridge_oxygens(xyz[self.oa], moved[:, self.ob], p)
-            return np.concatenate([moved, p[:, None], op1[:, None], op2[:, None]], axis=1)
-        return moved
+            op1, op2 = _phosphate_oxygens(xyz[self.oa], self._moved(X, new.local[[self.ob]])[:, 0], p)
+            return self.special_rows, np.stack([p, op1, op2], axis=1)
+        if self.p_side == "b":
+            rows = list(self.own_rows)
+            order = rows + [r for r in (self.c4, self.c5, self.o5, self.p) if r not in rows]
+            local = {row: k for k, row in enumerate(order)}
+            pts = self._moved(X, new.local[order])
+            if self.flex:
+                pts = self._turn(pts, pts[:, local[self.c4]], pts[:, local[self.c5]],
+                                 [local[r] for r in self.gamma_rows], [local[r] for r in self.beta_rows], X)
+            op1, op2 = _phosphate_oxygens(xyz[self.o3], pts[:, local[self.o5]], pts[:, local[self.p]], self.op_sign)
+            pts[:, local[self.op[0]]], pts[:, local[self.op[1]]] = op1, op2
+            return self.special_rows, pts[:, :len(rows)]
+        rows, local, b = self.side_rows, self.side_index, len(X)
+        side = np.array(np.broadcast_to(xyz[rows], (b, len(rows), 3)))
+        if self.flex:
+            side = self._turn(side, np.broadcast_to(xyz[self.c4], (b, 3)), np.broadcast_to(xyz[self.c5], (b, 3)),
+                              [local[r] for r in self.gamma_rows], [local[r] for r in self.beta_rows], X)
+        p = side[:, local[self.p]] if self.p in local else xyz[self.p]
+        o5 = side[:, local[self.o5]] if self.o5 in local else xyz[self.o5]
+        op1, op2 = _phosphate_oxygens(self._moved(X, new.local[[self.o3]])[:, 0], o5, p, self.op_sign)
+        side[:, local[self.op[0]]], side[:, local[self.op[1]]] = op1, op2
+        return self.special_rows, side
 
-    def _threshold(self, sep: np.ndarray) -> np.ndarray:
+    def _plan(self, rows: np.ndarray):
+        """What ``mobile_rows`` needs for the sorted mobile rows ``rows``: the rows, which of them move rigidly, and
+        where the special rows (``_special``) go: (rows, rigid, positions in rows, indices into the special rows)."""
+        nm = len(self.new.keys)
+        special = self.special_rows
+        at = np.searchsorted(rows, special)
+        found = (at < len(rows)) & (rows[np.minimum(at, len(rows) - 1)] == special) if len(rows) else at < 0
+        rigid = rows < nm
+        rigid[at[found]] = False
+        return rows, rigid, at[found], np.nonzero(found)[0]
+
+    def _limits(self, sep: np.ndarray, ca: np.ndarray, cb: np.ndarray) -> np.ndarray:
         """Contact distances for bond separations through the junction (NaN: not checked)."""
-        out = np.where(sep >= 6, CLASH, self.close)
-        return np.where(sep <= 3, np.nan, out)
+        return _contact_limits(sep, ca, cb, self.close)
 
     def candidates(self, x: np.ndarray):
         """The atom pairs a refit scores near ``x``: the mobile atoms there (N, 3), (mobile rows, static rows,
         contact distances) and (mobile rows, mobile rows, contact distances), pairs within their contact distance
         + _MARGIN."""
         y = self.mobile(x[None])[0]
-        nm = len(self.new.keys)
-        lists = self.tree.query_ball_point(y, CLASH + _MARGIN)
+        new, placed = self.new, self.placed
+        nm = len(new.keys)
+        lists = self.tree.query_ball_point(y, _REACH + _MARGIN)
         yi = np.repeat(np.arange(len(y)), [len(v) for v in lists])
         sj = np.fromiter((s for v in lists for s in v), dtype=np.int64, count=len(yi))
         fj = self.static_rows[sj]  # rows of placed
         thr = np.full(len(yi), np.nan)
         kind = self.kind[yi]
-        new_rows = kind == 0
-        sep = self.d_new[np.minimum(yi, nm - 1)] + self.span_bonds + self.d_fixed[fj]
-        thr[new_rows] = self._threshold(sep[new_rows])
-        if self.flex == "a":  # turning atoms against the rest of their own structure: as in the ideal helix
-            for k, row in enumerate(self.flex_fixed):
-                sel = yi == nm + k
-                d0 = np.linalg.norm(self.placed.xyz[fj[sel]] - self.placed.xyz[row], axis=1)
-                thr[sel] = np.minimum(self._threshold(self.within[row][fj[sel]]), d0)  # NaN stays NaN
+        sel = kind == 0  # the new segment against the structure so far: separations through the junction
+        sep = self.d_new[yi[sel]] + self.span_bonds + self.d_fixed[fj[sel]]
+        thr[sel] = self._limits(sep, self.code[yi[sel]], placed.code[fj[sel]])
+        for k, row in enumerate(self.side_rows):  # moving atoms against the rest of their own structure
+            sel = yi == nm + k
+            d0 = np.linalg.norm(placed.xyz[fj[sel]] - placed.xyz[row], axis=1)  # as in the ideal helix
+            thr[sel] = np.minimum(self._limits(self.within[row][fj[sel]], placed.code[row], placed.code[fj[sel]]),
+                                  d0)  # NaN stays NaN
         if self.bridge:
             sel = kind >= 2
             bsep = np.where(kind[sel] == 2, 1, 2) + self.d_fixed[fj[sel]]
-            thr[sel] = np.where(bsep <= 2, np.nan, BRIDGE_CLASH)
-        dist = np.linalg.norm(y[yi] - self.placed.xyz[fj], axis=1)
+            thr[sel] = _bridge_limits(bsep, self.code[yi[sel]], placed.code[fj[sel]])
+        dist = np.linalg.norm(y[yi] - placed.xyz[fj], axis=1)
         keep = ~np.isnan(thr) & (dist < np.nan_to_num(thr, nan=0.0) + _MARGIN)
         static = (yi[keep], fj[keep], thr[keep])
         # mobile-mobile pairs whose distance the fit changes
         pairs_i, pairs_k, pairs_t = [], [], []
-        if self.flex == "a":  # the turning atoms of the structure so far against the new segment
-            for k, row in enumerate(self.flex_fixed):
+        if self.p_side == "a":
+            for k, row in enumerate(self.side_rows):
+                # against the new segment, through the junction
                 pairs_i.append(np.full(nm, nm + k))
                 pairs_k.append(np.arange(nm))
-                pairs_t.append(self._threshold(self.d_new + self.span_bonds + self.d_fixed[row]))
-        elif self.flex == "b":  # the turning atoms of the new segment against the rest of it
-            for row in self.gamma_rows:
-                d0 = np.linalg.norm(self.new.local - self.new.local[row], axis=1)
-                t = np.minimum(self._threshold(self.within[row]), d0)
-                t[self.gamma_rows] = np.nan
+                pairs_t.append(self._limits(self.d_new + self.span_bonds + self.d_fixed[row], placed.code[row],
+                                            new.code))
+                # against the moving atoms after it, as in the ideal helix
+                later = np.array(self.side_rows[k + 1:], dtype=np.int64)
+                if len(later):
+                    d0 = np.linalg.norm(placed.xyz[later] - placed.xyz[row], axis=1)
+                    pairs_i.append(np.full(len(later), nm + k))
+                    pairs_k.append(nm + np.arange(k + 1, len(self.side_rows)))
+                    pairs_t.append(np.minimum(self._limits(self.within[row][later], placed.code[row],
+                                                           placed.code[later]), d0))
+        elif self.p_side == "b":  # the moving atoms of the new segment against the rest of it (each pair once)
+            own = np.array(self.own_rows, dtype=np.int64)
+            for k, row in enumerate(self.own_rows):
+                d0 = np.linalg.norm(new.local - new.local[row], axis=1)
+                t = np.minimum(self._limits(self.within[row], new.code[row], new.code), d0)
+                t[own[:k + 1]] = np.nan
                 pairs_i.append(np.full(nm, row))
                 pairs_k.append(np.arange(nm))
                 pairs_t.append(t)
@@ -790,7 +1023,7 @@ class _Junction:
                 bsep = (1 if k == 0 else 2) + self.d_new
                 pairs_i.append(np.full(nm, nm + k))
                 pairs_k.append(np.arange(nm))
-                pairs_t.append(np.where(bsep <= 2, np.nan, BRIDGE_CLASH))
+                pairs_t.append(_bridge_limits(bsep, self.code[nm + k], new.code))
         if pairs_i:
             mi, mk, mt = (np.concatenate(v) for v in (pairs_i, pairs_k, pairs_t))
             d = np.linalg.norm(y[mi] - y[mk], axis=1)
@@ -799,12 +1032,15 @@ class _Junction:
         else:
             empty = np.zeros(0, dtype=np.int64)
             mobile = (empty, empty, np.zeros(0))
-        return y, static, mobile
+        # the rows the pairs use, and the pairs by their positions among them
+        rows = np.unique(np.concatenate([static[0], mobile[0], mobile[1]]))
+        where = lambda r: np.searchsorted(rows, r)  # noqa: E731
+        return y, static, mobile, (self._plan(rows), where(static[0]), where(mobile[0]), where(mobile[1]))
 
     def residuals(self, X: np.ndarray, cand) -> np.ndarray:
         """Junction terms and one contact term per scored pair (B, m)."""
-        _y0, (si, sj, st), (mi, mk, mt) = cand
-        y = self.mobile(X)
+        _y0, (_si, sj, st), (_mi, _mk, mt), (plan, si, mi, mk) = cand
+        y = self.mobile_rows(X, plan)
         over = np.concatenate([st - _norms(y[:, si] - self.placed.xyz[sj]), mt - _norms(y[:, mi] - y[:, mk])],
                               axis=1)
         return np.concatenate([self.junction_terms(X), _W_CONTACT * np.clip(over, 0.0, None)], axis=1)
@@ -901,13 +1137,14 @@ def _fit_key(segments: Sequence[Segment], links: Sequence[str], phosphate5: bool
 
 def _fit(segments: Sequence[Segment], links: Sequence[str], phosphate5: bool, tick: Callable[[str], None],
          cancel: Cancel) -> _Fit:
-    """Fit every junction in design order (cached: the fit depends on the design and the 5'-phosphates only)."""
+    """Fit every junction in design order (cached: the fit depends on the design and the 5'-phosphates only; the
+    segments' hydrogens are always in its contacts, written or not)."""
     key = _fit_key(segments, links, phosphate5)
     if key in _FITS:
         _FITS.move_to_end(key)
         return _FITS[key]
     read = _read53(links)
-    parts = [_Part(k, _segment_residues(k, seg, _ends(links, read, k), False, phosphate5))
+    parts = [_Part(k, _segment_residues(k, seg, _ends(links, read, k), phosphate5))
              for k, seg in enumerate(segments)]
     placed = _Placed()
     placed.add(parts[0].keys, parts[0].local, parts[0].adj)
@@ -915,7 +1152,8 @@ def _fit(segments: Sequence[Segment], links: Sequence[str], phosphate5: bool, ti
     xs, costs = [], []
     for j, link in enumerate(links):
         prev, new = parts[j], parts[j + 1]
-        junction = _Junction(j, link, placed, prev, new, read, frames[j], (segments[j].na, segments[j + 1].na))
+        junction = _Junction(j, link, placed, prev, new, read, frames[j], (segments[j].na, segments[j + 1].na),
+                             (segments[j].chirality, segments[j + 1].chirality))
         junction.cancel = cancel
         x, cost = junction.fit(tick)
         _place(placed, junction, x)
@@ -935,8 +1173,8 @@ def _place(placed: _Placed, junction: _Junction, x: np.ndarray) -> None:
     new = junction.new
     nm = len(new.keys)
     placed.add(new.keys, y[:nm], new.adj)
-    if junction.flex == "a":
-        placed.xyz[junction.flex_fixed] = y[nm:]
+    if junction.side_rows:
+        placed.xyz[junction.side_rows] = y[nm:nm + len(junction.side_rows)]
     if junction.bridge:
         keys = [("PO2", junction.j, n) for n in ("P", "OP1", "OP2")]
         placed.add(keys, y[nm:])
@@ -981,10 +1219,11 @@ def _turn_residue(res: _Res, gamma: float, beta: float) -> None:
 
 def _coordinates(segments: Sequence[Segment], links: Sequence[str], fit: _Fit, hydrogens: bool, phosphate5: bool
                  ) -> Tuple[List[List[List[_Res]]], Dict[int, Dict[str, np.ndarray]]]:
-    """Every residue of the design placed as ``fit`` places its heavy atoms (hydrogens carried with their atoms)
-    and the atoms of the bridges by junction."""
+    """Every residue of the design placed as ``fit`` places it (the gamma / beta turns, the rebuilt phosphate
+    oxygens of every phosphodiester junction; hydrogens carried with their atoms, or dropped) and the atoms of
+    the bridges by junction."""
     read = _read53(links)
-    builds = [_segment_residues(k, seg, _ends(links, read, k), hydrogens, phosphate5) for k, seg in enumerate(segments)]
+    builds = [_segment_residues(k, seg, _ends(links, read, k), phosphate5) for k, seg in enumerate(segments)]
     for k, strands in enumerate(builds):
         rot, centre, shift = fit.frames[k]
         for st in strands:
@@ -994,15 +1233,23 @@ def _coordinates(segments: Sequence[Segment], links: Sequence[str], fit: _Fit, h
     for j, link in enumerate(links):
         x = fit.xs[j]
         ia, ib = _junction_residues(segments, links, j)
+        a, b = builds[j][0][ia], builds[j + 1][0][ib]
         if link in BRIDGES:
             o = "O3'" if link == "3'-3'" else "O5'"
             p = np.array(x[6:9])
-            op1, op2 = _bridge_oxygens(builds[j][0][ia].at(o), builds[j + 1][0][ib].at(o), p)
+            op1, op2 = _phosphate_oxygens(a.at(o), b.at(o), p)
             bridges[j] = {"P": p, "OP1": op1, "OP2": op2}
-        else:
-            flexed = _flexed(segments, links, j)
-            if flexed:
-                _turn_residue(builds[flexed[0]][0][flexed[1]], float(x[6]), float(x[7]))
+            continue
+        flexed = _flexed(segments, links, j)
+        if flexed:
+            _turn_residue(builds[flexed[0]][0][flexed[1]], float(x[6]), float(x[7]))
+        o_res, p_res = (a, b) if link == "3'-5'" else (b, a)
+        sign = 1.0 if p_res.hand == "D" else -1.0  # OP1 / OP2 named by the hand of the residue with the P
+        op1, op2 = _phosphate_oxygens(o_res.at("O3'"), p_res.at("O5'"), p_res.at("P"), sign)
+        p_res.xyz[p_res.names.index("OP1")], p_res.xyz[p_res.names.index("OP2")] = op1, op2
+    if not hydrogens:
+        for strands in builds:
+            _heavy_only(strands)
     return builds, bridges
 
 
@@ -1017,11 +1264,33 @@ def _mirror(builds, bridges) -> None:
             atoms[name] = atoms[name] * np.array([-1.0, 1.0, 1.0])
 
 
+def _centre(builds, bridges) -> Tuple[np.ndarray, np.ndarray]:
+    """Move the model so that the bounding box of its heavy atoms is centred at the origin (in place; a model and
+    its mirror image move by mirrored shifts, so they stay exact mirror images); returns the lowest and highest
+    coordinates (x y z) of all its atoms."""
+    rows = [r.xyz[[not n.startswith("H") for n in r.names]] for strands in builds for st in strands for r in st]
+    rows += [np.vstack(list(atoms.values())) for atoms in bridges.values()]
+    heavy = np.vstack(rows)
+    mid = 0.5 * (heavy.min(axis=0) + heavy.max(axis=0))
+    every = []
+    for strands in builds:
+        for st in strands:
+            for r in st:
+                r.xyz = r.xyz - mid
+                every.append(r.xyz)
+    for atoms in bridges.values():
+        for name in atoms:
+            atoms[name] = atoms[name] - mid
+            every.append(atoms[name][None])
+    every = np.vstack(every)
+    return every.min(axis=0), every.max(axis=0)
+
+
 def _layout(segments: Sequence[Segment], links: Sequence[str]
             ) -> List[Tuple[List[Tuple[int, int, int]], Optional[int]]]:
     """The chains as written: per chain its residues (segment, strand, index) 5'->3' and the junction whose PO2
-    is appended to it (None).  The runs of strand 1 between bridges in design order, then the partner strands in
-    segment order."""
+    follows it as a TER segment of its own with the chain's id (None).  The runs of strand 1 between bridges in
+    design order, then the partner strands in segment order."""
     read = _read53(links)
     runs = [[0]]
     for j, link in enumerate(links):
@@ -1072,14 +1341,16 @@ def _label(chain: str, resseq: int) -> str:
 
 
 def _assemble(segments, links, builds, bridges, scheme: str, terminals: bool, ids: Sequence[str]):
-    """The Structure (chains, names, records, PO2 residues), the labels (segment, strand, index) -> (chain, resseq,
-    name), the PO2 of every bridge (junction -> (chain, resseq)) and the residues the name notes list."""
+    """The Structure (chains, names, records, PO2 residues as TER segments of their own), the labels (segment,
+    strand, index) -> (chain, resseq, name), the PO2 of every bridge (junction -> (chain, resseq)) and the
+    residues the name notes list ('terminal': those with a terminal variant of their name)."""
     read = _read53(links)
     ends = [_ends(links, read, k) for k in range(len(segments))]
     s = Structure()
     labels: Dict[Tuple[int, int, int], Tuple[str, int, str]] = {}
     po2: Dict[int, Tuple[str, int]] = {}
-    special: Dict[str, List[Residue]] = {"kept_phosphate": [], "single_l": [], "l_dna": [], "plain_l": []}
+    special: Dict[str, List[Residue]] = {"kept_phosphate": [], "single_l": [], "l_dna": [], "plain_l": [],
+                                         "terminal": []}
     for (items, bridge), chain in zip(_layout(segments, links), ids):
         seg_res: List[Residue] = []
         for number, (k, strand, i) in enumerate(items, 1):
@@ -1089,25 +1360,28 @@ def _assemble(segments, links, builds, bridges, scheme: str, terminals: bool, id
             kept = scheme == "ccd" and r.na == "rna" and r.hand == "L" and term in ("5", "N") and "P" in r.names
             if kept:  # 0A5 ... stand for a 5'-OH end; a 5' end with its phosphate is the CCD component itself
                 term = ""
-            res = Residue(pdbtools.scheme_name(r.base, r.hand, term, scheme, r.na), chain, number, chirality=r.hand)
+            name = pdbtools.scheme_name(r.base, r.hand, term, scheme, r.na)
+            res = Residue(name, chain, number, chirality=r.hand)
             for what, listed in (("kept_phosphate", kept),
                                  ("single_l", scheme == "amber" and term == "N" and r.hand == "L" and r.na == "rna"),
                                  ("l_dna", scheme == "amber" and r.hand == "L" and r.na == "dna"),
-                                 ("plain_l", scheme == "standard" and r.hand == "L")):
+                                 ("plain_l", scheme == "standard" and r.hand == "L"),
+                                 ("terminal", name != pdbtools.scheme_name(r.base, r.hand, "", scheme, r.na))):
                 if listed:
                     special[what].append(res)
-            for atom_name, xyz in zip(r.names, r.xyz):
-                res.atoms.append(Atom("ATOM", atom_name, "", builder._tail(xyz), builder._element(atom_name)))
+            for atom_name, xyz in zip(r.names, r.xyz):  # a CCD component's atoms by its own names (0DA: N9A ...)
+                res.atoms.append(Atom("ATOM", pdbtools.component_atom_name(name, atom_name), "", builder._tail(xyz),
+                                      builder._element(atom_name)))
             labels[(k, strand, i)] = (chain, number, res.name)
             seg_res.append(res)
-        if bridge is not None:
+        s.segments.append(seg_res)
+        if bridge is not None:  # a TER segment of its own: no residue of the chain's sequence
             res = Residue("PO2", chain, len(items) + 1)
             for atom_name in ("P", "OP1", "OP2"):
                 res.atoms.append(Atom("HETATM", atom_name, "", builder._tail(bridges[bridge][atom_name]),
                                       builder._element(atom_name)))
             po2[bridge] = (chain, len(items) + 1)
-            seg_res.append(res)
-        s.segments.append(seg_res)
+            s.segments.append([res])
     return s, labels, po2, special
 
 
@@ -1118,7 +1392,8 @@ def _listed(residues: Sequence[Residue]) -> str:
 def _name_notes(segments, s: Structure, scheme: str, chosen: Optional[str], special, phosphate5: bool,
                 bridges: bool) -> List[str]:
     kinds = list(dict.fromkeys((seg.chirality, seg.na) for seg in segments))
-    po2 = "; the bridging phosphates PO2 HETATM" if bridges else ""
+    record = "ATOM" if scheme == "standard" else "HETATM"  # the standard scheme writes every record ATOM
+    po2 = f"; the bridging phosphates PO2 {record} (TER segments of their own)" if bridges else ""
     if chosen is None:
         if len(kinds) == 1:
             return [f"Residue names {_DEFAULT_NAMES[kinds[0]]}, ATOM records{po2}"]
@@ -1132,9 +1407,10 @@ def _name_notes(segments, s: Structure, scheme: str, chosen: Optional[str], spec
             names.setdefault(kind, [])
             if res.name not in names[kind]:
                 names[kind].append(res.name)
+    terminal = (" - terminal variants at the free strand ends only (the residues bonded through a junction have "
+                "internal names)") if special["terminal"] else ""
     out = [f"Residue names of the {scheme} scheme: " + "; ".join(f"{', '.join(v)} ({k})" for k, v in names.items())
-           + " - terminal variants at the free strand ends only (the residues bonded through a junction have "
-           f"internal names){po2}"]
+           + f"{terminal}{po2}"]
     if special["kept_phosphate"]:
         out.append("5'-terminal L residues with a 5'-phosphate keep the CCD component names (0A ..., which include "
                    "P/OP1/OP2/OP3; the 5' variants 0A5 ... have a 5'-OH): " + _listed(special["kept_phosphate"]))
@@ -1158,7 +1434,8 @@ def _name_notes(segments, s: Structure, scheme: str, chosen: Optional[str], spec
 
 
 def _model_graph(segments, links, builds, bridges) -> Tuple[_Placed, List[_Part]]:
-    """The heavy atoms of the written model with every bond (the junctions' too), for the reports."""
+    """The atoms of the written model (hydrogens when it has them) with every bond (the junctions' too), for the
+    reports."""
     placed = _Placed()
     parts = [_Part(k, strands) for k, strands in enumerate(builds)]
     for part in parts:
@@ -1200,11 +1477,35 @@ def _closest(xyz: np.ndarray, rows_a: np.ndarray, rows_b: np.ndarray, sep: Calla
     return best
 
 
+def _worst(xyz: np.ndarray, rows_a: np.ndarray, rows_b: np.ndarray,
+           limits: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> Optional[Tuple[float, float, float, int, int]]:
+    """The pair of rows_a x rows_b farthest inside its contact distance ``limits(a, b)`` (NaN: not scored):
+    (excess, distance, contact distance, row a, row b), None if no pair is inside."""
+    from scipy.spatial import cKDTree
+
+    if not len(rows_a) or not len(rows_b):
+        return None
+    tree = cKDTree(xyz[rows_a])
+    best: Optional[Tuple[float, float, float, int, int]] = None
+    for k, near in enumerate(tree.query_ball_point(xyz[rows_b], _REACH)):
+        if not near:
+            continue
+        a = rows_a[np.array(near)]
+        b = np.full(len(a), rows_b[k])
+        limit = limits(a, b)
+        d = np.linalg.norm(xyz[a] - xyz[b], axis=1)
+        excess = np.where(np.isnan(limit), -np.inf, np.nan_to_num(limit, nan=0.0) - d)
+        i = int(np.argmax(excess))
+        if excess[i] > 0.0 and (best is None or excess[i] > best[0]):
+            best = (float(excess[i]), float(d[i]), float(limit[i]), int(a[i]), int(b[i]))
+    return best
+
+
 def _report(segments, links, placed: _Placed, parts: List[_Part], j: int, turns: Optional[Tuple[float, float]]
             ) -> _Report:
     link = links[j]
     ia, ib = _junction_residues(segments, links, j)
-    xyz, index = placed.xyz, placed.index
+    xyz, index, code = placed.xyz, placed.index, placed.code
     ka, kb = (j, 0, ia), (j + 1, 0, ib)
     at = lambda key, name: xyz[index[key + (name,)]]  # noqa: E731
     deg = math.degrees
@@ -1213,16 +1514,18 @@ def _report(segments, links, placed: _Placed, parts: List[_Part], j: int, turns:
         pkey = ("PO2", j, "P")
         p = xyz[index[pkey]]
         bonds = [(ka + (o,), pkey, float(_norms(at(ka, o) - p))), (pkey, kb + (o,), float(_norms(p - at(kb, o))))]
-        angles = [(f"{c}-{o}-P", deg(float(_angles(at(ka, c), at(ka, o), p)))),
-                  (f"P-{o}-{c}", deg(float(_angles(p, at(kb, o), at(kb, c))))),
-                  (f"{o}-P-{o}", deg(float(_angles(at(ka, o), p, at(kb, o)))))]
+        angles = [(f"{c}-{o}-P", deg(float(_angles(at(ka, c), at(ka, o), p))), C_O_P),
+                  (f"P-{o}-{c}", deg(float(_angles(p, at(kb, o), at(kb, c)))), C_O_P),
+                  (f"{o}-P-{o}", deg(float(_angles(at(ka, o), p, at(kb, o)))), O_P_O)]
         ja, jb, span = index[ka + (o,)], index[kb + (o,)], 2
     else:
         o_key, p_key = (ka, kb) if link == "3'-5'" else (kb, ka)
-        p = at(p_key, "P")
-        bonds = [(o_key + ("O3'",), p_key + ("P",), float(_norms(at(o_key, "O3'") - p)))]
-        angles = [("C3'-O3'-P", deg(float(_angles(at(o_key, "C3'"), at(o_key, "O3'"), p)))),
-                  ("O3'-P-O5'", deg(float(_angles(at(o_key, "O3'"), p, at(p_key, "O5'")))))]
+        p, o3 = at(p_key, "P"), at(o_key, "O3'")
+        bonds = [(o_key + ("O3'",), p_key + ("P",), float(_norms(o3 - p)))]
+        angles = [("C3'-O3'-P", deg(float(_angles(at(o_key, "C3'"), o3, p))), C_O_P),
+                  ("O3'-P-O5'", deg(float(_angles(o3, p, at(p_key, "O5'")))), O_P_O),
+                  ("O3'-P-OP1", deg(float(_angles(o3, p, at(p_key, "OP1")))), O_P_OP),
+                  ("O3'-P-OP2", deg(float(_angles(o3, p, at(p_key, "OP2")))), O_P_OP)]
         ja, jb = (index[o_key + ("O3'",)], index[p_key + ("P",)]) if link == "3'-5'" else \
             (index[p_key + ("P",)], index[o_key + ("O3'",)])
         span = 1
@@ -1232,15 +1535,34 @@ def _report(segments, links, placed: _Placed, parts: List[_Part], j: int, turns:
     d_a, d_b = _separations(placed.adj, ja, n), _separations(placed.adj, jb, n)
     side = np.array([(key[0] <= j) if key[0] != "PO2" else (key[1] < j) for key in placed.keys])
     new = np.array([key[0] == j + 1 for key in placed.keys])
-    contact = _closest(xyz, np.nonzero(side)[0], np.nonzero(new)[0], lambda a, b: d_a[a] + span + d_b[b], 4)
+    heavy = code != _H
+    through = lambda a, b: d_a[a] + span + d_b[b]  # noqa: E731
+    contact = _closest(xyz, np.nonzero(side & heavy)[0], np.nonzero(new & heavy)[0], through, 4)
     report = _Report(bonds, angles, float(_norms(stack2 - stack1)),
                      (contact[0], placed.keys[contact[1]], placed.keys[contact[2]]))
+    if not heavy.all():  # a model with hydrogens: the closest contact of a hydrogen too
+        best = min(_closest(xyz, np.nonzero(side & ~heavy)[0], np.nonzero(new)[0], through, 4),
+                   _closest(xyz, np.nonzero(side)[0], np.nonzero(new & ~heavy)[0], through, 4))
+        if best[1] >= 0:
+            report.contact_h = (best[0], placed.keys[best[1]], placed.keys[best[2]])
+    # the heavy-atom pair farthest inside its contact distance (the same fit, so the same pair, with or without
+    # hydrogens; the hydrogens' closest contact is ``contact_h``)
+    close = CLOSE["dna" if (segments[j].na, segments[j + 1].na) == ("dna", "dna") else "rna"]
+    worst = [_worst(xyz, np.nonzero(side & heavy)[0], np.nonzero(new & heavy)[0],
+                    lambda a, b: _contact_limits(through(a, b), code[a], code[b], close))]
     if link in BRIDGES:
         rows = np.array([index[("PO2", j, name)] for name in ("P", "OP1", "OP2")])
         others = np.array([i for i, key in enumerate(placed.keys) if not (key[0] == "PO2" and key[1] == j)])
         near = np.minimum(d_a, d_b)  # bonds from the nearer of the two ester oxygens
-        best = _closest(xyz, others, rows, lambda a, b: near[a] + np.where(b == rows[0], 1, 2), 3)
+        bsep = lambda a, b: near[a] + np.where(b == rows[0], 1, 2)  # noqa: E731
+        best = _closest(xyz, others[heavy[others]], rows, bsep, 3)
         report.bridge_contact = (best[0], placed.keys[best[2]], placed.keys[best[1]])
+        worst.append(_worst(xyz, others[heavy[others]], rows, lambda a, b: np.where(bsep(a, b) >= 4, _bridge_limits(
+            bsep(a, b), code[b], code[a]), np.nan)))  # pairs four or more bonds apart, as the model check
+    worst = [w for w in worst if w is not None]
+    if worst:
+        excess, d, limit, a, b = max(worst)
+        report.worst = (excess, d, limit, placed.keys[a], placed.keys[b])
     flexed = _flexed(segments, links, j)
     if flexed and turns is not None:
         key = (flexed[0], 0, flexed[1])
@@ -1273,14 +1595,18 @@ def _junction_note(j: int, link: str, rep: _Report, labels, po2) -> str:
                 f"{rep.angles[2][0]} {rep.angles[2][1]:.1f}°")
     else:
         (o, p, length), = rep.bonds
-        what = (f"Junction {j + 1} ({link}, {name(o)} - {name(p)}): O3'-P {length:.2f} Å, "
-                + ", ".join(f"{label} {value:.1f}°" for label, value in rep.angles))
+        (c_label, c_value, _t), (o_label, o_value, _t), (_l, op1, _t), (_l, op2, _t) = rep.angles
+        what = (f"Junction {j + 1} ({link}, {name(o)} - {name(p)}): O3'-P {length:.2f} Å, {c_label} {c_value:.1f}°, "
+                f"{o_label} {o_value:.1f}°, O3'-P-OP1 / OP2 {op1:.1f}° / {op2:.1f}°")
     if rep.flex is not None:
         g, b, gamma, beta = rep.flex
         what += (f"; gamma of {_res_label(rep.flexed, labels)} turned {g:+.1f}° (now {gamma:.0f}°), beta {b:+.1f}° "
                  f"(now {beta:.0f}°)")
     what += (f"; end pairs {rep.stack:.2f} Å apart (target {STACK:g}); closest heavy-atom contact between the "
              f"segments {rep.contact[0]:.2f} Å ({name(rep.contact[1])} - {name(rep.contact[2])})")
+    if rep.contact_h is not None:
+        what += (f"; closest contact of a hydrogen between the segments {rep.contact_h[0]:.2f} Å "
+                 f"({name(rep.contact_h[1])} - {name(rep.contact_h[2])})")
     if rep.bridge_contact is not None:
         what += (f"; closest contact of the bridging phosphate {rep.bridge_contact[0]:.2f} Å "
                  f"({name(rep.bridge_contact[1])} - {name(rep.bridge_contact[2])})")
@@ -1311,13 +1637,14 @@ def _header(segments, links, reps: List[_Report], labels, po2) -> List[str]:
         name = lambda key: _atom_label(key, labels, po2).replace(" ", ":")  # noqa: E731
         if link in BRIDGES:
             (a, p, la), (_p, b, lb) = rep.bonds
-            (label, a1), (_l, a2), (label_o, a3) = rep.angles
+            (label, a1, _t), (_l, a2, _t), (label_o, a3, _t) = rep.angles
             what = (f"{name(a)}-{name(p)}-{name(b)} (PO2): O-P {la:.2f}/{lb:.2f} A, {label} {a1:.1f}/{a2:.1f}, "
                     f"{label_o} {a3:.1f} DEG")
         else:
             (o, p, length), = rep.bonds
-            what = (f"{name(o)}-{name(p)}: O3'-P {length:.2f} A, "
-                    + ", ".join(f"{label} {value:.1f}" for label, value in rep.angles) + " DEG")
+            (c_label, c_value, _t), (o_label, o_value, _t), (_l, op1, _t), (_l, op2, _t) = rep.angles
+            what = (f"{name(o)}-{name(p)}: O3'-P {length:.2f} A, {c_label} {c_value:.1f}, {o_label} {o_value:.1f}, "
+                    f"O3'-P-OP1/OP2 {op1:.1f}/{op2:.1f} DEG")
         if rep.flex:
             what += f", GAMMA/BETA TURNED {rep.flex[0]:+.1f}/{rep.flex[1]:+.1f}"
         what += f", END PAIRS {rep.stack:.2f} A, CLOSEST {rep.contact[0]:.2f} A"
@@ -1382,6 +1709,25 @@ def _amber_notes(segments, links, s: Structure, labels, po2) -> List[str]:
     return out
 
 
+def _closure_warning(j: int, link: str, rep: _Report, cost: float, labels, po2) -> Optional[str]:
+    """A WARNING note for a junction of the written model off its targets by more than ``CLOSED`` (the O-P
+    bonds, the angles, a phosphodiester's end pairs, the pair farthest inside its contact distance), or None."""
+    misses = [f"O-P {length:.2f} Å (target {LINK_BOND:.2f})" for _a, _b, length in rep.bonds
+              if abs(length - LINK_BOND) > CLOSED["bond"]]
+    misses += [f"{label} {value:.1f}° (target {target:g}°)" for label, value, target in rep.angles
+               if abs(value - target) > CLOSED["angle"]]
+    if link not in BRIDGES and rep.stack > STACK + CLOSED["stack"]:
+        misses.append(f"end pairs {rep.stack:.2f} Å apart (target {STACK:g})")
+    if rep.worst is not None and rep.worst[0] > CLOSED["contact"]:
+        _excess, d, limit, a, b = rep.worst
+        misses.append(f"{_atom_label(a, labels, po2)} - {_atom_label(b, labels, po2)} {d:.2f} Å (contact "
+                      f"distance {limit:.2f})")
+    if not misses:
+        return None
+    return (f"WARNING: junction {j + 1} ({link}) did not close: " + ", ".join(misses) + f"; fit cost {cost:.4f}: "
+            "minimise before use, or change the design (other sequences, longer segments)")
+
+
 def _units(segments: Sequence[Segment], links: Sequence[str]) -> int:
     """Progress steps of one fit: every start and refit of every junction."""
     out = 0
@@ -1399,11 +1745,14 @@ def build_chimera(design, na: str = "rna", scheme: Optional[str] = None, termina
     ``design``: a design string (:func:`parse_design`; ``na`` the nucleic acid of the segments that name none) or
     the (segments, links[, notes]) it parses to.  ``scheme``: residue names as in :mod:`mdatk.pdbtools` (None:
     ``builder.DEFAULT_SCHEME``); ``terminals``: 5'/3' variants at the free strand ends for the schemes that have
-    them; ``hydrogens`` adds all hydrogens (carried with their atoms, never fitted); ``phosphate5`` keeps a
-    5'-phosphate (P, OP1, OP2, OP3) on the free 5' ends.  ``chains``: chain ids ('A,B,C,D' or a list) for the
-    strand-1 chains in design order and then the partner strands in segment order.  ``notes`` (a list) receives
-    the build notes; ``progress(fraction, message)`` is called during the fit and ``cancel()`` returning True
-    stops it with a :class:`BuildError` 'cancelled'."""
+    them; ``hydrogens`` adds all hydrogens (carried with their atoms; the fit keeps them clear whether or not
+    they are written, so the heavy atoms are the same either way); ``phosphate5`` keeps a 5'-phosphate (P, OP1,
+    OP2, OP3) on the free 5' ends, but for a partner strand's 5' end at a junction, which keeps a 5'-OH.
+    ``chains``: chain ids ('A,B,C,D' or a list) for the strand-1 chains in design order and then the partner
+    strands in segment order (:func:`chain_count` of them).  ``notes`` (a list) receives the build notes;
+    ``progress(fraction, message)`` is called during the fit and ``cancel()`` returning True stops it with a
+    :class:`BuildError` 'cancelled'.  A junction that misses its targets is named in a 'WARNING: junction ...'
+    note."""
     if isinstance(design, str):
         segments, links, parse_notes = parse_design(design, na)
     else:
@@ -1416,7 +1765,8 @@ def build_chimera(design, na: str = "rna", scheme: Optional[str] = None, termina
     layout = _layout(segments, links)
     ids = _chain_ids(chains, len(layout))
     atoms = _atom_count(segments, links, hydrogens, phosphate5)
-    _check_size(atoms, len(layout))
+    _check_size(atoms, _ter_count(segments, links), len(layout))
+    _check_extent(segments, links)
     twin = [seg.flipped() for seg in segments]
     units = _units(segments, links)
     done = [0]
@@ -1445,6 +1795,10 @@ def build_chimera(design, na: str = "rna", scheme: Optional[str] = None, termina
             for st in strands:
                 for r in st:
                     r.hand = segments[k].chirality
+    lo, hi = _centre(builds, bridges)
+    if float(lo.min()) <= -999.9995 or float(hi.max()) >= 9999.9995:  # what builder._tail writes (8.3f)
+        raise BuildError(f"too long: the fitted chimera spans {float((hi - lo).max()):.0f} Å, and a PDB file holds "
+                         f"{2.0 * PDB_REACH:.0f} Å of a model centred at the origin: shorten the segments")
     placed, parts = _model_graph(segments, links, builds, bridges)
     sign = -1.0 if mirrored else 1.0  # a turn of the mirror image is the opposite turn here
     reps = []
@@ -1461,13 +1815,27 @@ def build_chimera(design, na: str = "rna", scheme: Optional[str] = None, termina
                    f"model to clear C2'(i)-OP2(i+1): {c2_op2:.2f} Å, C3'-O3'-P {c3_o3_p:.1f}°, P-O5'-C5' "
                    f"{p_o5_c5:.1f}°")
     out += _name_notes(segments, s, scheme, chosen, special, phosphate5, bool(po2))
+    read = _read53(links)
+    nicks = [labels[(k, 1, 0)] for k, seg in enumerate(segments)
+             if seg.partner is not None and _partner_end5(_ends(links, read, k)[1]) == "nick"]
+    if phosphate5 and nicks:
+        out.append("5'-phosphates on the free 5' ends, but not on the partner strands' 5' ends at the junctions ("
+                   + ", ".join(f"{c}:{n}" for c, n, _x in nicks) + "): a phosphate there would point at the next "
+                   "segment's end pair and stand in the way of its stacking, so these keep a 5'-OH")
     if scheme == "pdb":
         out += pdbtools.set_records(s, "pdb")
+    elif scheme == "standard":  # every record ATOM, the PO2 too (as 'mdatk pdb clean --scheme standard' writes)
+        pdbtools.set_records(s, "atom")
     out += [_junction_note(j, link, rep, labels, po2) for j, (link, rep) in enumerate(zip(links, reps))]
     out.append(f"Junction fit: the design and its mirror image (every hand flipped) were both fitted (cost "
                f"{fit.cost:.4f} and {fit_twin.cost:.4f}); written: "
                + ("the mirror image of the twin's fit (x -> -x)" if mirrored else "the design's own fit")
-               + ", so that a design and its twin give exact mirror images")
+               + ", so that a design and its twin give exact mirror images; the model is centred on its heavy "
+               "atoms")
+    for j, (link, rep) in enumerate(zip(links, reps)):
+        warning = _closure_warning(j, link, rep, chosen_fit.costs[j], labels, po2)
+        if warning:
+            out.append(warning)
     if scheme == "amber":
         out += _amber_notes(segments, links, s, labels, po2)
     # header, LINK and CONECT records of the bridges
@@ -1497,12 +1865,18 @@ def build_chimera(design, na: str = "rna", scheme: Optional[str] = None, termina
             o_atom.serial = o_serial
             o_serials.append(o_serial)
             conect.append((o_serial, [p_serial]))
-        conect.append((p_serial, o_serials))
+        for op in ("OP1", "OP2"):  # the HET group's own bonds (PDB 3.3: CONECT for every bond of a HET group)
+            op_serial, op_atom = serials[(chain, number, op)]
+            op_atom.serial = op_serial
+            o_serials.append(op_serial)
+            conect.append((op_serial, [p_serial]))
+        conect.append((p_serial, o_serials))  # P: O(a), O(b), OP1, OP2
     s.conect = ["CONECT" + "".join(f"{i:5d}" for i in [a] + bs) for a, bs in sorted(conect)]
     heavy = sum(1 for res in s.residues() for a in res.atoms if not a.name.startswith("H"))
     total = sum(len(res.atoms) for res in s.residues())
-    out.append(f"Built a chimera {describe((segments, links))}: {len(segments)} segments, {len(s.segments)} chains, "
-               f"{total} atoms" + (f" ({heavy} heavy)" if hydrogens else ", heavy atoms only")
+    out.append(f"Built a chimera {describe((segments, links))}: {len(segments)} segments, {len(layout)} chains"
+               + (f" and {len(po2)} PO2 segment(s)" if po2 else "") + f", {total} atoms"
+               + (f" ({heavy} heavy)" if hydrogens else ", heavy atoms only")
                + "; a starting model: minimise before production")
     if notes is not None:
         notes.extend(out)
@@ -1525,7 +1899,8 @@ def add_command(sub):
                    "DA/DC/DG/DT and 0DA/0DC/0DG/0DT, no terminal variants; the bridging phosphate PO2)")
     c.add_argument("--no-terminal-names", action="store_true", help="no 5'/3' residue name variants")
     c.add_argument("--phosphate5", action="store_true", help="keep a 5'-phosphate (P, OP1, OP2, OP3) on the free 5' "
-                                                             "ends")
+                                                             "ends (a partner strand's 5' end at a junction keeps "
+                                                             "a 5'-OH)")
     c.add_argument("--hydrogens", action="store_true", help="add all hydrogens (default: heavy atoms only)")
     c.add_argument("--chains", help="chain ids, comma-separated: the strand-1 chains in design order (split at 3'-3' "
                                     "/ 5'-5' links), then the partner strands in segment order (default A, B, C ...)")
