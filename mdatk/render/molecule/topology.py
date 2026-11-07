@@ -18,6 +18,8 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
+from ...pdbtools import standard_atom_name
+
 PURINE_RING = ("N9", "C8", "N7", "C5", "C6", "N1", "C2", "N3", "C4")
 PYRIMIDINE_RING = ("N1", "C2", "N3", "C4", "C5", "C6")
 SUGAR_RING = ("C1'", "C2'", "C3'", "C4'", "O4'")
@@ -78,7 +80,8 @@ class Topology:
                  chain: np.ndarray, resindex: np.ndarray, backbone_atom: str = "P"):
         self.n_res = int(n_res)
         self.row = np.asarray(row, dtype=np.int64)
-        self.names = [normalise_name(n) for n in names]
+        # (a CCD component's own atom names, such as N9A of 0DA, read as the standard ones)
+        self.names = [normalise_name(standard_atom_name(str(rn), str(n))) for n, rn in zip(names, resnames)]
         self.elements = [str(e).strip().upper() or "C" for e in elements]
         self.bonds = np.asarray(bonds, dtype=np.int64).reshape(-1, 2)
         self.chain = np.asarray(chain, dtype=np.int64)

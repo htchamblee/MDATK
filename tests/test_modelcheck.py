@@ -556,6 +556,74 @@ def test_a_link_bond_longer_than_the_break_length_is_a_warning():
     assert mc.check_model(s, mc.QCSettings(link_fail=4.0)).warnings == []  # the break length of the settings
 
 
+def test_the_links_check_measures_the_link_bonds_too(tmp_path, capsys):
+    """A chimera's 3'-3' / 5'-5' junction is no O3'(i)-P(i+1) link: the links check measures the LINK bonds as the
+    clash check matches them, so a run of the links check alone ('--checks links') warns of a broken junction as
+    the full check does, lists the bonds under the backbone and in its JSON, and notes records it cannot use."""
+    from mdatk.cli import main
+
+    s = _bridged()
+    p, o3 = atom(residue(s, "A", 4), "P").xyz, atom(residue(s, "B", 3), "O3'").xyz
+    u = _unit([o3[x] - p[x] for x in range(3)])
+    for res in [r for r in s.residues() if r.chain == "B"]:
+        shift(res, [(3.5 - math.dist(p, o3)) * x for x in u])
+    s = reread(s)
+    warning = ["1 LINK bond(s) longer than 3 A (B:3:O3'-A:4:P 3.50 A)"]
+    for checks in (("links",), ("clashes", "links"), ("clashes",), mc.CHECKS):
+        assert mc.check_model(s, mc.QCSettings(checks=checks), path="m").warnings == warning, checks
+    assert mc.check_model(s, mc.QCSettings(checks=("hands",)), path="m").warnings == []
+    st = mc.QCSettings(checks=("links",))
+    r = mc.check_model(s, st, path="pulled")
+    assert r.clashes is None and [(b.first, b.second, b.distance) for b in r.backbone.link_bonds] == [
+        ("A:3:O3'", "A:4:P", pytest.approx(1.59, abs=0.01)), ("B:3:O3'", "A:4:P", pytest.approx(3.5, abs=0.01))]
+    text = mc.text_report(r, st)
+    assert "LINK bonds (from the LINK records; atoms up to three bonds apart through them are not checked): 2" in text
+    assert "      B:3:O3'        - A:4:P          3.50 A (longer than 3 A)\n" in text
+    assert text.index("  backbone:") < text.index("  LINK bonds")
+    data = mc.report_data(r)
+    assert "clashes" not in data and [b["first"] for b in data["links"]["link_bonds"]] == ["A:3:O3'", "B:3:O3'"]
+    assert data["links"]["link_records_unused"] == 0
+    full = mc.check_model(s, mc.QCSettings(), path="pulled")  # the same bonds as the clash check's, listed once
+    assert full.backbone.link_bonds == full.clashes.links and mc.text_report(full, mc.QCSettings()).count(
+        "LINK bonds (from") == 1
+    pdb = tmp_path / "pulled.pdb"
+    pdb.write_text(pt.write_pdb(s))
+    assert main(["pdb", "qc", str(pdb), "--checks", "links"]) == 0
+    out = capsys.readouterr().out
+    assert "LINK bonds (from the LINK records" in out and "warnings: 1 LINK bond(s) longer than 3 A" in out
+    # a record the links check cannot use is noted as by the clash check
+    t = pt.read_pdb(pt.write_pdb(s))
+    t.header.append(pt.link_line(pt.LinkAtom("O3'", "A", "Z", 9), pt.LinkAtom("P", "PO2", "A", 4)))
+    r = mc.check_model(reread(t), st, path="odd")
+    assert r.backbone.link_records_unused == 1
+    assert any(n.startswith("1 LINK record(s) not used as bonds") for n in r.notes)
+
+
+def test_link_records_to_symmetry_mates_are_no_bonds():
+    """A LINK record whose symmetry operators differ bonds an atom to one of a copy of the model in the crystal: not
+    the atom of that name in the model, so it is no bond there (no long-bond warning, no excluded contacts, the
+    oxygen keeps its donor), with a note; one with equal operators is a bond of the model."""
+    s = _bridged()
+    plain = [ln for ln in s.header if ln.startswith("LINK")]
+    for ops, bonded in (("  1555   7645", False), ("  2555   2555", True), ("  1555   1555", True)):
+        t = pt.read_pdb(pt.write_pdb(s))
+        t.header = [ln[:59] + ops + ln[72:] if ln.startswith("LINK") and ln[21] == "B" else ln for ln in t.header]
+        r = mc.check_model(reread(t), mc.QCSettings(max_clashes=0), path="m")
+        assert len(r.clashes.links) == (2 if bonded else 1) and r.clashes.links_mates == (0 if bonded else 1)
+        assert len(r.backbone.link_bonds) == len(r.clashes.links)
+        mates = [n for n in r.notes if "symmetry mate" in n]
+        assert mates == ([] if bonded else [
+            "1 LINK record(s) to a symmetry mate not used as bonds: their two symmetry operators differ, so the second "
+            "atom is in a copy of the model made by the crystal symmetry, not the atom of that name in the model"])
+        model = mc.build_model(reread(t), mc.QCSettings())
+        o3 = model.atom_index[model.labels.index("B:3")]["O3'"]
+        assert model.donor[o3] == (not bonded)  # an unbonded 3' end is a 3'-OH
+        if not bonded:  # the 1.6 Å bond the record named is a clash of the model as it stands
+            assert r.status == "fail" and ("A:4:P", "B:3:O3'") in pairs(r.clashes)
+            assert mc.report_data(r)["clashes"]["link_records_mates"] == 1
+    assert len(plain) == 2
+
+
 def test_link_records_of_ions_and_of_atoms_not_checked_change_nothing():
     """A LINK record that names an atom the check leaves out (a water, an ion) or does not find (a chain or
     an atom the model lacks, another residue name) is not used, only noted; nor is one that names an ion
@@ -595,6 +663,7 @@ def test_link_records_of_ions_and_of_atoms_not_checked_change_nothing():
         assert mc.report_row(a) == mc.report_row(b)
         data, before = mc.report_data(b), mc.report_data(a)
         assert data["clashes"].pop("link_bonds") == [] and data["clashes"].pop("link_records_unused") == 5
+        assert data["links"].pop("link_bonds") == [] and data["links"].pop("link_records_unused") == 5
         assert data.pop("notes") == before.pop("notes") + [b.notes[-1]] and data == before
         assert "LINK" not in mc.text_report(a, st) and "link_bonds" not in mc.report_data(a)["clashes"]
     assert ("A:9:OP1", "M:1:MG") in pairs(mc.check_clashes(linked, mc.QCSettings(ions="check")))

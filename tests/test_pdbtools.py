@@ -886,12 +886,14 @@ def link_lines(text):
 @pytest.mark.parametrize("scheme", pt.SCHEMES)
 def test_link_records_follow_the_names_of_every_scheme(end, scheme):
     """The structure builder's chimeras bond a PO2 phosphate to two strands and say so in LINK records; the
-    model check bonds them by chain, number, insertion code and residue name.  Names that a scheme gives the
-    junction residues (amber: the 3' / 5' ends) are written into the records, which keep everything else."""
+    model check bonds them by chain, number, insertion code and residue name.  The residues bonded through the
+    junction are no strand ends: they keep the internal names of the scheme (amber A / LA, not A3 / LA3), as the
+    builder names them, and the names a scheme gives them are written into the records, which keep everything
+    else."""
     text = bridged(end)
     k, po2 = (3, 4) if end == "3" else (1, 0)
     r = pt.clean(text, scheme=scheme, l_ranges="B")  # strand B as L: every scheme but standard renames it
-    names = {"amber": (f"A{end}", f"LA{end}"), "ccd": ("A", f"0A{end}"), "rosetta": ("A", "0A"), "pdb": ("A", "0A"),
+    names = {"amber": ("A", "LA"), "ccd": ("A", "0A"), "rosetta": ("A", "0A"), "pdb": ("A", "0A"),
              "standard": ("A", "A")}[scheme]
     assert [(res.chain, res.resseq, res.name) for res in r.structure.residues() if res.resseq == k] == [
         ("A", k, names[0]), ("B", k, names[1])]
@@ -901,10 +903,19 @@ def test_link_records_follow_the_names_of_every_scheme(end, scheme):
         for chain, name in zip("AB", names)]
     assert pt.link_records(pt.read_pdb(r.text)) == pt.link_records(r.structure)
     changed = [n for n in names if n != "A"]
-    assert [n for n in r.notes if "LINK" in n] == ([
+    assert [n for n in r.notes if "LINK record(s)" in n] == ([
         f"Rewrote {len(changed)} LINK record(s) for the new residue names, numbers or chain ids: "
         + ", ".join(f"{c}:{k} {n} {oname} - A:{po2} PO2 P" for c, n in zip("AB", names) if n != "A")]
         if changed else [])
+    # the residues whose name a free end would change (amber: both; ccd: the L one) are listed
+    junction_note = [n for n in r.notes if n.startswith("Segment ends that LINK records bond")]
+    listed = {"amber": f"A:{k} A, B:{k} LA", "ccd": f"B:{k} 0A"}.get(scheme)
+    assert junction_note == ([f"Segment ends that LINK records bond to another residue (a junction such as a "
+                              f"chimera's 3'-3' / 5'-5' phosphate, or a strand bonded on) have internal names: "
+                              f"{listed}"] if listed else [])
+    # amber: the residues bonded through O5' have no 5'-phosphate their (internal) units may add
+    assert any(n.startswith(f"WARNING: the residues bonded through O5' by LINK records (A:{k} A, B:{k} LA)")
+               for n in r.notes) == (scheme == "amber" and end == "5")
     # the model check bonds the junction as before the clean-up: no clash, both LINK bonds
     assert link_bonds(r.text) == link_bonds(text) == (junction(end), [], 0)
     stale = "\n".join(link_lines(text) + [ln for ln in r.text.splitlines() if not ln.startswith("LINK")])
@@ -923,7 +934,7 @@ def test_link_records_follow_numbers_and_chain_ids(end):
         """(chain, number, name) of both ends of each record, as written."""
         recs = pt.link_records(pt.read_pdb(result.text))
         assert recs == pt.link_records(result.structure)
-        return [((a.chain, a.resseq, a.name), (b.chain, b.resseq, b.name)) for a, b, _ in recs]
+        return [((a.chain, a.resseq, a.name), (b.chain, b.resseq, b.name)) for a, b, *_ in recs]
 
     def bonded(result):
         """The model check finds both LINK bonds and no clash."""
@@ -975,17 +986,21 @@ def test_link_records_follow_numbers_and_chain_ids(end):
 @pytest.mark.parametrize("end", ["3", "5"])
 def test_link_records_through_hydrogen_and_phosphate_removal(end):
     """A clean-up for tleap (hydrogens and 5'-phosphates removed, amber names, renumbered): the records follow,
-    the strands' own 5'-phosphates go (3'-3'), and the 5'-5' bridge, no 5' end, stays.  The model check passes
-    the result with both LINK bonds.  A record that names a removed atom (a hydrogen) is dropped."""
+    the strands' own 5'-phosphates go (3'-3'), and the 5'-5' bridge, no 5' end, stays.  The residues bonded
+    through the bridge keep the internal unit A (no 3'-OH / 5'-OH unit that tleap would give a hydroxyl hydrogen
+    on the bonded oxygen).  The model check passes the result with both LINK bonds.  A record that names a
+    removed atom (a hydrogen) is dropped."""
     k, po2, oname = (3, 4, "O3'") if end == "3" else (1, 0, "O5'")
     text = bridged(end, hydrogens=True, phosphate5=True)
     lines = text.splitlines()
     lines.insert(2, pt.link_line(pt.LinkAtom("H1'", "A", "A", 2), pt.LinkAtom("OP1", "PO2", "A", po2)))
     r = pt.clean("\n".join(lines) + "\n", scheme="amber", strip_h=True, strip_5p=True, renumber=True, start=5)
     a_end, b_end, bridge = (7, 11, 8) if end == "3" else (6, 9, 5)
-    term = "A3" if end == "3" else "A5"
-    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom(oname, term, chain, n), pt.LinkAtom("P", "PO2", "A", bridge),
+    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom(oname, "A", chain, n), pt.LinkAtom("P", "PO2", "A", bridge),
                                                1.6) for chain, n in (("A", a_end), ("B", b_end))]
+    free = "A5" if end == "3" else "A3"  # the strands' other, free ends
+    assert [r_.name for seg in r.structure.segments for r_ in seg if r_.name != "PO2"] == (
+        [free, "A", "A"] * 2 if end == "3" else ["A", "A", free] * 2)
     assert f"Dropped 1 LINK record(s) whose residue or atom was removed: A:2 A H1' - A:{po2} PO2 OP1" in r.notes
     if end == "3":
         assert "Removed the 5'-terminal phosphate of 2 residue(s): A:1 A, B:1 A" in r.notes
@@ -1004,7 +1019,8 @@ def test_link_records_through_hydrogen_and_phosphate_removal(end):
 def test_a_phosphate_residue_is_a_5prime_phosphate_unless_bonded_to_another_strand():
     """strip_5p removes a 5'-phosphate modelled as a residue of its own whose LINK record bonds it to its
     strand's first O5' (the record goes with it); a phosphate that a record bonds to another strand is a link -
-    here a strand's own 5'-phosphate bonded to the O3' of the strand before it - and stays."""
+    here a strand's own 5'-phosphate bonded to the O3' of the strand before it - and stays, and the two residues
+    it joins are no strand ends: internal names (C, A, not C3, A5), no 'remove the 5'-phosphate' warning."""
     s = pt.read_pdb(bridged("3", phosphate5=True))
     first = s.segments[0][0]
     cap = pt.Residue("PHO", "A", 0, atoms=[a for a in first.atoms if a.name in ("P", "OP1", "OP2", "OP3")])
@@ -1025,7 +1041,11 @@ def test_a_phosphate_residue_is_a_5prime_phosphate_unless_bonded_to_another_stra
     assert any(n.startswith("Phosphates kept where LINK records bond them") and n.endswith(": B:4 A") for n in r.notes)
     assert [a.name for a in r.structure.segments[1][0].atoms][:3] == ["P", "OP1", "OP2"]
     assert link_bonds(r.text) == ([("A:3:O3'", "B:4:P")], [], 0)
-    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom("O3'", "C3", "A", 3), pt.LinkAtom("P", "A5", "B", 4), 1.6)]
+    assert [res.name for res in r.structure.residues()] == ["G5", "G", "C", "A", "U", "C3"]
+    assert link_lines(r.text) == [pt.link_line(pt.LinkAtom("O3'", "C", "A", 3), pt.LinkAtom("P", "A", "B", 4), 1.6)]
+    assert ("Segment ends that LINK records bond to another residue (a junction such as a chimera's 3'-3' / 5'-5' "
+            "phosphate, or a strand bonded on) have internal names: A:3 C, B:4 A") in r.notes
+    assert not any(n.startswith("WARNING") for n in r.notes)  # B:4's phosphate is the link's, as strip_5p said
 
 
 def test_a_metal_on_a_5prime_phosphate_oxygen_does_not_keep_the_phosphate():
@@ -1056,7 +1076,7 @@ def test_link_records_that_name_no_atom_stay_as_they_were():
     links, rest = link_lines(text), [ln for ln in text.splitlines() if not ln.startswith("LINK")]
     r = pt.clean("\n".join(links[:1] + odd + links[1:] + rest) + "\n", scheme="amber", renumber=True, start=2)
     assert link_lines(r.text)[1:5] == odd
-    assert [ln[17:26] for ln in link_lines(r.text)[::5]] == [" A3 A   4", " A3 B   8"]
+    assert [ln[17:26] for ln in link_lines(r.text)[::5]] == ["  A A   4", "  A B   8"]  # (junction: internal A)
     assert ("Kept 3 LINK record(s) as they were: they name no atom of the model (by chain, residue number, insertion "
             "code, residue name and atom name), so they cannot follow the residues: Z:9 A O3' - A:4 PO2 P, A:3 G O2' "
             "- A:4 PO2 P, A:3 A N9 - A:4 PO2 XX") in r.notes
@@ -1076,24 +1096,27 @@ def test_link_records_after_the_coordinates_are_read_and_follow():
     assert link_bonds(moved) == (junction("3"), [], 0)
     r = pt.clean(moved, scheme="amber", renumber=True, start=3)
     out = r.text.splitlines()
-    assert out[0][17:26] == " A3 A   5" and out[-2][17:26] == " A3 B   9" and out[-1] == "END"
+    assert out[0][17:26] == "  A A   5" and out[-2][17:26] == "  A B   9" and out[-1] == "END"
     assert r.structure.trailer == [out[-2]] and link_bonds(r.text)[1:] == ([], 0)
 
 
 def test_link_lines_are_rewritten_in_place():
     """Only the residue columns of an end whose residue changed are written: the atom names, alternate
-    locations, symmetry operators and the length stay, and so does the line's place among the header records."""
+    locations, symmetry operators and the length stay, and so does the line's place among the header records.
+    A record to a symmetry mate (operator 2555) follows the names too, but bonds nothing of the model: B:3 is a
+    free 3' end (LA3), A:3, bonded through the other record, the internal LA."""
     text = bridged("3")
     plain = link_lines(text)
     odd = pt.link_line(pt.LinkAtom("O3'", "A", "B", 3), pt.LinkAtom("P", "PO2", "A", 4), 2.1)
     odd = odd[:16] + "A" + odd[17:46] + "B" + odd[47:66] + "  2555" + odd[72:]  # altLocs, symmetry 2555
     body = [ln for ln in text.splitlines() if not ln.startswith(("LINK", "REMARK"))]
     head = ["HEADER    CHIMERA", plain[0], "REMARK   1 two LINK records", odd, "CRYST1   60.000   60.000   60.000"]
-    r = pt.clean("\n".join(head + body) + "\n", scheme="amber", l_ranges="B")
-    assert r.structure.header == [head[0], plain[0][:17] + " A3 A   3 " + plain[0][27:], head[2],
+    r = pt.clean("\n".join(head + body) + "\n", scheme="amber", l_ranges="A,B")
+    assert r.structure.header == [head[0], plain[0][:17] + " LA A   3 " + plain[0][27:], head[2],
                                   odd[:17] + "LA3 B   3 " + odd[27:], head[4]]
-    assert pt.link_records(r.structure)[1] == pt.LinkRecord(pt.LinkAtom("O3'", "LA3", "B", 3),
-                                                            pt.LinkAtom("P", "PO2", "A", 4), 2.1)
+    mate = pt.link_records(r.structure)[1]
+    assert mate == pt.LinkRecord(pt.LinkAtom("O3'", "LA3", "B", 3), pt.LinkAtom("P", "PO2", "A", 4), 2.1, "", "2555")
+    assert mate.mate and not pt.link_records(r.structure)[0].mate
     assert r.text.splitlines()[:5] == r.structure.header
     unchanged = pt.clean("\n".join(head + body) + "\n")  # nothing renamed: every line as it was
     assert unchanged.structure.header == head and not any("LINK" in n for n in unchanged.notes)
@@ -1112,8 +1135,9 @@ def test_operations_on_their_own_and_in_one_block():
     with convert_names).  A follow_links block resolves them once for several operations, which matters when one
     leaves two residues with the same id for a later one to tell apart; a block that raises leaves nothing."""
     s = pt.read_pdb(bridged("3"))
+    pt.assign_chirality(s, l_ranges="A,B")
     assert pt.convert_names(s, "amber")[-1] == ("Rewrote 2 LINK record(s) for the new residue names, numbers or chain "
-                                               "ids: A:3 A3 O3' - A:4 PO2 P, B:3 A3 O3' - A:4 PO2 P")
+                                               "ids: A:3 LA O3' - A:4 PO2 P, B:3 LA O3' - A:4 PO2 P")
     assert pt.renumber_residues(s, 10)[-1].startswith("Rewrote 2 LINK record(s)")
     assert [(x.first.resseq, x.second.resseq) for x in pt.link_records(s)] == [(12, 13), (16, 13)]
     assert link_bonds(pt.write_pdb(s))[1:] == ([], 0)
@@ -1144,13 +1168,13 @@ def test_to_lrna_and_the_command_line_follow_link_records(tmp_path):
     from mdatk.workflows.scripts import embed
 
     r = pt.to_lrna(bridged("3"), "B")
-    assert [x.first.resname for x in pt.link_records(r.structure)] == ["A", "LA3"]
+    assert [x.first.resname for x in pt.link_records(r.structure)] == ["A", "LA"]  # the junction: internal
     assert link_bonds(r.text) == (junction("3"), [], 0)
     pdb, out, copy = tmp_path / "chimera.pdb", tmp_path / "amber.pdb", tmp_path / "copy.pdb"
     pdb.write_text(bridged("5", phosphate5=True))
     args = ["--scheme", "amber", "--strip-5p", "--renumber"]
     assert main(["pdb", "clean", str(pdb), "-o", str(out)] + args) == 0
-    assert [x.first.resname for x in pt.link_records(pt.read_pdb(str(out)))] == ["A5", "A5"]
+    assert [x.first.resname for x in pt.link_records(pt.read_pdb(str(out)))] == ["A", "A"]
     assert main(["pdb", "qc", str(out), "--max-clashes", "0"]) == 0
     script = tmp_path / "pdbtools_copy.py"
     script.write_text(embed(pt, {}, "main()", "PDB hygiene (embedded copy)"))
@@ -1158,3 +1182,251 @@ def test_to_lrna_and_the_command_line_follow_link_records(tmp_path):
                           capture_output=True, text=True, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert copy.read_text() == out.read_text() and "pdbtools: Rewrote 2 LINK record(s)" in proc.stderr
+
+
+# --- LINK-bonded junctions, symmetry mates, sequences, SEQRES names, CCD atom names -----------------------
+
+def _names(structure):
+    return [(res.chain, res.resseq, res.name) for res in structure.residues()]
+
+
+@pytest.mark.parametrize("design", ["D:GC 3'-3' L:GC", "D:GC 5'-5' L:GC", "D:G 3'-3' L:GC"])
+@pytest.mark.parametrize("scheme", ["amber", "ccd"])
+def test_clean_names_a_chimera_as_the_structure_builder_does(design, scheme):
+    """The residues a chimera's PO2 bridge bonds (O3' at 3'-3', O5' at 5'-5') are no strand ends: cleaning the
+    builder's default names into a scheme gives the names the builder writes in that scheme (internal names at
+    the junction, terminal variants at the free ends, a single residue bonded at its 3' end its 5' unit), and the
+    LINK records name them; a clean of the scheme's own build changes nothing.  Before, clean gave the bonded
+    residues 3' / 5' units (amber C3 / LC3: tleap adds HO3' to an O3' bonded to the PO2)."""
+    from mdatk import chimera
+
+    built_text = chimera.build_chimera(design, scheme=scheme)
+    built = pt.read_pdb(built_text)
+    r = pt.clean(chimera.build_chimera(design), scheme=scheme)
+    assert _names(r.structure) == _names(built)
+    assert pt.link_records(r.structure) == pt.link_records(built) and len(pt.link_records(built)) == 2
+    again = pt.clean(built_text, scheme=scheme)
+    assert f"Residue names already follow the {scheme} scheme" in again.notes
+    assert link_lines(again.text) == link_lines(built_text) and not any("Rewrote" in n for n in again.notes)
+    bonded_o5 = [n for n in r.notes if n.startswith("WARNING: the residues bonded through O5' by LINK records")]
+    assert len(bonded_o5) == (1 if scheme == "amber" and "5'-5'" in design else 0)
+    assert link_bonds(r.text)[1:] == ([], 0)
+
+
+def test_a_strand_bonded_on_and_a_lone_phosphate_cap_at_the_segment_ends():
+    """The 5' end of a strand whose P a LINK record bonds to the O3' of another is no 5' end (internal name, no
+    5'-phosphate warning: it is the link's phosphate); a 5' end whose own phosphate is modelled as a residue of
+    its own (a cap bonded to nothing else) stays a 5' end; water and ions bonded to an end do not count."""
+    s = pt.read_pdb(builder.build_helix("GGCAUC", partner="none", phosphate5=True))
+    pt.split_chains(s, "A:4")
+    s.header.append(pt.link_line(pt.LinkAtom("O3'", "C", "A", 3), pt.LinkAtom("P", "A", "B", 4), 1.6))
+    r = pt.clean(pt.write_pdb(s), scheme="amber")
+    assert [res.name for res in r.structure.residues()] == ["G5", "G", "C", "A", "U", "C3"]
+    assert [n for n in r.notes if n.startswith("WARNING: 5'-terminal")] == [
+        "WARNING: 5'-terminal residues carry P/OP1/OP2, which the Amber 5' units do not have (tleap cannot type them; "
+        "remove them with --strip-5p or cap the end): A:1 G5"]
+    # the cap: the P of a phosphate residue bonded to the first O5'; a metal on the last O3'
+    s = pt.read_pdb(builder.build_helix("GGC", partner="none", phosphate5=True, chirality="L"))
+    first = s.segments[0][0]
+    cap = pt.Residue("PHO", "A", 0, atoms=[a for a in first.atoms if a.name in ("P", "OP1", "OP2", "OP3")])
+    first.atoms = [a for a in first.atoms if a not in cap.atoms]
+    s.segments[0].insert(0, cap)
+    o3 = next(a for a in s.segments[0][-1].atoms if a.name == "O3'")
+    s.segments.append([pt.Residue("MG", "M", 1, atoms=[pt.Atom("HETATM", "MG", "", o3.tail, "MG")])])
+    s.header += [pt.link_line(pt.LinkAtom("O5'", "0G", "A", 1), pt.LinkAtom("P", "PHO", "A", 0)),
+                 pt.link_line(pt.LinkAtom("O3'", "0C", "A", 3), pt.LinkAtom("MG", "MG", "M", 1))]
+    for scheme, names in (("amber", ["LG5", "LG", "LC3"]), ("ccd", ["0G5", "0G", "0C3"])):
+        r = pt.clean(pt.write_pdb(s), scheme=scheme)
+        assert [res.name for res in r.structure.residues() if res.name not in ("PHO", "MG")] == names
+        assert not any(n.startswith("Segment ends that LINK records bond") for n in r.notes)
+
+
+def test_link_records_with_symmetry_operators():
+    """The symmetry operators of a LINK record (columns 60-65 / 67-72) are read, '' for the identity (1555 or
+    blank), so a record of the model equals LinkRecord(first, second, length); one whose operators differ bonds an
+    atom to a symmetry mate (``mate``)."""
+    a, b = pt.LinkAtom("N", "NH4", "A", 102), pt.LinkAtom("O3'", "A", "A", 11)
+    line = pt.link_line(a, b, 2.69)
+    mate = line[:59] + "  1555   7645" + line[72:]
+    same = line[:59] + "  2555   2555" + line[72:]
+    records = pt.link_records(pt.Structure(header=[line, mate, same, pt.link_line(a, b)]))
+    assert records == [pt.LinkRecord(a, b, 2.69), pt.LinkRecord(a, b, 2.69, "", "7645"),
+                       pt.LinkRecord(a, b, 2.69, "2555", "2555"), pt.LinkRecord(a, b)]
+    assert [r.mate for r in records] == [False, True, False, False]
+
+
+def test_sequences_leave_out_residues_made_only_of_phosphate_atoms():
+    """FASTA, SEQRES and 'pdb check' list the polymer residues: a chimera's PO2 bridge (bonded through LINK
+    records) and a lone 5'-phosphate modelled as a residue are none (the check lists them among the other
+    residues); a modified nucleotide, which has a sugar, stays (X)."""
+    text = bridged("3")
+    r = pt.clean(text, seqres=True, make_fasta=True, title="c")
+    assert [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")] == [
+        "SEQRES   1 A    3    A   A   A", "SEQRES   1 B    3    A   A   A"]
+    assert r.fasta == ">c_A chain A | RNA | 3 residues\nAAA\n>c_B chain B | RNA | 3 residues\nAAA\n"
+    info = pt.summary(pt.read_pdb(text))
+    assert (info["chains"]["A"]["residues"], info["chains"]["A"]["numbers"], info["chains"]["A"]["sequence"],
+            info["chains"]["A"]["names"]) == (3, "1-3", "AAA", ["A"])
+    assert info["other_residues"] == {"PO2": 1}
+    s = pt.read_pdb(builder.build_helix("GGCAUC", partner="none", phosphate5=True))
+    first = s.segments[0][0]
+    cap = pt.Residue("PHO", "A", 0, atoms=[a for a in first.atoms if a.name in ("P", "OP1", "OP2", "OP3")])
+    first.atoms = [a for a in first.atoms if a not in cap.atoms]
+    s.segments[0].insert(0, cap)
+    s.segments[0][3].name = "PSU"  # A:3 (a pseudouridine, as far as names go: it has its sugar)
+    r = pt.clean(pt.write_pdb(s), seqres=True, make_fasta=True, title="m")
+    assert [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")] == [
+        "SEQRES   1 A    6    G   G PSU   A   U   C"]
+    assert r.fasta == ">m_A chain A | RNA | 6 residues\nGGXAUC\n"
+    assert pt.summary(pt.read_pdb(r.text))["other_residues"] == {"PHO": 1, "PSU": 1}
+
+
+def test_seqres_names_have_three_characters():
+    """SEQRES has three columns per residue name: MDATK's four-character Amber-style L-DNA names (LDG5, LDA3,
+    LDTN ...) are written as their CCD components (0DG ...), any other long name as UNK, each with a note; the
+    names of the residues themselves do not change."""
+    text = builder.build_helix("GACTGACTGACTGA", na="dna", chirality="L", scheme="amber")
+    r = pt.clean(text, seqres=True)
+    lines = [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")]
+    assert lines[0] == "SEQRES   1 A   14  0DG LDA LDC LDT LDG LDA LDC LDT LDG LDA LDC LDT LDG"
+    assert lines[1] == "SEQRES   2 A   14  0DA"
+    assert lines[2].endswith("  0DT LDC LDA LDG LDT LDC LDA LDG LDT LDC LDA LDG LDT") and lines[3].endswith("  0DC")
+    for ln in lines:  # every name in its columns 20-22, 24-26 ...
+        names = ln[19:].split()
+        assert [ln[19 + 4 * k:22 + 4 * k].strip() for k in range(len(names))] == names
+    assert ("SEQRES names have three characters: wrote the CCD components of the four-character names LDA3->0DA x1, "
+            "LDC3->0DC x1, LDG5->0DG x1, LDT5->0DT x1") in r.notes
+    assert {res.name for res in r.structure.residues()} >= {"LDG5", "LDA3", "LDT5", "LDC3"}
+    s = pt.read_pdb(text)
+    s.segments[0][1].name = "LIGX"
+    r = pt.clean(pt.write_pdb(s), seqres=True)
+    assert [ln for ln in r.text.splitlines() if ln.startswith("SEQRES")][0][19:30] == "0DG UNK LDC"
+    assert "WARNING: SEQRES names have three characters: wrote UNK for the residue name(s) of A:2 LIGX" in r.notes
+
+
+# The atoms of the CCD's L-deoxyribonucleotides (wwPDB CCD, as ParmEd's CCD templates list them; the CCP4
+# monomer library has the same names): 0DA spells its adenine and the hydrogen of a protonated OP2 its own way,
+# 0DT its methyl carbon
+CCD_COMPONENT_ATOMS = {
+    "0DA": "C8A N9A C4A C5A N7A N3A C2A N1A C6A N6A C4' O4' C3' C2' C1' O3' C5' O5' P OP2 OP3 OP1 H8A H2A HN61 HN62 "
+           "H4' H3' H2' H2'' H1' HO3' H5' H5'' H2P HOP3",
+    "0DC": "OP3 P OP1 OP2 O5' C5' C4' O4' C3' O3' C2' C1' N1 C2 O2 N3 C4 N4 C5 C6 HOP3 HOP2 H5' H5'' H4' H3' HO3' "
+           "H2' H2'' H1' H41 H42 H5 H6",
+    "0DG": "OP3 P OP1 OP2 O5' C5' C4' O4' C3' O3' C2' C1' N9 C8 N7 C5 C6 O6 N1 C2 N2 N3 C4 HOP3 HOP2 H5' H5'' H4' "
+           "H3' HO3' H2' H2'' H1' H8 H1 H21 H22",
+    "0DT": "OP3 P OP1 OP2 O5' C5' C4' O4' C3' O3' C2' C1' N1 C2 O2 N3 C4 O4 C5 C5M C6 HOP3 HOP2 H5' H5'' H4' H3' "
+           "HO3' H2' H2'' H1' H3 H71 H72 H73 H6",
+}
+
+
+def file_atoms(text):
+    """(residue name, atom name) of every ATOM / HETATM line, as written (columns 18-21, 13-16)."""
+    return [(ln[17:21].strip(), ln[12:16].strip()) for ln in text.splitlines() if ln.startswith(("ATOM", "HETATM"))]
+
+
+def test_the_ccd_component_atom_names_are_what_the_tables_say():
+    """CCD_ATOM_NAMES maps the standard names onto the components' own: with it, the standard atoms of each L-DNA
+    base (and the 5'-phosphate hydrogens of 0DA) are atoms of its component, and they map back."""
+    standard = {"A": "N9 C8 N7 C5 C6 N6 N1 C2 N3 C4 H8 H61 H62 H2 HOP2 HOP3",
+                "C": "N1 C2 O2 N3 C4 N4 C5 C6 H41 H42 H5 H6", "G": "N9 C8 N7 C5 C6 O6 N1 C2 N2 N3 C4 H8 H1 H21 H22",
+                "T": "N1 C2 O2 N3 C4 O4 C5 C7 C6 H3 H71 H72 H73 H6"}
+    for component, atoms in CCD_COMPONENT_ATOMS.items():
+        for name in standard[component[-1]].split():
+            own = pt.component_atom_name(component, name)
+            assert own in atoms.split(), (component, name)
+            assert pt.standard_atom_name(component, own) == name
+    assert set(pt.CCD_ATOM_NAMES) == {"0DA", "0DT"}
+    assert pt.component_atom_name("LDA", "N9") == "N9" == pt.standard_atom_name("LDA", "N9")
+
+
+def test_0da_and_0dt_are_read_and_written_with_their_components_atom_names():
+    """read_pdb gives the atoms of a 0DA / 0DT their standard names (every reader of a structure finds N9, C7 ...),
+    write_pdb writes the components' names for every residue named 0DA / 0DT and the standard names for every
+    other: a file round-trips byte for byte, a rename to LDA (amber) or DA (standard) writes the standard names,
+    and a 0DA / 0DT with standard names in the file is written with the component's, with a note."""
+    notes = []
+    text = builder.build_helix("GACT", na="dna", chirality="L", hydrogens=True, notes=notes)
+    assert {("0DA", "N9A"), ("0DA", "HN61"), ("0DT", "C5M")} <= set(file_atoms(text))
+    said = "0DA / 0DT are written with their CCD components' own atom names (0DA: N9A, C8A ... HN61, HN62; 0DT: C5M)"
+    assert any(n.startswith(said) for n in notes)
+    amber_notes = []
+    builder.build_helix("GACT", na="dna", chirality="L", scheme="amber", notes=amber_notes)
+    assert not any(n.startswith(said) for n in amber_notes)
+    s = pt.read_pdb(text)
+    names = {res.name: [a.name for a in res.atoms] for res in s.residues()}
+    assert "N9" in names["0DA"] and "H61" in names["0DA"] and "C7" in names["0DT"] and "N9A" not in names["0DA"]
+    assert next(r for r in s.residues() if r.name == "0DA").coords().keys() >= {"N9", "C8", "N6", "C1'"}
+    assert pt.write_pdb(s) == text and s.notes == []
+    for scheme, residue in (("amber", "LDA"), ("standard", "DA")):
+        s = pt.read_pdb(text)
+        pt.assign_chirality(s)
+        pt.convert_names(s, scheme, dna=True)
+        atoms = [a for r, a in file_atoms(pt.write_pdb(s)) if r == residue]
+        assert "N9" in atoms and "N9A" not in atoms and "HN61" not in atoms, scheme
+    old = "\n".join(ln[:12] + {" N9A": " N9 ", " C5M": " C7 "}.get(ln[12:16], ln[12:16]) + ln[16:]
+                    if ln.startswith("ATOM") and ln[21] == "A" else ln for ln in text.splitlines()) + "\n"
+    s = pt.read_pdb(old)  # strand A's 0DA and 0DT with two standard names
+    assert s.notes == ["2 0DA / 0DT residue(s) use standard atom names where their CCD components have their own "
+                       "(0DA: N9A, C8A ... HN61, HN62; 0DT: C5M): read as the same atoms, written with the components' "
+                       "names: A:2 0DA, A:4 0DT"]
+    assert pt.write_pdb(s) == text
+
+
+@pytest.mark.parametrize("scheme", [None, "ccd", "pdb", "rosetta"])
+def test_every_atom_of_an_l_dna_build_is_an_atom_of_its_ccd_component(scheme):
+    """The L-DNA residues of the structure builder named after the CCD components (0DA 0DC 0DG 0DT: the ccd, pdb,
+    rosetta and default names) carry the components' atom names, hydrogens and 5'-phosphates included (terminal
+    HO5' excepted: the components have a 5'-phosphate), so Coot / Phenix find every atom in their dictionaries;
+    so do the residues a mutation gives these names and the L-DNA segment of a chimera."""
+    from mdatk import chimera
+
+    texts = [builder.build_helix("GACTAG", na="dna", chirality="L", scheme=scheme, hydrogens=h, phosphate5=p)
+             for h in (False, True) for p in (False, True)]
+    texts.append(builder.mutate(texts[0], "A:1A, A:3T")[0])  # 0DG -> 0DA, 0DC -> 0DT and their partners
+    texts.append(chimera.build_chimera("D-DNA:GA 3'-5' L-DNA:GACT", scheme=scheme, hydrogens=True))
+    for text in texts:
+        atoms = file_atoms(text)
+        assert {r for r, _a in atoms if r in CCD_COMPONENT_ATOMS} == set(CCD_COMPONENT_ATOMS)
+        foreign = sorted({(r, a) for r, a in atoms
+                          if r in CCD_COMPONENT_ATOMS and a not in CCD_COMPONENT_ATOMS[r].split() and a != "HO5'"})
+        assert foreign == []
+    # amber (LDA ...) and standard (DA ...) names: the standard atom names
+    for other in ("amber", "standard"):
+        atoms = {a for _r, a in file_atoms(builder.build_helix("GACT", na="dna", chirality="L", scheme=other))}
+        assert {"N9", "C7"} <= atoms and not atoms & {"N9A", "C5M"}
+
+
+def test_analyses_of_0da_files_and_of_the_same_model_named_lda_agree():
+    """The model check (clashes, links, hands, kinks, the hydrogen contacts and their atom names), base-pair
+    detection (annotate's builtin engine, the builder's partners, the interfaces' engine), the sugar hands and a
+    mutation give the same results on a 0DA / 0DT model (CCD atom names) as on the same model named LDA ..."""
+    import re
+
+    from mdatk import annotate, interfaces
+
+    ccd, amber = (builder.build_helix("GACTAGTC", na="dna", chirality="L", scheme=scheme, hydrogens=True)
+                  for scheme in ("ccd", "amber"))
+    assert ("0DA", "N1A") in file_atoms(ccd) and ("LDA", "N1") in file_atoms(amber)
+    st = mc.QCSettings(hydrogen_check=True)
+    reports = [mc.check_model(t, st, path="m") for t in (ccd, amber)]
+    assert mc.report_data(reports[0]) == mc.report_data(reports[1]) and reports[0].status == "pass"
+    assert mc.text_report(reports[0], st) == mc.text_report(reports[1], st)
+
+    def pairs(text):  # (chain, number) of both residues and the class of every PAIR record, the names left out
+        out = []
+        for ln in annotate.annotate(text, engine="builtin").records:
+            m = re.match(r"REMARK 950 PAIR  (.)(.{4}).\S+\s+(.)(.{4}).\S+\s+(\S+)$", ln)
+            if m:
+                out.append((m.group(1), int(m.group(2)), m.group(3), int(m.group(4)), m.group(5)))
+        return out
+
+    assert pairs(ccd) == pairs(amber) and len(pairs(ccd)) == 8
+    partners = [sorted(builder._partners(pt.read_pdb(t)).values()) for t in (ccd, amber)]
+    assert partners[0] == partners[1] and len(partners[0]) == 16
+    found = [interfaces.engine_pairs(interfaces.nucleotides(pt.read_pdb(t)), "builtin")[0] for t in (ccd, amber)]
+    assert found[0] == found[1] and len(found[0]) == 8
+    hands = [[(h.call, h.c4, h.volumes) for h in pt.residue_hands(pt.read_pdb(t))] for t in (ccd, amber)]
+    assert hands[0] == hands[1] and {h[0] for h in hands[0]} == {"L"}
+    mutated = [builder.mutate(t, "A:2G")[0] for t in (ccd, amber)]
+    assert [ln[30:54] for ln in mutated[0].splitlines() if ln.startswith("ATOM")] == [
+        ln[30:54] for ln in mutated[1].splitlines() if ln.startswith("ATOM")]

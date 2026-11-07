@@ -72,8 +72,8 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 import numpy as np
 
-from .pdbtools import (PDBError, Structure, empty_slot, infer_base, parse_ranges, parse_residue_name,
-                       read_pdb, sugar_chirality)
+from .pdbtools import (PDBError, Structure, empty_slot, has_backbone_atoms, infer_base, parse_ranges,
+                       parse_residue_name, read_pdb, standard_atom_name, sugar_chirality)
 
 Range = Tuple[Optional[str], Optional[int], Optional[int]]  # (chain, None: any chain; first, last; None: all)
 Key = Tuple[str, int, str]  # (chain, residue number, insertion code)
@@ -276,7 +276,7 @@ def nucleotides(structure: Structure) -> List[Nucleotide]:
             atoms: Dict[str, np.ndarray] = {}
             heavy: List[str] = []
             for a in res.atoms:
-                name = a.name.replace("*", "'")
+                name = standard_atom_name(res.name, a.name.replace("*", "'"))  # (N9A of 0DA is N9)
                 if name in atoms:
                     continue  # an alternate location
                 atoms[name] = np.array(a.xyz, dtype=np.float64)
@@ -286,7 +286,7 @@ def nucleotides(structure: Structure) -> List[Nucleotide]:
             if len(atoms) < 2:
                 continue  # ions and other single atoms
             info = parse_residue_name(res.name)
-            backbone = any("'" in n or n == "P" for n in atoms)
+            backbone = has_backbone_atoms(atoms)
             if info is not None and backbone:
                 base, dna = info.base, info.sugar == "dna"
             elif "C1'" in atoms:

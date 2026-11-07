@@ -200,11 +200,14 @@ def test_dna_hydrogens(chirality):
             heavy = np.array([a.xyz for a in r.atoms if not a.name.startswith("H")])
             for x in hyd:  # every hydrogen 0.9-1.1 Å from its nearest heavy atom
                 assert 0.9 < np.linalg.norm(heavy - c[x], axis=1).min() < 1.12, (r.label, x)
-            # H2' is the methylene hydrogen cis to O3' (the CCD's name): negative volume C2'(C1', C3', H2') in D;
-            # the L helix keeps the D names on the mirror image (as for L-RNA)
-            assert dist(c["H2'"], c["O3'"]) == pytest.approx(2.50, abs=0.05) and dist(c["H2''"], c["O3'"]) > 3.2
-            assert sign * pt.chiral_volume(c["C2'"], c["C1'"], c["C3'"], c["H2'"]) < -1.5
-            assert sign * pt.chiral_volume(c["C2'"], c["C1'"], c["C3'"], c["H2''"]) > 1.5
+            # H2'' is the methylene hydrogen cis to O3' and to H1' (IUPAC, Amber's DNA libraries, the CCD's model
+            # coordinates and its L-DNA components), H2' the pro-S one trans to O3': positive volume C2'(C1', C3',
+            # H2') in D; the L helix keeps the D names on the mirror image (as for L-RNA)
+            assert dist(c["H2''"], c["O3'"]) == pytest.approx(2.50, abs=0.05) and dist(c["H2'"], c["O3'"]) > 3.2
+            assert dist(c["H2''"], c["H1'"]) == pytest.approx(2.27, abs=0.05) and dist(c["H2'"], c["H1'"]) > 2.9
+            assert sign * dihedral(c["H2''"], c["C2'"], c["C3'"], c["O3'"]) == pytest.approx(-34.4, abs=1.0)
+            assert sign * pt.chiral_volume(c["C2'"], c["C1'"], c["C3'"], c["H2'"]) > 1.5
+            assert sign * pt.chiral_volume(c["C2'"], c["C1'"], c["C3'"], c["H2''"]) < -1.5
             assert sign * pt.chiral_volume(c["C5'"], c["O5'"], c["C4'"], c["H5'"]) > 1.5  # as the RNA rule
             if base(r) == "T":  # the methyl, staggered on C5-C7
                 for h, torsion in (("H71", 180.0), ("H72", 60.0), ("H73", -60.0)):
@@ -546,9 +549,9 @@ def test_dna_citation():
 def test_model_check_of_dna_duplexes(chirality, hydrogens, monkeypatch):
     """No failed gate, no link problem, hands as named and no heavy-atom clash, every contact 0.05 Å or more outside
     the clash distance (the fiber model's C2'(i)-OP2(i+1) of 2.69 Å is 2.88 Å with the phosphate turned).  The
-    hydrogen contacts (reported only) list H2'(i)-OP2(i+1) (2.11 Å; clearing it would take a turn that makes the
+    hydrogen contacts (reported only) list H2''(i)-OP2(i+1) (2.11 Å; clearing it would take a turn that makes the
     C3'-O3'-P / P-O5'-C5' angles validation outliers), the fiber model's own H1'(i)-H5'(i+1) (1.84 Å) and, before a
-    thymine, the methyl against H2' and C8 / C6 of the 5' neighbour (1.94 / 2.48 Å)."""
+    thymine, the methyl against H2'' and C8 / C6 of the 5' neighbour (1.94 / 2.48 Å)."""
     from mdatk import modelcheck as MC
 
     s, text, _notes = dna(chirality=chirality, hydrogens=hydrogens)
@@ -574,20 +577,21 @@ def test_model_check_of_dna_duplexes(chirality, hydrogens, monkeypatch):
         assert (first, second) in steps, c  # residue i, then i + 1 of the same strand
         found.setdefault((x, y), []).append(c.distance)
     # GATCGTACGT / ACGTACGATC: 18 steps, 5 of them from a purine to a thymine
-    assert {k: len(v) for k, v in found.items()} == {("H1'", "H5'"): 18, ("H2'", "OP2"): 18, ("H2'", "H71"): 5,
+    assert {k: len(v) for k, v in found.items()} == {("H1'", "H5'"): 18, ("H2''", "OP2"): 18, ("H2''", "H71"): 5,
                                                      ("C8", "H72"): 5}
-    for k, value in ((("H1'", "H5'"), 1.84), (("H2'", "OP2"), 2.11), (("H2'", "H71"), 1.94), (("C8", "H72"), 2.48)):
+    for k, value in ((("H1'", "H5'"), 1.84), (("H2''", "OP2"), 2.11), (("H2''", "H71"), 1.94), (("C8", "H72"), 2.48)):
         assert found[k] == pytest.approx([value] * len(found[k]), abs=0.01), k
-    # as clashes (overlap 0.4 Å): H1'-H5', H2'-OP2 and the methyl's H71 at the H2' (0.40 Å); C8-H72 just outside (0.39)
+    # as clashes (overlap 0.4 Å): H1'-H5', H2''-OP2 and the methyl's H71 at the H2'' (0.40 Å); C8-H72 just outside
+    # (0.39)
     assert sorted({(c.first.rsplit(":", 1)[1], c.second.rsplit(":", 1)[1]) for c in r.hydrogens.clashes}) == [
-        ("H1'", "H5'"), ("H2'", "H71"), ("H2'", "OP2")] and len(r.hydrogens.clashes) == 41
+        ("H1'", "H5'"), ("H2''", "H71"), ("H2''", "OP2")] and len(r.hydrogens.clashes) == 41
 
 
 def test_dna_phosphate_turn_is_the_smallest_whole_turn_clear_of_the_heavy_atom_clash(monkeypatch):
     """DNA_PHOSPHATE_TURN: of the whole turns from 5 to 10 degrees, the smallest that keeps every heavy-atom contact
     of P, OP1 and OP2 0.05 Å outside the model check's clash distance (C2'(i)-OP2(i+1)), with C3'-O3'-P and
     P-O5'-C5' inside 4 standard deviations of Parkinson et al. 1996 (119.7 +- 1.2, 120.9 +- 1.6 degrees), where
-    validation reports angle outliers.  Clearing the hydrogen contact H2'(i)-OP2(i+1) as well would take 10, past that
+    validation reports angle outliers.  Clearing the hydrogen contact H2''(i)-OP2(i+1) as well would take 10, past that
     limit; the contacts of the other atoms do not change with the turn."""
     from mdatk import modelcheck as MC
 
