@@ -54,6 +54,27 @@ def test_every_entry_is_commented(tmp_path):
     assert Project.load(str(path)).notes == p.notes
 
 
+def test_a_step_option_and_a_stage_option_of_one_key_keep_their_own_comments(tmp_path):
+    """amber-md has 'dry_pdb' at step level (the dry PDB before production) and in its stage records (a stage's
+    own dry PDB): the step's value is commented with the step option, not with the stage option of that key."""
+    from mdatk.workflows import TOOLS
+    from mdatk.workflows.plan import add_node
+    tool = TOOLS["amber-md"]
+    assert PF._option_text(PF._tool_option("amber-md", "dry_pdb")).startswith("Dry PDB before production:")
+    assert PF._tool_option("amber-md", "stages") is tool.section("stages")
+    assert PF._tool_option("amber-md", "maxcyc") is None  # a stage option, not a step one
+    p = Project()
+    add_node(p.workflow, "amber-md", settings={"stages": [dict(name="eq", kind="md", dry_pdb=True)]})
+    path = tmp_path / "x.mdatk.toml"
+    p.save(str(path))
+    lines = path.read_text().splitlines()
+    k = lines.index("dry_pdb = true")  # the step's (the stage records come after the step's settings)
+    first = k
+    while lines[first - 1].startswith("#"):
+        first -= 1
+    assert lines[first].startswith("# Dry PDB before production: cpptraj strips water"), lines[first:k]
+
+
 def test_optional_values_and_round_trip(tmp_path):
     p = Project()
     p.inputs.stop = None

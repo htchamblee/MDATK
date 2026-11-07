@@ -235,12 +235,17 @@ def _tool(name: str):
 
 
 def _tool_option(tool_name: str, key: str):
+    """The option (or the repeated section) a step-level setting ``key`` of the tool stands for: a repeated
+    section's options belong to its records (``_record_doc``), never to the step, even when a step option
+    shares the key (amber-md's 'dry_pdb' of a stage and of the step)."""
     tool = _tool(tool_name)
     if tool is None:
         return None
     for s in tool.sections:
-        if s.key == key and s.repeat:
-            return s
+        if s.repeat:
+            if s.key == key:
+                return s
+            continue
         for o in s.options:
             if o.key == key:
                 return o

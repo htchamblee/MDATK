@@ -27,7 +27,7 @@ from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 
 from .. import PROJECT_ABBREV, __version__
 from ..config import PlanEdge, PlanNode, WorkflowParams
-from .base import PortValue, StepContext, Tool
+from .base import PortValue, StepContext, Tool, waiting_file
 from .naming import (file_name, folder_tag_problem, new_stamp, sanitize_project, sanitize_tag, step_folder,
                      step_label)
 from .registry import TOOLS
@@ -610,6 +610,9 @@ class Plan:
                 rel = step.ctx.from_own(f.name)
                 if f.role == "run":
                     lines.append(f'bash "{rel}"')
+                    if waiting_file(f.name) in f.content:  # it waits with exit 0, leaving its .waiting file
+                        lines.append(f'if [ -e "{waiting_file(rel)}" ]; then echo "WAITING: {rel} waits for its '
+                                     'separately run script; run that, then this script again" >&2; exit 0; fi')
                 elif f.role == "run-separate":
                     lines.append(f"#   run separately: bash {rel}")
             lines.append("")
