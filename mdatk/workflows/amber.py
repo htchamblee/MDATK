@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
-from .base import (SEPARATE_CONDA, PortValue, StepContext, Tool, env_section, extra_lines, fortran_float,
-                   require_file, script_header, separate_check, shell_quote, skip_when_done)
+from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, StepContext, Tool, env_section, extra_lines,
+                   fortran_float, require_file, script_header, separate_check, shell_quote, skip_when_done,
+                   waiting_done, waiting_file)
 from .budget import Resources, gpu_ids, gpu_step
+from .naming import sanitize_tag
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 from .scripts import cp_retype as _cp_retype
@@ -1597,6 +1600,41 @@ FINISHED_PATTERN = r"Total wall time|Run +done at"  # pmemd / sander print it wh
 FINISHED_FN = ["# a stage counts as finished when its output has the final timing lines",
                '# (pmemd: "Total wall time", sander: "Run   done at")',
                f'finished() {{ [ -s "$1" ] && grep -qE "{FINISHED_PATTERN}" "$1"; }}', ""]
+_AUTO_YES_NO = [("auto", "Auto"), ("yes", "Yes"), ("no", "No")]
+# the dry label of the step's dry production trajectory (dry-prod.nc, output 'dry_trajectory')
+DRY_PROD = "prod"
+DRY_LABEL = re.compile(r"[A-Za-z0-9_-]+")
+# labels whose output name dry_<label> belongs to another dry output: dry_pdb, dry_topology, dry_trajectory
+# and the stages' dry PDBs dry_pdb_<stage>
+RESERVED_DRY_LABELS = ("pdb", "topology", "trajectory")
+RESERVED_DRY_PREFIX = "pdb_"
+# set by a main script's stages that run before its separate script: their dry copies are made again
+STAGES_RAN = "STAGES_RAN"
+OUT_OF_DATE_FN = ["# a dry copy is out of date when it is missing or older than the output of one of its runs",
+                  'dry_out_of_date() { [ -s "$1" ] || return 0; local f="$1" o; shift; '
+                  'for o in "$@"; do [ "$f" -ot "$o" ] && return 0; done; return 1; }', ""]
+
+
+@dataclass
+class StageRoles:
+    """What the stages of an amber-md step do besides running, from the stage options ('Production stage'
+    and its Auto settings) and the step's: indices into the step's stages."""
+
+    separate: List[bool]  # per stage: runs in the separately run script
+    exported: List[int]  # stages whose trajectory goes out on the 'trajectory' output
+    dry: Dict[str, List[int]]  # dry label -> the stages dried into its file, in stage order (DRY_PROD: dry-prod)
+    dry_pdbs: List[int]  # stages with a dry PDB of their last frame
+
+    @property
+    def split(self) -> bool:
+        """Some stage runs in the separate script."""
+        return any(self.separate)
+
+    @property
+    def main(self) -> List[int]:
+        """The stages of the main script."""
+        return [k for k, sep in enumerate(self.separate) if not sep]
+
 
 STAGE_OPTIONS = [
     Option("name", "Name", "text", "stage", "Short stage name used in file names (letters, digits, "
@@ -1694,8 +1732,37 @@ STAGE_OPTIONS = [
     Option("segments", "Split into segments", "int", 1, "Run this stage as N consecutive pmemd runs "
            "(e.g. to fit cluster wall-time limits); file names get -001, -002 ...", minimum=1,
            maximum=1000, requires=_MD_KIND),
-    Option("production", "Production stage", "bool", False, "Its trajectory is passed on to analysis / "
-           "visualisation steps and goes into the separate production script.", requires=_MD_KIND),
+    Option("production", "Production stage", "bool", False, "Shorthand for a production run, through the "
+           "Auto settings below: the stage goes into the separate production script (with the step's "
+           "'Separate production script'), its trajectory is passed on to analysis / visualisation steps, and "
+           "with the step's 'Dry, imaged production trajectory' it is dried into dry-prod.nc unless it has a "
+           "dry label of its own. 'Run in the separate script' and 'Pass the trajectory on' set to Yes or No "
+           "override it.", requires=_MD_KIND),
+    Option("separate", "Run in the separate script", "choice", "auto",
+           "Auto: in the step's separately run script (e.g. on a cluster) when it is a 'Production stage' and "
+           "the step's 'Separate production script' is on, otherwise in the main script. Yes: in the separate "
+           "script, also when it is no production stage or that step option is off. No: in the main script. "
+           "The main script runs the stages before the first separate one, waits for the separate script, then "
+           "runs the rest.", choices=_AUTO_YES_NO, requires=_MD_KIND),
+    Option("export", "Pass the trajectory on", "choice", "auto",
+           "Whether the stage's trajectory goes out on the step's 'Trajectory' output to analysis / "
+           "visualisation steps. Auto: when it is a 'Production stage' (when no stage's trajectory goes out, "
+           "the last MD stage with a trajectory and Auto here does). Yes / No: always / never, whatever "
+           "'Production stage' says.", choices=_AUTO_YES_NO, requires=_MD_KIND),
+    Option("dry", "Dry trajectory label", "text", "",
+           "A label of letters, digits, '-' and '_' (empty: none): cpptraj autoimages this stage's trajectory, "
+           "strips the step's 'Strip mask (trajectory)' and writes <project>_<step>_dry-<label>.nc (and the dry "
+           "topology) right after the stage, in its script; stages with the same label are concatenated, in "
+           "stage order, into one file with an output of its own. Needs trajectory frames (ntwx > 0). The label "
+           "'prod' joins the step's dry production trajectory (dry-prod.nc). A label takes precedence over the "
+           "step's 'Dry, imaged production trajectory', which covers the production stages without one. "
+           "Reserved: pdb, topology, trajectory and labels starting with pdb_ (names of the step's other dry "
+           "outputs).", placeholder="e.g. relax1", requires=_MD_KIND),
+    Option("dry_pdb", "Dry PDB of its last frame", "bool", False,
+           "Right after the stage, cpptraj strips the step's 'Strip mask' from its final restart and writes "
+           "<project>_<step>_dry-<stage>.pdb, with an output of its own - e.g. the structure at the top of a "
+           "heating ramp. Independent of the step's 'Dry PDB before production'; needs no trajectory frames.",
+           requires=_MD_KIND),
     Option("extra_cntrl", "Extra &cntrl settings", "multiline", "", "Additional name=value settings "
            "added inside &cntrl (they override generated values with the same name).",
            placeholder="nscm=1000,"),
@@ -1772,7 +1839,9 @@ class AmberMDTool(Tool):
                    "Coordinates used as -ref for positional restraints.",
                    choices=[("previous", "Previous stage"), ("initial", "Starting coordinates")]),
             Option("separate_production", "Separate production script", "bool", True,
-                   "Production stages go into their own script (e.g. to run them on a cluster)."),
+                   "Production stages go into their own script (e.g. to run them on a cluster). A stage's "
+                   "'Run in the separate script' set to Yes or No takes precedence for that stage."),
+            WAITING_EXIT,
             Option("resume", "Skip finished stages", "bool", True,
                    "When the script is re-run, stages whose output file already has pmemd's final "
                    "timing lines are skipped (resumes an interrupted run)."),
@@ -1784,14 +1853,18 @@ class AmberMDTool(Tool):
         Section("final", "Final structure", [
             Option("dry_pdb", "Dry PDB before production", "bool", True,
                    "cpptraj strips water and ions from the last restart of the main script (before "
-                   "the production script) - for a visual check of the equilibrated structure."),
+                   "the production script) - for a visual check of the equilibrated structure. Any MD stage "
+                   "can write one of its own as well ('Dry PDB of its last frame')."),
             Option("strip_mask", "Strip mask", "text", DEFAULT_STRIP, "cpptraj mask of atoms removed "
-                   "in the dry PDB / trajectory.", requires={"dry_pdb": True}),
+                   "in the dry PDBs (this one and those of stages)."),
             Option("dry_traj", "Dry, imaged production trajectory", "bool", False,
                    "cpptraj autoimage + strip of the production trajectories (and the matching dry "
-                   "topology) for visualisation."),
+                   "topology) for visualisation, concatenated into dry-prod.nc. A production stage with a "
+                   "dry label of its own goes into that label's file instead; a stage labelled 'prod' joins "
+                   "this one."),
             Option("dry_mask", "Strip mask (trajectory)", "text", DEFAULT_STRIP,
-                   "cpptraj mask removed from the dry trajectory.", requires={"dry_traj": True}),
+                   "cpptraj mask removed from the dry trajectories (the production one and those of stage "
+                   "dry labels)."),
         ]),
         env_section("source /opt/amber26/amber.sh   or   module load Amber/24", [SEPARATE_CONDA]),
     ]
@@ -1799,19 +1872,67 @@ class AmberMDTool(Tool):
     # ----------------------------------------------------------- helpers
     @staticmethod
     def stage_tag(stage: Dict[str, Any], k: int) -> str:
-        from .naming import sanitize_tag
         return sanitize_tag(stage.get("name") or f"stage{k + 1}")
 
+    @staticmethod
+    def _choice(st: Dict[str, Any], key: str) -> str:
+        """A stage's Auto / Yes / No option; only MD stages have them (a minimisation stage: Auto)."""
+        value = st.get(key, "auto")
+        return value if st.get("kind") == "md" and value in ("yes", "no") else "auto"
+
+    @staticmethod
+    def dry_label(st: Dict[str, Any]) -> str:
+        """The stage's own dry label ("": none; only MD stages have one)."""
+        return (st.get("dry") or "").strip() if st.get("kind") == "md" else ""
+
+    def roles(self, s: Dict[str, Any]) -> StageRoles:
+        """What each stage does besides running.  'Production stage' is the shorthand the Auto settings
+        follow: separate script (with the step's 'Separate production script'), trajectory passed on, and
+        with the step's 'Dry, imaged production trajectory' dried into dry-prod.nc unless the stage has a dry
+        label of its own (the label 'prod' joins that file)."""
+        stages = s.get("stages", [])
+        separate = []
+        for st in stages:
+            mode = self._choice(st, "separate")
+            separate.append(bool(s.get("separate_production") and st.get("production")) if mode == "auto"
+                            else mode == "yes")
+        traj = [k for k, st in enumerate(stages) if st.get("kind") == "md" and st.get("ntwx", 0) > 0]
+        exported = [k for k in traj if (stages[k].get("production") if self._choice(stages[k], "export") == "auto"
+                                        else self._choice(stages[k], "export") == "yes")]
+        if not exported:  # as before: the last MD stage with a trajectory (unless it says No)
+            exported = [k for k in traj if self._choice(stages[k], "export") == "auto"][-1:]
+        dry: Dict[str, List[int]] = {}
+        for k in traj:
+            label = self.dry_label(stages[k])
+            if not label and s.get("dry_traj") and stages[k].get("production"):
+                label = DRY_PROD
+            if label:
+                dry.setdefault(label, []).append(k)
+        dry_pdbs = [k for k, st in enumerate(stages) if st.get("kind") == "md" and st.get("dry_pdb")]
+        return StageRoles(separate, exported, dry, dry_pdbs)
+
     def output_ports(self, s):
+        roles = self.roles(s)
+        tags = [self.stage_tag(st, k) for k, st in enumerate(s.get("stages", []))]
         ports = [Port("topology", "Topology (parm7)", ("parm7",)),
                  Port("restart", "Final restart (rst7)", ("rst7",))]
-        if any(st["kind"] == "md" and st["ntwx"] > 0 for st in s.get("stages", [])):
+        if roles.exported:
             ports.append(Port("trajectory", "Trajectory", ("nc",), multiple=True))
-        if s.get("dry_pdb"):
+        if s.get("dry_pdb") and roles.main:
             ports.append(Port("dry_pdb", "Dry final PDB", ("pdb",)))
-        if s.get("dry_traj"):
+        if roles.dry:
             ports.append(Port("dry_topology", "Dry topology", ("parm7",)))
+        if DRY_PROD in roles.dry:
             ports.append(Port("dry_trajectory", "Dry trajectory", ("nc",)))
+        for label, members in roles.dry.items():
+            if label != DRY_PROD:
+                names = [tags[k] for k in members]
+                ports.append(Port(f"dry_{label}", f"Dry trajectory {label}" + (
+                    f" ({', '.join(names)})" if names != [label] else ""), ("nc",),
+                    tooltip=f"Dry, imaged trajectory of {_stage_list(names)} (dry label {label})"))
+        for k in roles.dry_pdbs:
+            ports.append(Port(f"dry_pdb_{tags[k]}", f"Dry PDB of {tags[k]}", ("pdb",),
+                              tooltip=f"Dry PDB of the last frame of stage {tags[k]}"))
         return ports
 
     def _segments(self, s, ctx) -> List[Dict[str, Any]]:
@@ -1874,6 +1995,11 @@ class AmberMDTool(Tool):
         modes = self._restart_modes(s, ctx)
         prev_kind = None
         temps = []
+        # the temperature a continued run starts at: the previous MD stage's temp0, for the first stage the
+        # one the input restart was run at when its step says so (an amber-md step's restart output)
+        crd = ctx.data("coordinates")
+        prev_temp = crd.get("temp0") if crd.get("velocities", s["input_velocities"]) else None
+        prev_name = "the input restart"
         for k, st in enumerate(stages):
             key = f"stages.{k}."
             label = f"stage {tags[k]}"
@@ -1885,6 +2011,7 @@ class AmberMDTool(Tool):
                     out.append(Issue("warning", f"{label}: ncyc exceeds maxcyc, so conjugate gradient never "
                                                 "starts", (key + "ncyc",)))
                 prev_kind = "min"
+                prev_temp = None
                 continue
             irest, _ntx = modes[k]
             if st["restart"] == "continue" and prev_kind == "min":
@@ -1913,15 +2040,37 @@ class AmberMDTool(Tool):
                 if st["ramp_steps"] > st["nstlim"]:
                     out.append(Issue("error", f"{label}: the ramp is longer than the stage",
                                      (key + "ramp_steps",)))
-                if irest == 1:
-                    out.append(Issue("warning", f"{label}: a ramp from tempi on a continued run starts "
-                                                "below the current temperature", (key + "ramp",)))
-            if irest == 1 and st["tempi"] not in (0.0, st["temp0"]) and st["restart"] != "new":
+                # a continued run is at the previous temperature: fine when the ramp starts there (tempi), and
+                # a cooling ramp (tempi above temp0) starts above its target by design
+                if irest == 1 and st["tempi"] <= st["temp0"] and not (
+                        prev_temp is not None and abs(st["tempi"] - prev_temp) < 1e-6):
+                    if prev_temp is None:
+                        out.append(Issue("warning", f"{label}: a ramp from tempi on a continued run starts "
+                                                    "below the current temperature", (key + "ramp",)))
+                    else:
+                        out.append(Issue("warning", f"{label}: the ramp starts at tempi = {st['tempi']:g} K, but "
+                                                    f"{prev_name} ended at {prev_temp:g} K", (key + "ramp",
+                                                                                              key + "tempi")))
+            if irest == 1 and not st["ramp"] and st["tempi"] not in (0.0, st["temp0"]) and st["restart"] != "new":
                 out.append(Issue("info", f"{label}: tempi is ignored when velocities are continued",
                                  (key + "tempi",)))
-            if st["ntwx"] == 0 and st["production"]:
-                out.append(Issue("warning", f"{label}: production stage without trajectory output (ntwx=0)",
-                                 (key + "ntwx",)))
+            export = self._choice(st, "export")
+            if st["ntwx"] == 0 and (st["production"] if export == "auto" else export == "yes"):
+                out.append(Issue("warning", f"{label}: production stage without trajectory output (ntwx=0)"
+                                 if st["production"] else f"{label}: its trajectory is to be passed on, but it "
+                                 "writes none (ntwx=0)", (key + "ntwx",)))
+            dry = self.dry_label(st)
+            if dry:
+                if not DRY_LABEL.fullmatch(dry):
+                    out.append(Issue("error", f"{label}: the dry label '{dry}' may hold only letters, digits, "
+                                              "'-' and '_'", (key + "dry",)))
+                elif dry in RESERVED_DRY_LABELS or dry.startswith(RESERVED_DRY_PREFIX):
+                    out.append(Issue("error", f"{label}: the dry label '{dry}' is reserved: dry_pdb, dry_topology, "
+                                              "dry_trajectory and dry_pdb_<stage> name the step's other dry "
+                                              "outputs", (key + "dry",)))
+                if st["ntwx"] == 0:
+                    out.append(Issue("error", f"{label}: the dry label '{dry}' needs a trajectory: set "
+                                              "'Trajectory frame every (ntwx)' above 0", (key + "dry", key + "ntwx")))
             if st["ntwx"] and st["nstlim"] % st["ntwx"]:
                 out.append(Issue("info", f"{label}: nstlim is not a multiple of ntwx", (key + "ntwx",)))
             if not st["netcdf"] and st["ntwx"]:
@@ -1935,10 +2084,23 @@ class AmberMDTool(Tool):
                                  (key + "taup",)))
             temps.append((k, tags[k], st["temp0"]))
             prev_kind = "md"
+            prev_temp, prev_name = st["temp0"], label
             dup = _duplicated_keys(st["extra_cntrl"])
             if dup:
                 out.append(Issue("warning", f"{label}: extra &cntrl settings override generated ones: "
                                             f"{', '.join(dup)}", (key + "extra_cntrl",)))
+        roles = self.roles(s)
+        files: Dict[str, List[str]] = {}  # dry trajectory file tag -> the labels that write it
+        for dry, members in roles.dry.items():
+            if dry == DRY_PROD or (DRY_LABEL.fullmatch(dry) and dry not in RESERVED_DRY_LABELS
+                                   and not dry.startswith(RESERVED_DRY_PREFIX)):
+                files.setdefault(sanitize_tag(f"dry-{dry}"), []).append(dry)
+        for ftag, labels in files.items():
+            if len(labels) > 1:
+                ks = [k for dry in labels for k in roles.dry[dry]]
+                out.append(Issue("error", f"the dry labels {', '.join(repr(d) for d in labels)} would write the "
+                                          f"same file ({ctx.name(ftag, 'nc')}); give them one label or "
+                                          "distinct ones", tuple(f"stages.{k}.dry" for k in ks)))
         if len({t for _k, _n, t in temps}) > 1:
             listing = ", ".join(f"{n} {t:g} K" for _k, n, t in temps)
             out.append(Issue("warning", f"MD stages use different temperatures ({listing})",
@@ -1950,9 +2112,13 @@ class AmberMDTool(Tool):
                                           for st in stages):
             out.append(Issue("info", "single-core pmemd is slow for long runs; consider pmemd.cuda or "
                                      "pmemd.MPI", ("engine",)))
-        if not any(st.get("production") for st in stages if st["kind"] == "md") and s["separate_production"]:
-            out.append(Issue("info", "no stage is marked as production; everything runs in one script",
-                             ("separate_production",)))
+        if s["separate_production"] and not roles.split:
+            if not any(st.get("production") for st in stages if st["kind"] == "md"):
+                out.append(Issue("info", "no stage is marked as production; everything runs in one script",
+                                 ("separate_production",)))
+            else:
+                out.append(Issue("info", "every production stage runs in the main script ('Run in the separate "
+                                         "script': No); everything runs in one script", ("separate_production",)))
         if not env_has_amber(s):
             out.append(Issue("info", "no environment setup: pmemd and cpptraj must be on PATH when the "
                                      "script runs", ("env_setup",)))
@@ -1969,20 +2135,29 @@ class AmberMDTool(Tool):
         if top is not None and top.paths:
             out["topology"] = PortValue(list(top.paths), "parm7", dict(top.data))
         if runs:
-            out["restart"] = PortValue([ctx.own(runs[-1]["rtag"], "rst7")], "rst7", {"velocities":
-                                       runs[-1]["stage"]["kind"] == "md"})
-        prod = [r for r in runs if r["nc"] and r["stage"]["production"]]
-        if not prod:
-            md = [r for r in runs if r["nc"]]
-            prod = [r for r in md if r["index"] == md[-1]["index"]] if md else []
-        if prod:
-            out["trajectory"] = PortValue([ctx.from_own(r["nc"]) for r in prod], "nc")
-        main_runs = [r for r in runs if not (s["separate_production"] and r["stage"]["production"])]
-        if s["dry_pdb"] and main_runs:
+            last = runs[-1]["stage"]
+            data = {"velocities": last["kind"] == "md"}
+            if last["kind"] == "md":  # the temperature it ends at (a ramp ends at temp0): continued runs start there
+                data["temp0"] = last["temp0"]
+            out["restart"] = PortValue([ctx.own(runs[-1]["rtag"], "rst7")], "rst7", data)
+        roles = self.roles(s)
+        tags = [self.stage_tag(st, k) for k, st in enumerate(s["stages"])]
+        if roles.exported:
+            out["trajectory"] = PortValue([ctx.from_own(r["nc"]) for r in runs if r["index"] in roles.exported],
+                                          "nc", {"stages": [tags[k] for k in roles.exported]})
+        if s["dry_pdb"] and roles.main:
             out["dry_pdb"] = PortValue([ctx.own("dry", "pdb")], "pdb")
-        if s["dry_traj"] and prod:
+        if roles.dry:
             out["dry_topology"] = PortValue([ctx.own("dry", "parm7")], "parm7", {"box": False})
-            out["dry_trajectory"] = PortValue([ctx.own("dry-prod", "nc")], "nc")
+        if DRY_PROD in roles.dry:
+            out["dry_trajectory"] = PortValue([ctx.own("dry-prod", "nc")], "nc",
+                                              {"stages": [tags[k] for k in roles.dry[DRY_PROD]]})
+        for label, members in roles.dry.items():
+            if label != DRY_PROD:
+                out[f"dry_{label}"] = PortValue([ctx.own(f"dry-{label}", "nc")], "nc",
+                                                {"stages": [tags[k] for k in members], "label": label})
+        for k in roles.dry_pdbs:
+            out[f"dry_pdb_{tags[k]}"] = PortValue([ctx.own(f"dry-{tags[k]}", "pdb")], "pdb", {"stage": tags[k]})
         return out
 
     # ------------------------------------------------------------- files
@@ -2053,7 +2228,9 @@ class AmberMDTool(Tool):
         return "\n".join(lines) + "\n"
 
     def resources(self, s):
-        return ["ambertools", "pmemd"] + (["cpptraj"] if s.get("dry_pdb") or s.get("dry_traj") else [])
+        stages = [st for st in s.get("stages", []) if st.get("kind") == "md"]
+        dry = s.get("dry_pdb") or s.get("dry_traj") or any(self.dry_label(st) or st.get("dry_pdb") for st in stages)
+        return ["ambertools", "pmemd"] + (["cpptraj"] if dry else [])
 
     def run_resources(self, s):
         # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
@@ -2064,11 +2241,19 @@ class AmberMDTool(Tool):
             return gpu_step(1, 1, s, gpu_ids(s["gpu"]))
         return Resources()
 
-    def _production_done(self, s, ctx, runs) -> List[str]:
-        """Shell tests that succeed once the separate production script has finished."""
-        prod = [r for r in runs if r["stage"]["production"]]
-        tests = [f"finished {r['out']}" for r in prod]
-        if s["dry_traj"] and any(r["nc"] for r in prod):
+    def _separate_done(self, s, ctx, runs, roles: StageRoles) -> List[str]:
+        """Shell tests that succeed once the separate script has finished: its stages, then the dry copies it
+        makes, in its order (the dry production trajectory last)."""
+        tags = [self.stage_tag(st, k) for k, st in enumerate(s["stages"])]
+        tests = [f"finished {r['out']}" for r in runs if roles.separate[r["index"]]]
+        for k in sorted({r["index"] for r in runs if roles.separate[r["index"]]}):
+            for label, members in roles.dry.items():
+                if label != DRY_PROD and members[-1] == k:
+                    tests.append(f"[ -s {ctx.name(f'dry-{label}', 'nc')} ]")
+            if k in roles.dry_pdbs:
+                tests.append(f"[ -s {ctx.name(f'dry-{tags[k]}', 'pdb')} ]")
+        prod = roles.dry.get(DRY_PROD)
+        if prod and roles.separate[prod[-1]]:
             tests.append(f'[ -s {ctx.name("dry-prod", "nc")} ]')
         return tests
 
@@ -2106,7 +2291,10 @@ class AmberMDTool(Tool):
         else:
             pmemd = engine
         min_pmemd = "pmemd" if s["min_engine"] == "pmemd" else "$PMEMD"
-        prod_split = s["separate_production"] and any(r["stage"]["production"] for r in runs)
+        roles = self.roles(s)
+        sep = roles.separate
+        prod_split = roles.split  # some stage runs in the separate script
+        tags = [self.stage_tag(st, k) for k, st in enumerate(s["stages"])]
 
         def preamble(title, script, separate=False):
             lines = script_header(title, ctx, s, script, [
@@ -2122,19 +2310,56 @@ class AmberMDTool(Tool):
         prod_name = ctx.name("amber-prod", "sh")
         main = preamble("Amber MD stages", main_name)
         prod = preamble("Amber production", prod_name, separate=True) if prod_split else main
+        what = ("the production stages" if all(st["production"] for k, st in enumerate(s["stages"]) if sep[k])
+                else "the separately run stages")
+        flag = waiting_file(main_name) if prod_split and s["waiting_exit"] == "file" else ""
         waiting: List[str] = []
         # split production: the main script's stages before it (production starts from them) and after it
         before: List[str] = []
         after: List[str] = []
         if prod_split:  # the main script must not report success while production has not run
-            head, waiting = separate_check(prod_name, self._production_done(s, ctx, runs),
-                                           "the production stages")
+            head, waiting = separate_check(prod_name, self._separate_done(s, ctx, runs, roles), what, flag)
             main += ([] if s["resume"] else FINISHED_FN) + head
+        strip_mask = re.sub(r"[ ]+", "", s["strip_mask"])
+        dry_mask = re.sub(r"[ ]+", "", s["dry_mask"])
+        parm_written = set()  # the scripts whose first dry trajectory writes the dry topology (parmout)
+
+        def dry_copies(k: int, script: str) -> List[Tuple[str, List[str], List[str]]]:
+            """(file, the output files of the runs it is made from, cpptraj lines) of the dry copies made right
+            after stage ``k``: the dry trajectories whose last stage it is (the dry production trajectory comes
+            at the end) and its dry PDB."""
+            out = []
+            for label, members in roles.dry.items():
+                if label == DRY_PROD or members[-1] != k:
+                    continue
+                nc = ctx.name(f"dry-{label}", "nc")
+                parm = script not in parm_written
+                parm_written.add(script)
+                made_from = [r for r in runs if r["index"] in members]
+                lines = [f"# Dry, imaged copy of the trajectory of {_stage_list([tags[m] for m in members])} "
+                         f"(dry label {label})" + (" and the dry topology" if parm else ""),
+                         "cpptraj << EOF", 'parm "$TOP"', *[f"trajin {r['nc']}" for r in made_from], "autoimage",
+                         f"strip {dry_mask}" + (f" parmout {ctx.name('dry', 'parm7')}" if parm else ""),
+                         f"trajout {nc} netcdf", "run", "EOF", require_file(nc, "cpptraj"), ""]
+                out.append((nc, [r["out"] for r in made_from], lines))
+            if k in roles.dry_pdbs:
+                last = [r for r in runs if r["index"] == k][-1]
+                pdb = ctx.name(f"dry-{tags[k]}", "pdb")
+                lines = [f"# Strip a dry PDB of the last frame of {tags[k]} for visual checks",
+                         "cpptraj << EOF", 'parm "$TOP"', f"trajin {last['rst']}", f"strip {strip_mask}",
+                         f"trajout {pdb} pdb", "run", "EOF", require_file(pdb, "cpptraj"), ""]
+                out.append((pdb, [last["out"]], lines))
+            return out
+
+        # the dry copies of the stages before the separate script come after them, outside the part that is
+        # not run again once it has finished: made whenever those stages ran, and when missing (asked for later)
+        # or older than the output of one of its runs (one that ran again in an interrupted run)
+        held: List[Tuple[str, List[str], List[str]]] = []
         prev_rst = crd
         seen_prod = False
         for r in runs:
             st = r["stage"]
-            if prod_split and st["production"]:
+            if prod_split and sep[r["index"]]:
                 target, seen_prod = prod, True
             else:
                 target = (after if seen_prod else before) if prod_split else main
@@ -2153,37 +2378,56 @@ class AmberMDTool(Tool):
                 target.append(cmd)
             target += [require_file(r["rst"], f"pmemd ({r['rtag']})"), ""]
             prev_rst = r["rst"]
+            if r["seg"] == r["nseg"]:  # after the stage's last segment: its dry copies, in its script part
+                in_sep = prod_split and sep[r["index"]]
+                copies = dry_copies(r["index"], "separate" if in_sep else "main")
+                if prod_split and not in_sep and not seen_prod:
+                    held += copies
+                else:
+                    target += [line for _f, _outs, lines in copies for line in lines]
         if prod_split:  # before production; then wait for it; then the stages that continue from it
-            main += skip_when_done(before, "the production stages")
+            if held:
+                before.append(f"{STAGES_RAN}=1")
+            main += skip_when_done(before, what)
+            if held:
+                main += OUT_OF_DATE_FN
+            for path, outs, lines in held:
+                main += [f'if [ -n "${{{STAGES_RAN}:-}}" ] || dry_out_of_date {path} {" ".join(outs)}; then']
+                main += lines[:-1] + ["fi", ""]
             if after:
                 main += waiting + after
                 waiting = []
-        main_runs = [r for r in runs if not (prod_split and r["stage"]["production"])]
+        main_runs = [r for r in runs if not (prod_split and sep[r["index"]])]
         if main_runs and s["dry_pdb"]:
             dry = ctx.name("dry", "pdb")
             main += [f"# Strip a dry PDB of {main_runs[-1]['rtag']} for visual checks",
                      "cpptraj << EOF", 'parm "$TOP"', f"trajin {main_runs[-1]['rst']}",
-                     f"strip {re.sub(r'[ ]+', '', s['strip_mask'])}", f"trajout {dry} pdb", "run",
+                     f"strip {strip_mask}", f"trajout {dry} pdb", "run",
                      "EOF", require_file(dry, "cpptraj"), ""]
-        prod_runs = [r for r in runs if r["nc"] and r["stage"]["production"]]
-        if s["dry_traj"] and prod_runs:
-            last = prod if prod_split else main
-            mask = re.sub(r"[ ]+", "", s["dry_mask"])
+        prod_group = roles.dry.get(DRY_PROD)
+        if prod_group:  # where it always was: at the end of the script that runs its last stage
+            last = prod if prod_split and sep[prod_group[-1]] else main
             last += ["# Dry, imaged copy of the production trajectory (and its topology)",
-                     "cpptraj << EOF", 'parm "$TOP"'] + [f"trajin {r['nc']}" for r in prod_runs] + [
-                "autoimage", f"strip {mask} parmout {ctx.name('dry', 'parm7')}",
+                     "cpptraj << EOF", 'parm "$TOP"'] + [f"trajin {r['nc']}" for r in runs
+                                                          if r["index"] in prod_group] + [
+                "autoimage", f"strip {dry_mask} parmout {ctx.name('dry', 'parm7')}",
                 f"trajout {ctx.name('dry-prod', 'nc')} netcdf", "run", "EOF",
                 require_file(ctx.name("dry-prod", "nc"), "cpptraj"), ""]
-        main += waiting
+        main += waiting + waiting_done(flag)
         files.append(GeneratedFile(main_name, "\n".join(main), "run", "runs the MD stages"))
         if prod_split:
             files.append(GeneratedFile(prod_name, "\n".join(prod), "run-separate",
-                                       "runs the production stages"))
+                                       f"runs {what}"))
         return files
 
 
 def env_has_amber(s: Dict[str, Any]) -> bool:
     return bool(s.get("conda_env", "").strip() or s.get("env_setup", "").strip())
+
+
+def _stage_list(names: List[str]) -> str:
+    """'stage relax1', 'stages heat1, hold1'."""
+    return ("stage " if len(names) == 1 else "stages ") + ", ".join(names)
 
 
 def _duplicated_keys(extra: str) -> List[str]:

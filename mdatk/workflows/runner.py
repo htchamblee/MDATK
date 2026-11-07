@@ -6,7 +6,8 @@ their output to a callback and appends one entry per script to the project file'
 step log.  Scripts marked "run separately" (production runs meant for a cluster
 queue, long sampling runs) are started only when asked for (``include_separate``).
 The main script of a step that has such a script exits with
-:data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished: the step
+:data:`~mdatk.workflows.base.WAITING_STATUS` until that script has finished (or, in the step's
+'exit 0' waiting mode, exits 0 leaving ``<script>.waiting`` beside itself): the step
 is then *waiting*, which is not a failure, but the steps that depend on it are not
 started either.  Steps that use the outputs of an earlier run (``PlanNode.adopted``)
 are not run again.
@@ -37,7 +38,7 @@ from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
-from .base import LOCAL_VAR, WAITING_STATUS
+from .base import LOCAL_VAR, WAITING_STATUS, waiting_file
 from .budget import Budget, Grant, Resources, Slots, budget_notes, schedule
 from .runstate import stop_mark
 
@@ -413,14 +414,30 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     return code, "\n".join(captured)
 
 
+def _script_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _flags_waiting(text: str, path: str) -> bool:
+    """Whether the main script at ``path`` (its text) waits in the 'exit 0' mode: it leaves its
+    :func:`~mdatk.workflows.base.waiting_file` instead of exiting with WAITING_STATUS."""
+    return os.path.basename(waiting_file(path)) in text
+
+
 def _checks_separate(path: str) -> bool:
     """Whether a step's main script checks that its separately run scripts have finished (see
     base.separate_check); older ones exit 0 having run only the part before production."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return f"exit {WAITING_STATUS}" in fh.read()
-    except OSError:
-        return False
+    text = _script_text(path)
+    return f"exit {WAITING_STATUS}" in text or _flags_waiting(text, path)
+
+
+def _left_waiting(path: str) -> bool:
+    """A main script in the 'exit 0' waiting mode that exited 0 left its waiting file: it waits."""
+    return os.path.exists(waiting_file(path)) and _flags_waiting(_script_text(path), path)
 
 
 def _dependencies(jobs: Sequence[ScriptJob]) -> List[Set[int]]:
@@ -489,9 +506,10 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
     terminated) or, not started yet, never started: result status "stopped", its dependents not started
     ("skipped"), the other jobs go on, and its run leaves the note ``job.stop_mark``.
 
-    A main script that exits with WAITING_STATUS leaves its step *waiting* (result status
-    "waiting", not an exception) and its dependents not started - unless the step's separate
-    scripts are among ``jobs``: they then run next.  A separate script whose main script found
+    A main script that exits with WAITING_STATUS, or exits 0 leaving its ``<script>.waiting`` (the
+    step's 'exit 0' waiting mode), leaves its step *waiting* (result status "waiting", not an
+    exception) and its dependents not started - unless the step's separate scripts are among
+    ``jobs``: they then run next.  A separate script whose main script found
     it finished (exit status 0) is not run again."""
     limit = max(0, int(parallel))
     marks = (limit != 1 and len(jobs) > 1) if step_marks is None else step_marks
@@ -561,9 +579,11 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                     entry.output = output
                     entry.summary = f"exit status {code}"
                     main = job.role == "run" and bool(job.separate)
+                    # the 'exit 0' waiting mode: the script left <script>.waiting
+                    flagged = main and code == 0 and _left_waiting(job.path)
                     # a main script written by MDATK 0.0.8 or older "succeeds" whether or not production ran
-                    legacy = main and code == 0 and not _checks_separate(job.path)
-                    if main and (code == WAITING_STATUS or legacy):
+                    legacy = main and code == 0 and not flagged and not _checks_separate(job.path)
+                    if main and (code == WAITING_STATUS or flagged or legacy):
                         if job.node_id in separate_next:  # asked for: its separate scripts run next
                             waited.add(job.node_id)
                             entry.summary += " (its separately run scripts run next)"
