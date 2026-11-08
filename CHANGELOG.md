@@ -14,6 +14,33 @@ the notes below.
 
 ## Unreleased
 
+### Amber build: DNA force fields and a mirrored L-DNA library
+
+- **DNA force field** (*Force field*): OL24 (default), OL21 or OL15, sourced after the RNA force field when
+  the structure has DNA (from the structure builder, whose model data now say `dna` / `l_dna` / `rna`, or
+  an existing input PDB). Builds without DNA are unchanged. The naming step renames DNA too (`clean
+  --dna`, new): DA5 / DA3 …, L-DNA LDA, LDA5, LDA3, LDAN … (also from the CCD's 0DA …).
+- **L-DNA library, generated**: `LDNA.lib` + `frcmod.ldna` from the DNA force field's own library and
+  parameter files, by the L-RNA generator with L-DNA settings: O5′ / O4′ / O3′ (OS) typed LS and the
+  terminal OH typed LT, every term of their D twins repeated with mirrored dihedral phases (OL15 / OL21 ε
+  and ζ, and OL24's δ and τ1, run through O3′ and O4′, so twinning O5′ / O4′ alone, as for L-RNA, would
+  leave them unmirrored: up to 38 kcal/mol per residue in OL24). Checked for every unit of OL15, OL21 and
+  OL24 (the dihedral energy of an L unit at the mirror coordinates equals its D unit's to 10⁻⁹ kcal/mol);
+  with AmberTools installed the tests also compare tleap + sander energies of a D-DNA duplex and its
+  mirror image. The former warning that L-DNA needs a library of one's own is gone (an error when no DNA
+  force field is chosen).
+- **Mg²⁺ terms of the twin types**: microMg / nanoMg pair terms for LS / LT (as OS / OH); for 12-6-4 a
+  polarizability table `lj_1264_pol_mdatk.dat` with the twin types, passed to `add12_6_4 … polfile`.
+  ParmEd stops on an atom type missing from its table, so **12-6-4 builds of structures with L-RNA failed
+  at the ParmEd step** before this (the L-RNA types LD / LH / LE now get their lines too).
+- **Checks**: NBfix19's base term (NB / NC with H) acts on DNA bases as well (a warning; with the retyped CP
+  library its phosphate terms and 0BPh do not reach DNA); an own CP frcmod changes the DNA's O2 / OS too.
+- **Citations**: OL15 (Zgarbová et al. 2015), OL21 (2021) and OL24 (2025) DNA force fields.
+- **Fix**: the L-RNA generator module had its own `__main__` block, which ran before the settings the
+  build script writes after it; the generated L-RNA helper was unaffected (it has no settings), the L-DNA
+  one would have mirrored with the L-RNA rules.
+
+
 ### Scripts run from an RNAdo started from the applications menu
 
 - **What `~/.bashrc` sets up reaches the scripts.** Started from the applications menu, MDATK has the

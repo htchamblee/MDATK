@@ -1299,6 +1299,37 @@ CP residue library, use your own L-RNA files too (the generated units mirror Amb
 When the input PDB exists, the build step checks it and reports L residues without a library as an
 error.
 
+<a id="l-dna"></a>**DNA and L-DNA.** When the structure has DNA (from the structure builder, or DA/DC/DG/DT or
+L-DNA residues in an existing input PDB), the build sources the *DNA force field* after the RNA one:
+**OL24** (default; Zgarbová, Šponer & Jurečka, JCTC 2025: OL21 with refined δ and deoxyribose τ1 torsions
+and the χOL3 glycosidic torsion), **OL21** (JCTC 2021: OL15 with refined α / γ) or **OL15**, AmberTools'
+`leaprc.DNA.OL24` / `OL21` / `OL15`. A structure without DNA is built exactly as before. The DNA types are
+not RNA's (C3′ C7, C5′ CJ, χ on CK / CM / C1 / C2 against RNA's C5 / CP / C4 / CS), so RNA and DNA in one
+structure each keep their own terms. The naming step then gives DNA its Amber names too (DA5 / DA3 …, and
+L-DNA MDATK's LDA, LDA5, LDA3, LDAN …, also from the CCD's 0DA …).
+
+*L-DNA library* (Automatic: generated when the structure has L-DNA; or Generated / My own files) works as
+the generated L-RNA library does, from the DNA force field's own files (`ff-nucleic-OL24.lib` with
+`parm10.dat`, `frcmod.ff14SB` and `ff-nucleic-OL24.frcmod`; the OL21 / OL15 equivalents): `LDNA.lib` holds
+the D units mirrored and named LDA LDC LDG LDT / LDA5 LDA3 LDAN …, and `frcmod.ldna` the terms of the new
+types with mirrored phases. In DNA two oxygens are not enough: OL15 / OL21 have ε and ζ terms through O3′
+(C2′/C4′-C3′-O3′-P, C3′-O3′-P-OP) and OL24 adds δ (O3′-C3′-C4′-C5′) and τ1 (O4′-C1′-C2′-C3′), so every
+sugar and backbone oxygen gets a twin: O5′, O4′ and O3′ typed OS become **LS**, the 5′/3′-OH (OH) **LT**
+(distinct from the L-RNA types, whose χ differs). Every handedness-dependent term of the three force
+fields contains one of these oxygens. The tests check, for every unit of OL15, OL21 and OL24, that the L
+unit at the mirror coordinates has the D unit's dihedral energy (to 10⁻⁹ kcal/mol; without the twins it
+differs by up to 1.6, 2.6 and 38 kcal/mol per residue), and, where AmberTools is installed, that tleap and
+sander give a D-DNA duplex and its mirror image the same energy term by term. At a D/L junction the
+torsions across the link take the types of the residue that owns each oxygen (ζ through the D residue's
+O3′ keeps the D phase), as the L-RNA library does.
+
+The twins also get their D types' Mg²⁺ terms: the microMg / nanoMg pair terms (LS as OS, LT as OH), and,
+for the 12-6-4 model, a polarizability table `lj_1264_pol_mdatk.dat` with a line per twin type (ParmEd's
+`add12_6_4` stops on an atom type its table lacks; the same table now carries the L-RNA types LD / LH / LE
+when the structure has L-RNA, which 12-6-4 builds with L-RNA needed). NBfix19 and 0BPh are fitted for RNA:
+with the retyped CP library their phosphate terms and 0BPh address the CP types OP / OR, which DNA does not
+have, but NBfix19's base term (NB / NC with H) acts on DNA bases too, and the build says so.
+
 > **L residue names must match the library.** MDATK writes the Dudek names (LA LC LG LU, LA5/LA3 …).
 > A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
 > `addPdbResMap` lines under *Leap commands before loadpdb*. Without them tleap invents
@@ -2242,7 +2273,7 @@ the schemes of the [PDB clean-up](#pdb-clean-up); the records are ATOM but for t
 
 The Amber names are the units of AmberTools' RNA and DNA libraries and of Dudek & Trylska's
 `nucleic12_LRNA.lib`; LDA … are MDATK's own names in the same pattern, since AmberTools ships no L-DNA
-library (a note says that tleap needs units of these names). The CCD has no 5'/3' variants of DNA, so
+library: the Amber build step mirrors them from the DNA force field (see [L-DNA](#l-dna)). The CCD has no 5'/3' variants of DNA, so
 *5'/3' terminal names* matter for DNA in the `amber` scheme only; 0A5 / 0A3 are no CCD entries either (a
 5' end that keeps its phosphate is named after the component, 0A). 0DA, 0DC, 0DG and 0DT are the CCD's
 2'-deoxy-L-ribonucleotides, and two of them spell some atoms their own way: 0DA its adenine N9A, C8A,
