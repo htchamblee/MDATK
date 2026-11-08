@@ -33,8 +33,12 @@ the notes below.
   polarizability table `lj_1264_pol_mdatk.dat` with the twin types, passed to `add12_6_4 … polfile`.
   ParmEd stops on an atom type missing from its table, so **12-6-4 builds of structures with L-RNA failed
   at the ParmEd step** before this (the L-RNA types LD / LH / LE now get their lines too).
-- **Checks**: NBfix19's base term (NB / NC with H) acts on DNA bases as well (a warning; with the retyped CP
-  library its phosphate terms and 0BPh do not reach DNA); an own CP frcmod changes the DNA's O2 / OS too.
+- **NBfix19 is kept off DNA**: with DNA in the structure, the ParmEd input gives the DNA atoms of NBfix19's
+  types LJ types of their own (`addLJType` on the DNA residues) and its pairs name the RNA atoms only (no
+  parentheses in the masks, which ParmEd's argument parser would join with the rest of the line). 0BPh is
+  unchanged (on the plain types written for RNA and DNA alike, with a warning). Checked with ParmEd on a
+  topology of RNA, D- and L-DNA residues merged into LJ types as tleap does. An own CP frcmod changes the
+  DNA's O2 / OS too (a warning).
 - **Citations**: OL15 (Zgarbová et al. 2015), OL21 (2021) and OL24 (2025) DNA force fields.
 - **Fix**: the L-RNA generator module had its own `__main__` block, which ran before the settings the
   build script writes after it; the generated L-RNA helper was unaffected (it has no settings), the L-DNA

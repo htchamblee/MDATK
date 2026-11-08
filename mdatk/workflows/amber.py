@@ -136,6 +136,62 @@ def lrna_pair_lines(nbfix19: bool, bph0: bool, bridging: str = "LD") -> List[str
         out += [f"changeLJPair @%H5 {t} 2.8808 0.0505", f"changeLJPair @%H4 {t} 2.9308 0.0505"]
     return out
 
+
+# DNA residue names in a topology the Amber build writes (D-DNA of the DNA force fields, MDATK's L-DNA units)
+DNA_RESIDUES = tuple(h + b + end for h in ("D", "LD") for b in "ACGT" for end in ("", "5", "3", "N"))
+
+
+def nbfix_without_dna(nbfix: List[str], bph: List[str], lrna: List[str], cp: bool) -> List[str]:
+    """NBfix19 kept off DNA: ParmEd changes Lennard-Jones pairs by LJ type, which DNA atoms share with RNA, so
+    the DNA atoms of the NBfix19 types (base NB / NC and H, terminal HO; with the plain types also phosphate
+    O2 and bridging OS, with the L-DNA twin LS that tleap merges with OS) get LJ types of their own first, and
+    every NBfix19 pair (and the L-RNA ones) addresses the RNA atoms only.  0BPh keeps acting on DNA: a 0BPh
+    line on a type split this way is written for the RNA and for the DNA type."""
+    dna = ":" + ",".join(DNA_RESIDUES)
+    split = {"@%NB,NC": "@%NB,NC", "@%H": "@%H", "@%HO": "@%HO"}
+    if not cp:
+        split.update({"@%O2": "@%O2", "@%OS": "@%OS,LS"})
+
+    # no parentheses: ParmEd's argument parser would join a parenthesised mask with the rest of the line;
+    # '!' binds tighter than '&' in Amber masks
+    def rna(mask):
+        return f"{mask}&!{dna}" if mask in split else mask
+
+    def dna_mask(mask):
+        return f"{dna}&{split[mask]}"
+
+    def pair(ln):
+        f = ln.split()
+        return f[0], f[1], f[2], f[3:]
+
+    out = ["#", "# NBfix19 is fitted for RNA and kept off DNA: the DNA atoms of its types get LJ types of their own",
+           "# (ParmEd changes pairs by LJ type, which DNA shares with RNA), and its pairs name the RNA atoms"]
+    for ln in nbfix:
+        if ln.startswith("addLJType"):
+            out.append(ln)
+            if ln.split()[1] == "@%NB,NC":
+                out += [f"addLJType {dna_mask(m)}" for m in split]
+        elif ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            out.append(" ".join([cmd, rna(m1), rna(m2)] + rest))
+        else:
+            out.append(ln)
+    for ln in bph:
+        if ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            out.append(" ".join([cmd, rna(m1), rna(m2)] + rest))
+            if m1 in split or m2 in split:  # the same pair for the DNA atoms (0BPh is not switched off)
+                out.append(" ".join([cmd, dna_mask(m1) if m1 in split else m1,
+                                     dna_mask(m2) if m2 in split else m2] + rest))
+        else:
+            out.append(ln)
+    for ln in lrna:
+        if ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            ln = " ".join([cmd, rna(m1), rna(m2)] + rest)
+        out.append(ln)
+    return out
+
 # ---------------------------------------------------------------------------
 # shared option builders
 # ---------------------------------------------------------------------------
@@ -932,15 +988,14 @@ class AmberBuildTool(Tool):
             out.append(Issue("warning", "the own CP frcmod changes the O2 / OS types for every residue: the DNA "
                                         "phosphates and O4' get the correction too (the retyped CP library changes "
                                         "RNA only)", ("cp_source",)))
-        if (s["nbfix19"] or s["bph0"]) and self._cp_lib(s):
-            if s["nbfix19"]:
-                out.append(Issue("warning", "NBfix19 is fitted for RNA: its base pair term (N-H...N, types NB / NC "
-                                            "with H) acts on the DNA bases too; its phosphate terms and 0BPh address "
-                                            "the CP types OP / OR, which DNA does not have", ("nbfix19",)))
-        elif s["nbfix19"] or s["bph0"]:
-            out.append(Issue("warning", "NBfix19 / 0BPh are fitted for RNA and address atom types that DNA shares "
-                                        "(NB / NC with H; O2 and OS, which in DNA are also O4' and O3'): their pairs "
-                                        "act on the DNA as well", ("nbfix19", "bph0")))
+        if s["nbfix19"]:
+            out.append(Issue("info", "NBfix19 is fitted for RNA and kept off the DNA: ParmEd gives the DNA atoms of "
+                                     "its types (base NB / NC and H, terminal HO" + ("" if self._cp_lib(s) else
+                                     ", phosphate O2, OS") + ") LJ types of their own, and its pairs name the RNA "
+                                     "atoms (RNA-DNA contacts keep the standard terms)", ("nbfix19",)))
+        if s["bph0"] and not self._cp_lib(s):
+            out.append(Issue("warning", "0BPh is fitted for RNA and addresses H5 / H4 with OS, which DNA shares: its "
+                                        "pairs act on the DNA too", ("bph0",)))
         if self.ldna_generated(s, ctx) and not s["lrna"]:
             out.append(Issue("warning", "L-nucleotide naming is off: the input must already name the L-DNA "
                                         "residues LDA, LDA5, LDA3 ... (as the generated library does)", ("lrna",)))
@@ -1277,14 +1332,14 @@ class AmberBuildTool(Tool):
             lines += ["#", "# Give HO and O2 their own Lennard-Jones types so the pair changes below do not also",
                       "# apply to atom types tleap merged with them (water HW, carbonyl O)",
                       "addLJType @%HO"] + ([] if cp else ["addLJType @%O2"])
-        if s["nbfix19"]:
-            lines += _cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES
-        if s["bph0"]:
-            lines += _cp_masks(BPH0_LINES) if cp else BPH0_LINES
-        if (s["nbfix19"] or s["bph0"]) and self._lrna_types(s):
-            lines += lrna_pair_lines(s["nbfix19"], s["bph0"], self._lrna_types(s)[0])
-        elif s["nbfix19"] or s["bph0"]:
-            lines += LRNA_NOTE
+        nb = (_cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES) if s["nbfix19"] else []
+        bph = (_cp_masks(BPH0_LINES) if cp else BPH0_LINES) if s["bph0"] else []
+        lrna = (lrna_pair_lines(s["nbfix19"], s["bph0"], self._lrna_types(s)[0]) if self._lrna_types(s)
+                else LRNA_NOTE) if (s["nbfix19"] or s["bph0"]) else []
+        if s["nbfix19"] and ctx is not None and self.dna_loaded(s, ctx):
+            lines += nbfix_without_dna(nb, bph, lrna, cp)
+        else:
+            lines += nb + bph + lrna
         if wet and self._solvated(s) and s["mg_model"] == "1264":
             lines += ["#", "# 12-6-4 Lennard-Jones terms for Mg2+ (Li & Merz)",
                       f"add12_6_4 :MG watermodel {WATERS[s['water']][3]}"
@@ -1498,7 +1553,7 @@ class AmberBuildTool(Tool):
             if lj:
                 pm = n("parmed-dry")
                 files.append(GeneratedFile(n("parmed-dry", "in"), self._parmed(
-                    s, f"{mods} on the dry topology", f"{pm}.parm7", wet=False), "input"))
+                    s, f"{mods} on the dry topology", f"{pm}.parm7", wet=False, ctx=ctx), "input"))
                 sh += [f"# Edit parameters: {mods}",
                        f"parmed -O {dry}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                        require_file(f"{pm}.parm7", "ParmEd"), ""]

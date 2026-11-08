@@ -326,3 +326,94 @@ def test_l_dna_duplex_has_the_energy_of_its_mirror_image(tmp_path, ff, dna_mode)
         assert energies["L"][term] == pytest.approx(energies["D"][term], abs=0.01 + 1e-5 * abs(energies["D"][term])), \
             (label, term, energies)
     assert all(t in (tmp_path / "L.parm7").read_text() for t in ("LS",))
+
+
+# ------------------------------------------------------------------------------- NBfix19 kept off DNA
+
+def test_nbfix19_pairs_name_rna_atoms_only_when_the_structure_has_dna(tmp_path):
+    plan, st = _plan(tmp_path, builder.build_helix("GACT", na="dna", chirality="L", scheme="amber"))
+    pm = _files(plan)["parmed.in"].splitlines()
+    dna = ":" + ",".join(amber.DNA_RESIDUES)
+    assert f"addLJType {dna}&@%NB,NC" in pm and f"addLJType {dna}&@%H" in pm and f"addLJType {dna}&@%HO" in pm
+    assert pm.index("addLJType @%NB,NC") < pm.index(f"addLJType {dna}&@%NB,NC")
+    pairs = [ln for ln in pm if ln.startswith("changeLJPair") and ":MG" not in ln]
+    assert f"changeLJPair @%NB,NC&!{dna} @%H&!{dna} 2.1 0.63" in pairs
+    assert f"changeLJPair @%HO&!{dna} @%OP 2.73 0.01" in pairs  # CP library: phosphate types are RNA's own
+    assert "changeLJPair @%H5 @%OR 2.8808 0.0505" in pairs  # 0BPh on the CP type: unchanged
+    assert not any("(" in ln for ln in pm if ln.startswith(("changeLJPair", "addLJType")))  # ParmEd's parser
+    assert any(i.level == "info" and i.message.startswith("NBfix19 is fitted for RNA and kept off the DNA")
+               for i in st.issues)
+    # the plain types (no CP library): DNA phosphate / bridging oxygens split too, 0BPh written for both
+    plan, _st = _plan(tmp_path, builder.build_helix("GACT", na="dna", scheme="amber"), cp_source="frcmod")
+    pm = _files(plan)["parmed.in"].splitlines()
+    assert f"addLJType {dna}&@%OS,LS" in pm and f"addLJType {dna}&@%O2" in pm
+    assert f"changeLJPair @%H5 @%OS&!{dna} 2.8808 0.0505" in pm and f"changeLJPair @%H5 {dna}&@%OS,LS 2.8808 0.0505" in pm
+
+
+def test_without_dna_the_nbfix19_lines_are_as_before(tmp_path):
+    plan, _st = _plan(tmp_path, builder.build_helix("GACU", scheme="amber"))
+    pm = _files(plan)["parmed.in"]
+    assert "changeLJPair @%NB,NC @%H 2.1 0.63" in pm and "DA5" not in pm
+
+
+def _parmed():
+    """The parmed command, when the ParmEd package is importable too."""
+    import importlib.util
+
+    return shutil.which("parmed") if importlib.util.find_spec("parmed") else None
+
+
+@pytest.mark.skipif(_parmed() is None, reason="ParmEd not available")
+@pytest.mark.parametrize("cp", [True, False], ids=["CP library", "plain types"])
+def test_parmed_changes_no_dna_pair_for_nbfix19(tmp_path, cp):
+    """On a topology of RNA, D-DNA and L-DNA residues whose types share LJ types as tleap merges them, the
+    NBfix19 pairs change RNA atom pairs only, and 0BPh changes D- and L-DNA alike."""
+    import itertools
+
+    import parmed
+
+    lj = {"NB": (1.8240, 0.1700), "H": (0.6000, 0.0157), "HO": (0.0, 0.0), "O2": (1.6612, 0.2100),
+          "OS": (1.6837, 0.1700), "H5": (1.3590, 0.0150), "H4": (1.4090, 0.0150), "OP": (1.7493, 0.2100),
+          "OR": (1.7718, 0.1700)}
+    merge = {"LS": "OS", "NC": "NB"}  # identical Lennard-Jones terms: one LJ type, as tleap does
+    s, types = parmed.Structure(), {}
+    rna_o = ("OP", "OR") if cp else ("O2", "OS")
+    for rname, tnames in (("G", ["NB", "NC", "H", "HO", rna_o[0], rna_o[1], "H5", "H4", "OS"]),
+                          ("DG", ["NB", "NC", "H", "HO", "O2", "OS", "H5", "H4"]),
+                          ("LDG", ["NB", "NC", "H", "O2", "LS", "H5", "H4"])):
+        number = len(s.residues) + 1
+        for k, tn in enumerate(tnames):
+            key = merge.get(tn, tn)
+            if key not in types:
+                types[key] = parmed.AtomType(key, None, 1.0, 1)
+                types[key].set_lj_params(lj[key][1], lj[key][0])
+            a = parmed.Atom(name=f"{tn}{k}", type=tn, charge=0.0, mass=1.0, atomic_number=1)
+            a.atom_type = types[key]
+            s.add_atom(a, rname, number)
+    parm = parmed.amber.AmberParm.from_structure(s)
+    parm.save(str(tmp_path / "in.parm7"))
+    nb = amber._cp_masks(amber.NBFIX19_LINES) if cp else amber.NBFIX19_LINES
+    bph = amber._cp_masks(amber.BPH0_LINES) if cp else amber.BPH0_LINES
+    (tmp_path / "in.in").write_text("\n".join(amber.nbfix_without_dna(nb, bph, [], cp) + ["outparm out.parm7"]) + "\n")
+    subprocess.run([_parmed(), "-O", "in.parm7", "-i", "in.in"], cwd=tmp_path, capture_output=True, timeout=300,
+                   check=True)
+
+    def pairs(p):
+        nt = p.ptr("ntypes")
+        out = {}
+        for a, b in itertools.combinations(p.atoms, 2):
+            idx = p.parm_data["NONBONDED_PARM_INDEX"][nt * (a.nb_idx - 1) + b.nb_idx - 1] - 1
+            out[(f"{a.residue.name}:{a.type}", f"{b.residue.name}:{b.type}")] = (
+                p.parm_data["LENNARD_JONES_ACOEF"][idx], p.parm_data["LENNARD_JONES_BCOEF"][idx])
+        return out
+
+    before, after = pairs(parm), pairs(parmed.load_file(str(tmp_path / "out.parm7")))
+    changed = {k for k in before if not all(math.isclose(x, y, rel_tol=1e-6, abs_tol=1e-6)
+                                            for x, y in zip(before[k], after[k]))}
+    nbfix = {k for k in changed if not {k[0].split(":")[1], k[1].split(":")[1]} & {"H5", "H4"}}
+    assert nbfix and all(k[0].startswith("G:") and k[1].startswith("G:") for k in nbfix), sorted(nbfix)
+    # 0BPh: what changes for D-DNA changes for L-DNA (OS / LS)
+    d = {(k[0].replace("DG:", "XG:"), k[1].replace("DG:", "XG:")) for k in changed if "DG:" in str(k) and "LDG" not in str(k)}
+    lpairs = {(k[0].replace("LDG:", "XG:").replace("LS", "OS"), k[1].replace("LDG:", "XG:").replace("LS", "OS"))
+              for k in changed if "LDG:" in str(k) and "DG:" not in str(k).replace("LDG:", "")}
+    assert d == lpairs, (sorted(d), sorted(lpairs))

@@ -1326,9 +1326,15 @@ O3′ keeps the D phase), as the L-RNA library does.
 The twins also get their D types' Mg²⁺ terms: the microMg / nanoMg pair terms (LS as OS, LT as OH), and,
 for the 12-6-4 model, a polarizability table `lj_1264_pol_mdatk.dat` with a line per twin type (ParmEd's
 `add12_6_4` stops on an atom type its table lacks; the same table now carries the L-RNA types LD / LH / LE
-when the structure has L-RNA, which 12-6-4 builds with L-RNA needed). NBfix19 and 0BPh are fitted for RNA:
-with the retyped CP library their phosphate terms and 0BPh address the CP types OP / OR, which DNA does not
-have, but NBfix19's base term (NB / NC with H) acts on DNA bases too, and the build says so.
+when the structure has L-RNA, which 12-6-4 builds with L-RNA needed). NBfix19 is fitted for RNA and **kept off the DNA**: ParmEd changes Lennard-Jones pairs by LJ type, which
+DNA atoms share with RNA, so the ParmEd input first gives the DNA atoms of NBfix19's types their own LJ types
+(`addLJType` on the DNA residues: base NB / NC and H, terminal HO, and with the plain types phosphate O2 and
+bridging OS together with the L-DNA twin LS, which tleap merges with OS), and every NBfix19 pair names the
+RNA atoms only (masks such as `@%NB,NC&!:DA,DA5,…`; RNA-DNA contacts keep the standard terms). 0BPh is left
+as it was: with the retyped CP library it addresses OP / OR, which DNA does not have; with the plain types
+its H5 / H4 - OS pairs are written for the RNA and the DNA oxygens alike (a warning says so). A test runs
+the lines through ParmEd on a topology of RNA, D-DNA and L-DNA residues whose types share LJ types as tleap
+merges them: no pair of a DNA atom changes by NBfix19, and 0BPh changes D- and L-DNA the same way.
 
 > **L residue names must match the library.** MDATK writes the Dudek names (LA LC LG LU, LA5/LA3 …).
 > A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
