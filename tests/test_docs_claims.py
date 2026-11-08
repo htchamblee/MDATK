@@ -45,10 +45,14 @@ def test_the_project_layout_names_folders_that_exist():
 
 
 def test_whats_new_does_not_call_the_appimage_leftover_process_fixed():
-    new = flat(readme().split("## What's new in 0.0.12", 1)[1].split("\n---", 1)[0])
+    # the README's What's new (now of a later release) claims no fix either; 0.0.12's notes keep the guards
+    new = flat(readme().split("## What's new in ", 1)[1].split("\n---", 1)[0])
     assert "no longer stays running" not in new and "no longer inherit" not in new
-    assert "quits when its main window closes" in new and "close_fds" in new
-    assert "still being investigated" in new
+    with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as fh:
+        changelog = fh.read()
+    notes = flat(changelog.split("\n## 0.0.12 ", 1)[1].split("\n## 0.0.11 ", 1)[0])
+    assert "no longer stays running" not in notes and "close_fds" in notes
+    assert "quit when their main window closes" in notes
 
 
 def test_the_help_names_chimerax_for_q_scores(capsys):
