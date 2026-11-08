@@ -12,6 +12,9 @@ warnings.filterwarnings("ignore", module="MDAnalysis")
 def _private_settings(tmp_path_factory, monkeypatch):
     """Keep the recent-projects list of the tests out of the user's ~/.config."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("config")))
+    # scripts run by the tests keep the test's environment, whether or not pytest runs in a terminal
+    # (tests/test_shell_env.py covers the environment of an interactive shell)
+    monkeypatch.setenv("MDATK_SHELL_ENV", "0")
 
 
 def make_universe(atoms, coords, bonds=(), dt=1.0):

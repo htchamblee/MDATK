@@ -3229,6 +3229,12 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   run` find it as MDATK finds cpptraj (`$CONDA_EXE`, `~/miniforge3`, `~/miniconda3`, `~/anaconda3`, …,
   `~/.conda/environments.txt`) and put its `condabin` folder first on the script's PATH, saying so in
   the log; when none is found the log says how to point MDATK at it (`CONDA_EXE`).
+  The same holds for everything else `~/.bashrc` sets up (`source ~/pmemd26/amber.sh` for `pmemd.cuda`,
+  CCP4, Phenix, Rosetta …): started without a terminal (no `TERM`, no terminal on its standard streams,
+  as from the applications menu), RNAdo and `mdatk workflow run` read the environment of an interactive
+  bash once (`bash -i`, i.e. after `~/.bashrc`) and run the scripts in it, as from a terminal, saying so
+  in the log; when it cannot be read the log says so and the step's *Setup commands* are the way to set
+  the programs up. `MDATK_SHELL_ENV=1` always takes that environment, `MDATK_SHELL_ENV=0` never.
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame

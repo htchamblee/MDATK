@@ -12,6 +12,20 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Scripts run from an RNAdo started from the applications menu
+
+- **What `~/.bashrc` sets up reaches the scripts.** Started from the applications menu, MDATK has the
+  desktop session's environment, which never ran `~/.bashrc`: a step whose *Conda environment* gives
+  tleap found it, but `pmemd.cuda` from `source ~/pmemd26/amber.sh` (after the "not interactive: return"
+  guard of `~/.bashrc`) was not found, though everything worked with RNAdo started from a terminal. Started
+  without a terminal (no `TERM` and no terminal on its standard streams), RNAdo and `mdatk workflow run`
+  now read the environment of an interactive bash once (`bash -i`, its output discarded) and run the
+  scripts in it, with a line in the log; the variables MDATK sets (`MDATK_LOCAL`, `CUDA_VISIBLE_DEVICES`)
+  still come last. When bash cannot give it (it fails or takes more than 30 s), a warning names the
+  step's *Setup commands* as the way out. `MDATK_SHELL_ENV=1` / `0` forces it on or off.
+
 ## 0.0.13 (2026-11-07)
 
 ### Amber MD: per-stage dry trajectories, the production stage unbundled
