@@ -12,6 +12,34 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### NAMD MDFF: every restraint of a fit is a plan setting
+
+Three things that needed a `run.sh` editing `<step>_namd-mdff.sh` after every `workflow write` are now
+settings of the step, listed by `mdatk workflow check` and the plan summary and stored in the project
+file. Steps that use none of them write the same scripts and configurations as before (the embedded
+preparation helper carries the new code).
+
+- **Extra distance restraints** (`[[extra_bonds]]`, page *Extra distance restraints*): repeatable
+  flat-bottom walls between two atoms given as `residue:atom` (topology number, `16:O3'`) or
+  `chain:residue:atom` (as in the fitted model, `A:16:O3'`), with lower and upper wall and force constant,
+  e.g. across a chain break the map does not cover. The script resolves the atoms from the topology and
+  writes them as NAMD `extraBonds` `wall` lines into their own file (`…_extrabonds_….txt`), applied in the
+  stages whose new *Extra distance restraints* box is ticked (the default); a missing atom stops it before
+  NAMD runs. The planner checks the syntax and the walls, and resolves the atoms as soon as the topology
+  (for chains, the coordinates) exists.
+- **Positional restraints on residues** (`positional_residues`, beside *Positional restraints on*):
+  `16-17` or `A:16-17, B:3`; only those residues get a non-zero B column in the restraint PDB. Empty holds
+  every RNA residue, as before. A range that names no residue is an error in the planner and in the
+  script, never a silent all-or-nothing restraint.
+- **Continuation steps**: *Outputs for a continuation step* (turned on by connecting either output) writes
+  the final coordinates of the whole system as an rst7 with the box (`…_fitted-system_….rst7`, output
+  *restart*) and passes the topology on (output *topology*). A second NAMD MDFF step takes them as
+  coordinates and topology and the first step's fitted model as its map-frame model, so a two-part fit
+  is one plan. The planner reports coordinates connected with another topology as an error, and warns
+  when the map-frame model is not the first part's fitted model.
+
 ## 0.0.14 (2026-11-09)
 
 ### RNAdo: Cat-proof mode

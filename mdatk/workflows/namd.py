@@ -7,8 +7,13 @@ sander proves it for the topology at hand.
 
 Restraints are L-RNA-safe and written by MDATK (scripts/namd_mdff.py), all as NAMD extraBonds or
 positional restraints: chirality impropers with the target of each residue's own hand, the MDFF paper's
-dihedral restraints of paired residues, flat-bottom base-pair walls.  VMD's ``chirality`` /
+dihedral restraints of paired residues, flat-bottom base-pair walls, the plan's own distance walls
+(``extra_bonds``) and positional restraints, optionally on some residues only.  VMD's ``chirality`` /
 ``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used.
+
+Every restraint a fit applies is a setting of the step, so the planner's checks list it.  A step can
+continue another NAMD MDFF step's fit (its ``restart`` and ``topology`` outputs, its fitted model as the
+map-frame model) with restraints of its own: a two-part protocol is one plan.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ D_IMPROPERS = {"C1'": -35.01, "C2'": 40.03, "C3'": 38.30, "C4'": 33.31}
 FOUR_SITE = {"opc", "tip4pew", "tip4pd", "tip4p2005"}
 # file tags of the step's own files (ctx.name): a stage or segment run of the same name would overwrite them
 RESERVED_TAGS = ("start", "prep", "potential", "coupling", "posres", "chirality", "ssdihedrals", "basepairs",
-                 "cell", "fitted", "mdff", "energy", "energy-check", "namd-mdff")
+                 "extrabonds", "cell", "fitted", "fitted-system", "mdff", "energy", "energy-check", "namd-mdff")
 _FILE_CHECKS: Dict[tuple, List[Issue]] = {}
 _TOPOLOGY_FACTS: Dict[tuple, Dict[str, Any]] = {}
 
@@ -92,11 +97,29 @@ STAGE_OPTIONS = [
            "Trabuco et al. (2008); measured on the model itself, so L residues keep their own values."),
     Option("basepairs", "Base-pair restraints", "bool", True,
            "Flat-bottom hydrogen-bond distance restraints from the secondary structure (Restraints page)."),
+    Option("extrabonds", "Extra distance restraints", "bool", True,
+           "The step's own flat-bottom distance walls between named atoms (Extra distance restraints page)."),
     Option("positional", "Positional restraints", "bool", False,
-           "Harmonic restraints to the starting coordinates (atoms and force constant on the Restraints page)."),
+           "Harmonic restraints to the starting coordinates (atoms, residues and force constant on the Restraints "
+           "page)."),
     Option("dcdfreq", "Trajectory frame every", "int", 5000, "dcdfreq (MD steps); 0: no trajectory.",
            minimum=0, maximum=100_000_000, requires={"kind": "md"}),
     Option("energyfreq", "Energies every", "int", 1000, "outputEnergies (steps).", minimum=1, maximum=100_000_000),
+]
+EXTRA_BOND_OPTIONS = [
+    Option("name", "Name", "text", "wall", "Names the restraint in the restraint file and the planner's checks."),
+    Option("atom1", "First atom", "text", "",
+           "Residue and atom: a topology residue number (16:O3') or a chain and residue number as in the fitted "
+           "model, i.e. those of the map-frame model (A:16:O3').", placeholder="16:O3'"),
+    Option("atom2", "Second atom", "text", "", "Residue and atom, as the first.", placeholder="17:P"),
+    Option("lower", "Flat bottom from", "float", 1.4,
+           "Lower wall (Å). At least 0.1 Å: NAMD reads a lower wall of 0 as a bond of zero length.", minimum=0.1,
+           maximum=100.0, digits=2, unit="Å"),
+    Option("upper", "Flat bottom to", "float", 1.8, "Upper wall (Å).", minimum=0.1, maximum=100.0, digits=2,
+           unit="Å"),
+    Option("k", "Wall force constant", "float", 20.0,
+           "k in E = k (d − wall)² beyond the walls (kcal/mol/Å², NAMD extraBonds 'wall').", minimum=0.0,
+           maximum=10000.0, digits=2),
 ]
 _STAGE_TEMPLATES = [
     ("min", "Minimisation (ξ 0.3)", dict(name="min", kind="min", steps=2000, gscale=0.3)),
@@ -130,7 +153,13 @@ class NamdMDFFTool(Tool):
                            "the solute when it solvates it; the model gives the map's frame back."),
               Port("secstruct", "Secondary structure", ("secstruct",), optional=True,
                    tooltip="Dot-bracket for the base-pair restraints (or type it on the Restraints page).")]
-    outputs = [Port("fitted", "Fitted model (PDB, map frame)", ("pdb",))]
+    outputs = [Port("fitted", "Fitted model (PDB, map frame)", ("pdb",)),
+               Port("restart", "Final coordinates, whole system (rst7)", ("rst7",), turns_on="continuation",
+                    tooltip="NAMD's last coordinates of every atom in the simulation frame, with the box: the "
+                            "coordinates of a continuation step (with the topology output)."),
+               Port("topology", "Topology (passed on)", ("parm7",), turns_on="continuation",
+                    tooltip="The topology this step ran on, for a continuation step: the final coordinates belong "
+                            "to it (a rebuilt topology numbers the solvent anew).")]
     sections = [
         Section("system", "System", [
             Option("solvent", "Environment", "radio", "solvated",
@@ -212,9 +241,19 @@ class NamdMDFFTool(Tool):
             Option("positional_atoms", "Positional restraints on", "radio", "backbone",
                    "Atoms restrained to the starting coordinates in stages with positional restraints.",
                    choices=[("backbone", "RNA backbone (P O5' C5' C4' C3' O3')"), ("heavy", "RNA heavy atoms")]),
+            Option("positional_residues", "Positional restraints on residues", "text", "",
+                   "Only these residues are held (the B column of the restraint PDB is zero for every other atom): "
+                   "topology residue numbers such as 16-17, or chains and numbers as in the fitted model (those of "
+                   "the map-frame model) such as A:16-17, B:3. Empty: every RNA residue. A range that names no "
+                   "residue is an error, never an empty selection.", placeholder="16-17"),
             Option("positional_k", "Positional force constant", "float", 1.0, "kcal/mol/Å².", minimum=0.0,
                    maximum=1000.0, digits=2),
         ], tooltip="L-RNA-safe restraints written by MDATK (never VMD's chirality / ssrestraints)."),
+        Section("extra_bonds", "Extra distance restraints", EXTRA_BOND_OPTIONS, repeat=True, item_label="name",
+                templates=[("wall", "Distance wall between two atoms", {})],
+                tooltip="Flat-bottom distance restraints of your own between two atoms, e.g. across a chain break "
+                        "the map does not cover: NAMD extraBonds walls in the step's own file, applied in the "
+                        "stages that ask for them."),
         Section("stages", "Stages", STAGE_OPTIONS, repeat=True, item_label="name", templates=_STAGE_TEMPLATES,
                 default_items=("min", "ramp", "fit", "final-min"),
                 tooltip="Stages run in order, each from the previous one's coordinates."),
@@ -236,6 +275,11 @@ class NamdMDFFTool(Tool):
             Option("resume", "Skip finished runs", "bool", True,
                    "When the script is run again, finished runs are skipped while their inputs and stage files are "
                    "unchanged; a change reruns that stage and every one after it."),
+            Option("continuation", "Outputs for a continuation step", "bool", False,
+                   "Also write NAMD's last coordinates of every atom (solvent included) as an Amber rst7 in the "
+                   "simulation frame, with the box, and pass the topology on: a following NAMD MDFF step takes them "
+                   "as its coordinates and topology (and this step's fitted model as its map-frame model) and "
+                   "continues the fit with restraints of its own. Connecting either output turns this on."),
         ], tooltip="How the NAMD runs are started."),
         env_section("module load NAMD/3.0   and   module load Amber/24   (sander, cpptraj)"),
     ]
@@ -315,12 +359,49 @@ class NamdMDFFTool(Tool):
     def uses(self, s, key: str) -> bool:
         return any(st[key] for st in s["stages"])
 
+    @staticmethod
+    def extra_bonds(s) -> List[list]:
+        """The step's own distance restraints as the helper reads them: [name, atom 1, atom 2, lower, upper, k]
+        (white space collapsed: the name goes into a comment line of the restraint file)."""
+        return [[" ".join(b["name"].split()) or f"wall{k + 1}", b["atom1"].strip(), b["atom2"].strip(), b["lower"],
+                 b["upper"], b["k"]] for k, b in enumerate(s["extra_bonds"])]
+
+    @staticmethod
+    def positional_residues(s) -> str:
+        """The positional residue selection on one line ("" for every RNA residue)."""
+        return " ".join(s["positional_residues"].split())
+
+    def stages_using(self, s, key: str) -> str:
+        return ", ".join(self.stage_tag(st, k) for k, st in enumerate(s["stages"]) if st[key])
+
+    def restraint_lines(self, s) -> List[str]:
+        """What the plan restrains beyond the secondary structure and chirality, in words: the extra distance
+        walls and the positional restraints (planner checks, plan summary)."""
+        out = []
+        where = self.stages_using(s, "extrabonds")
+        for name, a1, a2, lower, upper, k in self.extra_bonds(s):
+            out.append(f"extra restraint {name}: {a1} - {a2}, flat {lower:g}-{upper:g} Å, k {k:g} kcal/mol/Å²"
+                       + (f" (stages {where})" if where else " (no stage applies it)"))
+        if self.uses(s, "positional"):
+            which = self.positional_residues(s)
+            out.append(f"positional restraints, k {s['positional_k']:g} kcal/mol/Å², on the "
+                       f"{'backbone' if s['positional_atoms'] == 'backbone' else 'heavy'} atoms of "
+                       + (f"residues {which} only" if which else "every RNA residue")
+                       + f" (stages {self.stages_using(s, 'positional')})")
+        return out
+
+    @staticmethod
+    def continuation_source(ctx) -> Optional[PortValue]:
+        """The coordinates when they are another NAMD MDFF step's final coordinates (a continuation)."""
+        value = ctx.value("coordinates")
+        return value if value is not None and value.paths and "mdff_topology" in value.data else None
+
     def prep_settings(self, s, ctx) -> Dict[str, Any]:
         n = ctx.name
         pairs, _issues, _src = self.pairs(s, ctx)
         paired = self.paired_residues(s, ctx)
         bonds = {k: v for k, v in rna.HBOND_ATOMS.items() if any(p[2] == k for p in pairs)}
-        return {
+        out = {
             "topology": ctx.inp("topology"), "coordinates": n("start", "rst7"), "model": ctx.inp("model"),
             "map": ctx.inp("map"), "periodic": s["solvent"] == "solvated",
             "four_site": self.four_site(s, ctx),
@@ -341,10 +422,27 @@ class NamdMDFFTool(Tool):
             "ssdihedrals": {"enabled": self.uses(s, "ssdihedrals") and bool(paired), "k": s["ss_k"],
                             "residues": paired, "file": n("ssdihedrals", "txt")},
         }
+        # the settings below appear only when used, so the helper of a step without them stays as it was
+        if self.positional_residues(s):
+            out["positional"]["residues"] = self.positional_residues(s)
+        if s["extra_bonds"]:
+            out["extra_bonds"] = {"enabled": self.uses(s, "extrabonds"), "bonds": self.extra_bonds(s),
+                                  "file": n("extrabonds", "txt")}
+        if s["continuation"]:
+            out["final_rst7"] = n("fitted-system", "rst7")
+        return out
 
     # ----------------------------------------------------------------- planner
     def output_values(self, s, ctx):
-        return {"fitted": PortValue([ctx.own("fitted", "pdb")], "pdb", {"map_frame": True})}
+        out = {"fitted": PortValue([ctx.own("fitted", "pdb")], "pdb", {"map_frame": True})}
+        if s["continuation"]:
+            top = ctx.value("topology")
+            out["restart"] = PortValue([ctx.own("fitted-system", "rst7")], "rst7",
+                                       {"box": s["solvent"] == "solvated", "map_frame": False,
+                                        "mdff_topology": top.path if top is not None else ""})
+            if top is not None and top.paths:  # passed on: the final coordinates belong to this very file
+                out["topology"] = PortValue([top.path], top.kind, dict(top.data))
+        return out
 
     def resources(self, s):
         # cpptraj: the script converts NetCDF restarts (pmemd's default) with it
@@ -362,7 +460,19 @@ class NamdMDFFTool(Tool):
         gs = [g for st in s["stages"] for g in self.stage_scales(st)]
         env = "solvated" if s["solvent"] == "solvated" else ("GBIS" if s["gbis"] else "vacuum")
         span = f", ξ {min(gs):g}–{max(gs):g}" if gs else ""
-        return f"NAMD MDFF on the Amber topology, {env}, {len(s['stages'])} stage(s){span}"
+        extra = ""
+        if s["extra_bonds"]:
+            extra += f", {len(s['extra_bonds'])} extra restraint{'s' * (len(s['extra_bonds']) > 1)}"
+        if self.positional_residues(s) and self.uses(s, "positional"):
+            extra += f", positional on {self.positional_residues(s)}"
+        return f"NAMD MDFF on the Amber topology, {env}, {len(s['stages'])} stage(s){span}{extra}"
+
+    def summary_lines(self, s, ctx):
+        # positional restraints of every RNA residue are what the stages' check boxes always meant: the summary
+        # of such a plan stays as it was
+        lines = [ln for ln in self.restraint_lines(s)
+                 if not ln.startswith("positional") or self.positional_residues(s)]
+        return ["Restraints of the plan:"] + [f"- {ln}" for ln in lines] if lines else []
 
     def check(self, s, ctx):
         out: List[Issue] = []
@@ -444,7 +554,7 @@ class NamdMDFFTool(Tool):
         if not s["energy_check"]:
             out.append(Issue("warning", "without the energy comparison nothing confirms that NAMD reproduces the "
                                         "Amber force field of this topology", ("energy_check",)))
-        if not ctx.has("model"):
+        if not ctx.has("model") and self.continuation_source(ctx) is None:  # a continuation: _restraint_checks
             if solvated:
                 out.append(Issue("warning", "no map-frame model: tleap moves the solute when it solvates it, so the "
                                             "coordinates are usually not in the map's frame. Connect the PDB that was "
@@ -491,27 +601,97 @@ class NamdMDFFTool(Tool):
                 out.append(Issue("warning", f"stage {k + 1}: ξ stays at {st['gscale']:g} - a ramp to "
                                             f"{st['gscale_end']:g} needs at least 2 segments",
                                  (f"stages.{k}.segments",)))
+        out += self._restraint_checks(s, ctx)
         out.append(Issue("info", "restraints are written by MDATK and keep every residue's own hand; do not add "
                                  "VMD's chirality / ssrestraints / cispeptide restraints, which assume D-nucleotides "
                                  "and would push L sugars towards the inverted centre", ("chirality_k",)))
         out += self._file_checks(s, ctx)
         return out
 
+    def _restraint_checks(self, s, ctx) -> List[Issue]:
+        """The plan's own restraints (extra distance walls, positional residues) and a continuation's wiring,
+        as far as the settings tell; _file_checks resolves the atoms and residues once the files exist."""
+        out: List[Issue] = []
+        for k, b in enumerate(s["extra_bonds"]):
+            name = " ".join(b["name"].split()) or f"wall{k + 1}"
+            for key, which in (("atom1", "first"), ("atom2", "second")):
+                if not b[key].strip():
+                    out.append(Issue("error", f"extra restraint {name}: name its {which} atom (residue:atom such as "
+                                              "16:O3', or chain:residue:atom such as A:16:O3')",
+                                     (f"extra_bonds.{k}.{key}",)))
+                    continue
+                try:
+                    _namd_mdff.parse_atom(b[key])
+                except _namd_mdff.PrepError as exc:
+                    out.append(Issue("error", f"extra restraint {name}: {exc}", (f"extra_bonds.{k}.{key}",)))
+            if b["atom1"].strip() and b["atom1"].strip() == b["atom2"].strip():
+                out.append(Issue("error", f"extra restraint {name}: both ends are {b['atom1'].strip()}",
+                                 (f"extra_bonds.{k}.atom2",)))
+            if b["lower"] > b["upper"]:
+                out.append(Issue("error", f"extra restraint {name}: the lower wall must not be above the upper wall",
+                                 (f"extra_bonds.{k}.lower", f"extra_bonds.{k}.upper")))
+        if s["extra_bonds"] and not self.uses(s, "extrabonds"):
+            out.append(Issue("warning", f"{len(s['extra_bonds'])} extra distance restraint(s) are defined but no "
+                                        "stage applies them (tick 'Extra distance restraints' in a stage)",
+                             ("extra_bonds",)))
+        residues = self.positional_residues(s)
+        try:
+            _namd_mdff.parse_selection(residues)
+        except _namd_mdff.PrepError as exc:
+            out.append(Issue("error", f"positional restraints on residues: {exc}", ("positional_residues",)))
+        if residues and not self.uses(s, "positional"):
+            out.append(Issue("warning", f"positional restraints are limited to residues {residues}, but no stage "
+                                        "uses positional restraints", ("positional_residues",)))
+        for line in self.restraint_lines(s):
+            out.append(Issue("info", line, ("extra_bonds",) if line.startswith("extra") else ("positional_residues",)))
+        cont = self.continuation_source(ctx)
+        if cont is not None:
+            src = cont.source_label or "the step before"
+            top, model = ctx.value("topology"), ctx.value("model")
+            if top is None or not top.paths or top.path != cont.data["mdff_topology"]:
+                out.append(Issue("error", f"the coordinates are the final coordinates of {src} and belong to its "
+                                          f"topology: connect {src}'s topology output (a rebuilt topology numbers the "
+                                          "solvent anew, so the coordinates would not fit it)", ("input:topology",)))
+            if model is None or not model.paths:
+                out.append(Issue("warning", f"connect {src}'s fitted model as the map-frame model: the continued "
+                                            "coordinates are in the simulation frame, and the fitted model gives the "
+                                            "map's frame back", ("input:model",)))
+            elif model.source != cont.source:
+                out.append(Issue("warning", f"the map-frame model is not {src}'s fitted model: the continued "
+                                            "coordinates are superposed on it, and a model from before the fit differs "
+                                            "from them by what the fit moved", ("input:model",)))
+            else:
+                out.append(Issue("info", f"continues the fit of {src} from its final coordinates and topology; the "
+                                         "restraints of this step (positional ones included) start from where that "
+                                         "fit ended", ("input:coordinates",)))
+        return out
+
     def _file_checks(self, s, ctx) -> List[Issue]:
         """When topology and coordinates already exist: the script's own topology checks, now (cached per
-        file version: the planner re-checks after every edit and a solvated parm7 takes a moment to read)."""
+        file version: the planner re-checks after every edit and a solvated parm7 takes a moment to read).
+        The plan's own restraints are resolved as soon as the topology exists (residues given by chain once the
+        coordinates do too)."""
         top_path, crd_path = ctx.existing("topology"), ctx.existing("coordinates")
-        if not top_path or not crd_path or getattr(ctx, "preview", False):
+        if not top_path or getattr(ctx, "preview", False):
+            return []
+        own = bool(s["extra_bonds"]) or bool(self.positional_residues(s) and self.uses(s, "positional"))
+        if not crd_path and not own:
             return []
         cfg = self.prep_settings(s, ctx)
         cfg.update(topology=top_path, coordinates=crd_path)
+        key, files = (), [top_path, crd_path]
+        if own:  # residues given by chain are numbered as in the map-frame model
+            model = ctx.existing("model")
+            cfg.update(model=model, model_missing=ctx.has("model") and not model)
+            key = (repr(cfg.get("extra_bonds")), repr(cfg["positional"]), model, cfg["model_missing"])
+            files.append(model)
         try:
-            stamp = tuple((os.path.getmtime(p), os.path.getsize(p)) for p in (top_path, crd_path))
+            stamp = tuple((os.path.getmtime(p), os.path.getsize(p)) for p in files if p)
         except OSError:
             return []
         key = (top_path, crd_path, stamp, cfg["periodic"], cfg["four_site"], cfg["timestep"],
                cfg["chirality"]["enabled"], cfg["ssdihedrals"]["enabled"], tuple(cfg["ssdihedrals"]["residues"]),
-               tuple(cfg["chirality"]["l_residues"] or ()), cfg["chirality"]["l_residues"] is None)
+               tuple(cfg["chirality"]["l_residues"] or ()), cfg["chirality"]["l_residues"] is None) + key
         if key not in _FILE_CHECKS:
             if len(_FILE_CHECKS) > 32:
                 _FILE_CHECKS.clear()
@@ -519,10 +699,71 @@ class NamdMDFFTool(Tool):
         return list(_FILE_CHECKS[key])
 
     @staticmethod
+    def _own_restraint_issues(cfg, top, xyz) -> List[Issue]:
+        """The extra distance walls and the positional residue selection resolved on the topology (and the
+        coordinates, for residues given by chain), as the script will: what does not exist is an error."""
+        out: List[Issue] = []
+        chains = xyz is not None and not cfg.get("model_missing")
+        numbers = _namd_mdff.ResidueNumbers(top, xyz if chains else None, cfg["model"] or None)
+        later = []
+        extra = cfg.get("extra_bonds")
+        if extra:
+            bonds = []
+            for bond in extra["bonds"]:
+                try:
+                    by_chain = any(_namd_mdff.parse_atom(a)[0] for a in bond[1:3])
+                except _namd_mdff.PrepError:
+                    continue  # reported by _restraint_checks, as are equal ends and crossed walls
+                if bond[1] == bond[2] or bond[3] > bond[4]:
+                    continue
+                if by_chain and not chains:  # the end given by topology number can be checked already
+                    for spec in bond[1:3]:
+                        try:
+                            if _namd_mdff.parse_atom(spec)[0] is None:
+                                numbers.atom(spec)
+                        except _namd_mdff.PrepError as exc:
+                            out.append(Issue("error", f"extra restraint {bond[0]}: {exc}", ("extra_bonds",)))
+                    later.append(f"extra restraint {bond[0]}")
+                    continue
+                bonds.append(bond)
+            _lines, problems, notes = _namd_mdff.extra_bond_lines(top, bonds, numbers, xyz)
+            out += [Issue("error", p, ("extra_bonds",)) for p in problems]
+            out += [Issue("info", n, ("extra_bonds",)) for n in notes]
+        pos = cfg["positional"]
+        if pos.get("residues") and pos["selection"] != "none":
+            try:
+                ranges = _namd_mdff.parse_selection(pos["residues"])
+            except _namd_mdff.PrepError:
+                ranges = None  # reported by _restraint_checks
+            if ranges and any(chain for chain, _a, _b in ranges) and not chains:
+                for chain, first, last in ranges:  # the ranges given by topology number can be checked already
+                    if chain is None and not numbers.find(None, first, last):
+                        out.append(Issue("error", f"positional restraints: {_namd_mdff.selection_text(None, first, last)}"
+                                                  f" names no residue (the topology has {top.nres})",
+                                         ("positional_residues",)))
+                later.append("the positional residues")
+            elif ranges:
+                chosen, problems = _namd_mdff.selected_residues(top, numbers, pos["residues"], pos["selection"])
+                out += [Issue("error", p, ("positional_residues",)) for p in problems]
+                if not problems:
+                    held = sum(1 for r in chosen for i in top.residue_atoms(r)
+                               if _namd_mdff.positional(top, i, pos["selection"]))
+                    out.append(Issue("info", f"positional restraints hold {held} atoms of {len(chosen)} residues "
+                                             f"({pos['residues']}); every other atom is free",
+                                     ("positional_residues",)))
+        if later:
+            out.append(Issue("info", f"{', '.join(later)}: residues given by chain are found from the coordinates "
+                                     "and the map-frame model, which the planner cannot read yet; the script checks "
+                                     "them before NAMD runs", ("extra_bonds",)))
+        return out
+
+    @staticmethod
     def _read_and_check(cfg, top_path, crd_path) -> List[Issue]:
         notes: List[Issue] = []
         try:
             top = _namd_mdff.Topology(top_path)
+            if not crd_path:  # the plan's own restraints only, on the topology
+                return NamdMDFFTool._own_restraint_issues(cfg, top, None)
             problems, _notes = _namd_mdff.topology_problems(top, cfg)
             xyz = None
             if _namd_mdff.is_netcdf(crd_path):  # converted by cpptraj when the script runs
@@ -550,6 +791,8 @@ class NamdMDFFTool(Tool):
                     problems += bad
                 if cfg["ssdihedrals"]["enabled"]:
                     problems += _namd_mdff.ss_dihedral_lines(top, xyz, cfg["ssdihedrals"]["residues"], 1.0)[1]
+            if cfg.get("extra_bonds") or cfg["positional"].get("residues"):
+                notes += NamdMDFFTool._own_restraint_issues(cfg, top, xyz)
         except (OSError, ValueError, EOFError, _namd_mdff.PrepError) as exc:
             return [Issue("error", f"cannot check the topology: {exc}", ("input:topology",))]
         return [Issue("error", p, ("input:topology",)) for p in problems] + notes
@@ -635,12 +878,18 @@ class NamdMDFFTool(Tool):
             extra.append(f"extraBondsFile   {n('ssdihedrals', 'txt')}")
         if st["basepairs"] and settings["basepairs"]["enabled"]:
             extra.append(f"extraBondsFile   {n('basepairs', 'txt')}")
+        own = st["extrabonds"] and settings.get("extra_bonds", {}).get("enabled")
+        if own:
+            extra.append(f"extraBondsFile   {n('extrabonds', 'txt')}")
         if extra:
             lines += ["", "# L-RNA-safe restraints written by MDATK: chirality impropers, secondary-structure dihedrals,",
-                      "# base-pair walls (extraBonds; never VMD's chirality / ssrestraints)",
+                      "# base-pair walls (extraBonds; never VMD's chirality / ssrestraints)"
+                      + (", and the plan's extra distance walls" if own else ""),
                       "extraBonds       on", *extra]
         if st["positional"]:
-            lines += ["", "# positional restraints to the starting coordinates", "constraints      on",
+            residues = settings["positional"].get("residues")
+            lines += ["", "# positional restraints to the starting coordinates"
+                      + (f" (residues {residues} only)" if residues else ""), "constraints      on",
                       f"consref          {n('posres', 'pdb')}", f"conskfile        {n('posres', 'pdb')}",
                       "conskcol         B"]
         lines += ["", f"{'minimize' if st['kind'] == 'min' else 'run'} {run['steps']}", ""]
@@ -744,6 +993,7 @@ class NamdMDFFTool(Tool):
                                (n("chirality", "txt"), settings["chirality"]["enabled"]),
                                (n("ssdihedrals", "txt"), settings["ssdihedrals"]["enabled"]),
                                (n("basepairs", "txt"), settings["basepairs"]["enabled"]),
+                               (n("extrabonds", "txt"), settings.get("extra_bonds", {}).get("enabled")),
                                (n("cell", "xsc"), s["solvent"] == "solvated")):
                 if used:
                     inputs.append(path)
@@ -772,4 +1022,8 @@ class NamdMDFFTool(Tool):
         sh += ["# The fitted model (solute only) in the map's frame",
                f"python3 {n('mdff', 'py')} final", require_file(n("fitted", "pdb"), "the final conversion"),
                f'echo "Fitted model: {n("fitted", "pdb")}"', ""]
+        if s["continuation"]:
+            sh[-1:] = ["# ... and every atom in the simulation frame, for a continuation step",
+                       require_file(n("fitted-system", "rst7"), "the final conversion"),
+                       f'echo "Final coordinates of the whole system: {n("fitted-system", "rst7")}"', ""]
         return "\n".join(sh)

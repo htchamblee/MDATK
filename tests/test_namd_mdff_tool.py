@@ -658,3 +658,164 @@ def test_planned_octahedral_build_is_flagged_before_anything_runs():
     assert any("truncated octahedron" in m for m in messages(st, "warning")), messages(st)
     _plan, st = built_after_amber({"water": "tip3p", "box": "rect"})
     assert not any("truncated octahedron" in m for m in messages(st, "warning"))
+
+
+# ------------------------------------------------- restraints and continuations that are plan settings
+JUNCTION = {"name": "junction", "atom1": "16:O3'", "atom2": "17:P", "lower": 1.4, "upper": 1.8, "k": 20.0}
+
+
+def test_defaults_add_nothing_to_the_generated_files():
+    plan, st = single()
+    cfg = TOOLS["namd-mdff"].prep_settings(st.settings, st.ctx)
+    assert "extra_bonds" not in cfg and "residues" not in cfg["positional"] and "final_rst7" not in cfg
+    assert set(st.outputs) == {"fitted"}  # nothing passed on: the plan summary stays as it was
+    for f in plan.generate(["m"])["m"]:
+        if not f.name.endswith(".py"):
+            assert "extrabonds" not in f.content and "fitted-system" not in f.content, f.name
+    assert "Restraints of the plan" not in plan.summary_text()
+
+
+def test_extra_restraints_and_positional_residues_are_plan_settings():
+    stages = [dict(name="fit", kind="md", steps=1000, positional=True),
+              dict(name="free", kind="min", steps=100, extrabonds=False)]
+    plan, st = single({"extra_bonds": [JUNCTION], "positional_residues": "16-17", "stages": stages})
+    assert not messages(st, "error"), messages(st)
+    # what will be applied is in the checks, not only in a generated file
+    info = messages(st, "info")
+    assert "extra restraint junction: 16:O3' - 17:P, flat 1.4-1.8 Å, k 20 kcal/mol/Å² (stages fit)" in info
+    assert ("positional restraints, k 1 kcal/mol/Å², on the backbone atoms of residues 16-17 only (stages fit)"
+            in info)
+    assert TOOLS["namd-mdff"].describe(st.settings).endswith(", 1 extra restraint, positional on 16-17")
+    summary = plan.summary_text()
+    assert "Restraints of the plan:" in summary and "- extra restraint junction: 16:O3' - 17:P" in summary
+    files = {f.name: f.content for f in plan.generate(["m"])["m"]}
+    settings = files[f"apt1_02_mdff_{STAMP}.py"].split("# --- settings written by MDATK ---")[1]
+    assert ("'extra_bonds': {'enabled': True, 'bonds': [['junction', \"16:O3'\", '17:P', 1.4, 1.8, 20.0]], "
+            f"'file': 'apt1_02_extrabonds_{STAMP}.txt'}}") in settings
+    assert "'positional': {'selection': 'backbone', 'k': 1.0, 'residues': '16-17'}" in settings
+    fit, free = files[f"apt1_02_fit_{STAMP}.namd"], files[f"apt1_02_free_{STAMP}.namd"]
+    assert f"extraBondsFile   apt1_02_extrabonds_{STAMP}.txt" in fit and "extrabonds" not in free
+    assert "# positional restraints to the starting coordinates (residues 16-17 only)" in fit
+    key = next(ln for ln in files[f"apt1_02_namd-mdff_{STAMP}.sh"].splitlines() if ln.startswith("KEY=$( { sed"))
+    assert f"apt1_02_extrabonds_{STAMP}.txt" in key  # a changed restraint reruns the stages
+
+
+@pytest.mark.parametrize("settings, level, text", [
+    ({"extra_bonds": [dict(JUNCTION, atom1="16-O3'")]}, "error", "extra restraint junction: cannot read the atom"),
+    ({"extra_bonds": [dict(JUNCTION, atom2="")]}, "error", "extra restraint junction: name its second atom"),
+    ({"extra_bonds": [dict(JUNCTION, atom2="16:O3'")]}, "error", "both ends are 16:O3'"),
+    ({"extra_bonds": [dict(JUNCTION, lower=2.0)]}, "error", "the lower wall must not be above the upper wall"),
+    ({"extra_bonds": [JUNCTION], "stages": [dict(name="a", kind="min", steps=10, extrabonds=False)]}, "warning",
+     "extra distance restraint(s) are defined but no stage applies them"),
+    ({"positional_residues": "17-16", "stages": [dict(name="a", kind="min", steps=10, positional=True)]}, "error",
+     "positional restraints on residues: cannot read the residue range '17-16'"),
+    ({"positional_residues": "16-17"}, "warning", "no stage uses positional restraints"),
+])
+def test_own_restraint_settings_are_checked(settings, level, text):
+    _plan, st = single(settings)
+    assert any(text in m for m in messages(st, level)), messages(st)
+
+
+def test_planner_resolves_the_restraints_on_the_files(tmp_path):
+    d, _atoms = _system(tmp_path)
+    files = {"topology": str(d / "sys.parm7"), "coordinates": str(d / "sys.rst7"), "map": str(d / "map.mrc"),
+             "model": str(d / "model.pdb")}
+    stages = [dict(name="fit", kind="min", steps=10, positional=True)]
+    bad = {"extra_bonds": [dict(JUNCTION, atom1="40:O3'", atom2="A:4:XX")], "positional_residues": "30-35",
+           "stages": stages}
+    _plan, st = single(bad, files)
+    errors = messages(st, "error")
+    assert "extra restraint junction: residue 40 does not exist (the topology has 23 residues)" in errors
+    assert any("30-35 names no residue" in m for m in errors), errors
+    good = {"extra_bonds": [dict(JUNCTION, atom1="4:O3'", atom2="B:1:O5'")], "positional_residues": "A:4, B:1",
+            "stages": stages}
+    _plan, st = single(good, files)
+    assert not messages(st, "error"), messages(st)
+    info = messages(st, "info")
+    assert any("extra restraint junction (4:O3' - B:1:O5') starts at" in m for m in info), info
+    assert "positional restraints hold 11 atoms of 2 residues (A:4, B:1); every other atom is free" in info
+    # before the coordinates exist (e.g. a continuation's), topology numbers are checked on the topology alone
+    _plan, st = single(dict(bad, positional_residues="A:30, 40"), dict(files, coordinates=str(d / "later.rst7")))
+    errors = messages(st, "error")
+    assert "extra restraint junction: residue 40 does not exist (the topology has 23 residues)" in errors
+    assert "positional restraints: 40 names no residue (the topology has 23)" in errors
+    assert any("extra restraint junction, the positional residues: residues given by chain are found from the "
+               "coordinates" in m for m in messages(st, "info")), messages(st)
+
+
+def _continuation_plan(root, d, first=None, second=None, connect_model=True):
+    from mdatk.workflows.plan import add_node, connect
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    base = {"sequence": "GCGC GCGC", "dotbracket": "(((( ))))", "timestep": "4"}
+    p1 = add_node(wf, "namd-mdff", settings=dict(base, stages=[dict(name="fit", kind="min", steps=100)],
+                                                 **(first or {})))
+    p1.files = {"topology": str(d / "sys.parm7"), "coordinates": str(d / "sys.rst7"), "map": str(d / "map.mrc"),
+                "model": str(d / "model.pdb")}
+    p2 = add_node(wf, "namd-mdff", settings=dict(base, **(second or {})))
+    p2.files = {"map": str(d / "map.mrc")}
+    assert not TOOLS["namd-mdff"].normalise(p1.settings)["continuation"]
+    connect(wf, p1.id, "restart", p2.id, "coordinates")
+    assert p1.settings["continuation"] is True  # connecting the output turns it on
+    connect(wf, p1.id, "topology", p2.id, "topology")
+    if connect_model:
+        connect(wf, p1.id, "fitted", p2.id, "model")
+    return wf, p1, p2, Plan(wf, str(root))
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_continuation_step_continues_the_fit_of_the_step_before(tmp_path):
+    _bin(tmp_path)
+    d, atoms = _system(tmp_path)
+    second = {"extra_bonds": [dict(JUNCTION, atom1="A:4:O3'", atom2="B:1:O5'")], "positional_residues": "A:4 B:1",
+              "stages": [dict(name="pin", kind="min", steps=100, positional=True)]}
+    wf, p1, p2, plan = _continuation_plan(tmp_path / "plan", d, second=second)
+    st1, st2 = plan.steps[p1.id], plan.steps[p2.id]
+    assert not messages(st1, "error") and not messages(st2, "error"), messages(st2)
+    assert set(st1.outputs) == {"fitted", "restart", "topology"}
+    assert st2.ctx.value("topology").path == str(d / "sys.parm7")  # passed on, the very file
+    assert any(m.startswith("continues the fit of") for m in messages(st2, "info")), messages(st2)
+    # the restraints are visible before anything ran; residues by chain are found once the coordinates exist
+    assert any("extra restraint junction: A:4:O3' - B:1:O5'" in m for m in messages(st2, "info"))
+    report = plan.write([p1.id, p2.id], supersede=False)
+    scripts = sorted(p for p in report.written if re.search(r"_namd-mdff_.*\.sh$", p))
+    assert len(scripts) == 2
+    first_sh = open(scripts[0]).read()
+    assert f"apt1_01_fitted-system_{STAMP}.rst7" in first_sh
+    for script in scripts:
+        res = _run(script, tmp_path, d, NAMD_SAME)
+        assert res.returncode == 0, res.stdout + res.stderr
+    one, two = (os.path.dirname(s) for s in scripts)
+    whole = os.path.join(one, f"apt1_01_fitted-system_{STAMP}.rst7")
+    top = nm.Topology(str(d / "sys.parm7"))
+    start = nm.read_rst7(os.path.join(two, f"apt1_02_start_{STAMP}.rst7"), top.natom)
+    assert start[0] == nm.read_rst7(whole, top.natom)[0] and start[1] is not None  # every atom, with the box
+    prep_log = open(os.path.join(two, f"apt1_02_prep_{STAMP}.log")).read()
+    assert re.search(r"map frame: \d+ heavy atoms of \.\./01_namd-mdff/apt1_01_fitted_\S+ superposed, RMSD 0\.00",
+                     prep_log), prep_log
+    walls = [ln for ln in open(os.path.join(two, f"apt1_02_extrabonds_{STAMP}.txt")) if ln.startswith("wall")]
+    o3 = next(i for i, a in enumerate(atoms) if a[:2] == ("A", 4) and a[3] == "O3'")
+    o5 = next(i for i, a in enumerate(atoms) if a[:2] == ("B", 1) and a[3] == "O5'")
+    assert walls == [f"wall {o3} {o5} 20.000 1.400 1.800\n"]
+    ref = [ln for ln in open(os.path.join(two, f"apt1_02_posres_{STAMP}.pdb")) if ln.startswith("ATOM")]
+    assert {int(ln[22:26]) for ln in ref if float(ln[60:66])} == {4, 5}
+    # planned again once the first part has run: the residues given by chain are resolved on its files
+    st2 = Plan(wf, str(tmp_path / "plan")).steps[p2.id]
+    assert "positional restraints hold 11 atoms of 2 residues (A:4 B:1); every other atom is free" in messages(st2)
+
+
+def test_continuation_wiring_is_checked(tmp_path):
+    d, _atoms = _system(tmp_path)
+    wf, p1, p2, plan = _continuation_plan("/tmp/mdatk-plan", d, connect_model=False)
+    st2 = plan.steps[p2.id]
+    assert any("fitted model as the map-frame model" in m for m in messages(st2, "warning")), messages(st2)
+    assert not any("tleap moves the solute" in m for m in messages(st2))
+    # another topology than the one the coordinates belong to (a rebuild numbers the solvent anew)
+    wf.edges = [e for e in wf.edges if e.input != "topology"]
+    p2.files.update(topology=str(d / "sys.parm7").replace("sys", "rebuilt"), model=str(d / "model.pdb"))
+    st2 = Plan(wf, "/tmp/mdatk-plan").steps[p2.id]
+    assert any("belong to its topology: connect" in m for m in messages(st2, "error")), messages(st2)
+    assert any("the map-frame model is not" in m for m in messages(st2, "warning")), messages(st2)
+    # an edge from an output the step no longer writes
+    p1.settings["continuation"] = False
+    st2 = Plan(wf, "/tmp/mdatk-plan").steps[p2.id]
+    assert any("does not produce this file" in m for m in messages(st2, "error")), messages(st2)

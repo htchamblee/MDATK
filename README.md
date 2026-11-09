@@ -2629,7 +2629,9 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
 - **Output:** the fitted model, solute only, in the map's frame, ready for *Phenix* / *Coot*
   real-space refinement. It keeps the chains and residue numbers of the map-frame model (without
   one, every strand gets its own chain), with TER between strands, so renaming tools such as
-  `mdatk pdb clean --scheme ccd` find every strand end.
+  `mdatk pdb clean --scheme ccd` find every strand end. With *Outputs for a continuation step* also
+  the final coordinates of the whole system and the topology, for a second NAMD MDFF step (see
+  *Continuing a fit* below).
 
 Drop the step after an existing *Amber build* (or MD) step. It adds new files only; the steps
 already in the plan and their files do not change.
@@ -2743,10 +2745,54 @@ VMD and writes its own restraints:
   - Unlike Amber's restraints, the walls stay harmonic far from the window; they have no linear
     part.
 - **Positional** (`…_posres_….pdb`, NAMD `constraints`): the RNA backbone or all heavy atoms,
-  restrained to the start coordinates, in stages that ask for it.
+  restrained to the start coordinates, in stages that ask for it. *Positional restraints on residues*
+  limits them to some residues: topology residue numbers (`16-17`) or chains and numbers as in the
+  fitted model, i.e. those of the map-frame model (`A:16-17, B:3`). Every other atom gets B = 0 in the
+  restraint PDB. Empty (the default) holds every RNA residue, as before. A range that names no residue,
+  or a selection without a single atom to hold, is an error in the planner (as soon as the topology,
+  or for chains the coordinates, exist) and in the script, never a run that holds nothing or
+  everything.
+- **Extra distance restraints** (`…_extrabonds_….txt`, NAMD `extraBonds` `wall`; page *Extra distance
+  restraints*, `[[extra_bonds]]` in the project file): walls of your own between two atoms, e.g. across
+  a chain break that the map does not cover, which the fit would otherwise open with nothing objecting.
+  Each has a name, two atoms as `residue:atom` (topology number, `16:O3'`) or `chain:residue:atom` (as in
+  the fitted model, `A:16:O3'`), the flat bottom (default 1.4–1.8 Å, a covalent O3′–P distance) and k
+  (default 20 kcal/mol/Å²). The script resolves the atoms on the topology as it does the base pairs, and
+  stops if one does not exist; it notes a starting distance outside the window. Stages apply them unless
+  their *Extra distance restraints* box is unticked. The planner checks the syntax, that the lower wall
+  is not above the upper one and, once the files exist, that the atoms do.
+
+```toml
+[[workflow.nodes.settings.extra_bonds]]
+name = "junction"
+atom1 = "16:O3'"
+atom2 = "17:P"
+lower = 1.4
+upper = 1.8
+k = 20.0
+```
 
 All restraint files are NAMD `extraBonds` files (comments on lines of their own, 0-based atoms) plus
-the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF,
+the positional-restraint PDB. Every restraint a fit applies is a setting of the step: `mdatk workflow
+check` lists the extra walls and the positional residues (with the stages that apply them), the plan
+summary (`…_00_plan_….md`) has them under *Restraints of the plan*, the planner box mentions them, and a
+change reruns the stages. Nothing needs editing in a generated script after `workflow write`.
+
+**Continuing a fit (two-part protocols).** *Outputs for a continuation step* (Engine page; connecting
+either output turns it on) makes the step also write NAMD's last coordinates of every atom, solvent
+included, as an Amber rst7 in the simulation frame with the box (`…_fitted-system_….rst7`, output
+*Final coordinates, whole system*), and pass its topology on (output *Topology (passed on)*). A second
+NAMD MDFF step connected to them continues the fit, with restraints of its own:
+
+- *restart* → its *Coordinates*, *topology* → its *Topology*: the same topology file, so the atom order
+  and the solvent numbering match (a rebuilt topology would number the solvent anew; the planner reports
+  coordinates connected with another topology as an error);
+- *fitted* → its *Map-frame model*: the first part's fitted model is in the map's frame, so the second
+  part recovers the frame from it (RMSD ≈ 0); the planner warns without it, or with another model;
+- the map, and the secondary structure if used.
+
+Positional restraints of the second part hold the atoms where the first part left them. Each part keeps
+its own stages, checks and energy comparison (the second part starts with fresh velocities). Every setting is stored with the project, and the step cites NAMD, MDFF,
 CPPTRAJ (it converts NetCDF restarts) and AmberTools (for the energy comparison).
 
 **What NAMD does with an Amber topology.** These settings were checked against the NAMD 3.0 user's guide
