@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.13"
+mdatk_version = "0.0.14"
 # When the settings were last saved.
-saved = 2026-11-07T23:40:53
+saved = 2026-11-09T17:47:19
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -620,6 +620,20 @@ cp_source = "lib"
 # CP frcmod file: Parameter file with the CP phosphate correction: a name in leap's search path /
 # the step folder, or an absolute path.
 cp_frcmod = "frcmod.99bsc0-chiol3-CaseP"
+# DNA force field: leaprc file for DNA, sourced after the RNA one when the structure has DNA (from
+# the structure builder, or residues DA/DC/DG/DT or L-DNA LDA ... in an existing input PDB); a
+# structure without DNA is built as before. The DNA types (C7, CJ, C1, C2; chi on CK / CM / C1 / C2)
+# are not RNA's, so RNA and DNA in one structure each keep their own terms. OL24 (Zgarbová et al.
+# JCTC 2025): OL21 with refined delta and deoxyribose tau1 and chiOL3; OL21 (JCTC 2021): bsc0 + OL15
+# with refined alpha / gamma. Choices: ol24, ol21, ol15, none.
+dna_ff = "ol24"
+# L-DNA library: Generated: the build script writes LDNA.lib and frcmod.ldna from the DNA force
+# field (its D library and parameter files): the D units mirrored, named LDA LDC LDG LDT / LDA5 LDA3
+# LDAN ..., with O5' / O4' / O3' given the types LS (OS) and LT (OH), whose dihedral phases are
+# mirrored, so a D molecule and its mirror image have the same energy term by term. Automatic:
+# generated when the structure has L-DNA. Own: L-DNA units from the libraries listed under Force
+# field. Choices: auto, generated, own.
+ldna_library = "auto"
 # Extra parameter files: One frcmod file per line, loaded with loadamberparams after the force field
 # (e.g. frcmod.LRNA).
 extra_frcmod = ""

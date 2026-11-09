@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.13](#whats-new-in-0013)
+- [What's new in 0.0.14](#whats-new-in-0014)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,33 +82,23 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.13
+## What's new in 0.0.14
 
-- **B-form DNA and D/L chimeras in the structure builder.** Ideal B-DNA helices of either hand, DNA and
-  L-DNA residue names in every naming scheme, and chimeras of D and L, RNA and DNA segments joined by
-  3'-5', 5'-3', 3'-3' or 5'-5' links (a PO2 bridge with LINK records), from the command line, the
-  planner's structure-builder step and RNAdo's builder window (see [Structure
-  builder](#structure-builder)).
-- **LINK records are kept and checked:** the PDB tools carry them through renaming, renumbering and chain
-  changes, and the model check treats them as bonds.
-- **Amber MD stages, one option per job:** *Production stage* is split into *Run in the separate
-  script*, *Pass the trajectory on*, *Dry trajectory label* and *Dry PDB of its last frame*, so a chained
-  protocol (an annealing cycle, a restraint release) can run on the cluster as a whole and pass on only
-  the frames meant for analysis, dried per stage or per label (see [Amber MD stages](#amber-md-stages)).
-- **Batch-friendly waiting:** *Exit 0 + .waiting file* instead of exit status 75 while the separate
-  script has not finished, for `sbatch --dependency` chains.
-- **Ramp warnings know the starting temperature:** a ramp that starts where the previous stage ended is
-  no longer warned.
-- **Folder tags and MANIFEST:** a step's folder tag goes into its folder name (`03_amber-md_model12/`),
-  steps that write nothing get no folder, every write records the folders in `MANIFEST` and
-  `MDATK_step.toml`, and `mdatk workflow manifest` matches a renumbered plan to an existing tree (see
-  [Folder tags and MANIFEST](#folder-tags-and-manifest)).
-- **RNAdo:** tool rows wrap instead of stretching when the window first opens, the *Open* drop-down lists
-  recent projects, *Select all steps* / *Clear selection*, *Write selected steps*, and a timestamped
-  output log per step.
-- **Generated workflow files** of earlier step types are unchanged unless a new option is turned on,
-  apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds
-  (see [CHANGELOG.md](CHANGELOG.md)).
+- **DNA force fields in the Amber build:** OL24 (default; OL21 with the refined δ and deoxyribose sugar
+  pucker and χOL3), OL21 or OL15, loaded when the structure has DNA; RNA-only builds are unchanged (see
+  [DNA and L-DNA](#l-dna)).
+- **L-DNA, mirrored from the DNA force field:** `LDNA.lib` + `frcmod.ldna` with O5′ / O4′ / O3′ typed LS / LT
+  and their dihedral phases mirrored, so an L-DNA molecule has the energy of its D mirror image term by term;
+  L-DNA residues get their Amber names (LDA, LDA5 …) before tleap, and the twin types get their D types'
+  Mg²⁺ terms (microMg / nanoMg pairs, 12-6-4 polarizabilities).
+- **NBfix19 kept off DNA:** its pairs name RNA atoms only; 0BPh is unchanged.
+- **Fix: 12-6-4 Mg²⁺ with L-RNA** stopped at the ParmEd step (`add12_6_4` lacked the L-RNA atom types).
+- **Applications menu:** RNAdo started from the menu gives the scripts it runs the environment your
+  `~/.bashrc` sets up (e.g. `pmemd.cuda` from `amber.sh`), as from a terminal.
+- **Cat-proof mode:** a check box in RNAdo's header bar (with a cat on a keyboard) that makes RNAdo ignore the
+  keyboard; the mouse unticks it.
+- **Generated workflow files** of earlier step types are unchanged unless DNA is in the structure, apart from
+  the version in their headers and the PDB tools copied into Amber builds (see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
