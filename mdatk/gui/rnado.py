@@ -137,6 +137,9 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         self.connect("destroy", self._on_destroy)
         self._adopt(self.project, project_path)
         self.append_log(f"{TITLE} {__version__} ({TAGLINE}) ready. Everything runs on this computer.")
+        if self.cat_proof.get_active():
+            self.append_log("Cat-proof mode is on (remembered from last time): the keyboard is ignored; untick the box "
+                            "in the header bar with the mouse to type again")
 
     # ================================================================ chrome
     def _build_header(self) -> None:
@@ -205,6 +208,22 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                  "chimeras, base mutations and rigid-body fits into a density map", "applications-science-symbolic")):
             tools.pack_start(W.button(text, cb, tip, icon), False, False, 0)
         hb.pack_end(tools)
+        from ..projectfile import user_setting
+        from . import catproof
+
+        self.cat_proof = catproof.check_button(self._on_cat_proof, active=bool(user_setting("cat_proof", False)))
+        hb.pack_end(self.cat_proof)
+
+    def _on_cat_proof(self, active: bool, ignored: int) -> None:
+        from ..projectfile import set_user_setting
+
+        set_user_setting("cat_proof", active)
+        if not hasattr(self, "log"):  # switched on from the saved setting while the window is being built
+            return
+        if active:
+            self.append_log("Cat-proof mode on: the keyboard is ignored; untick the box with the mouse to type again")
+        else:
+            self.append_log(f"Cat-proof mode off ({ignored} keystroke{'s' * (ignored != 1)} ignored)")
 
     def _fill_open_menu(self) -> None:
         fill_open_menu(self.open_menu, self.open_path,

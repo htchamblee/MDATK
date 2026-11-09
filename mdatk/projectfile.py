@@ -584,16 +584,47 @@ def recent_projects() -> List[str]:
     return [p for p in data.get("recent", []) if isinstance(p, str) and os.path.isfile(p)][:RECENT_MAX]
 
 
+def _user_settings() -> Dict[str, Any]:
+    try:
+        data = tomlio.load(_settings_path())
+    except (OSError, tomlio.TOMLDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_SETTING_DOCS = {"recent": "Recently used project files, newest first.",
+                 "cat_proof": "RNAdo's Cat-proof mode: the keyboard is ignored (untick it with the mouse)."}
+
+
+def _write_user_settings(data: Dict[str, Any]) -> None:
+    target = _settings_path()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    text = tomlio.dumps(data, lambda p, s: _SETTING_DOCS.get(p[-1] if p else "", None),
+                        [f"{PROJECT_TITLE} user settings."])
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def user_setting(key: str, default: Any = None) -> Any:
+    """A per-user setting (settings.toml beside the recent projects list)."""
+    return _user_settings().get(key, default)
+
+
+def set_user_setting(key: str, value: Any) -> None:
+    data = _user_settings()
+    data[key] = value
+    try:
+        _write_user_settings(data)
+    except OSError as exc:
+        log.warning("could not save the setting %s: %s", key, exc)
+
+
 def add_recent(path: str) -> None:
     path = os.path.abspath(path)
     recent = [path] + [p for p in recent_projects() if p != path]
-    target = _settings_path()
+    data = _user_settings()  # other settings stay
+    data["recent"] = recent[:RECENT_MAX]
     try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        text = tomlio.dumps({"recent": recent[:RECENT_MAX]},
-                            lambda p, s: "Recently used project files, newest first.",
-                            [f"{PROJECT_TITLE} user settings."])
-        with open(target, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        _write_user_settings(data)
     except OSError as exc:
         log.warning("could not update the recent projects list: %s", exc)

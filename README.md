@@ -371,7 +371,12 @@ seconds is reported in the analysis window.
   changes), and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…* (Ctrl+Shift+S),
   *Close project*, the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
-  the citations of the plan and *Export BibTeX…*).
+  the citations of the plan and *Export BibTeX…*). *Cat-proof mode*, a check box beside the tools, makes
+  RNAdo ignore the keyboard: every key press and release in its window, its tool windows and its dialogs
+  is dropped before GTK sees it, so a cat walking across the keys types nothing, triggers no shortcut and
+  deletes no step. The mouse keeps working, so the box is unticked with it; the output log says how many
+  keystrokes were ignored, and the setting is remembered (`cat_proof` in `~/.config/mdatk/settings.toml`)
+  and announced in the log when RNAdo starts with it on.
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
   previous runs*, *Select all steps*, *Clear selection*, *Write all files*, *Write selected steps*, *Run
   all…*, *Run selected steps*, *Stop scripts*, *Open folder*), the naming bar (project name, *Time

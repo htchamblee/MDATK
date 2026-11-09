@@ -14,6 +14,14 @@ the notes below.
 
 ## Unreleased
 
+### RNAdo: Cat-proof mode
+
+- **Cat-proof mode**, a check box in RNAdo's header bar: while it is ticked, every key press and release in
+  RNAdo's window, tool windows and dialogs is dropped where GDK hands events to GTK, so a cat on the
+  keyboard types nothing and triggers no shortcut; the mouse keeps working and unticks it. The log counts
+  the ignored keystrokes; the setting is remembered in the user settings file (which now keeps every
+  setting when the recent projects list is updated).
+
 ### Amber build: DNA force fields and a mirrored L-DNA library
 
 - **DNA force field** (*Force field*): OL24 (default), OL21 or OL15, sourced after the RNA force field when
