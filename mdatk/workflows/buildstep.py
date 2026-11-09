@@ -240,13 +240,18 @@ class StructureBuilderTool(Tool):
         and 'build' ('helix' or 'chimera').  Empty for the other modes and while a chimera design does not
         parse."""
         if s["mode"] == "helix":
-            return {"chirality": s["chirality"], "l_rna": s["chirality"] == "L" and self._na(s) == "rna",
-                    "build": "helix"}
+            dna = self._na(s) == "dna"
+            return {"chirality": s["chirality"], "l_rna": s["chirality"] == "L" and not dna,
+                    "dna": dna, "l_dna": s["chirality"] == "L" and dna, "rna": not dna, "build": "helix"}
         design = self._chimera(s) if s["mode"] == "chimera" else None
         if design is None:
             return {}
+        segs = design[0]
         return {"chirality": self.chimera_hand(s),
-                "l_rna": any(seg.chirality == "L" and seg.na == "rna" for seg in design[0]), "build": "chimera"}
+                "l_rna": any(seg.chirality == "L" and seg.na == "rna" for seg in segs),
+                "dna": any(seg.na == "dna" for seg in segs),
+                "l_dna": any(seg.chirality == "L" and seg.na == "dna" for seg in segs),
+                "rna": any(seg.na == "rna" for seg in segs), "build": "chimera"}
 
     def output_values(self, s, ctx):
         data = self.model_data(s)

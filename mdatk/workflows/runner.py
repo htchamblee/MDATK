@@ -33,7 +33,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Protocol, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
 
 from .. import PROJECT_ABBREV
 from ..frozen import child_env
@@ -277,6 +277,78 @@ def conda_on_path(environ: Optional[Dict[str, str]], script: str,
     return env
 
 
+# Started without a terminal (the applications menu), MDATK has the desktop session's environment, which
+# never ran ~/.bashrc: what it sets up (e.g. 'source ~/pmemd26/amber.sh' for pmemd.cuda, usually after the
+# "not interactive: return" guard at its top) is missing from the scripts MDATK runs, though they work when
+# MDATK is started from a terminal.  The scripts then get the environment of an interactive bash instead.
+SHELL_ENV_VAR = "MDATK_SHELL_ENV"  # 1: always take the interactive shell's environment; 0: never
+_SHELL_ENV_MARK = "__MDATK_SHELL_ENV__"
+_SHELL_ENV_DROP = ("PWD", "OLDPWD", "SHLVL", "_", "PS1", "PS2", "PROMPT_COMMAND")  # the shell's own
+_shell_env_lock = threading.Lock()
+_shell_env_cache: Dict[str, Any] = {}
+
+
+def started_without_terminal(environ: Dict[str, str]) -> bool:
+    """Whether MDATK runs without a terminal, as when started from the applications menu: no TERM (or
+    "dumb") and none of standard input, output and error a terminal.  ``MDATK_SHELL_ENV`` = 1 / 0 says
+    so instead."""
+    flag = environ.get(SHELL_ENV_VAR, "").strip().lower()
+    if flag in ("1", "yes", "true", "on"):
+        return True
+    if flag in ("0", "no", "false", "off"):
+        return False
+    if environ.get("TERM", "") not in ("", "dumb"):
+        return False
+    for fd in (0, 1, 2):
+        try:
+            if os.isatty(fd):
+                return False
+        except (OSError, ValueError):
+            pass
+    return True
+
+
+def interactive_shell_env(environ: Dict[str, str], on_line: Optional[LineFn] = None,
+                          timeout: float = 30.0) -> Optional[Dict[str, str]]:
+    """The environment of an interactive bash started with ``environ`` (after ~/.bashrc), read once for
+    each ``environ``; None when bash cannot give it (a hint goes to ``on_line`` the first time)."""
+    key = hash(frozenset(environ.items()))
+    with _shell_env_lock:
+        if key in _shell_env_cache:
+            return _shell_env_cache[key]
+        result: Optional[Dict[str, str]] = None
+        problem = ""
+        bash = shutil.which("bash", path=environ.get("PATH") or os.defpath)
+        if bash is None:
+            problem = "bash not found"
+        else:
+            try:  # no terminal: bash -i says it cannot set the terminal's process group (stderr, ignored)
+                proc = subprocess.run([bash, "-i", "-c", f"printf '\\0{_SHELL_ENV_MARK}\\0'; env -0"],
+                                      env=environ, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL, timeout=timeout, start_new_session=True,
+                                      close_fds=True)
+                out = proc.stdout.decode("utf-8", "replace")
+                marker = f"\0{_SHELL_ENV_MARK}\0"
+                if marker in out:
+                    result = {}
+                    for item in out.split(marker, 1)[1].split("\0"):
+                        name, sep, value = item.partition("=")
+                        if sep and name and name not in _SHELL_ENV_DROP:
+                            result[name] = value
+                else:
+                    problem = f"bash -i exited with status {proc.returncode} before printing it"
+            except subprocess.TimeoutExpired:
+                problem = f"bash -i did not finish within {timeout:g} s"
+            except OSError as exc:
+                problem = str(exc.strerror or exc)
+        if result is None and on_line is not None:
+            on_line(f"WARNING: MDATK was started without a terminal, and the environment of an interactive "
+                    f"shell (~/.bashrc) could not be read ({problem}); programs set up there may be missing: "
+                    "add their set-up to the step's Setup commands, or start RNAdo from a terminal")
+        _shell_env_cache[key] = result
+        return result
+
+
 STEP_LOG_EXT = ".log"  # <script>.sh.log beside the script: the output of its last run
 DONE_FLAG = "Step completed successfully"
 
@@ -356,8 +428,15 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
     environ = child_env()
+    base = dict(os.environ if environ is None else environ)
+    if started_without_terminal(base):  # the applications menu: the environment ~/.bashrc sets up
+        shell = interactive_shell_env(base, on_line)
+        if shell is not None:
+            base = shell
+            on_line("MDATK was started without a terminal: the script gets the environment of an "
+                    "interactive shell (~/.bashrc), as from a terminal")
     # run here by MDATK: a separately run script activates its conda environment (base.LOCAL_VAR)
-    environ = {**(os.environ if environ is None else environ), LOCAL_VAR: "1", **(env or {})}
+    environ = {**base, LOCAL_VAR: "1", **(env or {})}
     environ = conda_on_path(environ, path, on_line)
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
     # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive

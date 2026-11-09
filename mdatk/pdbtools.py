@@ -1464,8 +1464,8 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
     if l_dna:
         notes.append(f"L-DNA: {len(l_dna)} residue(s) ({ranges_text(l_dna)}) have MDATK's Amber-style names LDA, "
-                     "LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no L-DNA library, so "
-                     "tleap needs residue units of these names")
+                     "LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no L-DNA library: the "
+                     "Amber build step generates its units (LDNA.lib) from the DNA force field")
     if plain_l:
         notes.append(f"WARNING: the standard scheme gives {len(plain_l)} L residue(s) plain D names "
                      f"({ranges_text(plain_l)}): the names no longer record the hand. Use this copy only for "
@@ -1931,7 +1931,7 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
           renumber: bool = False, start: int = 1, per_chain: bool = False, keep_gaps: bool = False,
           seqres: bool = False, make_fasta: bool = False, title: Optional[str] = None,
           terminal_names: bool = True, strip_5p: bool = False, strip_h: bool = False,
-          drop_virtual: bool = False) -> CleanResult:
+          drop_virtual: bool = False, rename_dna: bool = False) -> CleanResult:
     """Read, fix and write a PDB file in one call; returns the text plus change notes.
 
     Order: parse (ChimeraX repair, first model) -> Rosetta virtual residues (``drop_virtual``) and hydrogens
@@ -1980,7 +1980,7 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
         if strip_5p:
             notes += strip_5prime_phosphates(s)
         if scheme:
-            notes += convert_names(s, scheme, terminals=terminal_names)
+            notes += convert_names(s, scheme, terminals=terminal_names, dna=rename_dna)
         if renumber:
             notes += renumber_residues(s, start, per_chain, keep_gaps)
     notes += link_notes
@@ -2034,6 +2034,8 @@ def _clean_arguments(p) -> None:
     p.add_argument("--drop-virtual", action="store_true", help="remove Rosetta's virtual residues (VRT, XXX)")
     p.add_argument("--no-terminal-names", action="store_true", help="chain ends keep the internal names "
                    "(LA, not LA5/LA3), for libraries that map terminals with addPdbResMap")
+    p.add_argument("--dna", action="store_true", help="rename the DNA residues too (amber: DA5 / DA3 ... and "
+                   "MDATK's L-DNA LDA, LDA5, LDA3 ...; ccd: 0DA ...), as the structure builder names them")
     p.add_argument("--keep-conect", action="store_true", help="keep CONECT records (stripped by default "
                    "until final deposition processing)")
     p.add_argument("--no-detect", action="store_true", help="do not detect L-nucleotides from the sugar "
@@ -2075,7 +2077,7 @@ def clean_options(args) -> Dict[str, object]:
                 renumber=args.renumber, start=args.start, per_chain=args.per_chain, keep_gaps=args.keep_gaps,
                 seqres=args.seqres, make_fasta=bool(args.fasta), terminal_names=not args.no_terminal_names,
                 strip_5p=args.strip_5p, strip_h=getattr(args, "strip_h", False),
-                drop_virtual=getattr(args, "drop_virtual", False))
+                drop_virtual=getattr(args, "drop_virtual", False), rename_dna=getattr(args, "dna", False))
 
 
 def add_commands(sub) -> list:

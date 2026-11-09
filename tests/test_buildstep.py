@@ -123,11 +123,12 @@ def test_dna_helix_command_checks_ports_data_describe_and_files():
     assert [p.name for p in TOOL.output_ports(single)] == ["pdb"] and list(TOOL.output_values(single, CTX)) == ["pdb"]
     values = TOOL.output_values(s, CTX)
     assert values["pdb"].paths == [CTX.own("helix", "pdb")]
-    assert values["pdb"].data == {"chirality": "L", "l_rna": False, "build": "helix"}  # L, but no L-RNA
+    assert values["pdb"].data == {"chirality": "L", "l_rna": False, "dna": True, "l_dna": True, "rna": False,
+                                  "build": "helix"}  # L, but no L-RNA: L-DNA
     assert TOOL.output_values(settings(sequence="GGCAU", chirality="L"), CTX)["pdb"].data == {
-        "chirality": "L", "l_rna": True, "build": "helix"}
+        "chirality": "L", "l_rna": True, "dna": False, "l_dna": False, "rna": True, "build": "helix"}
     assert TOOL.output_values(settings(sequence="GGCAU"), CTX)["pdb"].data == {"chirality": "D", "l_rna": False,
-                                                                               "build": "helix"}
+                                                                               "dna": False, "l_dna": False, "rna": True, "build": "helix"}
     model = values["secstruct"].data["rna_model"]
     assert model.split(model.dotbracket) == "((((( )))))" and model.sequence == "GGCAUAUGCC"
     wobble = TOOL.ss_model(settings(sequence="GGCAT", nucleic_acid="dna", partner_mode="explicit", partner="AAGTC"))
@@ -154,7 +155,7 @@ def test_chimera_ports_data_describe_citations_and_files():
     assert TOOL.input_ports(s) == [] and [p.name for p in TOOL.output_ports(s)] == ["pdb"]
     values = TOOL.output_values(s, CTX)
     assert list(values) == ["pdb"] and values["pdb"].paths == [CTX.own("chimera", "pdb")]
-    assert values["pdb"].data == {"chirality": "mixed", "l_rna": True, "build": "chimera"}
+    assert values["pdb"].data == {"chirality": "mixed", "l_rna": True, "dna": False, "l_dna": False, "rna": True, "build": "chimera"}
     assert TOOL.chimera_hand(s) == "mixed"
     # the hand, and whether an L segment is RNA (L-DNA needs no L-RNA dictionaries or library)
     for design, na, hand, l_rna in (("D-RNA:GGC 3'-5' D-DNA:GCC", "rna", "D", False),
@@ -163,8 +164,16 @@ def test_chimera_ports_data_describe_citations_and_files():
                                     ("D:GC 5'-5' L:GC", "rna", "mixed", True),
                                     ("D-RNA:GC 3'-5' L-DNA:GC", "rna", "mixed", False),
                                     ("L:GC 3'-5' L:GC 3'-3' D:A", "rna", "mixed", True)):
-        assert TOOL.output_values(settings(mode="chimera", design=design, chimera_na=na), CTX)["pdb"].data == {
+        data = TOOL.output_values(settings(mode="chimera", design=design, chimera_na=na), CTX)["pdb"].data
+        assert {k: v for k, v in data.items() if k not in ("dna", "l_dna", "rna")} == {
             "chirality": hand, "l_rna": l_rna, "build": "chimera"}, design
+    # DNA, L-DNA and RNA: the Amber build loads its DNA force field and mirrors L-DNA
+    for design, na, flags in (("D-RNA:GGC 3'-5' D-DNA:GCC", "rna", (True, False, True)),
+                              ("L:GC 3'-3' L-DNA:GC/none", "dna", (True, True, False)),
+                              ("D-RNA:GC 3'-5' L-DNA:GC", "rna", (True, True, True)),
+                              ("D:GC 5'-5' L:GC", "rna", (False, False, True))):
+        data = TOOL.output_values(settings(mode="chimera", design=design, chimera_na=na), CTX)["pdb"].data
+        assert (data["dna"], data["l_dna"], data["rna"]) == flags, design
     for design in ("", "D:GC 3'-5'", "D:GX 3'-5' L:GC"):  # no hand while the design does not parse
         assert TOOL.output_values(settings(mode="chimera", design=design), CTX)["pdb"].data == {}
     for mode in ("mutate", "fit"):  # the hands of a connected model are not known before it is read
@@ -430,7 +439,7 @@ def _run_step(tmp_path, node_settings):
 def test_the_generated_chimera_script_builds_the_design(tmp_path):
     st, pdb = _run_step(tmp_path, {"mode": "chimera", "design": "D-RNA:GC 3'-5' L-RNA:GC",
                                    "chimera_chains": "P,Q,R", "scheme": "amber"})
-    assert st.outputs["pdb"].data == {"chirality": "mixed", "l_rna": True, "build": "chimera"}
+    assert st.outputs["pdb"].data == {"chirality": "mixed", "l_rna": True, "dna": False, "l_dna": False, "rna": True, "build": "chimera"}
     with open(pdb, encoding="utf-8") as fh:
         text = fh.read()
     assert text.startswith("REMARK 951 MDATK CHIMERA 5'-D-RNA(2)-p-L-RNA(2)-3'\n")

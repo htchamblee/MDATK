@@ -314,6 +314,55 @@ REFERENCE_DATA = [
         ),
     },
     {
+        "key": 'zgarbova2015',
+        "text": (
+            'Zgarbová M., Šponer J., Otyepka M., Cheatham T. E., Galindo-Murillo R., Jurečka P. J. Chem. '
+            'Theory Comput. 2015, 11, 5723-5736. doi:10.1021/acs.jctc.5b00716'
+        ),
+        "bibtex": (
+            '@article{zgarbova2015,\n  author = {Zgarbová, M. and Šponer, J. and Otyepka, M. and Cheatham, III, '
+            'T. E. and Galindo-Murillo, R. and Jurečka, P.},\n  title = {{Refinement of the Sugar-Phosphate '
+            'Backbone Torsion Beta for AMBER Force Fields Improves the Description of Z- and B-DNA}},\n  '
+            'journal = {Journal of Chemical Theory and Computation},\n  year = {2015},\n  volume = {11},\n  '
+            'pages = {5723--5736},\n  doi = {10.1021/acs.jctc.5b00716}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.5b00716',
+        "url": '',
+        "verified": 'leaprc:AmberTools 26 dat/leap/cmd/leaprc.DNA.OL15 header (journal, volume, first page, year); authors and title not checked against the paper',
+    },
+    {
+        "key": 'zgarbova2021',
+        "text": (
+            'Zgarbová M., Šponer J., Jurečka P. J. Chem. Theory Comput. 2021, 17, 6292-6301. '
+            'doi:10.1021/acs.jctc.1c00697'
+        ),
+        "bibtex": (
+            '@article{zgarbova2021,\n  author = {Zgarbová, M. and Šponer, J. and Jurečka, P.},\n  title = '
+            '{{Z-DNA as a Touchstone for Additive Empirical Force Fields and a Refinement of the Alpha/Gamma '
+            'DNA Torsions for AMBER}},\n  journal = {Journal of Chemical Theory and Computation},\n  year = '
+            '{2021},\n  volume = {17},\n  pages = {6292--6301},\n  doi = {10.1021/acs.jctc.1c00697}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.1c00697',
+        "url": '',
+        "verified": 'leaprc:AmberTools 26 dat/leap/cmd/leaprc.DNA.OL21 header (journal, volume, first page, year); authors and title not checked against the paper',
+    },
+    {
+        "key": 'zgarbova2025',
+        "text": (
+            'Zgarbová M., Šponer J., Jurečka P. J. Chem. Theory Comput. 2025, 21, 833 (the OL24 DNA force '
+            'field). doi:10.1021/acs.jctc.4c01100'
+        ),
+        "bibtex": (
+            '@article{zgarbova2025,\n  author = {Zgarbová, M. and Šponer, J. and Jurečka, P.},\n  note = {The '
+            'OL24 DNA force field (delta, deoxyribose tau1 and chiOL3)},\n  journal = {Journal of Chemical '
+            'Theory and Computation},\n  year = {2025},\n  volume = {21},\n  number = {2},\n  pages = '
+            '{833},\n  doi = {10.1021/acs.jctc.4c01100}\n}'
+        ),
+        "doi": '10.1021/acs.jctc.4c01100',
+        "url": 'http://ffol.upol.cz',
+        "verified": 'search:abstract of doi 10.1021/acs.jctc.4c01100 (journal, volume, first page, authors); the paper itself not read',
+    },
+    {
         "key": 'steinbrecher2012',
         "text": (
             'Steinbrecher T., Latzer J., Case D. A. J. Chem. Theory Comput. 2012, 8, 4405-4412. '
@@ -1210,6 +1259,24 @@ RESOURCE_DATA = [
         "name": 'OL3 RNA force field',
         "keys": ['cornell1995', 'wang2000', 'perez2007', 'zgarbova2011'],
         "note": 'ff99 (Cornell 1995 + Wang 2000) with the bsc0 and chiOL3 corrections.',
+    },
+    {
+        "id": 'dna_ol15',
+        "name": 'OL15 DNA force field',
+        "keys": ['cornell1995', 'wang2000', 'perez2007', 'zgarbova2015'],
+        "note": 'ff99 + bsc0 with the epsilon/zeta OL1, chiOL4 and beta OL1 refinements (leaprc.DNA.OL15).',
+    },
+    {
+        "id": 'dna_ol21',
+        "name": 'OL21 DNA force field',
+        "keys": ['cornell1995', 'wang2000', 'perez2007', 'zgarbova2015', 'zgarbova2021'],
+        "note": 'OL15 with the alpha/gamma OL21 refinement (leaprc.DNA.OL21).',
+    },
+    {
+        "id": 'dna_ol24',
+        "name": 'OL24 DNA force field',
+        "keys": ['cornell1995', 'wang2000', 'perez2007', 'zgarbova2015', 'zgarbova2021', 'zgarbova2025'],
+        "note": 'OL21 with refined delta and deoxyribose tau1 torsions and chiOL3 (leaprc.DNA.OL24).',
     },
     {
         "id": 'cp',

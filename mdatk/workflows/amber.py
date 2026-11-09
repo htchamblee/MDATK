@@ -48,6 +48,24 @@ FORCE_FIELDS: Dict[str, Tuple[str, str, str]] = {
     "shaw": ("DESRES RNA (Tan et al. 2018)", "leaprc.RNA.Shaw", "DESRES-RNA"),
 }
 
+# DNA force fields of AmberTools 26 (the Olomouc series): id -> (label, leaprc, short name, D library and the
+# parameter files its leaprc loads, in load order - what the L-DNA helper mirrors)
+DNA_FORCE_FIELDS: Dict[str, Tuple[str, str, str, str, Tuple[str, ...]]] = {
+    "ol24": ("OL24 (OL21 + δ, sugar τ1, χOL3)", "leaprc.DNA.OL24", "OL24", "ff-nucleic-OL24.lib",
+             ("parm10.dat", "frcmod.ff14SB", "ff-nucleic-OL24.frcmod")),
+    "ol21": ("OL21 (bsc0 + OL15 + αγ OL21)", "leaprc.DNA.OL21", "OL21", "ff-nucleic-OL21.lib",
+             ("parm10.dat", "ff-nucleic-OL21.frcmod")),
+    "ol15": ("OL15 (bsc0 + εζ OL1 + χ OL4 + β OL1)", "leaprc.DNA.OL15", "OL15", "DNA.OL15.lib",
+             ("parm10.dat", "frcmod.DNA.OL15")),
+}
+# L-DNA: every type of the sugar / backbone oxygens O5', O4', O3' (bridging OS, terminal OH) gets a twin whose
+# dihedral phases are mirrored; every handedness-dependent term of OL15 / OL21 / OL24 (alpha to zeta, chi and the
+# OL24 sugar terms) contains one of these oxygens.  Distinct from the L-RNA twins (LD LH LE), whose chi differs.
+LDNA_TWINS = {"OS": "LS", "OH": "LT"}
+LDNA_SETTINGS = {"KIND": "L-DNA", "NUCLEOTIDE_PATTERN": r"^D[ACGT][35N]?$", "TWIN_ATOMS": ("O5'", "O4'", "O3'"),
+                 "LIB_NAME": "LDNA.lib", "FRCMOD_NAME": "frcmod.ldna", "TWIN_NAMES": LDNA_TWINS}
+POL_1264 = "lj_1264_pol_mdatk.dat"  # the 12-6-4 polarizabilities with the twin types (ParmEd needs every type)
+
 # id -> (label, leaprc, solvent box, ParmEd add12_6_4 water model, 12-6-4 ion frcmod)
 # (box and frcmod names checked against AmberTools 26 dat/leap)
 WATERS: Dict[str, Tuple[str, str, str, str, str]] = {
@@ -116,6 +134,62 @@ def lrna_pair_lines(nbfix19: bool, bph0: bool, bridging: str = "LD") -> List[str
         out.append(f"changeLJPair @%HO {t} 3.03 0.01")
     if bph0:
         out += [f"changeLJPair @%H5 {t} 2.8808 0.0505", f"changeLJPair @%H4 {t} 2.9308 0.0505"]
+    return out
+
+
+# DNA residue names in a topology the Amber build writes (D-DNA of the DNA force fields, MDATK's L-DNA units)
+DNA_RESIDUES = tuple(h + b + end for h in ("D", "LD") for b in "ACGT" for end in ("", "5", "3", "N"))
+
+
+def nbfix_without_dna(nbfix: List[str], bph: List[str], lrna: List[str], cp: bool) -> List[str]:
+    """NBfix19 kept off DNA: ParmEd changes Lennard-Jones pairs by LJ type, which DNA atoms share with RNA, so
+    the DNA atoms of the NBfix19 types (base NB / NC and H, terminal HO; with the plain types also phosphate
+    O2 and bridging OS, with the L-DNA twin LS that tleap merges with OS) get LJ types of their own first, and
+    every NBfix19 pair (and the L-RNA ones) addresses the RNA atoms only.  0BPh keeps acting on DNA: a 0BPh
+    line on a type split this way is written for the RNA and for the DNA type."""
+    dna = ":" + ",".join(DNA_RESIDUES)
+    split = {"@%NB,NC": "@%NB,NC", "@%H": "@%H", "@%HO": "@%HO"}
+    if not cp:
+        split.update({"@%O2": "@%O2", "@%OS": "@%OS,LS"})
+
+    # no parentheses: ParmEd's argument parser would join a parenthesised mask with the rest of the line;
+    # '!' binds tighter than '&' in Amber masks
+    def rna(mask):
+        return f"{mask}&!{dna}" if mask in split else mask
+
+    def dna_mask(mask):
+        return f"{dna}&{split[mask]}"
+
+    def pair(ln):
+        f = ln.split()
+        return f[0], f[1], f[2], f[3:]
+
+    out = ["#", "# NBfix19 is fitted for RNA and kept off DNA: the DNA atoms of its types get LJ types of their own",
+           "# (ParmEd changes pairs by LJ type, which DNA shares with RNA), and its pairs name the RNA atoms"]
+    for ln in nbfix:
+        if ln.startswith("addLJType"):
+            out.append(ln)
+            if ln.split()[1] == "@%NB,NC":
+                out += [f"addLJType {dna_mask(m)}" for m in split]
+        elif ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            out.append(" ".join([cmd, rna(m1), rna(m2)] + rest))
+        else:
+            out.append(ln)
+    for ln in bph:
+        if ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            out.append(" ".join([cmd, rna(m1), rna(m2)] + rest))
+            if m1 in split or m2 in split:  # the same pair for the DNA atoms (0BPh is not switched off)
+                out.append(" ".join([cmd, dna_mask(m1) if m1 in split else m1,
+                                     dna_mask(m2) if m2 in split else m2] + rest))
+        else:
+            out.append(ln)
+    for ln in lrna:
+        if ln.startswith("changeLJPair"):
+            cmd, m1, m2, rest = pair(ln)
+            ln = " ".join([cmd, rna(m1), rna(m2)] + rest)
+        out.append(ln)
     return out
 
 # ---------------------------------------------------------------------------
@@ -324,6 +398,22 @@ class AmberBuildTool(Tool):
             Option("cp_frcmod", "CP frcmod file", "file", "frcmod.99bsc0-chiol3-CaseP",
                    "Parameter file with the CP phosphate correction: a name in leap's search path / "
                    "the step folder, or an absolute path.", requires={"rna_ff": "ol3cp", "cp_source": "frcmod"}),
+            Option("dna_ff", "DNA force field", "choice", "ol24",
+                   "leaprc file for DNA, sourced after the RNA one when the structure has DNA (from the structure "
+                   "builder, or residues DA/DC/DG/DT or L-DNA LDA ... in an existing input PDB); a structure "
+                   "without DNA is built as before. The DNA types (C7, CJ, C1, C2; chi on CK / CM / C1 / C2) are "
+                   "not RNA's, so RNA and DNA in one structure each keep their own terms. OL24 (Zgarbová et al. "
+                   "JCTC 2025): OL21 with refined delta and deoxyribose tau1 and chiOL3; OL21 (JCTC 2021): bsc0 + "
+                   "OL15 with refined alpha / gamma.",
+                   choices=[(k, v[0]) for k, v in DNA_FORCE_FIELDS.items()] + [("none", "None (no DNA force field)")]),
+            Option("ldna_library", "L-DNA library", "radio", "auto",
+                   "Generated: the build script writes LDNA.lib and frcmod.ldna from the DNA force field (its D "
+                   "library and parameter files): the D units mirrored, named LDA LDC LDG LDT / LDA5 LDA3 LDAN ..., "
+                   "with O5' / O4' / O3' given the types LS (OS) and LT (OH), whose dihedral phases are mirrored, "
+                   "so a D molecule and its mirror image have the same energy term by term. Automatic: generated "
+                   "when the structure has L-DNA. Own: L-DNA units from the libraries listed under Force field.",
+                   choices=[("auto", "Automatic"), ("generated", "Generated by MDATK"), ("own", "My own files")],
+                   requires={"dna_ff": tuple(DNA_FORCE_FIELDS)}),
             Option("extra_frcmod", "Extra parameter files", "multiline", "",
                    "One frcmod file per line, loaded with loadamberparams after the force field "
                    "(e.g. frcmod.LRNA).", placeholder="frcmod.LRNA"),
@@ -617,8 +707,8 @@ class AmberBuildTool(Tool):
         return out
 
     @staticmethod
-    def _lrna_args(s, src: str, dst: str) -> str:
-        args = ["clean", src, "-o", dst, "--scheme", "amber"]
+    def _lrna_args(s, src: str, dst: str, dna: bool = False) -> str:
+        args = ["clean", src, "-o", dst, "--scheme", "amber"] + (["--dna"] if dna else [])
         if s["lrna_ranges"].strip():
             args += ["--l-ranges", s["lrna_ranges"].strip()]
         if not s["lrna_terminals"]:
@@ -626,9 +716,9 @@ class AmberBuildTool(Tool):
         return " ".join(shell_quote(a) for a in args)
 
     @staticmethod
-    def _lrna_args_dry(s, src: str, dst: str) -> str:
+    def _lrna_args_dry(s, src: str, dst: str, dna: bool = False) -> str:
         """After ambpdb: residue numbers and chains changed, the names come from the topology."""
-        args = ["clean", src, "-o", dst, "--scheme", "amber", "--no-detect"]
+        args = ["clean", src, "-o", dst, "--scheme", "amber", "--no-detect"] + (["--dna"] if dna else [])
         if not s["lrna_terminals"]:
             args.append("--no-terminal-names")
         return " ".join(shell_quote(a) for a in args)
@@ -651,6 +741,59 @@ class AmberBuildTool(Tool):
         except (OSError, pdbtools.PDBError):
             return False
         return any(r.chirality == "L" and pdbtools.nucleotide(r).sugar != "dna" for r in struct.residues())
+
+    @staticmethod
+    def nucleic_content(s, ctx) -> Dict[str, bool]:
+        """What planning knows of the structure's nucleic acids: {'dna', 'l_dna', 'rna'} from the structure
+        builder's data, else from an existing input PDB (all False when neither tells)."""
+        data = ctx.data("structure")
+        if "dna" in data:
+            return {"dna": bool(data["dna"]), "l_dna": bool(data.get("l_dna")),
+                    "rna": bool(data.get("rna", not data["dna"]))}
+        out = {"dna": False, "l_dna": False, "rna": False}
+        path = ctx.existing("structure")
+        if not path:
+            return out
+        try:
+            struct = pdbtools.read_pdb(path)
+            pdbtools.assign_chirality(struct, detect=True, l_ranges=s.get("lrna_ranges") or None)
+        except (OSError, pdbtools.PDBError):
+            return out
+        for r in struct.residues():
+            nt = pdbtools.nucleotide(r)
+            if nt is None:
+                continue
+            if nt.sugar == "dna":
+                out["dna"] = True
+                out["l_dna"] = out["l_dna"] or r.chirality == "L"
+            else:
+                out["rna"] = True
+        return out
+
+    def dna_loaded(self, s, ctx) -> bool:
+        """Whether the build sources the DNA force field (the structure has DNA, or L-DNA is to be generated)."""
+        return s["dna_ff"] in DNA_FORCE_FIELDS and (self.nucleic_content(s, ctx)["dna"] or s["ldna_library"] ==
+                                                    "generated")
+
+    def ldna_generated(self, s, ctx) -> bool:
+        """Whether the build writes its own L-DNA library (LDNA.lib + frcmod.ldna)."""
+        if s["dna_ff"] not in DNA_FORCE_FIELDS or s["ldna_library"] == "own":
+            return False
+        return s["ldna_library"] == "generated" or self.nucleic_content(s, ctx)["l_dna"]
+
+    def twin_refs(self, s, ctx) -> Dict[str, str]:
+        """The twin atom types the topology carries -> the D type whose 12-6-4 polarizability they take: the
+        L-RNA types when the structure has L-RNA (known when planning), and the generated L-DNA types.  (ParmEd
+        add12_6_4 looks up the types of the atoms only, so a declared type no atom has needs no entry.)"""
+        out: Dict[str, str] = {}
+        if self.lrna_generated(s, ctx) or (s["lrna"] and self._has_l(s, ctx)):
+            out = {t: ref for t, ref in self._mg_type_map(s)[0].items() if t in self._lrna_types(s)}
+            if self.lrna_generated(s, ctx):
+                for t in self._lrna_twins(s):
+                    out.setdefault(t, mg_params.LRNA_DEFAULT_REFS.get(t, "OS"))
+        if self.ldna_generated(s, ctx):
+            out.update({twin: d for d, twin in LDNA_TWINS.items()})
+        return out
 
     def lrna_generated(self, s, ctx) -> bool:
         """Whether the build writes its own L-RNA library (LRNA.lib + frcmod.lrna)."""
@@ -700,6 +843,8 @@ class AmberBuildTool(Tool):
 
     def step_resources(self, s, ctx) -> List[str]:
         out = self.resources(s)
+        if self.dna_loaded(s, ctx):
+            out.append("dna_" + s["dna_ff"])
         if self.lrna_generated(s, ctx) and "lrna" not in out:
             out.append("lrna")  # the L-RNA type scheme of Dudek & Trylska
         return out
@@ -770,11 +915,15 @@ class AmberBuildTool(Tool):
                     out.append(Issue("warning", note[len("WARNING:"):].strip(), ("lrna_ranges",)))
             if n_l or n_ldna:
                 out.append(Issue("info", f"{os.path.basename(path)}: {notes[0]}", ("lrna",)))
-            if n_ldna:
-                out.append(Issue("warning", f"{os.path.basename(path)}: {n_ldna} L-DNA residue(s): the L-RNA "
-                                            "library has no units for them and AmberTools no L-DNA library; "
-                                            "list your own (units named as MDATK's Amber scheme: LDA, LDA5, LDA3 "
-                                            "...) under Force field", ("extra_libs",)))
+            if n_ldna and not self.ldna_generated(s, ctx) and s["ldna_library"] != "own":
+                out.append(Issue("error", f"{os.path.basename(path)}: {n_ldna} L-DNA residue(s) need a DNA force "
+                                          "field to mirror: choose one under Force field (AmberTools has no L-DNA "
+                                          "library)", ("dna_ff",)))
+            elif n_ldna and s["ldna_library"] == "own" and not extra_lines(s["extra_libs"]):
+                out.append(Issue("error", f"{os.path.basename(path)}: {n_ldna} L-DNA residue(s): list your own "
+                                          "L-DNA library (units named as MDATK's Amber scheme: LDA, LDA5, LDA3 ...) "
+                                          "under Force field, or choose 'Generated by MDATK'", ("ldna_library",
+                                                                                              "extra_libs")))
         elif s["lrna_ranges"].strip():
             n_l = 1
         if self.lrna_generated(s, ctx):
@@ -822,6 +971,42 @@ class AmberBuildTool(Tool):
         if not path and ctx.has("structure"):
             out.append(Issue("info", "L-nucleotides are detected from the sugar geometry when the script runs "
                                      "(the input PDB does not exist yet)", ("lrna",)))
+        return out
+
+    def _check_dna(self, s, ctx) -> List[Issue]:
+        """The DNA force field and the generated L-DNA library."""
+        out: List[Issue] = []
+        content = self.nucleic_content(s, ctx)
+        if content["dna"] and s["dna_ff"] not in DNA_FORCE_FIELDS:
+            out.append(Issue("error", "the structure has DNA but no DNA force field is chosen", ("dna_ff",)))
+            return out
+        if not self.dna_loaded(s, ctx):
+            return out
+        ff = DNA_FORCE_FIELDS[s["dna_ff"]]
+        out.append(Issue("info", f"DNA: {ff[0]} ({ff[1]}, sourced after the RNA force field)", ("dna_ff",)))
+        if self._cp_frcmod(s):
+            out.append(Issue("warning", "the own CP frcmod changes the O2 / OS types for every residue: the DNA "
+                                        "phosphates and O4' get the correction too (the retyped CP library changes "
+                                        "RNA only)", ("cp_source",)))
+        if s["nbfix19"]:
+            out.append(Issue("info", "NBfix19 is fitted for RNA and kept off the DNA: ParmEd gives the DNA atoms of "
+                                     "its types (base NB / NC and H, terminal HO" + ("" if self._cp_lib(s) else
+                                     ", phosphate O2, OS") + ") LJ types of their own, and its pairs name the RNA "
+                                     "atoms (RNA-DNA contacts keep the standard terms)", ("nbfix19",)))
+        if s["bph0"] and not self._cp_lib(s):
+            out.append(Issue("warning", "0BPh is fitted for RNA and addresses H5 / H4 with OS, which DNA shares: its "
+                                        "pairs act on the DNA too", ("bph0",)))
+        if self.ldna_generated(s, ctx) and not s["lrna"]:
+            out.append(Issue("warning", "L-nucleotide naming is off: the input must already name the L-DNA "
+                                        "residues LDA, LDA5, LDA3 ... (as the generated library does)", ("lrna",)))
+        if self.ldna_generated(s, ctx):
+            out.append(Issue("info", f"MDATK generates the L-DNA library (LDNA.lib, frcmod.ldna) from {ff[2]}: "
+                                     "mirrored units LDA LDC LDG LDT / LDA5 LDA3 LDAN ... with O5' / O4' / O3' typed "
+                                     f"{' / '.join(LDNA_TWINS.values())} and their dihedral phases mirrored",
+                             ("ldna_library",)))
+            if extra_lines(s["extra_libs"]):
+                out.append(Issue("warning", "own residue libraries are listed as well: a unit they define with an "
+                                            "L-DNA name replaces the generated one", ("ldna_library", "extra_libs")))
         return out
 
     # checks -----------------------------------------------------------
@@ -872,6 +1057,7 @@ class AmberBuildTool(Tool):
                                      "same topology; the two-pass build is kept for set-ups that need the "
                                      "dry intermediate files", ("two_pass",)))
         out += self._check_lrna(s, ctx)
+        out += self._check_dna(s, ctx)
         if s["link_check"] != "off" and s["link_fail"] < s["link_max"]:
             out.append(Issue("error", "the O3′–P break length must not be below the longest unstrained link",
                              ("link_fail", "link_max")))
@@ -1073,6 +1259,8 @@ class AmberBuildTool(Tool):
     def _leap(self, s, ctx, title, pdb_in, stem, wet, save_pdb) -> str:
         lines = [f"# {title}", f"# written by {PROJECT_ABBREV} {__version__}",
                  f"source {FORCE_FIELDS[s['rna_ff']][1]}"]
+        if self.dna_loaded(s, ctx):
+            lines.append(f"source {DNA_FORCE_FIELDS[s['dna_ff']][1]}")
         solvated = wet and self._solvated(s)
         if solvated:
             lines.append(f"source {WATERS[s['water']][1]}")
@@ -1083,6 +1271,8 @@ class AmberBuildTool(Tool):
         types = self._lrna_types(s)
         if self.lrna_generated(s, ctx):
             types += [t for t in self._lrna_twins(s) if t not in types]
+        if self.ldna_generated(s, ctx):
+            types += [t for t in LDNA_TWINS.values() if t not in types]
         if types and not any("addAtomTypes" in ln and types[0] in ln for ln in extra_lines(s["leap_before_params"])):
             lines.append("addAtomTypes { " + " ".join(f'{{ "{t}" "O" "sp3" }}' for t in types) + " }")
         if self._cp_frcmod(s):
@@ -1096,6 +1286,8 @@ class AmberBuildTool(Tool):
             lines.append(f"loadamberparams {self._mg_frcmod(ctx)}")
         if self.lrna_generated(s, ctx):
             lines += ["loadamberparams frcmod.lrna", "loadOff LRNA.lib"]
+        if self.ldna_generated(s, ctx):
+            lines += ["loadamberparams frcmod.ldna", "loadOff LDNA.lib"]
         lines += [f"loadOff {f.strip()}" for f in extra_lines(s["extra_libs"])]
         lines += extra_lines(s["leap_before_load"])
         lines.append(f'mol = loadpdb "{pdb_in}"')
@@ -1140,18 +1332,19 @@ class AmberBuildTool(Tool):
             lines += ["#", "# Give HO and O2 their own Lennard-Jones types so the pair changes below do not also",
                       "# apply to atom types tleap merged with them (water HW, carbonyl O)",
                       "addLJType @%HO"] + ([] if cp else ["addLJType @%O2"])
-        if s["nbfix19"]:
-            lines += _cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES
-        if s["bph0"]:
-            lines += _cp_masks(BPH0_LINES) if cp else BPH0_LINES
-        if (s["nbfix19"] or s["bph0"]) and self._lrna_types(s):
-            lines += lrna_pair_lines(s["nbfix19"], s["bph0"], self._lrna_types(s)[0])
-        elif s["nbfix19"] or s["bph0"]:
-            lines += LRNA_NOTE
+        nb = (_cp_masks(NBFIX19_LINES) if cp else NBFIX19_LINES) if s["nbfix19"] else []
+        bph = (_cp_masks(BPH0_LINES) if cp else BPH0_LINES) if s["bph0"] else []
+        lrna = (lrna_pair_lines(s["nbfix19"], s["bph0"], self._lrna_types(s)[0]) if self._lrna_types(s)
+                else LRNA_NOTE) if (s["nbfix19"] or s["bph0"]) else []
+        if s["nbfix19"] and ctx is not None and self.dna_loaded(s, ctx):
+            lines += nbfix_without_dna(nb, bph, lrna, cp)
+        else:
+            lines += nb + bph + lrna
         if wet and self._solvated(s) and s["mg_model"] == "1264":
             lines += ["#", "# 12-6-4 Lennard-Jones terms for Mg2+ (Li & Merz)",
                       f"add12_6_4 :MG watermodel {WATERS[s['water']][3]}"
-                      + (" polfile lj_1264_pol_cp.dat" if self._cp_lib(s) else "")]
+                      + (f" polfile {POL_1264}" if ctx is not None and self.twin_refs(s, ctx) else
+                         " polfile lj_1264_pol_cp.dat" if self._cp_lib(s) else "")]
         if wet and s["hmr"]:
             lines += ["#", "# Hydrogen mass repartitioning (4 fs time steps with SHAKE)",
                       "HMassRepartition"]
@@ -1161,8 +1354,11 @@ class AmberBuildTool(Tool):
         if extra:
             lines += ["#", "# Extra commands"] + extra
         if wet and self._mg_pairs(s):
+            extra = dict(self._mg_type_map(s)[0])
+            if ctx is not None and self.ldna_generated(s, ctx):
+                extra.update({twin: d for d, twin in LDNA_TWINS.items()})
             lines += mg_params.parmed_lines(s["mg_model"], s["water"], WATERS[s["water"]][0],
-                                            self._mg_frcmod(ctx), s["mg_cl_pair"], self._mg_type_map(s)[0])
+                                            self._mg_frcmod(ctx), s["mg_cl_pair"], extra)
         lines += ["#", f"outparm {out_parm}"]
         return "\n".join(lines) + "\n"
 
@@ -1270,6 +1466,30 @@ class AmberBuildTool(Tool):
                 sh.append(f'P{k}={shell_quote(f.strip())}; [ -f "$P{k}" ] || P{k}="$AMBERHOME/dat/leap/parm/$P{k}"')
                 parms.append(f'"$P{k}"')
             sh += [f"python3 {lib_py} {d_lib} {' '.join(parms)} .", require_file("LRNA.lib", "the L-RNA helper"), ""]
+        if self.ldna_generated(s, ctx):
+            ff = DNA_FORCE_FIELDS[s["dna_ff"]]
+            lib_py = n("ldna-lib", "py")
+            files.append(GeneratedFile(lib_py, embed(
+                _lrna_lib, LDNA_SETTINGS, "main(sys.argv[1:])",
+                f"L-DNA library and parameters from the D-DNA force field {ff[2]} - written by {PROJECT_ABBREV} "
+                f"{__version__}.\n\nUsage: python3 THIS_SCRIPT D_LIBRARY PARM.dat [FRCMOD ...] OUTPUT_DIR"),
+                "helper", "writes LDNA.lib and frcmod.ldna: the D-DNA units mirrored, phases of the new types mirrored"))
+            parms = [f'"$AMBERHOME/dat/leap/parm/{f}"' for f in ff[4]]
+            sh += [f"# L-DNA library and parameters: {ff[2]} mirrored (LDNA.lib + frcmod.ldna; O5' / O4' / O3' "
+                   "typed LS / LT with mirrored dihedral phases)",
+                   f'python3 {lib_py} "$AMBERHOME/dat/leap/lib/{ff[3]}" {" ".join(parms)} .',
+                   require_file("LDNA.lib", "the L-DNA helper"), ""]
+        twins = self.twin_refs(s, ctx)
+        if self._solvated(s) and s["mg_model"] == "1264" and twins:
+            base = "lj_1264_pol_cp.dat" if self._cp_lib(s) else '"$AMBERHOME/dat/leap/parm/lj_1264_pol.dat"'
+            pairs = " ".join(f"{t}={ref}" for t, ref in sorted(twins.items()))
+            sh += [f"# 12-6-4 polarizabilities with the twin atom types ({pairs}): ParmEd add12_6_4 stops on a type",
+                   "# that its table lacks; each twin takes the value of its D type",
+                   f"cp {base} {POL_1264}",
+                   f"for pair in {pairs}; do",
+                   '  awk -v t="${pair%%=*}" -v r="${pair#*=}" \'$1 == r && !done { printf "%-6s%s    copied from %s by '
+                   f'{PROJECT_ABBREV}\\n", t, $2, r; done = 1 }}\' {base} >> {POL_1264}',
+                   "done", require_file(POL_1264, "the 12-6-4 polarizability table"), ""]
         if self._solvated(s) and s["water"] == "tip4p2005":
             w_py = n("tip4p2005", "py")
             files.append(GeneratedFile(w_py, embed(
@@ -1302,8 +1522,10 @@ class AmberBuildTool(Tool):
                 "       python3 THIS_SCRIPT check IN.pdb"), "helper",
                 "L-RNA detection and Amber residue names (mdatk pdb)"))
             named = n("lrna", "pdb")
-            sh += ["# L-RNA residue names from the sugar chirality (C1'/C3'/C4'): LA/LC/LG/LU, LA5/LA3 ...",
-                   f"python3 {tools_py} {self._lrna_args(s, pdb_in, named)}", require_file(named, "pdbtools"), ""]
+            dna = self.dna_loaded(s, ctx)
+            sh += ["# L-RNA residue names from the sugar chirality (C1'/C3'/C4'): LA/LC/LG/LU, LA5/LA3 ..."
+                   + (" (DNA too: DA5 / DA3 ..., L-DNA LDA, LDA5, LDA3 ...)" if dna else ""),
+                   f"python3 {tools_py} {self._lrna_args(s, pdb_in, named, dna)}", require_file(named, "pdbtools"), ""]
             pdb_in = named
             # before the first tleap, so a mismatch costs seconds
             if not gen and self._own_libs(s) and self._lrna_setup(s, ctx):
@@ -1331,7 +1553,7 @@ class AmberBuildTool(Tool):
             if lj:
                 pm = n("parmed-dry")
                 files.append(GeneratedFile(n("parmed-dry", "in"), self._parmed(
-                    s, f"{mods} on the dry topology", f"{pm}.parm7", wet=False), "input"))
+                    s, f"{mods} on the dry topology", f"{pm}.parm7", wet=False, ctx=ctx), "input"))
                 sh += [f"# Edit parameters: {mods}",
                        f"parmed -O {dry}.parm7 -i {pm}.in 2>&1 | tee {pm}.log",
                        require_file(f"{pm}.parm7", "ParmEd"), ""]
@@ -1343,7 +1565,8 @@ class AmberBuildTool(Tool):
             if s["lrna"]:
                 out_pdb = n("lrna-dry", "pdb")
                 sh += ["# Amber names of the dry topology (ambpdb renumbers residues and drops chain ids)",
-                       f"python3 {n('pdbtools', 'py')} {self._lrna_args_dry(s, amb, out_pdb)}",
+                       f"python3 {n('pdbtools', 'py')} "
+                       f"{self._lrna_args_dry(s, amb, out_pdb, self.dna_loaded(s, ctx))}",
                        require_file(out_pdb, "pdbtools"), ""]
                 pdb_in = out_pdb
         if self._mg_pairs(s):

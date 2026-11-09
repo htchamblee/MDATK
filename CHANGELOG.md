@@ -5,12 +5,65 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+
+## 0.0.14 (2026-11-09)
+
+### RNAdo: Cat-proof mode
+
+- **Cat-proof mode**, a check box in RNAdo's header bar: while it is ticked, every key press and release in
+  RNAdo's window, tool windows and dialogs is dropped where GDK hands events to GTK, so a cat on the
+  keyboard types nothing and triggers no shortcut; the mouse keeps working and unticks it. The log counts
+  the ignored keystrokes; the setting is remembered in the user settings file (which now keeps every
+  setting when the recent projects list is updated).
+
+### Amber build: DNA force fields and a mirrored L-DNA library
+
+- **DNA force field** (*Force field*): OL24 (default), OL21 or OL15, sourced after the RNA force field when
+  the structure has DNA (from the structure builder, whose model data now say `dna` / `l_dna` / `rna`, or
+  an existing input PDB). Builds without DNA are unchanged. The naming step renames DNA too (`clean
+  --dna`, new): DA5 / DA3 …, L-DNA LDA, LDA5, LDA3, LDAN … (also from the CCD's 0DA …).
+- **L-DNA library, generated**: `LDNA.lib` + `frcmod.ldna` from the DNA force field's own library and
+  parameter files, by the L-RNA generator with L-DNA settings: O5′ / O4′ / O3′ (OS) typed LS and the
+  terminal OH typed LT, every term of their D twins repeated with mirrored dihedral phases (OL15 / OL21 ε
+  and ζ, and OL24's δ and τ1, run through O3′ and O4′, so twinning O5′ / O4′ alone, as for L-RNA, would
+  leave them unmirrored: up to 38 kcal/mol per residue in OL24). Checked for every unit of OL15, OL21 and
+  OL24 (the dihedral energy of an L unit at the mirror coordinates equals its D unit's to 10⁻⁹ kcal/mol);
+  with AmberTools installed the tests also compare tleap + sander energies of a D-DNA duplex and its
+  mirror image. The former warning that L-DNA needs a library of one's own is gone (an error when no DNA
+  force field is chosen).
+- **Mg²⁺ terms of the twin types**: microMg / nanoMg pair terms for LS / LT (as OS / OH); for 12-6-4 a
+  polarizability table `lj_1264_pol_mdatk.dat` with the twin types, passed to `add12_6_4 … polfile`.
+  ParmEd stops on an atom type missing from its table, so **12-6-4 builds of structures with L-RNA failed
+  at the ParmEd step** before this (the L-RNA types LD / LH / LE now get their lines too).
+- **NBfix19 is kept off DNA**: with DNA in the structure, the ParmEd input gives the DNA atoms of NBfix19's
+  types LJ types of their own (`addLJType` on the DNA residues) and its pairs name the RNA atoms only (no
+  parentheses in the masks, which ParmEd's argument parser would join with the rest of the line). 0BPh is
+  unchanged (on the plain types written for RNA and DNA alike, with a warning). Checked with ParmEd on a
+  topology of RNA, D- and L-DNA residues merged into LJ types as tleap does. An own CP frcmod changes the
+  DNA's O2 / OS too (a warning).
+- **Citations**: OL15 (Zgarbová et al. 2015), OL21 (2021) and OL24 (2025) DNA force fields.
+- **Fix**: the L-RNA generator module had its own `__main__` block, which ran before the settings the
+  build script writes after it; the generated L-RNA helper was unaffected (it has no settings), the L-DNA
+  one would have mirrored with the L-RNA rules.
+
+
+### Scripts run from an RNAdo started from the applications menu
+
+- **What `~/.bashrc` sets up reaches the scripts.** Started from the applications menu, MDATK has the
+  desktop session's environment, which never ran `~/.bashrc`: a step whose *Conda environment* gives
+  tleap found it, but `pmemd.cuda` from `source ~/pmemd26/amber.sh` (after the "not interactive: return"
+  guard of `~/.bashrc`) was not found, though everything worked with RNAdo started from a terminal. Started
+  without a terminal (no `TERM` and no terminal on its standard streams), RNAdo and `mdatk workflow run`
+  now read the environment of an interactive bash once (`bash -i`, its output discarded) and run the
+  scripts in it, with a line in the log; the variables MDATK sets (`MDATK_LOCAL`, `CUDA_VISIBLE_DEVICES`)
+  still come last. When bash cannot give it (it fails or takes more than 30 s), a warning names the
+  step's *Setup commands* as the way out. `MDATK_SHELL_ENV=1` / `0` forces it on or off.
 
 ## 0.0.13 (2026-11-07)
 

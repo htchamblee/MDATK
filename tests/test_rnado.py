@@ -923,3 +923,116 @@ def test_select_all_and_clear_selection_buttons(app, windows, tmp_path):
     pl.clear_selection_btn.clicked()
     assert not pl.checked and not pl.clear_selection_btn.get_sensitive()
     assert pl.run_selected_btn.get_label() == "Run selected steps" and not pl.run_selected_btn.get_sensitive()
+
+
+# --- Cat-proof mode -------------------------------------------------------------------------------------
+
+def _entries(w):
+    out = []
+    if isinstance(w, Gtk.Entry) and w.get_visible() and w.get_sensitive():
+        out.append(w)
+    if isinstance(w, Gtk.Container):
+        for c in w.get_children():
+            out += _entries(c)
+    return out
+
+
+def _x_type(window, entry, text):
+    """Type ``text`` into ``entry``: key press / release events put on GDK's event queue, so they reach GTK
+    through the same event handler as a keyboard's (the one Cat-proof mode filters)."""
+    from gi.repository import Gdk
+
+    entry.set_text("")
+    window.present()
+    entry.grab_focus()
+    pump(0.2)
+    display = Gdk.Display.get_default()
+    keyboard = display.get_default_seat().get_keyboard()
+    for ch in text:
+        keyval = Gdk.unicode_to_keyval(ord(ch))
+        keys = Gdk.Keymap.get_for_display(display).get_entries_for_keyval(keyval)
+        code = keys[1][0].keycode if keys[0] and keys[1] else 0
+        for kind in (Gdk.EventType.KEY_PRESS, Gdk.EventType.KEY_RELEASE):
+            ev = Gdk.Event.new(kind)
+            ev.key.window = window.get_window()
+            ev.key.keyval = keyval
+            ev.key.hardware_keycode = code
+            ev.key.time = Gdk.CURRENT_TIME
+            ev.set_device(keyboard)
+            display.put_event(ev)
+        pump(0.05)
+    pump(0.3)
+    return entry.get_text()
+
+
+def _x_click(widget):
+    import subprocess
+
+    alloc = widget.get_allocation()
+    x, y = widget.get_window().get_root_coords(alloc.x + alloc.width // 2, alloc.y + alloc.height // 2) \
+        if widget.get_has_window() else widget.get_toplevel().get_window().get_root_coords(
+            *widget.translate_coordinates(widget.get_toplevel(), alloc.width // 2, alloc.height // 2))
+    subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"], check=True)
+    pump(0.4)
+
+
+@pytest.mark.skipif(shutil.which("xdotool") is None, reason="needs xdotool")
+def test_cat_proof_mode_ignores_the_keyboard_everywhere_but_not_the_mouse(app, windows, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    from mdatk import projectfile
+    from mdatk.gui import catproof
+
+    win = rnado_window(app, windows)
+    labels = [c.get_label() for c in win.cat_proof.get_child().get_children() if isinstance(c, Gtk.Label)]
+    assert labels == ["Cat-proof mode"] and not win.cat_proof.get_active()
+    icon = win.cat_proof.icon  # the cat-on-a-keyboard icon, drawn: something dark on its 18 x 16 px
+    assert isinstance(icon, catproof.CatIcon) and icon.get_allocated_width() >= 18
+    import cairo
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 18, 16)
+    catproof.draw_cat_keyboard(cairo.Context(surface), 0, 0, 0)
+    alpha = surface.get_data()[3::4]
+    assert 0.25 < sum(1 for a in alpha if a > 128) / len(alpha) < 0.7  # a silhouette, neither empty nor solid
+    entry = _entries(win)[0]
+    grab = Gtk.grab_get_current()
+    for _ in range(50):  # popup menus earlier tests left open hold the keyboard grab, one on top of another
+        grab = Gtk.grab_get_current()
+        if not isinstance(grab, Gtk.Menu):
+            break
+        grab.popdown()
+        grab.grab_remove()
+        pump(0.05)
+    assert _x_type(win, entry, "meow") == "meow"
+    win.cat_proof.set_active(True)
+    pump(0.2)
+    assert _x_type(win, entry, "prrr") == ""  # the keys go nowhere
+    assert projectfile.user_setting("cat_proof") is True  # remembered
+    # a tool window of RNAdo is covered too
+    win.open_builder()
+    pump(0.5)
+    tool = win.builder
+    windows.append(tool)
+    tool_entry = _entries(tool)[0]
+    before = tool_entry.get_text()
+    tool_entry.set_text(before)
+    assert _x_type(tool, tool_entry, "hiss") == ""
+    # the mouse still works: a real click on the box unticks it, and the keyboard is back (the tool window,
+    # which Xvfb without a window manager opens over RNAdo's header bar, out of the way first)
+    tool.hide()
+    pump(0.3)
+    _x_click(win.cat_proof)
+    assert not win.cat_proof.get_active() and not catproof.guard().active
+    assert _x_type(win, entry, "ok") == "ok"
+    log = win.log.buffer.get_text(win.log.buffer.get_start_iter(), win.log.buffer.get_end_iter(), False)
+    assert "Cat-proof mode on: the keyboard is ignored" in log
+    assert "Cat-proof mode off (8 keystrokes ignored)" in log  # prrr + hiss
+    assert projectfile.user_setting("cat_proof") is False
+    # remembered: a new window starts with the mode on, and says so
+    projectfile.set_user_setting("cat_proof", True)
+    win2 = rnado_window(app, windows)
+    assert win2.cat_proof.get_active() and catproof.guard().active
+    log2 = win2.log.buffer.get_text(win2.log.buffer.get_start_iter(), win2.log.buffer.get_end_iter(), False)
+    assert "Cat-proof mode is on (remembered from last time)" in log2
+    win2.cat_proof.set_active(False)
+    pump(0.1)
+    assert not catproof.guard().active

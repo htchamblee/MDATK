@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.13](#whats-new-in-0013)
+- [What's new in 0.0.14](#whats-new-in-0014)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,33 +82,23 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.13
+## What's new in 0.0.14
 
-- **B-form DNA and D/L chimeras in the structure builder.** Ideal B-DNA helices of either hand, DNA and
-  L-DNA residue names in every naming scheme, and chimeras of D and L, RNA and DNA segments joined by
-  3'-5', 5'-3', 3'-3' or 5'-5' links (a PO2 bridge with LINK records), from the command line, the
-  planner's structure-builder step and RNAdo's builder window (see [Structure
-  builder](#structure-builder)).
-- **LINK records are kept and checked:** the PDB tools carry them through renaming, renumbering and chain
-  changes, and the model check treats them as bonds.
-- **Amber MD stages, one option per job:** *Production stage* is split into *Run in the separate
-  script*, *Pass the trajectory on*, *Dry trajectory label* and *Dry PDB of its last frame*, so a chained
-  protocol (an annealing cycle, a restraint release) can run on the cluster as a whole and pass on only
-  the frames meant for analysis, dried per stage or per label (see [Amber MD stages](#amber-md-stages)).
-- **Batch-friendly waiting:** *Exit 0 + .waiting file* instead of exit status 75 while the separate
-  script has not finished, for `sbatch --dependency` chains.
-- **Ramp warnings know the starting temperature:** a ramp that starts where the previous stage ended is
-  no longer warned.
-- **Folder tags and MANIFEST:** a step's folder tag goes into its folder name (`03_amber-md_model12/`),
-  steps that write nothing get no folder, every write records the folders in `MANIFEST` and
-  `MDATK_step.toml`, and `mdatk workflow manifest` matches a renumbered plan to an existing tree (see
-  [Folder tags and MANIFEST](#folder-tags-and-manifest)).
-- **RNAdo:** tool rows wrap instead of stretching when the window first opens, the *Open* drop-down lists
-  recent projects, *Select all steps* / *Clear selection*, *Write selected steps*, and a timestamped
-  output log per step.
-- **Generated workflow files** of earlier step types are unchanged unless a new option is turned on,
-  apart from the version in their headers and the PDB tools and PDB preparation copied into Amber builds
-  (see [CHANGELOG.md](CHANGELOG.md)).
+- **DNA force fields in the Amber build:** OL24 (default; OL21 with the refined δ and deoxyribose sugar
+  pucker and χOL3), OL21 or OL15, loaded when the structure has DNA; RNA-only builds are unchanged (see
+  [DNA and L-DNA](#l-dna)).
+- **L-DNA, mirrored from the DNA force field:** `LDNA.lib` + `frcmod.ldna` with O5′ / O4′ / O3′ typed LS / LT
+  and their dihedral phases mirrored, so an L-DNA molecule has the energy of its D mirror image term by term;
+  L-DNA residues get their Amber names (LDA, LDA5 …) before tleap, and the twin types get their D types'
+  Mg²⁺ terms (microMg / nanoMg pairs, 12-6-4 polarizabilities).
+- **NBfix19 kept off DNA:** its pairs name RNA atoms only; 0BPh is unchanged.
+- **Fix: 12-6-4 Mg²⁺ with L-RNA** stopped at the ParmEd step (`add12_6_4` lacked the L-RNA atom types).
+- **Applications menu:** RNAdo started from the menu gives the scripts it runs the environment your
+  `~/.bashrc` sets up (e.g. `pmemd.cuda` from `amber.sh`), as from a terminal.
+- **Cat-proof mode:** a check box in RNAdo's header bar (with a cat on a keyboard) that makes RNAdo ignore the
+  keyboard; the mouse unticks it.
+- **Generated workflow files** of earlier step types are unchanged unless DNA is in the structure, apart from
+  the version in their headers and the PDB tools copied into Amber builds (see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -371,7 +361,12 @@ seconds is reported in the analysis window.
   changes), and a menu with *New project* (Ctrl+N), *Open project…*, *Save*, *Save as…* (Ctrl+Shift+S),
   *Close project*, the three tools, *Show the output log*, *Project log…*, *Add MDATK and RNAdo to the
   applications menu…* (see [Applications menu (Linux)](#applications-menu-linux)) and *About RNAdo* (with
-  the citations of the plan and *Export BibTeX…*).
+  the citations of the plan and *Export BibTeX…*). *Cat-proof mode*, a check box beside the tools, makes
+  RNAdo ignore the keyboard: every key press and release in its window, its tool windows and its dialogs
+  is dropped before GTK sees it, so a cat walking across the keys types nothing, triggers no shortcut and
+  deletes no step. The mouse keeps working, so the box is unticked with it; the output log says how many
+  keystrokes were ignored, and the setting is remembered (`cat_proof` in `~/.config/mdatk/settings.toml`)
+  and announced in the log when RNAdo starts with it on.
 - **The planner:** its toolbar (*Add step*, *Templates*, *Delete*, *Arrange*, zoom, *Fit*, *Check
   previous runs*, *Select all steps*, *Clear selection*, *Write all files*, *Write selected steps*, *Run
   all…*, *Run selected steps*, *Stop scripts*, *Open folder*), the naming bar (project name, *Time
@@ -1298,6 +1293,43 @@ CP residue library, use your own L-RNA files too (the generated units mirror Amb
 
 When the input PDB exists, the build step checks it and reports L residues without a library as an
 error.
+
+<a id="l-dna"></a>**DNA and L-DNA.** When the structure has DNA (from the structure builder, or DA/DC/DG/DT or
+L-DNA residues in an existing input PDB), the build sources the *DNA force field* after the RNA one:
+**OL24** (default; Zgarbová, Šponer & Jurečka, JCTC 2025: OL21 with refined δ and deoxyribose τ1 torsions
+and the χOL3 glycosidic torsion), **OL21** (JCTC 2021: OL15 with refined α / γ) or **OL15**, AmberTools'
+`leaprc.DNA.OL24` / `OL21` / `OL15`. A structure without DNA is built exactly as before. The DNA types are
+not RNA's (C3′ C7, C5′ CJ, χ on CK / CM / C1 / C2 against RNA's C5 / CP / C4 / CS), so RNA and DNA in one
+structure each keep their own terms. The naming step then gives DNA its Amber names too (DA5 / DA3 …, and
+L-DNA MDATK's LDA, LDA5, LDA3, LDAN …, also from the CCD's 0DA …).
+
+*L-DNA library* (Automatic: generated when the structure has L-DNA; or Generated / My own files) works as
+the generated L-RNA library does, from the DNA force field's own files (`ff-nucleic-OL24.lib` with
+`parm10.dat`, `frcmod.ff14SB` and `ff-nucleic-OL24.frcmod`; the OL21 / OL15 equivalents): `LDNA.lib` holds
+the D units mirrored and named LDA LDC LDG LDT / LDA5 LDA3 LDAN …, and `frcmod.ldna` the terms of the new
+types with mirrored phases. In DNA two oxygens are not enough: OL15 / OL21 have ε and ζ terms through O3′
+(C2′/C4′-C3′-O3′-P, C3′-O3′-P-OP) and OL24 adds δ (O3′-C3′-C4′-C5′) and τ1 (O4′-C1′-C2′-C3′), so every
+sugar and backbone oxygen gets a twin: O5′, O4′ and O3′ typed OS become **LS**, the 5′/3′-OH (OH) **LT**
+(distinct from the L-RNA types, whose χ differs). Every handedness-dependent term of the three force
+fields contains one of these oxygens. The tests check, for every unit of OL15, OL21 and OL24, that the L
+unit at the mirror coordinates has the D unit's dihedral energy (to 10⁻⁹ kcal/mol; without the twins it
+differs by up to 1.6, 2.6 and 38 kcal/mol per residue), and, where AmberTools is installed, that tleap and
+sander give a D-DNA duplex and its mirror image the same energy term by term. At a D/L junction the
+torsions across the link take the types of the residue that owns each oxygen (ζ through the D residue's
+O3′ keeps the D phase), as the L-RNA library does.
+
+The twins also get their D types' Mg²⁺ terms: the microMg / nanoMg pair terms (LS as OS, LT as OH), and,
+for the 12-6-4 model, a polarizability table `lj_1264_pol_mdatk.dat` with a line per twin type (ParmEd's
+`add12_6_4` stops on an atom type its table lacks; the same table now carries the L-RNA types LD / LH / LE
+when the structure has L-RNA, which 12-6-4 builds with L-RNA needed). NBfix19 is fitted for RNA and **kept off the DNA**: ParmEd changes Lennard-Jones pairs by LJ type, which
+DNA atoms share with RNA, so the ParmEd input first gives the DNA atoms of NBfix19's types their own LJ types
+(`addLJType` on the DNA residues: base NB / NC and H, terminal HO, and with the plain types phosphate O2 and
+bridging OS together with the L-DNA twin LS, which tleap merges with OS), and every NBfix19 pair names the
+RNA atoms only (masks such as `@%NB,NC&!:DA,DA5,…`; RNA-DNA contacts keep the standard terms). 0BPh is left
+as it was: with the retyped CP library it addresses OP / OR, which DNA does not have; with the plain types
+its H5 / H4 - OS pairs are written for the RNA and the DNA oxygens alike (a warning says so). A test runs
+the lines through ParmEd on a topology of RNA, D-DNA and L-DNA residues whose types share LJ types as tleap
+merges them: no pair of a DNA atom changes by NBfix19, and 0BPh changes D- and L-DNA the same way.
 
 > **L residue names must match the library.** MDATK writes the Dudek names (LA LC LG LU, LA5/LA3 …).
 > A library whose units have other names (e.g. A0/C0/G0/U0 with A05/A03 terminals) needs
@@ -2242,7 +2274,7 @@ the schemes of the [PDB clean-up](#pdb-clean-up); the records are ATOM but for t
 
 The Amber names are the units of AmberTools' RNA and DNA libraries and of Dudek & Trylska's
 `nucleic12_LRNA.lib`; LDA … are MDATK's own names in the same pattern, since AmberTools ships no L-DNA
-library (a note says that tleap needs units of these names). The CCD has no 5'/3' variants of DNA, so
+library: the Amber build step mirrors them from the DNA force field (see [L-DNA](#l-dna)). The CCD has no 5'/3' variants of DNA, so
 *5'/3' terminal names* matter for DNA in the `amber` scheme only; 0A5 / 0A3 are no CCD entries either (a
 5' end that keeps its phosphate is named after the component, 0A). 0DA, 0DC, 0DG and 0DT are the CCD's
 2'-deoxy-L-ribonucleotides, and two of them spell some atoms their own way: 0DA its adenine N9A, C8A,
@@ -3229,6 +3261,12 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   run` find it as MDATK finds cpptraj (`$CONDA_EXE`, `~/miniforge3`, `~/miniconda3`, `~/anaconda3`, …,
   `~/.conda/environments.txt`) and put its `condabin` folder first on the script's PATH, saying so in
   the log; when none is found the log says how to point MDATK at it (`CONDA_EXE`).
+  The same holds for everything else `~/.bashrc` sets up (`source ~/pmemd26/amber.sh` for `pmemd.cuda`,
+  CCP4, Phenix, Rosetta …): started without a terminal (no `TERM`, no terminal on its standard streams,
+  as from the applications menu), RNAdo and `mdatk workflow run` read the environment of an interactive
+  bash once (`bash -i`, i.e. after `~/.bashrc`) and run the scripts in it, as from a terminal, saying so
+  in the log; when it cannot be read the log says so and the step's *Setup commands* are the way to set
+  the programs up. `MDATK_SHELL_ENV=1` always takes that environment, `MDATK_SHELL_ENV=0` never.
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame
