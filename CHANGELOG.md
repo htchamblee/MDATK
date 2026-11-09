@@ -12,6 +12,22 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Missing programs reported before a step runs
+
+- Before MDATK runs a script it checks the programs the script calls (its step declares them: the Amber MD
+  engine, its MPI launcher and `cpptraj`; the Amber build's `tleap`, `parmed`, `ambpdb`, `cpptraj`) in the
+  environment the script gets (conda environment, setup file, setup commands). A missing program stops
+  the step before it starts: `… not started: program not found: pmemd.cuda`, with which environment the
+  scripts get (a terminal's, or an interactive shell's when MDATK was started from the menu) and how to
+  set the program up; the same wording either way. A main script whose stages all run separately does not
+  need the engine. A script that exits 127 has the missing command named the same way.
+- **Setup file** (Environment, every step that writes scripts): a shell file sourced after the conda
+  environment if it exists, skipped with a warning if not; the planner warns when it is missing on this
+  computer or not an absolute path. Left empty, the scripts are unchanged. The *Setup commands* help
+  explains `module` (a login-profile shell function) for RNAdo started from the menu.
+
 ## 0.0.14 (2026-11-09)
 
 ### RNAdo: Cat-proof mode

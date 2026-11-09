@@ -3267,6 +3267,14 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   bash once (`bash -i`, i.e. after `~/.bashrc`) and run the scripts in it, as from a terminal, saying so
   in the log; when it cannot be read the log says so and the step's *Setup commands* are the way to set
   the programs up. `MDATK_SHELL_ENV=1` always takes that environment, `MDATK_SHELL_ENV=0` never.
+  Before a script runs, MDATK checks that the programs it calls (an Amber MD step's engine, `cpptraj`, the
+  MPI launcher; an Amber build's `tleap`, `parmed` …) are found in the environment the script gets, after
+  its conda environment, *Setup file* and *Setup commands*; a missing one stops the step at once, naming
+  the program and why, in the same words from a terminal and from the menu (only the sentence on which
+  environment the scripts get differs). A script that still exits 127 has the command bash did not find
+  named the same way. *Setup file* (Environment) is a shell file the script sources if it exists (e.g.
+  `/opt/amber26/amber.sh`) and skips with a warning if not; `module load` needs the modules init file
+  sourced first when RNAdo was started from the menu (no login profile).
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame
