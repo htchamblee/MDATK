@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.14"
 # When the settings were last saved.
-saved = 2026-11-09T17:47:19
+saved = 2026-11-09T22:15:42
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -848,8 +848,17 @@ bp_k = 10.0
 # Positional restraints on: Atoms restrained to the starting coordinates in stages with positional
 # restraints. Choices: backbone, heavy.
 positional_atoms = "backbone"
+# Positional restraints on residues: Only these residues are held (the B column of the restraint PDB
+# is zero for every other atom): topology residue numbers such as 16-17, or chains and numbers as in
+# the fitted model (those of the map-frame model) such as A:16-17, B:3. Empty: every RNA residue. A
+# range that names no residue is an error, never an empty selection.
+positional_residues = ""
 # Positional force constant: kcal/mol/Å².
 positional_k = 1.0
+# Flat-bottom distance restraints of your own between two atoms, e.g. across a chain break the map
+# does not cover: NAMD extraBonds walls in the step's own file, applied in the stages that ask for
+# them.
+extra_bonds = []
 # NAMD program: NAMD 3.0 (namd3) or 2.14 (namd2). The runs use the classic (not the GPU-resident,
 # CUDASOAintegrate) mode: grid forces are not known to work there.
 namd = "namd3"
@@ -868,6 +877,12 @@ sander = "sander"
 # Skip finished runs: When the script is run again, finished runs are skipped while their inputs and
 # stage files are unchanged; a change reruns that stage and every one after it.
 resume = true
+# Outputs for a continuation step: Also write NAMD's last coordinates of every atom (solvent
+# included) as an Amber rst7 in the simulation frame, with the box, and pass the topology on: a
+# following NAMD MDFF step takes them as its coordinates and topology (and this step's fitted model
+# as its map-frame model) and continues the fit with restraints of its own. Connecting either output
+# turns this on.
+continuation = false
 # Conda environment: Activate this conda environment at the top of the script (eval "$(conda
 # shell.bash hook)"; conda activate <name>). Leave empty when the programs are already on PATH.
 conda_env = ""
@@ -885,6 +900,7 @@ segments = 1
 chirality = true
 ssdihedrals = true
 basepairs = true
+extrabonds = true
 positional = false
 dcdfreq = 5000
 energyfreq = 1000
@@ -899,6 +915,7 @@ segments = 5
 chirality = true
 ssdihedrals = true
 basepairs = true
+extrabonds = true
 positional = false
 dcdfreq = 5000
 energyfreq = 1000
@@ -912,6 +929,7 @@ segments = 1
 chirality = true
 ssdihedrals = true
 basepairs = true
+extrabonds = true
 positional = false
 dcdfreq = 5000
 energyfreq = 1000
@@ -925,6 +943,7 @@ segments = 1
 chirality = true
 ssdihedrals = true
 basepairs = true
+extrabonds = true
 positional = false
 dcdfreq = 5000
 energyfreq = 1000

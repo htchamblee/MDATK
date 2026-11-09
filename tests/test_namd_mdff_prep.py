@@ -693,3 +693,103 @@ def test_strands_joined_by_tleap_stop_the_run(tmp_path, system):
                       extra_flags=[("BONDS_WITHOUT_HYDROGEN", "i", [3 * o3, 3 * p, 1])])
     with pytest.raises(nm.PrepError, match=r"bond\(s\) of the topology are longer than 3 A"):
         nm.prep(config(tmp_path), write=False)
+
+
+# ------------------------------------------------------------------ the plan's own restraints
+def test_atom_and_residue_selections_parse():
+    assert nm.parse_atom("16:O3'") == (None, 16, "", "O3'")
+    assert nm.parse_atom(" A:16:O3' ") == ("A", 16, "", "O3'")
+    assert nm.parse_atom("B:-3A:P") == ("B", -3, "A", "P")
+    for bad in ("", "16", "16-O3'", "AB:16:P", "16A:P", "A:16:O3' P"):
+        with pytest.raises(nm.PrepError):
+            nm.parse_atom(bad)
+    assert nm.parse_selection("") is None and nm.parse_selection("  ") is None
+    assert nm.parse_selection("16-17") == [(None, 16, 17)]
+    assert nm.parse_selection("A:16-17, B:3 40") == [("A", 16, 17), ("B", 3, 3), (None, 40, 40)]
+    for bad in ("17-16", "A:", "16-", "a-b", "A:16:P"):
+        with pytest.raises(nm.PrepError):
+            nm.parse_selection(bad)
+
+
+def test_extra_walls_resolve_atoms_by_topology_number_or_by_chain(tmp_path, system):
+    top = nm.Topology(str(tmp_path / "sys.parm7"))
+    xyz = [a[5] for a in system]
+    o3 = next(i for i, a in enumerate(system) if a[:2] == ("A", 4) and a[3] == "O3'")
+    o5 = next(i for i, a in enumerate(system) if a[:2] == ("B", 1) and a[3] == "O5'")
+    bonds = [["junction", "4:O3'", "5:O5'", 1.4, 1.8, 20.0], ["by-chain", "A:4:O3'", "B:1:O5'", 1.4, 1.8, 20.0]]
+    for model in (str(tmp_path / "model.pdb"), None):  # the model's chains, or A, B ... per strand without one
+        lines, problems, notes = nm.extra_bond_lines(top, bonds, nm.ResidueNumbers(top, xyz, model), xyz)
+        assert not problems
+        walls = [ln for ln in lines if not ln.startswith("#")]
+        assert walls == [f"wall {o3} {o5} 20.000 1.400 1.800"] * 2  # 0-based, k lower upper, nothing after
+        assert lines[0] == "# junction: residue 4 = A:4 (C3) O3' - residue 5 = B:1 (G5) O5'"
+        assert lines[2] == lines[0].replace("junction", "by-chain")
+        # the two strand ends are far apart: the wall pulls them together, and the log says so
+        assert len(notes) == 2 and "outside its window 1.4-1.8 A: the wall pulls it in" in notes[0]
+    numbers = nm.ResidueNumbers(top, xyz, str(tmp_path / "model.pdb"))
+    bad = [["a", "17:P", "1:O5'", 1.4, 1.8, 1.0], ["b", "4:XX", "5:O5'", 1.4, 1.8, 1.0],
+           ["c", "E:1:P", "5:O5'", 1.4, 1.8, 1.0], ["d", "A:1:P", "5:O5'", 1.4, 1.8, 1.0],
+           ["e", "4:O3'", "A:4:O3'", 1.4, 1.8, 1.0], ["f", "4:O3'", "5:O5'", 2.0, 1.8, 1.0]]
+    lines, problems, _notes = nm.extra_bond_lines(top, bad, numbers, xyz)
+    assert lines == [] and len(problems) == 6
+    assert "residue 17 does not exist (the topology has 16 residues)" in problems[0]
+    assert "(C3) has no atom XX" in problems[1]
+    assert "residue E:1 does not exist in the fitted model's chains" in problems[2]
+    assert "has no atom P" in problems[3]  # a 5' end
+    assert "same atom" in problems[4] and "lower wall 2 A is above the upper wall" in problems[5]
+    # residues by chain need coordinates: the planner reads the topology alone before they exist
+    with pytest.raises(nm.PrepError, match="found from the coordinates"):
+        nm.ResidueNumbers(top).atom("A:4:O3'")
+    assert nm.ResidueNumbers(top).atom("4:O3'") == o3
+
+
+def test_prep_writes_the_extra_walls_and_restrains_only_the_selected_residues(tmp_path, system):
+    o3 = next(i for i, a in enumerate(system) if a[:2] == ("A", 4) and a[3] == "O3'")
+    o5 = next(i for i, a in enumerate(system) if a[:2] == ("B", 1) and a[3] == "O5'")
+    extra = {"enabled": True, "bonds": [["junction", "A:4:O3'", "5:O5'", 1.4, 1.8, 20.0]],
+             "file": str(tmp_path / "extra.txt")}
+    cfg = config(tmp_path, model=str(tmp_path / "model.pdb"), extra_bonds=extra,
+                 positional={"selection": "backbone", "k": 2.5, "residues": "A:4, 5"})
+    assert nm.prep(cfg) == 0
+    text = (tmp_path / "extra.txt").read_text()
+    assert [ln for ln in text.splitlines() if not ln.startswith("#")] == [f"wall {o3} {o5} 20.000 1.400 1.800"]
+    ref = [ln for ln in (tmp_path / "ref.pdb").read_text().splitlines() if ln.startswith("ATOM")]
+    held = {(int(ln[22:26]), ln[12:16].strip()) for ln in ref if float(ln[60:66]) != 0.0}
+    names = {(r, a[3]) for r, key in ((4, ("A", 4)), (5, ("B", 1))) for a in system if a[:2] == key}
+    assert held == {(r, n) for r, n in names if n in nm.BACKBONE}  # residues 4 and 5 only
+    assert {float(ln[60:66]) for ln in ref if float(ln[60:66])} == {2.5}
+    # without a selection every RNA residue is held, as before
+    cfg["positional"] = {"selection": "backbone", "k": 2.5}
+    assert nm.prep(cfg) == 0
+    ref = [ln for ln in (tmp_path / "ref.pdb").read_text().splitlines() if ln.startswith("ATOM")]
+    assert len({int(ln[22:26]) for ln in ref if float(ln[60:66])}) == 16
+    # a selection that names nothing, or an atom that does not exist, stops the run before any file is written
+    os.remove(tmp_path / "extra.txt")
+    for change, message in (({"positional": {"selection": "backbone", "k": 2.5, "residues": "30-35"}},
+                             r"30-35 names no residue \(the topology has 16\)"),
+                            ({"positional": {"selection": "backbone", "k": 2.5, "residues": "Q:1-4"}},
+                             "Q:1-4 names no residue of the fitted model"),
+                            ({"extra_bonds": dict(extra, bonds=[["j", "4:O3'", "5:P", 1.4, 1.8, 20.0]])},
+                             r"extra restraint j: residue 5 = B:1 \(G5\) has no atom P")):
+        with pytest.raises(nm.PrepError, match=message):
+            nm.prep(dict(cfg, **change))
+        assert not (tmp_path / "extra.txt").exists()
+
+
+def test_final_writes_the_whole_system_for_a_continuation(tmp_path, system):
+    solvated = ms.with_solvent(system)
+    box = (70.0, 70.0, 70.0, 90.0, 90.0, 90.0)
+    ms.write_topology(str(tmp_path / "sys.parm7"), solvated, box=box)
+    ms.write_rst7(str(tmp_path / "sys.rst7"), [a[5] for a in solvated], box=box)
+    cfg = config(tmp_path, periodic=True, pad=4.0)
+    assert nm.prep(cfg) == 0
+    moved = [(x + 0.5, y, z - 0.25) for x, y, z in (a[5] for a in solvated)]
+    n = len(moved)
+    with open(cfg["final_coor"], "wb") as fh:
+        fh.write(struct.pack("<i", n) + struct.pack(f"<{3 * n}d", *[c for p in moved for c in p]))
+    assert nm.final(cfg) == 0 and not os.path.exists(tmp_path / "whole.rst7")  # not asked for: as before
+    cfg["final_rst7"] = str(tmp_path / "whole.rst7")
+    assert nm.final(cfg) == 0
+    xyz, out_box, vel = nm.read_rst7(cfg["final_rst7"], n)  # every atom, topology order, the box
+    assert out_box == pytest.approx(box) and not vel
+    assert np.abs(np.array(xyz) - np.array(moved)).max() < 1e-6

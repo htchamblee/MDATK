@@ -159,3 +159,15 @@ def test_a_script_that_exits_127_reports_the_program(tmp_path, bare_path):
         run_jobs([ScriptJob(1, "test", str(path))], on_line=lines.append)
     text = "\n".join(lines) + str(err.value)
     assert "exited with status 127: program not found: not-a-program-xyz" in text, text
+
+
+def test_namd_mdff_declares_namd_python_and_sander(tmp_path):
+    tool = TOOLS["namd-mdff"]
+    s = tool.normalise(dict(namd="/opt/namd/namd3 ", energy_check=True))
+    progs = dict(tool.programs(s))
+    assert set(progs) == {"/opt/namd/namd3", "python3", "sander"}
+    script = tmp_path / "s.sh"
+    script.write_text('NAMD="/opt/namd/namd3 +p8"\n# sander -O in a comment\npython3 x.py prep\n'
+                      "$NAMD e.namd > e.log 2>&1\nsander -O -i e.mdin\n")
+    assert runner.called_programs(str(script), tool.programs(s)) == ["/opt/namd/namd3", "python3", "sander"]
+    assert "sander" not in dict(tool.programs(tool.normalise(dict(energy_check=False))))

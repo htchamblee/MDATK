@@ -26,9 +26,13 @@ needs around that topology:
           / ``ssrestraints`` / ``cispeptide`` tools assume D-nucleotides and are never used:
           on an L-RNA they would push every sugar towards the inverted centre, silently;
         - base pairs: flat-bottom extraBonds walls on the hydrogen-bond distances of the secondary
-          structure (same pairs, atoms and window as MDATK's Amber helix restraints).
+          structure (same pairs, atoms and window as MDATK's Amber helix restraints);
+        - extra distance restraints of the step's own (``extra_bonds``): flat-bottom walls between
+          two atoms named by residue and atom, resolved to atom numbers from the topology;
+      positional restraints can be limited to some residues (``positional.residues``).
 ``final``
-    writes the solute of NAMD's last binary coordinates as a PDB in the map's frame.
+    writes the solute of NAMD's last binary coordinates as a PDB in the map's frame (and, for a
+    continuation step, every atom's coordinates as an Amber rst7 in the simulation frame).
 ``check-only``
     the topology checks of ``prep`` without writing anything.
 """
@@ -62,6 +66,10 @@ CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 BACKBONE = ("P", "O5'", "C5'", "C4'", "C3'", "O3'")
 _FMT_RE = re.compile(r"\(\s*(\d+)\s*([aAiIeEfF])\s*(\d+)")
 _NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
+# 16:O3' (topology residue number) or A:16:O3' / A:16B:O3' (chain, number and insertion code of the fitted model)
+_ATOM_RE = re.compile(r"(?:([^:\s,]):)?(-?\d+)([A-Za-z]?):([^:\s,]+)")
+# 16, 16-17 (topology residue numbers) or A:16-17 (chain and numbers of the fitted model)
+_RANGE_RE = re.compile(r"(?:([^:\s,]):)?(-?\d+)(?:-(-?\d+))?")
 
 
 class PrepError(Exception):
@@ -852,6 +860,144 @@ def basepair_walls(top, pairs, bonds, offset, walls):
     return out, count
 
 
+def parse_atom(text):
+    """(chain or None, residue number, insertion code, atom name) of '16:O3'' (topology residue number,
+    1-based) or 'A:16:O3'' (chain and residue number as in the fitted model)."""
+    m = _ATOM_RE.fullmatch((text or "").strip())
+    if not m:
+        raise PrepError(f"cannot read the atom {text!r} (residue:atom such as 16:O3', or chain:residue:atom "
+                        "such as A:16:O3')")
+    if m.group(3) and not m.group(1):
+        raise PrepError(f"{text.strip()}: an insertion code needs a chain (A:16B:O3'); topology residue numbers "
+                        "have none")
+    return m.group(1), int(m.group(2)), m.group(3), m.group(4)
+
+
+def parse_selection(text):
+    """[(chain or None, first, last)] of a residue selection such as '16-17' (topology residue numbers) or
+    'A:16-17, B:3' (chains and numbers as in the fitted model); None for an empty text."""
+    if not text or not text.strip():
+        return None
+    out = []
+    for part in re.split(r"[,\s]+", text.strip()):
+        m = _RANGE_RE.fullmatch(part)
+        if not m or (m.group(3) and int(m.group(3)) < int(m.group(2))):
+            raise PrepError(f"cannot read the residue range {part!r} (e.g. 16-17, or A:16-17 with a chain)")
+        out.append((m.group(1), int(m.group(2)), int(m.group(3) or m.group(2))))
+    return out
+
+
+def selection_text(chain, first, last):
+    return (f"{chain}:" if chain else "") + (f"{first}" if first == last else f"{first}-{last}")
+
+
+class ResidueNumbers:
+    """Residues by topology number (1-based) or by chain and number as the fitted model has them: those of the
+    map-frame model, or A, B ... per strand numbered from 1 without one (solute_chains, which ``final`` uses
+    too).  Chains need the coordinates (a strand ends where the backbone is not bonded)."""
+
+    def __init__(self, top, xyz=None, model=None):
+        self.top, self.xyz, self.model = top, xyz, model
+        self._chains = None
+
+    def chains(self):
+        """{residue: (chain, number, insertion code)} of the solute."""
+        if self._chains is None:
+            if self.xyz is None:
+                raise PrepError("residues given by chain are found from the coordinates, which are not there yet")
+            self._chains = {}
+            for r, (chain, number, _starts) in solute_chains(self.top, self.xyz, self.model).items():
+                try:
+                    self._chains[r] = (chain, int(number[:4]), number[4:].strip())
+                except ValueError:
+                    continue
+        return self._chains
+
+    def find(self, chain, first, last, icode=None):
+        """0-based residues of a range; ``icode`` None: any insertion code."""
+        if chain is None:
+            return [r - 1 for r in range(first, last + 1) if 1 <= r <= self.top.nres]
+        return sorted(r for r, (c, n, i) in self.chains().items()
+                      if c == chain and first <= n <= last and (icode is None or i == icode))
+
+    def label(self, r):
+        """'residue 16 = A:16 (G)': the topology number and, with the coordinates, the fitted model's."""
+        known = self.chains().get(r) if self.xyz is not None else None
+        where = f" = {known[0]}:{known[1]}{known[2]}" if known else ""
+        return f"residue {r + 1}{where} ({self.top.labels[r]})"
+
+    def atom(self, spec):
+        """0-based atom number of '16:O3'' / 'A:16:O3''."""
+        chain, number, icode, name = parse_atom(spec)
+        where = f"{chain}:{number}{icode}" if chain else f"{number}"
+        found = self.find(chain, number, number, icode if chain else None)
+        if not found:
+            raise PrepError(f"residue {where} does not exist " + (
+                f"(the topology has {self.top.nres} residues)" if chain is None
+                else "in the fitted model's chains and numbers (those of the map-frame model, else A, B ... per "
+                     "strand from 1)"))
+        if len(found) > 1:
+            raise PrepError(f"{where} names {len(found)} residues (topology residues "
+                            f"{', '.join(str(r + 1) for r in found)}): use the topology residue number")
+        r = found[0]
+        for i in self.top.residue_atoms(r):
+            if _canonical(self.top.names[i]) == _canonical(name):
+                return i
+        raise PrepError(f"{self.label(r)} has no atom {name}")
+
+
+def extra_bond_lines(top, bonds, numbers, xyz=None):
+    """extraBonds flat-bottom walls (0-based atoms) of the step's own distance restraints, each
+    [name, atom 1, atom 2, lower, upper, k] with the atoms as ResidueNumbers.atom reads them.  Returns the
+    lines, problems and notes (a starting distance outside the window)."""
+    lines, problems, notes = [], [], []
+    for name, a1, a2, lower, upper, k in bonds:
+        label = " ".join(str(name).split()) or "restraint"
+        try:
+            idx = [numbers.atom(a) for a in (a1, a2)]
+        except PrepError as exc:
+            problems.append(f"extra restraint {label}: {exc}")
+            continue
+        if idx[0] == idx[1]:
+            problems.append(f"extra restraint {label}: {a1} and {a2} are the same atom")
+            continue
+        if lower > upper:
+            problems.append(f"extra restraint {label}: the lower wall {lower:g} A is above the upper wall {upper:g} A")
+            continue
+        ends = [f"{numbers.label(top.residue[i])} {top.names[i]}" for i in idx]
+        lines.append(f"# {label}: {ends[0]} - {ends[1]}")
+        lines.append(f"wall {idx[0]} {idx[1]} {k:.3f} {lower:.3f} {upper:.3f}")
+        if xyz is not None:
+            v = sub(xyz[idx[0]], xyz[idx[1]])
+            d = math.sqrt(dot(v, v))
+            if not lower <= d <= upper:
+                notes.append(f"extra restraint {label} ({a1} - {a2}) starts at {d:.2f} A, outside its window "
+                             f"{lower:g}-{upper:g} A: the wall pulls it in")
+    return lines, problems, notes
+
+
+def selected_residues(top, numbers, text, selection):
+    """0-based residues of a positional-restraint selection ('16-17', 'A:16-17, B:3'), or None for every
+    residue (an empty text), and problems: a range that names no residue, or a selection without any atom
+    the restraints would hold (``selection``: backbone / heavy)."""
+    ranges = parse_selection(text)
+    if ranges is None:
+        return None, []
+    chosen, problems = set(), []
+    for chain, first, last in ranges:
+        found = numbers.find(chain, first, last)
+        if not found:
+            problems.append(f"positional restraints: {selection_text(chain, first, last)} names no residue "
+                            + (f"(the topology has {top.nres})" if chain is None
+                               else "of the fitted model's chains and numbers"))
+        chosen.update(found)
+    if chosen and not problems and not any(positional(top, i, selection) for r in chosen
+                                           for i in top.residue_atoms(r)):
+        problems.append(f"positional restraints: residues {text.strip()} have no RNA {selection} atom to "
+                        "restrain")
+    return chosen, problems
+
+
 # ------------------------------------------------------------------------------------------- output
 def _fixed(value, width, decimals):
     """``value`` in ``width`` columns, with fewer decimals when it would not fit (a wider field shifts
@@ -1093,6 +1239,18 @@ def prep(cfg, write=True):
     ssd = cfg.get("ssdihedrals") or {"enabled": False}
     if ssd["enabled"]:
         problems += ss_dihedral_lines(top, xyz, ssd["residues"], ssd["k"])[1]
+    numbers = ResidueNumbers(top, xyz, cfg["model"])
+    extra = cfg.get("extra_bonds") or {"enabled": False}
+    extra_lines = []
+    if extra["enabled"]:
+        extra_lines, bad, more = extra_bond_lines(top, extra["bonds"], numbers, xyz)
+        problems += bad
+        notes += more
+    pos = cfg["positional"]
+    pos_residues = None
+    if pos["selection"] != "none" and pos.get("residues"):
+        pos_residues, bad = selected_residues(top, numbers, pos["residues"], pos["selection"])
+        problems += bad
     for n in notes:
         print(f"note: {n}")
     if problems:
@@ -1166,13 +1324,15 @@ def prep(cfg, write=True):
     write_pdb(cfg["grid_pdb"], top, xyz, lambda i: (1.0, masses[i]) if i in masses else (0.0, 0.0),
               "MDFF coupling: occupancy 1 = coupled, beta = standard atomic mass")
     print(f"wrote {cfg['potential']} and {cfg['grid_pdb']}")
-    if cfg["positional"]["selection"] != "none":
-        k = cfg["positional"]["k"]
-        chosen = [i for i in range(top.natom) if positional(top, i, cfg["positional"]["selection"])]
-        write_pdb(cfg["restraint_pdb"], top, xyz, lambda i: (1.0, k) if positional(
-            top, i, cfg["positional"]["selection"]) else (0.0, 0.0),
+    if pos["selection"] != "none":
+        k = pos["k"]
+        held = {i for i in range(top.natom) if positional(top, i, pos["selection"])
+                and (pos_residues is None or top.residue[i] in pos_residues)}
+        write_pdb(cfg["restraint_pdb"], top, xyz, lambda i: (1.0, k) if i in held else (0.0, 0.0),
                   "positional restraints: beta = force constant (kcal/mol/A^2), reference = these coordinates")
-        print(f"wrote {cfg['restraint_pdb']} ({len(chosen)} restrained atoms)")
+        print(f"wrote {cfg['restraint_pdb']} ({len(held)} restrained atoms"
+              + (f" of residues {pos['residues']}: {len(pos_residues)} residues" if pos_residues is not None else "")
+              + ")")
     if cfg["chirality"]["enabled"]:
         lines, _bad, _more = chirality_lines(top, xyz, cfg["chirality"]["k"], cfg["chirality"]["targets"], declared)
         with open(cfg["extrabonds"], "w", encoding="ascii", errors="replace") as fh:
@@ -1200,6 +1360,14 @@ def prep(cfg, write=True):
                      "# k (d - lower)^2 below, 0 inside (extraBonds 'wall'). Atom numbers are 0-based.\n")
             fh.write("\n".join(lines) + "\n")
         print(f"wrote {bp['file']} ({count} hydrogen-bond distances)")
+    if extra["enabled"]:
+        with open(extra["file"], "w", encoding="ascii", errors="replace") as fh:
+            fh.write("# Extra distance restraints of the plan (MDATK): flat-bottom walls between two named atoms,\n"
+                     "# U = k (d - upper)^2 above, k (d - lower)^2 below, 0 inside (extraBonds 'wall').\n"
+                     "# Atom numbers are 0-based.\n")
+            fh.write("\n".join(extra_lines) + "\n")
+        print(f"wrote {extra['file']} ({sum(1 for ln in extra_lines if ln.startswith('wall'))} extra distance "
+              "restraints)")
     if vectors is not None:
         cx = tuple(sum(p[a] for p in xyz) / len(xyz) for a in range(3))
         write_xsc(cfg["xsc"], vectors, cx)
@@ -1260,6 +1428,13 @@ def final(cfg):
             last = chain
         fh.write("TER\nEND\n")
     print(f"wrote {cfg['final_pdb']}")
+    if cfg.get("final_rst7"):
+        # for a continuation step: every atom, solvent included, in the simulation frame and topology order;
+        # the runs are NVT, so the box is the start's
+        _start, box, _vel = read_rst7(cfg["coordinates"], top.natom)
+        write_rst7(cfg["final_rst7"], xyz, box, title=f"final coordinates of {os.path.basename(cfg['final_coor'])} "
+                                                     "(MDATK MDFF)")
+        print(f"wrote {cfg['final_rst7']} (every atom, simulation frame{', with the box' if box else ''})")
     return 0
 
 
