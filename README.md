@@ -926,8 +926,8 @@ the scripts marked 'run separately'* in the confirmation (or give `--include-sep
 right after their step's main script, and the main script runs once more after them for the rest of the
 step (the stages after the separate ones, the dry copies made at its end), before the steps that read from
 it. A separate script activates the step's *Conda environment* only when MDATK runs it
-on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand: `MDATK_LOCAL=1 bash
-<script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
+on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand:
+`MDATK_LOCAL=1 bash <script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
 the *Setup commands* (`module load …`) run everywhere. *Conda in the separate script on a cluster too*
 (Environment) activates it there as well. Such a step is complete only when its separate script has
 finished, and its main script checks that:
