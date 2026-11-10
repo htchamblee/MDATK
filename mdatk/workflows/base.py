@@ -271,6 +271,14 @@ class Tool:
         """Ids of the programs / force fields / parameter sets these settings use (see mdatk.citations)."""
         return []
 
+    def programs(self, s: Dict[str, Any]) -> List[Tuple[str, str]]:
+        """The programs the step's scripts call, each with a regular expression that a non-comment line of a
+        script matches where it calls it (a script needs only the programs it calls: a main script whose
+        stages all run separately calls no MD engine).  Before MDATK runs a script it checks them in the
+        environment the script gets (its conda environment, setup file and setup commands; mdatk.workflows.
+        runner.missing_programs), so a missing program stops the step at once, not hours into it."""
+        return []
+
     def run_resources(self, s: Dict[str, Any]) -> Resources:
         """CPU cores, GPUs and named GPU ids one run of the step's scripts uses (see mdatk.workflows.budget);
         MDATK starts the script when they are free.  Default: one core."""
@@ -303,9 +311,19 @@ def env_section(placeholder: str, extra: Sequence[Option] = ()) -> Section:
                "Activate this conda environment at the top of the script "
                "(eval \"$(conda shell.bash hook)\"; conda activate <name>). Leave empty when "
                "the programs are already on PATH.", placeholder="e.g. AmberTools26"),
+        Option("env_file", "Setup file", "file", "",
+               "A shell file the script sources before any program, after the conda environment, e.g. "
+               "/opt/amber26/amber.sh (an absolute path: the script runs in the step folder). A file that "
+               "does not exist where the script runs is reported (a warning in the output) and skipped; the "
+               "planner warns when it is missing on this computer.", placeholder="/opt/amber26/amber.sh"),
         Option("env_setup", "Setup commands", "multiline", "",
-               "Shell lines run before any program, e.g. 'module load ...' on a cluster or "
-               "'source /opt/amber26/amber.sh' on a workstation.", placeholder=placeholder),
+               "Shell lines run before any program, after the setup file, e.g. 'module load ...' on a cluster "
+               "or 'source /opt/amber26/amber.sh' on a workstation. 'module' is a shell function that a login "
+               "shell's profile defines (/etc/profile.d/modules.sh, Lmod's init): RNAdo started from the "
+               "applications menu runs its scripts in the environment of an interactive shell (~/.bashrc), "
+               "without a login profile, so source the modules init file first there. Before it runs a "
+               "script MDATK checks that the step's programs are found after these lines.",
+               placeholder=placeholder),
         *extra,
     ], tooltip="How the generated scripts find the programs.")
 
@@ -322,7 +340,7 @@ SEPARATE_CONDA = Option(
 
 
 def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
-    """The Environment lines of a script: conda activation, then the setup commands.  In a separately run
+    """The Environment lines of a script: conda activation, the setup file, then the setup commands.  In a separately run
     script (``separate``) the conda lines run only when MDATK runs it here (``$MDATK_LOCAL``), unless the
     step's ``conda_separate`` is set."""
     lines: List[str] = []
@@ -332,6 +350,10 @@ def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
             conda = ["# conda only when MDATK runs this script on this computer; a cluster job skips it",
                      f'if [ -n "${{{LOCAL_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
         lines += conda
+    setup_file = (s.get("env_file") or "").strip()
+    if setup_file:
+        q = shell_quote(setup_file)
+        lines.append(f'if [ -f {q} ]; then . {q}; else echo "WARNING: setup file {setup_file} not found" >&2; fi')
     for line in (s.get("env_setup") or "").splitlines():
         if line.strip():
             lines.append(line.rstrip())

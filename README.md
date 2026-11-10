@@ -926,8 +926,8 @@ the scripts marked 'run separately'* in the confirmation (or give `--include-sep
 right after their step's main script, and the main script runs once more after them for the rest of the
 step (the stages after the separate ones, the dry copies made at its end), before the steps that read from
 it. A separate script activates the step's *Conda environment* only when MDATK runs it
-on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand: `MDATK_LOCAL=1 bash
-<script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
+on this computer (MDATK sets `MDATK_LOCAL=1` for every script it runs; by hand:
+`MDATK_LOCAL=1 bash <script>`): a cluster job skips the conda lines, as clusters provide their programs their own way, while
 the *Setup commands* (`module load …`) run everywhere. *Conda in the separate script on a cluster too*
 (Environment) activates it there as well. Such a step is complete only when its separate script has
 finished, and its main script checks that:
@@ -2629,7 +2629,9 @@ A CHARMM PSF conversion would lose exactly these terms, so MDATK does not offer 
 - **Output:** the fitted model, solute only, in the map's frame, ready for *Phenix* / *Coot*
   real-space refinement. It keeps the chains and residue numbers of the map-frame model (without
   one, every strand gets its own chain), with TER between strands, so renaming tools such as
-  `mdatk pdb clean --scheme ccd` find every strand end.
+  `mdatk pdb clean --scheme ccd` find every strand end. With *Outputs for a continuation step* also
+  the final coordinates of the whole system and the topology, for a second NAMD MDFF step (see
+  *Continuing a fit* below).
 
 Drop the step after an existing *Amber build* (or MD) step. It adds new files only; the steps
 already in the plan and their files do not change.
@@ -2743,10 +2745,54 @@ VMD and writes its own restraints:
   - Unlike Amber's restraints, the walls stay harmonic far from the window; they have no linear
     part.
 - **Positional** (`…_posres_….pdb`, NAMD `constraints`): the RNA backbone or all heavy atoms,
-  restrained to the start coordinates, in stages that ask for it.
+  restrained to the start coordinates, in stages that ask for it. *Positional restraints on residues*
+  limits them to some residues: topology residue numbers (`16-17`) or chains and numbers as in the
+  fitted model, i.e. those of the map-frame model (`A:16-17, B:3`). Every other atom gets B = 0 in the
+  restraint PDB. Empty (the default) holds every RNA residue, as before. A range that names no residue,
+  or a selection without a single atom to hold, is an error in the planner (as soon as the topology,
+  or for chains the coordinates, exist) and in the script, never a run that holds nothing or
+  everything.
+- **Extra distance restraints** (`…_extrabonds_….txt`, NAMD `extraBonds` `wall`; page *Extra distance
+  restraints*, `[[extra_bonds]]` in the project file): walls of your own between two atoms, e.g. across
+  a chain break that the map does not cover, which the fit would otherwise open with nothing objecting.
+  Each has a name, two atoms as `residue:atom` (topology number, `16:O3'`) or `chain:residue:atom` (as in
+  the fitted model, `A:16:O3'`), the flat bottom (default 1.4–1.8 Å, a covalent O3′–P distance) and k
+  (default 20 kcal/mol/Å²). The script resolves the atoms on the topology as it does the base pairs, and
+  stops if one does not exist; it notes a starting distance outside the window. Stages apply them unless
+  their *Extra distance restraints* box is unticked. The planner checks the syntax, that the lower wall
+  is not above the upper one and, once the files exist, that the atoms do.
+
+```toml
+[[workflow.nodes.settings.extra_bonds]]
+name = "junction"
+atom1 = "16:O3'"
+atom2 = "17:P"
+lower = 1.4
+upper = 1.8
+k = 20.0
+```
 
 All restraint files are NAMD `extraBonds` files (comments on lines of their own, 0-based atoms) plus
-the positional-restraint PDB. Every setting is stored with the project, and the step cites NAMD, MDFF,
+the positional-restraint PDB. Every restraint a fit applies is a setting of the step: `mdatk workflow
+check` lists the extra walls and the positional residues (with the stages that apply them), the plan
+summary (`…_00_plan_….md`) has them under *Restraints of the plan*, the planner box mentions them, and a
+change reruns the stages. Nothing needs editing in a generated script after `workflow write`.
+
+**Continuing a fit (two-part protocols).** *Outputs for a continuation step* (Engine page; connecting
+either output turns it on) makes the step also write NAMD's last coordinates of every atom, solvent
+included, as an Amber rst7 in the simulation frame with the box (`…_fitted-system_….rst7`, output
+*Final coordinates, whole system*), and pass its topology on (output *Topology (passed on)*). A second
+NAMD MDFF step connected to them continues the fit, with restraints of its own:
+
+- *restart* → its *Coordinates*, *topology* → its *Topology*: the same topology file, so the atom order
+  and the solvent numbering match (a rebuilt topology would number the solvent anew; the planner reports
+  coordinates connected with another topology as an error);
+- *fitted* → its *Map-frame model*: the first part's fitted model is in the map's frame, so the second
+  part recovers the frame from it (RMSD ≈ 0); the planner warns without it, or with another model;
+- the map, and the secondary structure if used.
+
+Positional restraints of the second part hold the atoms where the first part left them. Each part keeps
+its own stages, checks and energy comparison (the second part starts with fresh velocities). Every setting is stored with the project, and the step cites NAMD, MDFF,
 CPPTRAJ (it converts NetCDF restarts) and AmberTools (for the energy comparison).
 
 **What NAMD does with an Amber topology.** These settings were checked against the NAMD 3.0 user's guide
@@ -3267,6 +3313,14 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   bash once (`bash -i`, i.e. after `~/.bashrc`) and run the scripts in it, as from a terminal, saying so
   in the log; when it cannot be read the log says so and the step's *Setup commands* are the way to set
   the programs up. `MDATK_SHELL_ENV=1` always takes that environment, `MDATK_SHELL_ENV=0` never.
+  Before a script runs, MDATK checks that the programs it calls (an Amber MD step's engine, `cpptraj`, the
+  MPI launcher; an Amber build's `tleap`, `parmed` …; NAMD MDFF's NAMD and `sander`) are found in the environment the script gets, after
+  its conda environment, *Setup file* and *Setup commands*; a missing one stops the step at once, naming
+  the program and why, in the same words from a terminal and from the menu (only the sentence on which
+  environment the scripts get differs). A script that still exits 127 has the command bash did not find
+  named the same way. *Setup file* (Environment) is a shell file the script sources if it exists (e.g.
+  `/opt/amber26/amber.sh`) and skips with a warning if not; `module load` needs the modules init file
+  sourced first when RNAdo was started from the menu (no login profile).
 - 3D representations are made for nucleic acids. Protein chains get a round tube through CA in
   cartoons and ribbons (no helix / sheet detection), and licorice, VDW, surface and trace work for
   any residue. PDF / SVG previews embed the 3D layer as an image. Surfaces are rebuilt every frame

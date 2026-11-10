@@ -385,6 +385,14 @@ class Plan:
             step.issues.append(Issue("error", "step numbers start at 1"))
         try:
             step.issues.extend(tool.check(step.settings, step.ctx))
+            setup_file = (step.settings.get("env_file") or "").strip() if tool.generates else ""
+            if setup_file and not os.path.isfile(setup_file):
+                step.issues.append(Issue("warning", f"setup file {setup_file} does not exist on this computer: "
+                                         "a script that runs here skips it (with a warning); fine if the "
+                                         "scripts run elsewhere", ("env_file",)))
+            elif setup_file and not os.path.isabs(setup_file):
+                step.issues.append(Issue("warning", f"setup file {setup_file}: give an absolute path (the "
+                                         "script runs in the step folder)", ("env_file",)))
             step.outputs = tool.output_values(step.settings, step.ctx)
         except Exception as exc:  # a generator bug must not break the planner
             step.issues.append(Issue("error", f"internal error while checking this step: {exc}"))

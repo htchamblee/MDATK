@@ -33,13 +33,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set, Tuple
 
 from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
-from .base import LOCAL_VAR, WAITING_STATUS, waiting_file
+from .base import LOCAL_VAR, WAITING_STATUS, env_lines, shell_quote, waiting_file
 from .budget import Budget, Grant, Resources, Slots, budget_notes, schedule
 from .runstate import stop_mark
 
@@ -143,6 +143,10 @@ class ScriptJob:
     # role "run": the main script once more, after its step's separate scripts (plan_jobs with
     # include_separate), for its part after them and its end; it runs only when its first run waited for them
     again: bool = False
+    # checked before the script runs: (program, call pattern) of the step (Tool.programs) and the lines that set
+    # up the script's environment (its conda environment, setup file and setup commands; base.env_lines)
+    programs: List[Tuple[str, str]] = field(default_factory=list)
+    setup: List[str] = field(default_factory=list)
 
     def waiting_message(self) -> str:
         names = ", ".join(os.path.basename(p) for p in self.separate) or "a separately run script"
@@ -198,6 +202,10 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
         except Exception:  # noqa: BLE001 - a generator bug: one core (the planner shows the settings' issues)
             needs = Resources()
         mark = os.path.join(plan.root, stop_mark(step.ctx)) if plan.root and step.ctx is not None else ""
+        try:
+            programs = list(step.tool.programs(step.settings))
+        except Exception:  # noqa: BLE001 - a generator bug: no check (the script still reports what it misses)
+            programs = []
         passes = [("run", False)]
         if include_separate and separate:  # then its separate scripts, then its main scripts again
             passes += [("run-separate", False), ("run", True)]
@@ -205,7 +213,8 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
             for f in step.files:
                 if f.role == role:
                     jobs.append(ScriptJob(step.node.step, step.label, path[f.name], step_citations(step), nid,
-                                          after, separate, role, needs, mark, again))
+                                          after, separate, role, needs, mark, again, programs,
+                                          env_lines(step.settings, separate=role == "run-separate")))
     return jobs
 
 
@@ -349,6 +358,106 @@ def interactive_shell_env(environ: Dict[str, str], on_line: Optional[LineFn] = N
         return result
 
 
+def script_environ(path: str, on_line: LineFn, env: Optional[Dict[str, str]] = None) -> "tuple[Dict[str, str], bool]":
+    """The environment MDATK runs the script at ``path`` in, and whether it is that of an interactive shell
+    (MDATK started without a terminal): MDATK's own (without a frozen build's settings) or the shell's, then
+    MDATK_LOCAL, ``env`` (e.g. CUDA_VISIBLE_DEVICES) and conda on PATH when the script uses it."""
+    environ = child_env()
+    base = dict(os.environ if environ is None else environ)
+    from_shell = False
+    if started_without_terminal(base):  # the applications menu: the environment ~/.bashrc sets up
+        shell = interactive_shell_env(base, on_line)
+        if shell is not None:
+            base, from_shell = shell, True
+            on_line("MDATK was started without a terminal: the script gets the environment of an "
+                    "interactive shell (~/.bashrc), as from a terminal")
+    # run here by MDATK: a separately run script activates its conda environment (base.LOCAL_VAR)
+    environ = {**base, LOCAL_VAR: "1", **(env or {})}
+    return conda_on_path(environ, path, on_line), from_shell
+
+
+_COMMENT = re.compile(r"^\s*#")
+_NOT_FOUND = re.compile(r":\s*([^\s:]+): command not found\s*$")
+
+
+def called_programs(path: str, programs: Sequence[Tuple[str, str]]) -> List[str]:
+    """The programs of ``programs`` (program, call pattern) that the script at ``path`` calls."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = [ln for ln in fh.read().splitlines() if not _COMMENT.match(ln)]
+    except OSError:
+        return []
+    out: List[str] = []
+    for prog, pattern in programs:
+        if prog and prog not in out and any(re.search(pattern, ln) for ln in lines):
+            out.append(prog)
+    return out
+
+
+def missing_programs(path: str, programs: Sequence[str], setup: Sequence[str],
+                     environ: Dict[str, str]) -> "tuple[List[str], List[str]]":
+    """(programs not found, error lines of the set-up) after running the script's environment lines
+    ``setup`` with ``environ`` in its folder, as the script will before its first program."""
+    bash = shutil.which("bash", path=environ.get("PATH") or os.defpath) or shutil.which("bash")
+    if not programs or bash is None:
+        return [], []
+    mark = "__MDATK_MISSING__"
+    check = "\n".join(list(setup) + [
+        f"echo {mark}",
+        "for p in " + " ".join(shell_quote(p) for p in programs) + "; do",
+        '  command -v "$p" >/dev/null 2>&1 || echo "$p"',
+        "done"])
+    try:
+        res = subprocess.run([bash, "-c", check], cwd=os.path.dirname(path) or ".", env=environ,
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                             timeout=120, start_new_session=True, close_fds=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return [], []
+    out = res.stdout.split(mark + "\n", 1)
+    missing = [ln.strip() for ln in out[1].splitlines() if ln.strip()] if len(out) == 2 else []
+    errors = [ln.strip() for ln in res.stderr.splitlines() if ln.strip()]
+    return missing, errors
+
+
+def runs_in_shell_env() -> bool:
+    """Whether MDATK runs its scripts in the environment of an interactive shell (started without a
+    terminal, and that environment could be read; read once, then cached)."""
+    environ = child_env()
+    base = dict(os.environ if environ is None else environ)
+    return started_without_terminal(base) and interactive_shell_env(base) is not None
+
+
+def not_found(output: str) -> List[str]:
+    """The commands bash reported not found in a script's output ('line 12: pmemd.cuda: command not found')."""
+    found: List[str] = []
+    for ln in output.splitlines():
+        m = _NOT_FOUND.search(ln)
+        if m and m.group(1) not in found:
+            found.append(m.group(1))
+    return found
+
+
+def program_message(missing: Sequence[str], from_shell: bool, setup_errors: Sequence[str] = ()) -> str:
+    """Why programs were not found, the same whether MDATK was started from a terminal or the menu (only the
+    sentence on the environment differs)."""
+    names = ", ".join(missing)
+    text = (f"program{'s' * (len(missing) > 1)} not found: {names}. Not on PATH after the step's Conda "
+            "environment, Setup file and Setup commands; ")
+    text += ("MDATK runs its scripts in the environment of an interactive shell (~/.bashrc), as it was started "
+             "without a terminal (the applications menu): a login profile and /etc/profile.d are not read"
+             if from_shell else "MDATK runs its scripts in the environment it was started from (a terminal)")
+    text += (". Make them available there, e.g. the step's Setup file (an absolute path such as "
+             "/opt/amber26/amber.sh) or 'source /path/to/amber.sh' in its Setup commands")
+    if "module" in missing or any("module: command not found" in e for e in setup_errors):
+        text += ("; 'module' is a shell function that the login profile defines (/etc/profile.d/modules.sh or "
+                 "Lmod's init): source that file in the Setup commands first")
+    useful = [e for e in setup_errors if "command not found" in e or "No such file" in e
+              or "EnvironmentNameNotFound" in e or "conda" in e.lower()]
+    if useful:
+        text += ". Set-up said: " + " | ".join(useful[:3])
+    return text
+
+
 STEP_LOG_EXT = ".log"  # <script>.sh.log beside the script: the output of its last run
 DONE_FLAG = "Step completed successfully"
 
@@ -415,29 +524,32 @@ def _now() -> str:
 
 
 def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
-               on_stderr: Optional[LineFn] = None, env: Optional[Dict[str, str]] = None) -> "tuple[int, str]":
+               on_stderr: Optional[LineFn] = None, env: Optional[Dict[str, str]] = None,
+               programs: Sequence[Tuple[str, str]] = (), setup: Sequence[str] = ()) -> "tuple[int, str]":
     """Run ``bash path`` in the script's folder; returns (exit status, captured output).
 
     The script's standard error goes to ``on_line`` with its output, or to ``on_stderr`` when given
     (RNAdo highlights it); the captured output holds both streams in the order their lines arrived.
-    ``env``: variables set for the script on top of MDATK's environment (e.g. CUDA_VISIBLE_DEVICES)."""
+    ``env``: variables set for the script on top of MDATK's environment (e.g. CUDA_VISIBLE_DEVICES).
+    ``programs`` (program, call pattern) and ``setup`` (the script's environment lines): the programs the
+    script calls are checked first, in the environment it gets; a missing one raises :class:`ScriptFailed`
+    (``.missing`` names them) without starting the script."""
     problem = runner_problem()
     if problem:
         raise ScriptFailed(problem)
     bash = shutil.which("bash")
     if not os.path.isfile(path):
         raise ScriptFailed(f"{path} does not exist (write the plan's files first)")
-    environ = child_env()
-    base = dict(os.environ if environ is None else environ)
-    if started_without_terminal(base):  # the applications menu: the environment ~/.bashrc sets up
-        shell = interactive_shell_env(base, on_line)
-        if shell is not None:
-            base = shell
-            on_line("MDATK was started without a terminal: the script gets the environment of an "
-                    "interactive shell (~/.bashrc), as from a terminal")
-    # run here by MDATK: a separately run script activates its conda environment (base.LOCAL_VAR)
-    environ = {**base, LOCAL_VAR: "1", **(env or {})}
-    environ = conda_on_path(environ, path, on_line)
+    environ, from_shell = script_environ(path, on_line, env)
+    needed = called_programs(path, programs)
+    if needed:
+        missing, errors = missing_programs(path, needed, setup, environ)
+        if missing:
+            exc = ScriptFailed(f"{os.path.basename(path)} not started: "
+                               + program_message(missing, from_shell, errors))
+            exc.missing = missing
+            raise exc
+        on_line(f"Programs found: {', '.join(needed)}")
     # own process group: cancelling stops its children too; child_env: no bundle settings (frozen build);
     # close_fds (the default, stated): a script started from the AppImage must not inherit its keepalive
     # pipe or its fd 1023 on the mount, which would keep the AppImage mounted for as long as the script (or
@@ -663,7 +775,8 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                 entry.command = command
                 entry.folder = os.path.dirname(job.path)
                 try:
-                    code, output = run_script(job.path, line_fn, halt, on_stderr=err_fn, env=env)
+                    code, output = run_script(job.path, line_fn, halt, on_stderr=err_fn, env=env,
+                                              programs=job.programs, setup=job.setup)
                 except ScriptCancelled as exc:
                     entry.output = exc.output
                     if stop.is_set() or not halt.stopped():
@@ -696,7 +809,12 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                             outcome = "waiting"
                     elif code != 0:
                         message = f"exit status {code}"
-                        raise ScriptFailed(f"{rel} (step {job.step:02d}) exited with status {code}")
+                        missing = not_found(output) if code == 127 or "command not found" in output else []
+                        why = program_message(missing, runs_in_shell_env()) if missing else ""
+                        if why:  # a program the step did not declare, or one its own lines lost
+                            message += ": " + why
+                        raise ScriptFailed(f"{rel} (step {job.step:02d}) exited with status {code}"
+                                           + (": " + why if why else ""))
                     else:
                         outcome = "ok"
             if outcome == "stopped":

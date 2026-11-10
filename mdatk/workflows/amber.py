@@ -600,6 +600,9 @@ class AmberBuildTool(Tool):
     def _final_topology(self, s, ctx) -> str:
         return ctx.name("parmed" if self._wet_parmed(s) else "tleap", "parm7")
 
+    def programs(self, s):
+        return [(p, r"(^|[\s;(&|])" + p + r"\s") for p in ("tleap", "parmed", "ambpdb", "cpptraj", "python3")]
+
     def resources(self, s):
         out = ["ambertools"] + {"ol3cp": ["ol3", "cp"], "ol3": ["ol3"], "ljbb": ["ol3", "ljbb"], "roc": ["roc"],
                                 "yil": ["yil"], "shaw": ["shaw"]}[s["rna_ff"]]
@@ -2582,6 +2585,15 @@ class AmberMDTool(Tool):
         stages = [st for st in s.get("stages", []) if st.get("kind") == "md"]
         dry = s.get("dry_pdb") or s.get("dry_traj") or any(self.dry_label(st) or st.get("dry_pdb") for st in stages)
         return ["ambertools", "pmemd"] + (["cpptraj"] if dry else [])
+
+    def programs(self, s):
+        out = []
+        if s["engine"] == "pmemd.MPI":
+            launcher = s["mpi_launcher"].replace("{n}", str(s["nproc"])).split()
+            if launcher:
+                out.append((launcher[0], r"(^|[\s;(&|])\$PMEMD\s"))
+        return out + [(s["engine"], r"(^|[\s;(&|])\$PMEMD\s"), ("pmemd", r"(^|[\s;(&|])pmemd\s+-O\b"),
+                      ("cpptraj", r"(^|[\s;(&|])cpptraj\b")]
 
     def run_resources(self, s):
         # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
