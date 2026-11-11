@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.16](#whats-new-in-0016)
+- [What's new in 0.0.17](#whats-new-in-0017)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,29 +82,18 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.16
+## What's new in 0.0.17
+
+- **Fix: L-DNA chain ends bonded.** tleap reads three characters of a PDB residue name, so the L-DNA end
+  residues (LDG3, LDC5 …) were built as internal units and left unbonded to their neighbours. The Amber build
+  now maps L-DNA residues at a chain's 5' / 3' end to the terminal units; rebuild topologies with L-DNA ends
+  made by earlier versions. Builds without L-DNA are unchanged.
+
+### Also new in 0.0.16
 
 - **Fix: helix restraints on DNA.** The *Amber · helix restraints* step refused every DNA build (it read DNA
   and L-DNA residue names such as `DT` and `LDA` as RNA names); DNA and L-DNA pairs are now restrained, and
   RNA restraints are unchanged.
-
-### Also new in 0.0.15
-
-- **Planner boxes keep apart:** a box dragged onto another stops at its edge and slides along it (Shift:
-  put it anywhere); *Duplicate* and *Arrange* place boxes clear of the others.
-- **Outlined connections:** every connection has a dark outline, so light wires (coordinates, text) show on
-  the canvas and where wires cross boxes or each other.
-- **Missing programs named before a step runs:** MDATK checks the programs a script calls (the Amber MD
-  engine, `tleap`, NAMD, `sander` …) in the environment it will run in, and stops the step at once with the
-  program's name and why, the same from a terminal or the applications menu; a script that exits 127 has
-  the command named too. New *Setup file* in every step's Environment (sourced if it exists).
-- **NAMD MDFF restraints as plan settings:** extra distance walls between named atoms
-  (`[[extra_bonds]]`), positional restraints on chosen residues, and continuation steps (a second fit
-  from the first one's final coordinates), all listed by `mdatk workflow check` and the plan summary.
-- **README fix:** the *Running steps* section rendered as plain text on GitHub after a `<script>` at the
-  start of a line.
-- **Generated workflow files** are unchanged with default settings, apart from the version in their
-  headers and the NAMD MDFF helper (it embeds the new preparation code; see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
