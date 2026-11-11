@@ -163,10 +163,10 @@ def free_position(x: float, y: float, w: float, h: float, boxes: Sequence[Tuple[
 
 def edge_casing(rgb: Tuple[float, float, float]) -> Tuple[float, float, float]:
     """The outline drawn under a connection of colour ``rgb``: near-black (the canvas and the steps are light,
-    every wire colour is a mid or light tone), darkest under the lightest wires, so every wire stands out from
-    the canvas, the steps and the wires it crosses."""
+    every wire colour is a mid or light tone), blacker under the mid tones (red, blue, green) so they keep
+    their contrast with it, so every wire stands out from the canvas, the steps and the wires it crosses."""
     lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-    return (0.10, 0.10, 0.10) if lum > 0.45 else (0.18, 0.18, 0.18)
+    return (0.10, 0.10, 0.10) if lum > 0.45 else (0.05, 0.05, 0.05)
 
 
 def checkable(node: PlanNode) -> bool:
