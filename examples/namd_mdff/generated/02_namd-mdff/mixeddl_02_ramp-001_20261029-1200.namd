@@ -1,4 +1,4 @@
-# NAMD MDFF stage 'ramp-001' - written by MDATK 0.0.17
+# NAMD MDFF stage 'ramp-001' - written by MDATK 0.0.18
 # MD, 10000 steps, map coupling 0.05
 
 # Amber force field read natively from the parm7 (nothing converted)

@@ -57,7 +57,7 @@ def test_options_rna_only_pairings_shared_names_and_projects_written_before():
     assert flat["start2"].is_enabled(dict(values, nucleic_acid="dna"))
     # the chimera's own options; residue names and atoms: one set for both builds, the helix's keys
     chim = TOOL.section("chimera")
-    assert [o.key for o in chim.options] == ["design", "chimera_na", "chimera_chains"]
+    assert [o.key for o in chim.options] == ["design", "chimera_na", "chimera_chains", "chimera_link_partners"]
     assert chim.requires == {"mode": "chimera"} and chim.option("design").placeholder == DESIGN
     tip = chim.option("design").tooltip
     assert "HAND[-NA]:SEQUENCE[/PARTNER]" in tip and "3'-3'" in tip and f"{DESIGN} is 5'-D-RNA(6)-p-L-RNA(6)-3'" in tip

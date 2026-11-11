@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.17](#whats-new-in-0017)
+- [What's new in 0.0.18](#whats-new-in-0018)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,7 +82,19 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.17
+## What's new in 0.0.18
+
+- **D/L chimeras with linked partner strands.** The structure builder's chimera mode can now join the partner
+  strands too (*Link the partner strands* in the planner step and in RNAdo's *Chimera* page,
+  `mdatk build chimera --link-partners`): a phosphodiester at every junction on both strands, so a D|L duplex
+  comes out as two continuous chains instead of strand 1 plus one nicked partner per segment. Both
+  phosphodiesters of a junction are fitted together (O3'-P 1.60 Å); the design and its twin still give exact
+  mirror images. A D/L B-DNA junction cannot stack with both backbones closed: its end pairs stay coaxial but
+  about 6.4-7.5 Å apart, which the builder warns about (minimise). With linked partners of one nucleic acid the
+  step has a *Secondary structure* output, e.g. for helix restraints. Off by default: other builds are
+  byte-identical to 0.0.17.
+
+### Also new in 0.0.17
 
 - **Fix: L-DNA chain ends bonded.** tleap reads three characters of a PDB residue name, so the L-DNA end
   residues (LDG3, LDC5 …) were built as internal units and left unbonded to their neighbours. The Amber build
@@ -91,12 +103,6 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 - **Three-character residue names only:** L-DNA is LDA LDC LDG LDT at every position, chain ends included, in
   every PDB file MDATK writes and in the generated library's residue names (so in topologies too); older
   files with LDA5 / LDA3 / LDAN are still read.
-
-### Also new in 0.0.16
-
-- **Fix: helix restraints on DNA.** The *Amber · helix restraints* step refused every DNA build (it read DNA
-  and L-DNA residue names such as `DT` and `LDA` as RNA names); DNA and L-DNA pairs are now restrained, and
-  RNA restraints are unchanged.
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -2481,6 +2487,30 @@ cost: `D:GC 3'-5' L:A 3'-5' D:GC`, whose one-pair segment cannot stack, warns of
 *Check* and the planner's checks read the design without fitting it: the strand, the pairs of every
 segment, the atom count, the chain ids and the errors.
 
+**Linked partner strands.** Without it each segment's partner strand is a chain of its own, nicked at every
+junction. `--link-partners` (*Link the partner strands* on the window's *Chimera* page and in the planner
+step's *D/L chimera* section; off by default) joins the partner strands too: at every junction the partner
+3' end that faces it gets a phosphodiester to the other partner's 5' end, which carries P, OP1 and OP2
+instead of a 5'-OH. The partners then make one continuous chain, written after strand 1, so there are two
+chains in all, with no TER inside the partner chain and internal names at its junction residues (still three
+characters: L-DNA LDA … everywhere, D-DNA DA5 / DA3 only at the free ends). For `D-DNA:CTGGCGTCTT 3'-5'
+L-DNA:AAGACGCCAG --na dna --scheme amber`, chain A is `5'-D(CTGGCGTCTT)-p-L(AAGACGCCAG)-3'` and chain B
+`5'-L(CTGGCGTCTT)-p-D(AAGACGCCAG)-3'` (B:1-20; the notes say `5'-L-DNA(10)-p-D-DNA(10)-3'`). The junction
+fit closes both phosphodiesters at once: both phosphates are rebuilt, the γ / β of both P residues turn (RNA
+ones too, since a rigid body cannot close two links), the contacts count through either link, and every start is
+fitted with the rigid body alone and with the turns before the 8 best poses are refitted. That takes a few times
+longer than without the option (20–40 s for the design and its twin in the examples here). For the example
+both links come out at O3'–P 1.61 Å, C3'–O3'–P 121.0°, O3'–P–O5' 103.6° and P–O5'–C5' 115.9° (as in the builder's B-DNA), with the
+closest heavy-atom contact between the segments 3.10 Å. A D/L RNA junction stacks as without the option
+(`D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC`: end pairs 4.59 Å apart). A D/L B-DNA junction cannot stack with both
+backbones closed, because the L pair's backbones run on the other side of the pair: its halves stay coaxial
+but the end pairs are about 6.4–7.5 Å apart (a rise of about 5.2 Å and an offset of about 4 Å), and the
+closure warning names this. Minimise before use. The notes and the header give the partners' phosphodiester
+too (`REMARK 951 JUNCTION 1 3'-5' B:10:O3'-B:11:P: … , PARTNER STRANDS`). A bridging link (3'-3', 5'-5')
+or a single-strand segment cannot be linked: it is an error of the design check (the planner shows it on
+the option) and of the build. With linked partners of one nucleic acid, the planner step also writes the
+duplex pairs of strand 1 and the partner chain to its *Secondary structure* port (e.g. for helix restraints).
+
 **Amber.** tleap has no unit for PO2 and does not read LINK records. With `--scheme amber` the notes say
 what it needs: a PO2 unit (P, OP1, OP2; MDATK writes none) loaded before `loadpdb`, and after it the
 `bond` commands for the LINK atoms, written for a unit `m = loadpdb …` with the residues numbered as
@@ -2502,18 +2532,20 @@ strips the CONECT records by default; the LINK records stay). The window's *Chim
 (its tooltip gives the grammar and three of the examples), the default nucleic acid, the chain ids, the
 names and atoms, and an output named after the design next to the project file
 (`chimera_D-RNA6_p_L-RNA6_c1e9cc.pdb`, `chimera_D-DNA5_3p3_L-DNA5_882f20.pdb`: the segments, the links
-and six hex digits of the design, so that two designs of one layout get two files) until you choose
-your own. *Check* reports wrong chain ids as the command line and the planner step do, and the step-log
+and six hex digits of the design, so that two designs of one layout get two files; `…_linked_<digits>.pdb`
+with the partner strands linked) until you choose your own. *Check* reports wrong chain ids as the command line and the planner step do, and the step-log
 entry is the command line's (`build chimera`, *Chimera* and the strand, the notes, the citations), its
 summary led by the design and the options (`Design: D:GC 3'-3' L:GC (default nucleic acid RNA; chains
-P,Q,R,S; residue names amber)`). The planner step's mode has no inputs and writes the PDB only (no
-secondary structure); its *Chain ids* are checked against the chains the design writes.
+P,Q,R,S; residue names amber)`). The planner step's mode has no inputs and writes the PDB only (a
+secondary structure only with linked partner strands of one nucleic acid); its *Chain ids* are checked
+against the chains the design writes.
 
 ```bash
 mdatk build chimera --design "D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC" -o dl_rna.pdb
 mdatk build chimera --design "D-DNA:GGCAT 3'-3' L-DNA:GGCAT" --scheme amber -o dl_dna_33.pdb
 mdatk build chimera --design "D:GAUC/none 5'-5' L-DNA:GATC" --hydrogens --chains P,Q,R -o mixed.pdb
 mdatk build chimera --na dna --design "D:GGCAT 3'-5' L:ATGCC" -o dna_35.pdb   # the segments are DNA
+mdatk build chimera --na dna --design "D:CTGGCGTCTT 3'-5' L:AAGACGCCAG" --link-partners --scheme amber -o dl_duplex.pdb
 ```
 
 ## Restraint dictionaries, real-space refinement and MDFF

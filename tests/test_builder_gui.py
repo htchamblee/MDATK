@@ -244,6 +244,35 @@ def test_check_validates_the_chain_ids_as_the_build_and_the_planner_do(window):
     assert report(w) == "ERROR: segment 1 sequence: invalid letter(s) X (RNA: A, C, G, U)"
 
 
+def test_the_link_partners_check_box(window, tmp_path):
+    """The chimera page's *Link the partner strands*: off by default, passed to the build, checked as the build and
+    the planner step check it (a bridge cannot be linked; two chains), and named in the suggested file."""
+    w = window
+    w.set_page("chimera")
+    assert w.chim_link.get_active() is False and w.chimera_options()["link_partners"] is False
+    w.design.set_text("D:GC 3'-5' L:GC")
+    plain = w.chim_out.entry.get_text()
+    assert plain == str(tmp_path / chimera_file_name("D:GC 3'-5' L:GC")) and "linked" not in plain
+    w.chim_link.set_active(True)
+    assert w.chimera_options()["link_partners"] is True
+    assert w.chim_out.entry.get_text() == plain.replace("_L-RNA2_", "_L-RNA2_linked_")
+    assert chimera_file_name("D:GC 3'-5' L:GC", "rna", True) == \
+        chimera_file_name("D:GC 3'-5' L:GC").replace("_L-RNA2_", "_L-RNA2_linked_")
+    w.chim_chains.set_text("A,B")
+    w.check_current()
+    assert "ERROR" not in report(w) and "INFO: partner strands linked: one continuous partner chain " \
+        "5'-L-RNA(2)-p-D-RNA(2)-3'" in report(w)
+    w.chim_chains.set_text("")
+    w.design.set_text("D:GC 3'-3' L:GC")
+    w.check_current()
+    assert report(w).startswith("ERROR: link partners: link 1 (3'-3') is a phosphate bridging two 3' ends")
+    w.chim_link.set_active(False)
+    w.check_current()
+    assert "ERROR" not in report(w)
+    from mdatk.gui.builderdialog import chimera_log_line
+    assert chimera_log_line(dict(w.chimera_options(), link_partners=True)).endswith("; partner strands linked)")
+
+
 def answering(monkeypatch, responses):
     """Answer the window's message dialogs with ``responses`` in turn; returns what each asked: (question,
     detail, whether every label of the dialog is selectable)."""

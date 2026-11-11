@@ -84,10 +84,11 @@ def design_digest(segments, links) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:6]
 
 
-def chimera_file_name(design: str, na: str = "rna") -> str:
+def chimera_file_name(design: str, na: str = "rna", linked: bool = False) -> str:
     """The suggested file of a chimera, named after its segments and links and a digest of the design
     (:func:`design_digest`): 'chimera_D-RNA6_p_L-RNA6_<digest>.pdb' for D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC,
-    'chimera_D-DNA5_3p3_L-DNA5_<digest>.pdb' for a 3'-3' bridge ('' when the design does not read)."""
+    'chimera_D-DNA5_3p3_L-DNA5_<digest>.pdb' for a 3'-3' bridge ('' when the design does not read); with the
+    partner strands linked (``linked``) '..._linked_<digest>.pdb'."""
     try:
         segments, links, _notes = chimera.parse_design(design, na)
     except builder.BuildError:
@@ -95,7 +96,7 @@ def chimera_file_name(design: str, na: str = "rna") -> str:
     words = [f"{segments[0].kind}{len(segments[0].sequence)}"]
     for link, seg in zip(links, segments[1:]):
         words += ["p" if link not in chimera.BRIDGES else f"{link[0]}p{link[0]}", f"{seg.kind}{len(seg.sequence)}"]
-    return "chimera_" + "_".join(words + [design_digest(segments, links)]) + ".pdb"
+    return "chimera_" + "_".join(words + (["linked"] if linked else []) + [design_digest(segments, links)]) + ".pdb"
 
 
 def chimera_log_line(opts: dict) -> str:
@@ -110,6 +111,8 @@ def chimera_log_line(opts: dict) -> str:
         parts.append("5'-phosphate")
     if opts["hydrogens"]:
         parts.append("hydrogens")
+    if opts.get("link_partners"):
+        parts.append("partner strands linked")
     return f"Design: {' '.join(opts['design'].split())} ({'; '.join(parts)})"
 
 
@@ -275,6 +278,12 @@ class BuilderWindow(Gtk.Window):
                                    "order (strand 1 is split at the 3'-3' / 5'-5' links), then the partner strands "
                                    "in segment order")
         f.add("Chains (optional)", self.chim_chains)
+        self.chim_link = W.check("Link the partner strands (one continuous partner chain)",
+                                 "Join the partner strands too, by a phosphodiester at every junction (fitted with "
+                                 "strand 1's): two chains in all instead of a nicked partner per segment. Every link "
+                                 "3'-5' or 5'-3', every segment paired")
+        self.chim_link.connect("toggled", lambda *_: self._suggest("chimera"))
+        f.add_wide(self.chim_link)
         box.pack_start(W.frame("Design", f), False, False, 0)
         n = W.Form()
         self.chim_scheme = W.combo(CHIMERA_SCHEME_LABELS)
@@ -302,7 +311,8 @@ class BuilderWindow(Gtk.Window):
                               "mirror image both fitted (seconds per junction): a starting model, minimise before "
                               "production. 3'-3' and 5'-5' links write a bridging phosphate PO2 as a group of its "
                               "own (a TER segment; HETATM, ATOM in the standard scheme) with LINK and CONECT "
-                              "records, and strand 1 is split into chains there."), False, False, 0)
+                              "records, and strand 1 is split into chains there. Linked partner strands: each "
+                              "junction's two phosphodiesters are fitted together."), False, False, 0)
         return W.scrolled(box)
 
     def _mutate_page(self) -> Gtk.Widget:
@@ -400,7 +410,7 @@ class BuilderWindow(Gtk.Window):
             return
         if page == "chimera":
             design = self.design.get_text().strip()
-            name = chimera_file_name(design, self.chim_na.get_active_id() or "rna")
+            name = chimera_file_name(design, self.chim_na.get_active_id() or "rna", self.chim_link.get_active())
             if design and not name:
                 return  # a design being typed: the last suggestion stays until it reads again
             self._auto[page] = os.path.join(self._folder(), name) if name else ""
@@ -443,7 +453,7 @@ class BuilderWindow(Gtk.Window):
         return dict(design=self.design.get_text(), na=self.chim_na.get_active_id() or "rna",
                     scheme=self.chim_scheme.get_active_id() or None, terminals=self.chim_terminals.get_active(),
                     hydrogens=self.chim_hydrogens.get_active(), phosphate5=self.chim_phosphate5.get_active(),
-                    chains=self.chim_chains.get_text().strip() or None)
+                    chains=self.chim_chains.get_text().strip() or None, link_partners=self.chim_link.get_active())
 
     def _show(self, text: str) -> None:
         self.report.get_buffer().set_text(text)
@@ -492,7 +502,8 @@ class BuilderWindow(Gtk.Window):
         elif self.page() == "chimera":  # the chain ids too, by the rule of the build (and of the planner step)
             opts = self.chimera_options()
             msgs = chimera.check_chimera(opts["design"], opts["na"], hydrogens=opts["hydrogens"],
-                                         phosphate5=opts["phosphate5"], chains=opts["chains"])
+                                         phosphate5=opts["phosphate5"], chains=opts["chains"],
+                                         link_partners=opts["link_partners"])
             self._show("\n".join(f"{level.upper()}: {text}" for level, text in msgs))
         elif self.page() == "mutate":
             path = self._input(self.mut_input, "input PDB")

@@ -51,7 +51,8 @@ class StructureBuilderTool(Tool):
     outputs = [Port("pdb", "Structure (PDB)", ("pdb",)),
                Port("secstruct", "Secondary structure", ("secstruct",),
                     tooltip="Duplex pairs of the ideal helix (Watson-Crick and G·U, DNA G·T, antiparallel only), "
-                            "e.g. for helix restraints.")]
+                            "or of a chimera with linked partner strands of one nucleic acid, e.g. for helix "
+                            "restraints.")]
     sections = [
         Section("mode", "Mode", [
             Option("mode", "Build", "radio", "helix", "Ideal helix: a new A-form RNA or B-form DNA duplex or single "
@@ -103,6 +104,9 @@ class StructureBuilderTool(Tool):
             Option("chimera_chains", "Chain ids", "text", "", "Optional, comma separated, one per chain: the "
                    "strand-1 chains in design order (strand 1 is split at 3'-3' / 5'-5' links), then the partner "
                    "strands in segment order. Empty: A, B, C ...", placeholder="A,B,C"),
+            Option("chimera_link_partners", "Link the partner strands", "bool", False, "Join the partner strands "
+                   "too, by a phosphodiester at every junction: one continuous partner chain (two chains in all) "
+                   "instead of one nicked chain per segment. Every link 3'-5' or 5'-3', every segment paired."),
         ], requires={"mode": "chimera"}),
         # residue names and atoms of both builds, shown once: the helix options of before, keys and all, so that
         # projects keep their values
@@ -146,7 +150,7 @@ class StructureBuilderTool(Tool):
         return []
 
     def output_ports(self, s):
-        return list(self.outputs) if self._duplex(s) else [self.outputs[0]]
+        return list(self.outputs) if self._duplex(s) or self._linked_chimera(s) else [self.outputs[0]]
 
     @staticmethod
     def _na(s) -> str:
@@ -179,18 +183,30 @@ class StructureBuilderTool(Tool):
 
         A B-DNA duplex has one as well (G·T wobbles bracketed): mdatk.workflows.rna reads its T as U, and the
         steps that restrain the pairs (Amber, NAMD, Phenix) find the hydrogen-bond atoms of U in T (N3, O4, O2)
-        and take A·T for the A·U class; its .secstruct file keeps the T (:meth:`secstruct_text`)."""
-        if not self._duplex(s):
+        and take A·T for the A·U class; its .secstruct file keeps the T (:meth:`secstruct_text`).
+
+        A chimera with linked partner strands of one nucleic acid has one as well: strand 1 and the continuous
+        partner chain (:func:`mdatk.chimera.linked_strands`), the hand of the residues aside."""
+        third = ""
+        if self._linked_chimera(s):
+            try:
+                seq, other, kinds = chimera.linked_strands(self._design(s), s.get("chimera_na") or "rna")
+            except builder.BuildError:
+                return None
+            other_kinds = kinds
+        elif not self._duplex(s):
             return None
-        na = self._na(s)
-        try:
-            seq, other, _notes = builder.resolve_partner(s["sequence"], self._partner(s), na=na)
-            third = builder.resolve_third(seq, self._third(s), self._triplex(s))[0] if self._triplex(s) else ""
-        except builder.BuildError:
-            return None
+        else:
+            na = self._na(s)
+            try:
+                seq, other, _notes = builder.resolve_partner(s["sequence"], self._partner(s), na=na)
+                third = builder.resolve_third(seq, self._third(s), self._triplex(s))[0] if self._triplex(s) else ""
+            except builder.BuildError:
+                return None
+            other_kinds = None
         if other is None:
             return None
-        kinds = builder.pair_types(seq, other, na)
+        kinds = other_kinds if other_kinds is not None else builder.pair_types(seq, other, na)
         first = "".join("." if k == "mismatch" else "(" for k in kinds)
         second = "".join("." if k == "mismatch" else ")" for k in reversed(kinds))
         seqs, dots = f"{seq} {other}", f"{first} {second}"
@@ -205,10 +221,28 @@ class StructureBuilderTool(Tool):
         """The .secstruct file of the duplex (:func:`mdatk.workflows.rna.secstruct_text`): dot-bracket, then the
         sequence for reference, of a DNA duplex with its T (read as U again by whatever reads the file)."""
         text = rna.secstruct_text(model)
-        if self._na(s) != "dna":
+        linked = self._linked_chimera(s)
+        if (linked or self._na(s)) != "dna":
             return text
         dots, letters = text.split("\n")[:2]
         return f"{dots}\n{letters.replace('u', 't')}\n"
+
+    @classmethod
+    def _linked_chimera(cls, s) -> Optional[str]:
+        """The nucleic acid ('rna' or 'dna') of a chimera with linked partner strands whose segments are all of
+        it (it has a secondary structure, :meth:`ss_model`); None otherwise, or while the design does not parse
+        or its partners cannot be linked."""
+        if s.get("mode") != "chimera" or not s.get("chimera_link_partners"):
+            return None
+        design = cls._chimera(s)
+        if design is None:
+            return None
+        segments, links = design
+        nas = {seg.na for seg in segments}
+        if len(nas) != 1 or any(link in chimera.BRIDGES for link in links) or \
+                any(seg.partner is None for seg in segments):
+            return None
+        return nas.pop()
 
     @staticmethod
     def _design(s) -> str:
@@ -380,12 +414,19 @@ class StructureBuilderTool(Tool):
         if not text:
             return [Issue("error", f"enter the design, e.g. {DESIGN_EXAMPLE}", ("design",))]
         args = (text, s["chimera_na"], s["hydrogens"], s["phosphate5"])
+        linked = bool(s.get("chimera_link_partners"))
         out = [Issue(level, message, ("design",)) for level, message in chimera.check_chimera(*args)]
+        if linked and not any(i.level == "error" for i in out):
+            # the design reads: an error now is the linked partners' (a bridge, a single strand)
+            out = [Issue(level, message, ("chimera_link_partners",) if message.startswith(("link partners",
+                         "partner strands linked")) else ("design",))
+                   for level, message in chimera.check_chimera(*args, link_partners=True)]
         chains = self._chimera_chains(s)
         if chains and not any(i.level == "error" for i in out):
             # the design reads: an error now is the chain ids' (checked last, after the design)
             out += [Issue(level, message, ("chimera_chains",))
-                    for level, message in chimera.check_chimera(*args, chains=chains) if level == "error"]
+                    for level, message in chimera.check_chimera(*args, chains=chains, link_partners=linked)
+                    if level == "error"]
         return out
 
     def _check_residues(self, s, path) -> List[Issue]:
@@ -457,6 +498,8 @@ class StructureBuilderTool(Tool):
             chains = self._chimera_chains(s)
             if chains:
                 words += self._option("--chains", chains)
+            if s.get("chimera_link_partners"):  # the flag only when on: other command lines stay as they were
+                words.append("--link-partners")
             words += self._name_flags(s)
         elif s["mode"] == "mutate":
             words = self.mdatk(s) + ["build", "mutate", q(ctx.inp("pdb")), q(s["mutations"].strip())]
