@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.14](#whats-new-in-0014)
+- [What's new in 0.0.15](#whats-new-in-0015)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,23 +82,23 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.14
+## What's new in 0.0.15
 
-- **DNA force fields in the Amber build:** OL24 (default; OL21 with the refined δ and deoxyribose sugar
-  pucker and χOL3), OL21 or OL15, loaded when the structure has DNA; RNA-only builds are unchanged (see
-  [DNA and L-DNA](#l-dna)).
-- **L-DNA, mirrored from the DNA force field:** `LDNA.lib` + `frcmod.ldna` with O5′ / O4′ / O3′ typed LS / LT
-  and their dihedral phases mirrored, so an L-DNA molecule has the energy of its D mirror image term by term;
-  L-DNA residues get their Amber names (LDA, LDA5 …) before tleap, and the twin types get their D types'
-  Mg²⁺ terms (microMg / nanoMg pairs, 12-6-4 polarizabilities).
-- **NBfix19 kept off DNA:** its pairs name RNA atoms only; 0BPh is unchanged.
-- **Fix: 12-6-4 Mg²⁺ with L-RNA** stopped at the ParmEd step (`add12_6_4` lacked the L-RNA atom types).
-- **Applications menu:** RNAdo started from the menu gives the scripts it runs the environment your
-  `~/.bashrc` sets up (e.g. `pmemd.cuda` from `amber.sh`), as from a terminal.
-- **Cat-proof mode:** a check box in RNAdo's header bar (with a cat on a keyboard) that makes RNAdo ignore the
-  keyboard; the mouse unticks it.
-- **Generated workflow files** of earlier step types are unchanged unless DNA is in the structure, apart from
-  the version in their headers and the PDB tools copied into Amber builds (see [CHANGELOG.md](CHANGELOG.md)).
+- **Planner boxes keep apart:** a box dragged onto another stops at its edge and slides along it (Shift:
+  put it anywhere); *Duplicate* and *Arrange* place boxes clear of the others.
+- **Outlined connections:** every connection has a dark outline, so light wires (coordinates, text) show on
+  the canvas and where wires cross boxes or each other.
+- **Missing programs named before a step runs:** MDATK checks the programs a script calls (the Amber MD
+  engine, `tleap`, NAMD, `sander` …) in the environment it will run in, and stops the step at once with the
+  program's name and why, the same from a terminal or the applications menu; a script that exits 127 has
+  the command named too. New *Setup file* in every step's Environment (sourced if it exists).
+- **NAMD MDFF restraints as plan settings:** extra distance walls between named atoms
+  (`[[extra_bonds]]`), positional restraints on chosen residues, and continuation steps (a second fit
+  from the first one's final coordinates), all listed by `mdatk workflow check` and the plan summary.
+- **README fix:** the *Running steps* section rendered as plain text on GitHub after a `<script>` at the
+  start of a line.
+- **Generated workflow files** are unchanged with default settings, apart from the version in their
+  headers and the NAMD MDFF helper (it embeds the new preparation code; see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -783,7 +783,11 @@ canvas's right-click menu (where you clicked), and connect them by dragging from
 edge) to an input port (left edge), or onto the box itself: its first free input that takes the file;
 only compatible files connect, and loops are refused. To move a connection, drag its end off the input
 it goes into and drop it on another input or another box; dropped anywhere else, or back on its input, it
-stays. Dragging a box or a connection to the edge of the visible canvas scrolls it that way (faster
+stays. Boxes keep apart: a box dragged onto another stops at its edge and slides along it, and jumps
+past it once the pointer is on free canvas beyond; hold Shift while dragging to put it anywhere.
+*Duplicate* places the copy in the nearest free spot and *Arrange* spaces the rows by the boxes' heights.
+Connections are drawn with a dark outline, so they stand out from the canvas, the boxes and each other.
+Dragging a box or a connection to the edge of the visible canvas scrolls it that way (faster
 nearer the edge), so a box can be moved a long way in one drag. *Delete connection* (right-click on a
 connection) deletes only that connection. A large, stacked dot is a **set**: the full set of N files of one kind, such as *Every decoy* on
 the right of a FARFAR2 box, whose files are known only once that step has run (see [Every decoy from the

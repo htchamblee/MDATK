@@ -96,6 +96,79 @@ def _rgb_hex(rgb) -> str:
     return "#{:02x}{:02x}{:02x}".format(*(int(c * 255) for c in rgb))
 
 
+TILE_GAP = 2 * GRID  # the least space the planner keeps between two steps (dragging, Duplicate, Arrange)
+
+
+def free_position(x: float, y: float, w: float, h: float, boxes: Sequence[Tuple[float, float, float, float]],
+                  gap: float = TILE_GAP, grid: float = GRID,
+                  start: Optional[Tuple[float, float]] = None) -> Optional[Tuple[float, float]]:
+    """A free place on the grid for a ``w`` x ``h`` tile wanted at (x, y): at least ``gap`` from each of
+    ``boxes`` (x, y, width, height) and not left of or above 0.  (x, y) itself when it is free.  Otherwise,
+    for a tile being dragged from ``start``, as far towards (x, y) as it gets, first across and then up or
+    down: it stops at the edge of the step in its way and slides along it (and jumps past it once the
+    pointer's place is free).  Else the free place nearest (x, y); None when nothing free is near (a crowded
+    spot: the caller keeps the tile where it was)."""
+    # the corners where the tile's top-left corner may not go (strictly inside: touching at ``gap`` is fine)
+    rects = [(math.floor((bx - gap - w) / grid) * grid, math.floor((by - gap - h) / grid) * grid,
+              math.ceil((bx + bw + gap) / grid) * grid, math.ceil((by + bh + gap) / grid) * grid)
+             for bx, by, bw, bh in boxes]
+
+    def hits(px: float, py: float) -> list:
+        return [r for r in rects if r[0] < px < r[2] and r[1] < py < r[3]]
+
+    x, y = max(0.0, x), max(0.0, y)
+    if not hits(x, y):
+        return x, y
+    if start is not None and not hits(*start):
+        sx, sy = start
+        for r in rects:  # across, at the start's height
+            if r[1] < sy < r[3]:
+                if r[0] >= sx:
+                    x = min(x, r[0])
+                elif r[2] <= sx:
+                    x = max(x, r[2])
+        for r in rects:  # then up or down, at the new x
+            if r[0] < x < r[2]:
+                if r[1] >= sy:
+                    y = min(y, r[1])
+                elif r[3] <= sy:
+                    y = max(y, r[3])
+        if not hits(x, y):
+            return x, y
+
+    best, best_d = None, math.inf
+    frontier, seen = [(max(0.0, x), max(0.0, y))], set()
+    for _depth in range(6):
+        nxt = []
+        for px, py in frontier:
+            if (px, py) in seen:
+                continue
+            seen.add((px, py))
+            inside = hits(px, py)
+            d = math.hypot(px - x, py - y)
+            if not inside:
+                if d < best_d:
+                    best, best_d = (px, py), d
+                continue
+            if d >= best_d:
+                continue  # pushing further only gets farther from (x, y)
+            for left, top, right, bottom in inside:
+                nxt += [(c, d2) for c, d2 in ((left, py), (right, py), (px, top), (px, bottom))
+                        if c >= 0 and d2 >= 0]
+        frontier = nxt[:400]
+        if not frontier:
+            break
+    return best
+
+
+def edge_casing(rgb: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """The outline drawn under a connection of colour ``rgb``: near-black (the canvas and the steps are light,
+    every wire colour is a mid or light tone), blacker under the mid tones (red, blue, green) so they keep
+    their contrast with it, so every wire stands out from the canvas, the steps and the wires it crosses."""
+    lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    return (0.10, 0.10, 0.10) if lum > 0.45 else (0.05, 0.05, 0.05)
+
+
 def checkable(node: PlanNode) -> bool:
     """Steps that write and run scripts (not notes or the MDATK analysis box)."""
     tool = TOOLS.get(node.tool)
@@ -259,6 +332,10 @@ class PlannerCanvas(Gtk.DrawingArea):
                 return best
         return None
 
+    def boxes(self, *skip: PlanNode) -> List[Tuple[float, float, float, float]]:
+        """(x, y, width, height) of every step but ``skip``."""
+        return [(n.x, n.y) + self.node_size(n) for n in self.workflow.nodes if all(n is not s for s in skip)]
+
     def edge_points(self, e: PlanEdge):
         nodes = {n.id: n for n in self.workflow.nodes}
         if e.source not in nodes or e.target not in nodes:
@@ -338,14 +415,19 @@ class PlannerCanvas(Gtk.DrawingArea):
         kind = port.kind if port is not None else "text"
         rgb = KIND_COLORS.get(kind, (0.4, 0.4, 0.4))
         (x0, y0), (x1, y1), (x2, y2), (x3, y3) = pts
-        cr.set_line_width(4.0 if selected else 3.4 if port is not None and port.collection else 2.2)
+        width = 4.0 if selected else 3.4 if port is not None and port.collection else 2.2
         if selected:
-            cr.set_source_rgb(0.10, 0.37, 0.71)
-        else:
-            cr.set_source_rgba(*rgb, 0.85)
+            rgb = (0.10, 0.37, 0.71)
+        cr.set_line_cap(1)  # round: the outline closes around the ends
         cr.move_to(x0, y0)
         cr.curve_to(x1, y1, x2, y2, x3, y3)
+        cr.set_source_rgba(*edge_casing(rgb), 0.9)  # the contrasting outline, under the wire
+        cr.set_line_width(width + 2.6)
+        cr.stroke_preserve()
+        cr.set_source_rgb(*rgb)
+        cr.set_line_width(width)
         cr.stroke()
+        cr.set_line_cap(0)
 
     def _rounded(self, cr, x, y, w, h, r=7.0) -> None:
         cr.new_sub_path()
@@ -698,6 +780,7 @@ class PlannerCanvas(Gtk.DrawingArea):
             self.win.scroller.get_hadjustment().set_value(d["h"] - (ev.x_root - d["ex"]))
             self.win.scroller.get_vadjustment().set_value(d["v"] - (ev.y_root - d["ey"]))
             return True
+        d["overlap"] = bool(ev.state & Gdk.ModifierType.SHIFT_MASK)
         self._drag_to(x, y)
         self._edge_check(ev.x, ev.y)
         return True
@@ -710,10 +793,16 @@ class PlannerCanvas(Gtk.DrawingArea):
         if d["mode"] == "move":
             n = self.win.node(d["node"])
             if n is not None:
-                n.x = max(0.0, round((x - d["dx"]) / GRID) * GRID)
-                n.y = max(0.0, round((y - d["dy"]) / GRID) * GRID)
-                d["moved"] = True
-                self.queue_draw()
+                nx = max(0.0, round((x - d["dx"]) / GRID) * GRID)
+                ny = max(0.0, round((y - d["dy"]) / GRID) * GRID)
+                if not d.get("overlap"):  # steps keep TILE_GAP apart (Shift held: put it anywhere)
+                    w, h = self.node_size(n)
+                    spot = free_position(nx, ny, w, h, self.boxes(n), start=(n.x, n.y))
+                    nx, ny = spot if spot is not None else (n.x, n.y)
+                if (nx, ny) != (n.x, n.y):
+                    n.x, n.y = nx, ny
+                    d["moved"] = True
+                    self.queue_draw()
         elif d["mode"] in ("connect", "rewire"):
             d["pos"] = (x, y)
             self.queue_draw()
@@ -1599,7 +1688,9 @@ class PlannerPanel(Gtk.Box):
 
     def duplicate(self, node: PlanNode) -> None:
         tool = TOOLS.get(node.tool)
-        new = add_node(self.workflow, node.tool, node.x + 30, node.y + 30,
+        w, h = self.canvas.node_size(node)
+        x, y = free_position(node.x + 30, node.y + 30, w, h, self.canvas.boxes()) or (node.x + 30, node.y + 30)
+        new = add_node(self.workflow, node.tool, x, y,
                        step=next_step(self.workflow) if tool and tool.generates else 0,
                        title=node.title, settings=copy.deepcopy(node.settings))
         new.files = dict(node.files)
@@ -1636,16 +1727,22 @@ class PlannerPanel(Gtk.Box):
         for nid in plan.order:
             preds = [e.source for e in self.workflow.edges if e.target == nid and e.source in depth]
             depth[nid] = 1 + max((depth[p] for p in preds), default=-1)
-        rows: Dict[int, int] = {}
+        tops: Dict[int, float] = {}  # the next free y of each column: rows as tall as their steps
         for nid in plan.order:
             n = self.node(nid)
             if n is None or n.tool == "note":
                 continue
             col = depth[nid]
-            row = rows.get(col, 0)
             n.x = 40.0 + col * 290
-            n.y = 40.0 + row * 200
-            rows[col] = row + 1
+            n.y = tops.get(col, 40.0)
+            h = self.canvas.node_size(n)[1]
+            tops[col] = n.y + max(200.0, math.ceil((h + 40) / GRID) * GRID)
+        # notes stay where they are, unless a step now sits on one: then the note moves to the nearest free place
+        notes = [n for n in self.workflow.nodes if n.tool == "note"]
+        for n in notes:
+            spot = free_position(n.x, n.y, *self.canvas.node_size(n), self.canvas.boxes(*notes))
+            if spot is not None:
+                n.x, n.y = spot
         self.changed()
 
     def _on_naming(self, *_):
