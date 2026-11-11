@@ -18,7 +18,7 @@ the notes below.
 
 - A box dragged onto another stops `TILE_GAP` (20 px) short of it and slides along its edge, first across
   and then up or down, and jumps past once the pointer's place is free; Shift while dragging puts it
-  anywhere (as before). *Duplicate* puts the copy in the nearest free spot (it was 30 px down and right,
+  anywhere, as every drag did before. *Duplicate* puts the copy in the nearest free spot (it was 30 px down and right,
   on top of the original); *Arrange* spaces each column by the boxes' heights (rows were 200 px whatever
   their size) and moves a note a box now sits on to the nearest free spot.
 - Connections are drawn over a dark outline (2.6 px wider than the wire, round ends): light wires such as
