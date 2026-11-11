@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.17](#whats-new-in-0017)
+- [What's new in 0.0.18](#whats-new-in-0018)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,7 +82,19 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.17
+## What's new in 0.0.18
+
+- **D/L chimeras with linked partner strands.** The structure builder's chimera mode can now join the partner
+  strands too (*Link the partner strands* in the planner step and in RNAdo's *Chimera* page,
+  `mdatk build chimera --link-partners`): a phosphodiester at every junction on both strands, so a D|L duplex
+  comes out as two continuous chains instead of strand 1 plus one nicked partner per segment. Both
+  phosphodiesters of a junction are fitted together (O3'-P 1.60 Å); the design and its twin still give exact
+  mirror images. A D/L B-DNA junction cannot stack with both backbones closed: its end pairs stay coaxial but
+  about 6.4-7.5 Å apart, which the builder warns about (minimise). With linked partners of one nucleic acid the
+  step has a *Secondary structure* output, e.g. for helix restraints. Off by default: other builds are
+  byte-identical to 0.0.17.
+
+### Also new in 0.0.17
 
 - **Fix: L-DNA chain ends bonded.** tleap reads three characters of a PDB residue name, so the L-DNA end
   residues (LDG3, LDC5 …) were built as internal units and left unbonded to their neighbours. The Amber build
@@ -91,12 +103,6 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 - **Three-character residue names only:** L-DNA is LDA LDC LDG LDT at every position, chain ends included, in
   every PDB file MDATK writes and in the generated library's residue names (so in topologies too); older
   files with LDA5 / LDA3 / LDAN are still read.
-
-### Also new in 0.0.16
-
-- **Fix: helix restraints on DNA.** The *Amber · helix restraints* step refused every DNA build (it read DNA
-  and L-DNA residue names such as `DT` and `LDA` as RNA names); DNA and L-DNA pairs are now restrained, and
-  RNA restraints are unchanged.
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 

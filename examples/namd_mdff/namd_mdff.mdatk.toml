@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.17"
+mdatk_version = "0.0.18"
 # When the settings were last saved.
-saved = 2026-11-11T18:49:22
+saved = 2026-11-11T21:30:02
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -628,11 +628,12 @@ cp_frcmod = "frcmod.99bsc0-chiol3-CaseP"
 # with refined alpha / gamma. Choices: ol24, ol21, ol15, none.
 dna_ff = "ol24"
 # L-DNA library: Generated: the build script writes LDNA.lib and frcmod.ldna from the DNA force
-# field (its D library and parameter files): the D units mirrored, named LDA LDC LDG LDT / LDA5 LDA3
-# LDAN ..., with O5' / O4' / O3' given the types LS (OS) and LT (OH), whose dihedral phases are
-# mirrored, so a D molecule and its mirror image have the same energy term by term. Automatic:
-# generated when the structure has L-DNA. Own: L-DNA units from the libraries listed under Force
-# field. Choices: auto, generated, own.
+# field (its D library and parameter files): the D units mirrored, named LDA LDC LDG LDT (chain
+# ends: LDA5 / LDA3 units, chosen by tleap from the position; residue names stay three characters),
+# with O5' / O4' / O3' given the types LS (OS) and LT (OH), whose dihedral phases are mirrored, so a
+# D molecule and its mirror image have the same energy term by term. Automatic: generated when the
+# structure has L-DNA. Own: L-DNA units from the libraries listed under Force field. Choices: auto,
+# generated, own.
 ldna_library = "auto"
 # Extra parameter files: One frcmod file per line, loaded with loadamberparams after the force field
 # (e.g. frcmod.LRNA).
