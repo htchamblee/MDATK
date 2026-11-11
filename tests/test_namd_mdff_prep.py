@@ -451,7 +451,8 @@ def test_gzipped_dx_and_non_ascii_file_names(tmp_path, system):
     assert nm.main(["coordinates", str(tmp_path / "coordonnées.rst7")], cfg) == 0
     assert nm.main(["prep"], cfg) == 0
     assert "carte_r?solue_3.2?.mrc" in (tmp_path / "pot.dx").read_text().splitlines()[0]
-    assert nm.read_rst7(cfg["coordinates"], len(system))[0] == pytest.approx([a[5] for a in system], abs=1e-6)
+    got = [c for xyz in nm.read_rst7(cfg["coordinates"], len(system))[0] for c in xyz]
+    assert got == pytest.approx([c for a in system for c in a[5]], abs=1e-6)  # flat: pytest 9 refuses nested
 
 
 def _flatten(atoms, chain, resseq, centre, partners, factor):
