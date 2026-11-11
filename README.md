@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.15](#whats-new-in-0015)
+- [What's new in 0.0.16](#whats-new-in-0016)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,7 +82,13 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.15
+## What's new in 0.0.16
+
+- **Fix: helix restraints on DNA.** The *Amber · helix restraints* step refused every DNA build (it read DNA
+  and L-DNA residue names such as `DT` and `LDA` as RNA names); DNA and L-DNA pairs are now restrained, and
+  RNA restraints are unchanged.
+
+### Also new in 0.0.15
 
 - **Planner boxes keep apart:** a box dragged onto another stops at its edge and slides along it (Shift:
   put it anywhere); *Duplicate* and *Arrange* place boxes clear of the others.

@@ -5,14 +5,14 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
-## Unreleased
+## 0.0.16 (2026-11-11)
 
 ### Fix: helix restraints on DNA
 
@@ -20,6 +20,7 @@ the notes below.
   L-DNA LDA, LDG3 ...) as RNA names and refused the pairs (`residue 2 is DT in the topology but the secondary
   structure expects U`). It now reads DNA and L-DNA names and matches T with the U of the secondary
   structure; RNA restraints are unchanged.
+- `examples/namd_mdff` regenerated (version in the headers).
 
 ## 0.0.15 (2026-11-11)
 
