@@ -47,6 +47,10 @@ INTENDED = [
     # unreleased: a separately run (cluster) production script activates its conda environment only when
     # MDATK runs it on this computer ($MDATK_LOCAL); only the example sets a conda environment
     (re.compile(r"_amber-prod_\d{8}-\d{4}\.sh$"), {"example:rna_plan.mdatk.toml"}),
+    # 0.0.16: the helix-restraint helper (a copy of mdatk/workflows/scripts/helix_dist.py) reads DNA and L-DNA
+    # residue names (DT, DG5, LDA ...) and matches T with the U of the secondary structure: it refused every
+    # DNA pair. RNA names give the same letters as before, so RNA restraints are unchanged
+    (re.compile(r"(^|/)\d+_amber-restraints/[^/]*_helix_\d{8}-\d{4}\.py$"), None),
 ]
 
 
