@@ -148,6 +148,10 @@ def test_build_with_l_dna_sources_dna_mirrors_and_names(tmp_path):
     assert leap[:2] == ["source leaprc.RNA.OL3", "source leaprc.DNA.OL24"]
     assert any('{ "LS" "O" "sp3" } { "LT" "O" "sp3" }' in ln for ln in leap)
     assert leap.index("loadamberparams frcmod.ldna") + 1 == leap.index("loadOff LDNA.lib")
+    # tleap reads 3 characters of a PDB residue name (LDG3 -> LDG): the chain ends are mapped to the terminal units
+    assert leap[leap.index("loadOff LDNA.lib") + 1] == amber.LDNA_TERMINAL_MAP
+    assert '{ 0 "LDC" "LDC5" }' in amber.LDNA_TERMINAL_MAP and '{ 1 "LDG" "LDG3" }' in amber.LDNA_TERMINAL_MAP
+    assert leap.index(amber.LDNA_TERMINAL_MAP) < next(k for k, ln in enumerate(leap) if ln.startswith("mol = loadpdb"))
     sh = files["amber-build.sh"]
     assert ('python3 apt1_01_ldna-lib_20261015-1432.py "$AMBERHOME/dat/leap/lib/ff-nucleic-OL24.lib" '
             '"$AMBERHOME/dat/leap/parm/parm10.dat" "$AMBERHOME/dat/leap/parm/frcmod.ff14SB" '
@@ -305,7 +309,7 @@ def test_l_dna_duplex_has_the_energy_of_its_mirror_image(tmp_path, ff, dna_mode)
     assert lrna_lib.main([os.path.join(leap_dir, "lib", lib)] + paths + [str(tmp_path)]) == 0
     base = f"source {leaprc}\n"
     l_leap = (base + 'addAtomTypes { { "LS" "O" "sp3" } { "LT" "O" "sp3" } }\n'
-              "loadamberparams frcmod.ldna\nloadOff LDNA.lib\n")
+              "loadamberparams frcmod.ldna\nloadOff LDNA.lib\n" + amber.LDNA_TERMINAL_MAP + "\n")
     energies = {}
     for hand, leap in (("D", base), ("L", l_leap)):
         (tmp_path / f"{hand}.pdb").write_text(builder.build_helix("GACTGCAT", na="dna", chirality=hand,

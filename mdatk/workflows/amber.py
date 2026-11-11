@@ -64,6 +64,10 @@ DNA_FORCE_FIELDS: Dict[str, Tuple[str, str, str, str, Tuple[str, ...]]] = {
 LDNA_TWINS = {"OS": "LS", "OH": "LT"}
 LDNA_SETTINGS = {"KIND": "L-DNA", "NUCLEOTIDE_PATTERN": r"^D[ACGT][35N]?$", "TWIN_ATOMS": ("O5'", "O4'", "O3'"),
                  "LIB_NAME": "LDNA.lib", "FRCMOD_NAME": "frcmod.ldna", "TWIN_NAMES": LDNA_TWINS}
+# L-DNA residues at the 5' (0) / 3' (1) end of a chain get their terminal units (tleap reads 3 characters of a
+# PDB residue name, so a PDB's LDG3 is read as LDG)
+LDNA_TERMINAL_MAP = "addPdbResMap { " + " ".join(f'{{ {end} "LD{b}" "LD{b}{suffix}" }}' for b in "ACGT"
+                                                  for end, suffix in ((0, "5"), (1, "3"))) + " }"
 POL_1264 = "lj_1264_pol_mdatk.dat"  # the 12-6-4 polarizabilities with the twin types (ParmEd needs every type)
 
 # id -> (label, leaprc, solvent box, ParmEd add12_6_4 water model, 12-6-4 ion frcmod)
@@ -1290,7 +1294,10 @@ class AmberBuildTool(Tool):
         if self.lrna_generated(s, ctx):
             lines += ["loadamberparams frcmod.lrna", "loadOff LRNA.lib"]
         if self.ldna_generated(s, ctx):
-            lines += ["loadamberparams frcmod.ldna", "loadOff LDNA.lib"]
+            # tleap reads three characters of a PDB residue name: LDG3 / LDC5 arrive as LDG / LDC, the internal
+            # units, which tleap then leaves unbonded at the chain end; map them to the terminal units, as
+            # leaprc.DNA maps DG to DG5 / DG3
+            lines += ["loadamberparams frcmod.ldna", "loadOff LDNA.lib", LDNA_TERMINAL_MAP]
         lines += [f"loadOff {f.strip()}" for f in extra_lines(s["extra_libs"])]
         lines += extra_lines(s["leap_before_load"])
         lines.append(f'mol = loadpdb "{pdb_in}"')

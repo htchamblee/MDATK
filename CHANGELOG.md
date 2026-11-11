@@ -12,6 +12,17 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Fix: L-DNA chain ends bonded
+
+- tleap reads three characters of a PDB residue name, so the 4-character L-DNA terminal names (LDG3, LDC5 ...)
+  arrived as the internal units LDG / LDC: the residue at each L-DNA chain end got a 5'-phosphate or lost
+  its 3'-OH hydrogen and was left unbonded to its neighbour (a separate molecule in the topology). The
+  Amber build now maps L-DNA residues at a chain's 5' / 3' end to the terminal units (`addPdbResMap`, as
+  leaprc.DNA maps DG to DG5 / DG3). Builds without L-DNA are unchanged. Topologies built with L-DNA
+  ends before this fix should be rebuilt.
+
 ## 0.0.16 (2026-11-11)
 
 ### Fix: helix restraints on DNA
