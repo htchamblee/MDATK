@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.14"
+mdatk_version = "0.0.15"
 # When the settings were last saved.
-saved = 2026-11-09T22:15:42
+saved = 2026-11-11T00:03:26
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -750,8 +750,17 @@ check_topology = true
 # Conda environment: Activate this conda environment at the top of the script (eval "$(conda
 # shell.bash hook)"; conda activate <name>). Leave empty when the programs are already on PATH.
 conda_env = ""
-# Setup commands: Shell lines run before any program, e.g. 'module load ...' on a cluster or 'source
-# /opt/amber26/amber.sh' on a workstation.
+# Setup file: A shell file the script sources before any program, after the conda environment, e.g.
+# /opt/amber26/amber.sh (an absolute path: the script runs in the step folder). A file that does not
+# exist where the script runs is reported (a warning in the output) and skipped; the planner warns
+# when it is missing on this computer.
+env_file = ""
+# Setup commands: Shell lines run before any program, after the setup file, e.g. 'module load ...'
+# on a cluster or 'source /opt/amber26/amber.sh' on a workstation. 'module' is a shell function that
+# a login shell's profile defines (/etc/profile.d/modules.sh, Lmod's init): RNAdo started from the
+# applications menu runs its scripts in the environment of an interactive shell (~/.bashrc), without
+# a login profile, so source the modules init file first there. Before it runs a script MDATK checks
+# that the step's programs are found after these lines.
 env_setup = ""
 
 [[workflow.nodes]]
@@ -886,8 +895,17 @@ continuation = false
 # Conda environment: Activate this conda environment at the top of the script (eval "$(conda
 # shell.bash hook)"; conda activate <name>). Leave empty when the programs are already on PATH.
 conda_env = ""
-# Setup commands: Shell lines run before any program, e.g. 'module load ...' on a cluster or 'source
-# /opt/amber26/amber.sh' on a workstation.
+# Setup file: A shell file the script sources before any program, after the conda environment, e.g.
+# /opt/amber26/amber.sh (an absolute path: the script runs in the step folder). A file that does not
+# exist where the script runs is reported (a warning in the output) and skipped; the planner warns
+# when it is missing on this computer.
+env_file = ""
+# Setup commands: Shell lines run before any program, after the setup file, e.g. 'module load ...'
+# on a cluster or 'source /opt/amber26/amber.sh' on a workstation. 'module' is a shell function that
+# a login shell's profile defines (/etc/profile.d/modules.sh, Lmod's init): RNAdo started from the
+# applications menu runs its scripts in the environment of an interactive shell (~/.bashrc), without
+# a login profile, so source the modules init file first there. Before it runs a script MDATK checks
+# that the step's programs are found after these lines.
 env_setup = ""
 
 # Stages run in order, each from the previous one's coordinates.

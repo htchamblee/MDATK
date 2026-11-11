@@ -280,13 +280,24 @@ def test_planner_template_connect_and_write(main, tmp_path):
     canvas._on_press(canvas, at(*start))
     canvas._on_release(canvas, at(*end))
     assert len(main.project.workflow.edges) == edges
-    # moving a box (positions snap to a 10 px grid)
+    # moving a box (positions snap to a 10 px grid); it stops short of the steps in its way
     node = nodes["amber-md"]
     x0 = node.x
     p = (node.x + 60, node.y + 10)  # the title bar, right of the "run" check box
     canvas._on_press(canvas, at(*p))
     canvas._on_motion(canvas, at(p[0] + 100, p[1] + 50))
     canvas._on_release(canvas, at(p[0] + 100, p[1] + 50))
+    assert node.x % 10 == 0 and node.y % 10 == 0 and node.x > x0
+    nx, ny, nw, nh = (node.x, node.y) + canvas.node_size(node)
+    assert all(nx + nw <= bx or bx + bw <= nx or ny + nh <= by or by + bh <= ny
+               for bx, by, bw, bh in canvas.boxes(node))
+    # with Shift held it goes where it is put
+    x0, p = node.x, (node.x + 60, node.y + 10)
+    canvas._on_press(canvas, at(*p))
+    ev = at(p[0] + 100, p[1] + 50)
+    ev.state = Gdk.ModifierType.SHIFT_MASK
+    canvas._on_motion(canvas, ev)
+    canvas._on_release(canvas, ev)
     assert node.x == pytest.approx(x0 + 100, abs=10)
     # fill in the missing bits through the node data and write everything
     nodes["amber-build"].files["structure"] = str(tmp_path / "model.pdb")

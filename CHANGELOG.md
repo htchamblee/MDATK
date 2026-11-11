@@ -5,14 +5,24 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
-## Unreleased
+## 0.0.15 (2026-11-11)
+
+### RNAdo planner: boxes keep apart, outlined connections
+
+- A box dragged onto another stops `TILE_GAP` (20 px) short of it and slides along its edge, first across
+  and then up or down, and jumps past once the pointer's place is free; Shift while dragging puts it
+  anywhere (as before). *Duplicate* puts the copy in the nearest free spot (it was 30 px down and right,
+  on top of the original); *Arrange* spaces each column by the boxes' heights (rows were 200 px whatever
+  their size) and moves a note a box now sits on to the nearest free spot.
+- Connections are drawn over a dark outline (2.6 px wider than the wire, round ends): light wires such as
+  coordinates (rst7) and text were hard to see on the canvas and on the boxes.
 
 ### Missing programs reported before a step runs
 
@@ -54,6 +64,12 @@ preparation helper carries the new code).
   coordinates and topology and the first step's fitted model as its map-frame model, so a two-part fit
   is one plan. The planner reports coordinates connected with another topology as an error, and warns
   when the map-frame model is not the first part's fitted model.
+
+### Other
+
+- README: a wrapped inline code span put `<script>` at the start of a line, which GitHub reads as a raw
+  HTML block: the rest of *Running steps* rendered as plain text.
+- `examples/namd_mdff` regenerated (version in the headers, the helper's new code, the new option keys).
 
 ## 0.0.14 (2026-11-09)
 
