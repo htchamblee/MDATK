@@ -836,7 +836,7 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
         out_notes += pdbtools.set_records(s, "pdb")
     if phosphate5 and scheme == "amber":
         out_notes.append("WARNING: the Amber 5' units have no 5'-phosphate (tleap cannot type P/OP1/OP2/OP3 "
-                         f"of {'DA5/LDA5' if dna else 'A5/LA5'} ...); build without the 5'-phosphate for tleap")
+                         f"of {'DA5 / LDA (L-DNA 5 prime end)' if dna else 'A5/LA5'} ...); build without the 5'-phosphate for tleap")
     hand = "right-handed, D" if chirality == "D" else "left-handed, L: mirror image"
     what = f"duplex of {n} base pairs" if other is not None else f"single strand of {n} nucleotides"
     if motif:

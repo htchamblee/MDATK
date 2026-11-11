@@ -85,6 +85,12 @@ def test_generator_in_dna_mode_twins_o3_and_mirrors_phases(tmp_path, dna_mode):
     assert ' "O3\'" "LS" 0' in lib and ' "O3\'" "LT" 0' in lib and ' "O5\'" "LS" 0' in lib
     assert ' "O4\'" "LS" 0' in lib and ' "C3\'" "C7" 0' in lib  # carbons keep their types
     assert " 1 2 -3\n -1.5 0.5 2.25" in lib  # z mirrored
+    # unit names LDT / LDT3 (tleap maps a chain's 3' end to LDT3); residue names of three characters: the
+    # topology and the PDB files written from it never carry a four-character name
+    assert '!entry.LDT3.unit.name single str\n "LDT3"' in lib
+    assert '!entry.LDT3.unit.residues table' in lib and ' "LDT" 1 5 1 "?" 0' in lib and '"LDT3" 1 5' not in lib
+    assert [lrna_lib.residue_name(u) for u in ("DA", "DA5", "DA3", "DAN", "A", "A5", "AN")] == \
+        ["LDA", "LDA", "LDA", "LDA", "LA", "LA5", "LAN"]
     frc = (tmp_path / "out" / "frcmod.ldna").read_text()
     assert frc.startswith("L-DNA atom types LT (OH) LS (OS)")
     sections = dict(re.findall(r"^(MASS|BOND|ANGL|DIHE|IMPR|NONB)\n(.*?)\n\n", frc, re.S | re.M))

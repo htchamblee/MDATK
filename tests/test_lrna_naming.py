@@ -293,10 +293,10 @@ def _ligand_builds(tmp_path):
 # copy library code (mdatk.pdbtools, scripts/prep_pdb.py) grew, as tests/test_golden.py lists (last: the
 # empty slots of a model check, with their reason; then DNA and L-DNA names, LINK records that follow the
 # residues, the CCD's 0DA / 0DT atom names, and prep keeping a phosphate-only residue such as a chimera's
-# PO2 bridge; then clean --dna, for the Amber build of DNA); the build scripts, leap / ParmEd inputs and messages
-# are those of a3b572c
+# PO2 bridge; then clean --dna, for the Amber build of DNA; then 0.0.17: L-DNA names of three characters at the
+# chain ends too); the build scripts, leap / ParmEd inputs and messages are those of a3b572c
 _LIGAND_SAME = {"check.py": "9b3c751ac12a", "cp-lib.py": "c34fff6d74b5", "parmed.in": "19a1cbd00ec2",
-                "pdbtools.py": "2ac905b66ac3", "prep.py": "a377a5917762"}
+                "pdbtools.py": "01b28890501e", "prep.py": "a377a5917762"}
 LIGAND_BUILDS_A3B572C = {
     "helix": dict(_LIGAND_SAME, **{":issues": "6a48b36ce705", "amber-build.sh": "6afa8ca98cf5",
                                    "tleap.leap": "74b75b71fbec"}),

@@ -198,7 +198,7 @@ def test_scheme_name_dna():
     rows = {scheme: [pt.scheme_name("T", c, t, scheme, "dna") for c in "DL" for t in ("", "5", "3", "N")]
             for scheme in pt.SCHEMES}
     assert rows == {
-        "amber": ["DT", "DT5", "DT3", "DTN", "LDT", "LDT5", "LDT3", "LDTN"],
+        "amber": ["DT", "DT5", "DT3", "DTN", "LDT", "LDT", "LDT", "LDT"],  # L-DNA: 3 characters, ends mapped by tleap
         "ccd": ["DT"] * 4 + ["0DT"] * 4, "rosetta": ["DT"] * 4 + ["0DT"] * 4, "pdb": ["DT"] * 4 + ["0DT"] * 4,
         "standard": ["DT"] * 8}
     for scheme in pt.SCHEMES:  # every name reads back as the DNA nucleotide it names
@@ -207,7 +207,7 @@ def test_scheme_name_dna():
                 info = pt.parse_residue_name(pt.scheme_name("A", c, t, scheme, "dna"))
                 assert info.base == "A" and info.sugar == "dna"
                 assert info.chirality == ("D" if scheme == "standard" else c)
-                assert info.terminal == (t if scheme == "amber" else "")
+                assert info.terminal == (t if scheme == "amber" and c == "D" else "")
     assert pt.scheme_name("G", "L", "5", "amber") == "LG5"  # RNA by default, as before
     with pytest.raises(pt.PDBError):
         pt.scheme_name("G", "D", "", "charmm", "dna")
@@ -228,7 +228,7 @@ def test_convert_names_dna():
                             "L-DNA 0DA, 0DC, 0DG, 0DT): F:6 DG") for n in r.notes)
     assert not any(n.startswith("L sugars in") for n in r.notes)  # 'L names when a scheme is applied': RNA only
     by_scheme = {
-        "amber": ["G5", "C3", "DG5", "DA", "DC3", "LDG5", "LDT", "LDC3", "LDAN"],
+        "amber": ["G5", "C3", "DG5", "DA", "DC3", "LDG", "LDT", "LDC", "LDA"],
         "ccd": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
         "rosetta": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
         "pdb": ["G", "C", "DG", "DA", "DC", "0DG", "0DT", "0DC", "0DA"],
@@ -240,9 +240,10 @@ def test_convert_names_dna():
         notes = pt.convert_names(s, scheme, dna=True)
         assert [n for _, _, n in names(s)] == want, scheme
         if scheme == "amber":
-            # the 5'-phosphate warning covers DNA; L-DNA gets MDATK's names, with a note; LDAN is a unit name
+            # the 5'-phosphate warning covers DNA, L-DNA too (named LDG / LDA at the 5' end: tleap maps them to
+            # the 5' units); L-DNA gets MDATK's names, with a note
             warn = next(n for n in notes if n.startswith("WARNING: 5'-terminal residues carry P/OP1/OP2"))
-            assert "E:3 DG5" in warn and "F:6 LDG5" in warn and "G:9 LDAN" in warn
+            assert "E:3 DG5" in warn and "F:6 LDG" in warn and "G:9 LDA" in warn
             assert any(n.startswith("L-DNA: 4 residue(s) (F:6-8, G:9) have MDATK's Amber-style names") for n in notes)
             assert not any("no unit for a single-residue L segment" in n for n in notes)
         if scheme == "ccd":
@@ -260,7 +261,7 @@ def test_convert_names_dna():
     s = pt.read_pdb(text)
     pt.assign_chirality(s)
     pt.convert_names(s, "amber", only="F", dna=True)
-    assert [n for _, _, n in names(s)] == ["G", "C", "DG", "DA", "DC", "LDG5", "LDT", "LDC3", "DA"]
+    assert [n for _, _, n in names(s)] == ["G", "C", "DG", "DA", "DC", "LDG", "LDT", "LDC", "DA"]
 
 
 def test_l_dna_names_are_l_nucleotides():
@@ -1283,7 +1284,7 @@ def test_sequences_leave_out_residues_made_only_of_phosphate_atoms():
 
 
 def test_seqres_names_have_three_characters():
-    """SEQRES has three columns per residue name: MDATK's Amber-style L-DNA names (LDG5, LDA, LDA3, LDTN ...; the
+    """SEQRES has three columns per residue name: MDATK's Amber-style L-DNA names (LDG, LDA ...; the
     CCD's LDA and LDT are other compounds) are written as their CCD components (0DG, 0DA ...), any other long name
     as UNK, each with a note; the names of the residues themselves do not change."""
     text = builder.build_helix("GACTGACTGACTGA", na="dna", chirality="L", scheme="amber")
@@ -1296,9 +1297,8 @@ def test_seqres_names_have_three_characters():
         names = ln[19:].split()
         assert [ln[19 + 4 * k:22 + 4 * k].strip() for k in range(len(names))] == names
     assert ("SEQRES names are the CCD's three-character ones: wrote the CCD components of MDATK's Amber-style L-DNA "
-            "names and of other four-character names LDA->0DA x6, LDA3->0DA x1, LDC->0DC x6, LDC3->0DC x1, "
-            "LDG->0DG x6, LDG5->0DG x1, LDT->0DT x6, LDT5->0DT x1") in r.notes
-    assert {res.name for res in r.structure.residues()} >= {"LDG5", "LDA3", "LDT5", "LDC3"}
+            "names and of other four-character names LDA->0DA x7, LDC->0DC x7, LDG->0DG x7, LDT->0DT x7") in r.notes
+    assert {res.name for res in r.structure.residues()} == {"LDG", "LDA", "LDT", "LDC"}
     s = pt.read_pdb(text)
     s.segments[0][1].name = "LIGX"
     r = pt.clean(pt.write_pdb(s), seqres=True)

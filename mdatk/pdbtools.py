@@ -30,7 +30,7 @@ occupancies, B-factors and segment ids are carried over verbatim (columns 28-76)
                that read names.
 
   DNA is renamed only on request (``convert_names(..., dna=True)``, as the structure builder does): D: DA DC
-  DG DT (amber: DA5/DA3/DAN of DNA.OL15); L: the CCD's 0DA 0DC 0DG 0DT, amber: MDATK's LDA, LDA5, LDA3, LDAN
+  DG DT (amber: DA5/DA3/DAN of DNA.OL15); L: the CCD's 0DA 0DC 0DG 0DT, amber: MDATK's LDA LDC LDG LDT (3 characters, ends too)
   ... (AmberTools ships no L-DNA library); standard: DA for both hands.  Both L-DNA spellings are read back.
   0DA and 0DT carry their CCD components' own atom names (0DA: N9A, C8A ... HN61, HN62; 0DT: C5M,
   ``CCD_ATOM_NAMES``): :func:`read_pdb` reads them as the standard names, so that every reader of a parsed
@@ -113,7 +113,8 @@ _WATER = frozenset({"HOH", "WAT", "H2O", "DOD", "SOL", "TIP", "TIP3", "TIP4", "T
                     "SPC", "OPC"})
 _NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
 # L-DNA: the CCD's 2'-deoxy-L-ribonucleotides 0DA 0DC 0DG 0DT (no terminal variants) and the Amber-style names
-# MDATK's builder writes, LDA LDA5 LDA3 LDAN ... (after nucleic12_LRNA.lib's LA; AmberTools has no L-DNA units)
+# MDATK's builder writes, LDA ... (after nucleic12_LRNA.lib's LA; AmberTools has no L-DNA units); older files
+# have LDA5 / LDA3 / LDAN at the ends
 _LDNA_RE = re.compile(r"^(?:0D([ACGT])|LD([ACGT])([53N]?))$")
 _NT_ALIASES = {"ADE": ("A", "rna"), "CYT": ("C", "rna"), "GUA": ("G", "rna"), "URA": ("U", "rna"),
                "URI": ("U", "rna"), "THY": ("T", "dna")}
@@ -202,7 +203,7 @@ def parse_residue_name(name: str) -> Optional[ResidueName]:
 
     RNA: A, A5, A3, AN, RA, RA5, RA3, RAN, ADE/CYT/GUA/URA/URI; L-RNA: LA, LA5, LA3, 0A, 0A5, 0A3 (and the
     N forms); DNA: DA, DA5, DA3, DAN, T, THY ...; L-DNA: the CCD components 0DA, 0DC, 0DG, 0DT and the
-    Amber-style LDA, LDA5, LDA3, LDAN ... of MDATK's builder.
+    Amber-style LDA ... of MDATK's builder (LDA5, LDA3, LDAN in files written before 0.0.17).
 
     A name alone can mean something else: in the CCD, LA, LU and RA are the lanthanum, lutetium and radium ions,
     LDA a detergent (lauryldimethylamine N-oxide), LDT a ligand without a sugar, LDC an L-2'-deoxycytidine
@@ -234,12 +235,14 @@ def scheme_name(base: str, chirality: str, terminal: str, scheme: str, sugar: st
     """Residue name of an RNA nucleotide in ``scheme`` (terminal: "5", "3", "N" or "").
 
     ``sugar`` "dna": the name of a DNA nucleotide.  amber: DA DA5 DA3 DAN (the units of AmberTools'
-    DNA.OL15.lib), L: LDA LDA5 LDA3 LDAN (MDATK's own names, after nucleic12_LRNA.lib's LA LA5 LA3: AmberTools
-    ships no L-DNA library); ccd / rosetta / pdb: DA, L: 0DA (the CCD has no terminal variants for DNA);
-    standard: DA for both hands."""
+    DNA.OL15.lib), L: LDA at every position (MDATK's own names, after nucleic12_LRNA.lib's LA: AmberTools ships
+    no L-DNA library). A PDB residue name has three characters, and tleap reads no more: the Amber build maps an
+    L-DNA residue at a chain end to its terminal unit (LDA5 / LDA3 of the generated library), as leaprc.DNA maps
+    DA to DA5 / DA3; ccd / rosetta / pdb: DA, L: 0DA (the CCD has no terminal variants for DNA); standard: DA
+    for both hands."""
     if sugar == "dna":
         if scheme == "amber":
-            return ("LD" if chirality == "L" else "D") + base + terminal
+            return "LD" + base if chirality == "L" else "D" + base + terminal
         if scheme in ("ccd", "rosetta", "pdb"):
             return ("0D" if chirality == "L" else "D") + base
         if scheme == "standard":  # as for RNA: the hand is not in the name
@@ -1464,7 +1467,7 @@ def convert_names(structure: Structure, scheme: str, only=None, terminals: bool 
                      "(its O3' lacks a hydrogen): " + _listing(single_l))
     if l_dna:
         notes.append(f"L-DNA: {len(l_dna)} residue(s) ({ranges_text(l_dna)}) have MDATK's Amber-style names LDA, "
-                     "LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no L-DNA library: the "
+                     "LDC, LDG, LDT (three characters at the chain ends too); AmberTools ships no L-DNA library: the "
                      "Amber build step generates its units (LDNA.lib) from the DNA force field")
     if plain_l:
         notes.append(f"WARNING: the standard scheme gives {len(plain_l)} L residue(s) plain D names "
@@ -1836,7 +1839,7 @@ def _sequence_chains(structure: Structure) -> Dict[str, List[Residue]]:
 
 def _seqres_names(structure: Structure) -> Tuple[Dict[str, List[str]], List[str]]:
     """(chain -> the residue names of its SEQRES records, notes).  SEQRES names have three characters (columns
-    20-22, 24-26 ...): a longer nucleotide name, such as MDATK's Amber-style L-DNA LDA5 / LDA3 / LDAN, is written
+    20-22, 24-26 ...): a longer nucleotide name, such as the Amber-style L-DNA LDA5 / LDA3 / LDAN of older files, is written
     as its CCD component (0DA), any other one as UNK, each with a note."""
     out: Dict[str, List[str]] = {}
     mapped: Counter = Counter()
@@ -2035,7 +2038,7 @@ def _clean_arguments(p) -> None:
     p.add_argument("--no-terminal-names", action="store_true", help="chain ends keep the internal names "
                    "(LA, not LA5/LA3), for libraries that map terminals with addPdbResMap")
     p.add_argument("--dna", action="store_true", help="rename the DNA residues too (amber: DA5 / DA3 ... and "
-                   "MDATK's L-DNA LDA, LDA5, LDA3 ...; ccd: 0DA ...), as the structure builder names them")
+                   "MDATK's L-DNA LDA ...; ccd: 0DA ...), as the structure builder names them")
     p.add_argument("--keep-conect", action="store_true", help="keep CONECT records (stripped by default "
                    "until final deposition processing)")
     p.add_argument("--no-detect", action="store_true", help="do not detect L-nucleotides from the sugar "

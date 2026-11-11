@@ -22,6 +22,16 @@ the notes below.
   Amber build now maps L-DNA residues at a chain's 5' / 3' end to the terminal units (`addPdbResMap`, as
   leaprc.DNA maps DG to DG5 / DG3). Builds without L-DNA are unchanged. Topologies built with L-DNA
   ends before this fix should be rebuilt.
+
+### Three-character residue names only
+
+- A PDB residue name has three characters (columns 18-20), and tleap reads no more. MDATK no longer writes
+  four-character names: L-DNA is LDA / LDC / LDG / LDT at every position, chain ends included, in the
+  structure builder's and the PDB tools' `amber` scheme (it was LDA5 / LDA3 / LDAN at the ends, as D-DNA's
+  DA5 / DA3 / DAN). The generated L-DNA library keeps its end units LDA5 / LDA3 / LDAN, which tleap picks by
+  position (above), but names their residues LDA …, so topologies, and the PDB files cpptraj or tleap write
+  from them, carry three-character names only. Files with the old names are still read (and their SEQRES
+  written as 0DA …). The embedded PDB tools of the Amber build change accordingly.
 - `examples/namd_mdff` regenerated (version in the headers).
 
 ## 0.0.16 (2026-11-11)

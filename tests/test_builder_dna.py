@@ -238,7 +238,7 @@ def test_l_dna_is_the_exact_mirror_image():
 
 @pytest.mark.parametrize("scheme, chirality, names", [
     ("amber", "D", ["DG5", "DA", "DC", "DT3", "DA5", "DG", "DT", "DC3"]),
-    ("amber", "L", ["LDG5", "LDA", "LDC", "LDT3", "LDA5", "LDG", "LDT", "LDC3"]),
+    ("amber", "L", ["LDG", "LDA", "LDC", "LDT", "LDA", "LDG", "LDT", "LDC"]),  # 3 characters: tleap maps the ends
     ("ccd", "D", ["DG", "DA", "DC", "DT", "DA", "DG", "DT", "DC"]),
     ("ccd", "L", ["0DG", "0DA", "0DC", "0DT", "0DA", "0DG", "0DT", "0DC"]),
     ("rosetta", "L", ["0DG", "0DA", "0DC", "0DT", "0DA", "0DG", "0DT", "0DC"]),
@@ -271,7 +271,7 @@ def test_dna_terminal_names_single_residues_and_phosphate():
     names = [r.name for r in dna("GACT", scheme="amber", terminals=False)[0].residues()]
     assert names == ["DG", "DA", "DC", "DT", "DA", "DG", "DT", "DC"]
     assert [r.name for r in dna("G", scheme="amber")[0].residues()] == ["DGN", "DCN"]
-    assert [r.name for r in dna("G", scheme="amber", chirality="L")[0].residues()] == ["LDGN", "LDCN"]
+    assert [r.name for r in dna("G", scheme="amber", chirality="L")[0].residues()] == ["LDG", "LDC"]
     assert [r.name for r in dna("G", scheme="ccd", chirality="L")[0].residues()] == ["0DG", "0DC"]
     s, _text, notes = dna("GACT", scheme="amber", phosphate5=True)
     first = s.segments[0][0]
@@ -283,7 +283,7 @@ def test_dna_terminal_names_single_residues_and_phosphate():
     nxt = s.segments[0][1].coords()
     for x in ("O5'", "OP1", "OP2"):
         assert angle(c["OP3"], c["P"], c[x]) == pytest.approx(angle(c["O3'"], nxt["P"], nxt[x]), abs=0.15), x
-    assert any("Amber 5' units have no 5'-phosphate" in n and "DA5/LDA5" in n for n in notes)
+    assert any("Amber 5' units have no 5'-phosphate" in n and "DA5 / LDA (L-DNA 5 prime end)" in n for n in notes)
     assert not any(n.startswith("WARNING: 5'-terminal") for n in notes)  # the builder's own warning only
     assert "P" not in [a.name for a in dna("GACT")[0].segments[1][0].atoms]  # 5'-OH by default
 
@@ -438,7 +438,7 @@ def test_g_t_wobble_pairs_of_an_explicit_partner():
 
 @pytest.mark.parametrize("scheme, chirality, before, after", [
     ("amber", "D", ("DG5", "DC", "DC3"), ("DT5", "DT", "DA3")),
-    ("amber", "L", ("LDG5", "LDC", "LDC3"), ("LDT5", "LDT", "LDA3")),
+    ("amber", "L", ("LDG", "LDC", "LDC"), ("LDT", "LDT", "LDA")),
     (None, "L", ("0DG", "0DC", "0DC"), ("0DT", "0DT", "0DA")),
     ("ccd", "D", ("DG", "DC", "DC"), ("DT", "DT", "DA")),
 ])
@@ -515,7 +515,7 @@ def test_dna_cli_logs_title_and_citations(tmp_path):
     assert main(["build", "helix", "--seq", "GGCAT", "--na", "dna", "--chirality", "L", "--scheme", "amber",
                  "--hydrogens", "-o", str(l_dna), "-p", str(proj)]) == 0
     s = pt.read_pdb(str(l_dna))
-    assert [r.name for r in s.residues()][:2] == ["LDG5", "LDG"]
+    assert [r.name for r in s.residues()][:2] == ["LDG", "LDG"]
     entry = read_log(str(proj))[-1]
     assert entry["step"] == "build helix" and entry["title"] == "Ideal B-form L-DNA helix GGCAT"
     assert entry["citations"] == ["arnott1972dna"] and "Built an ideal B-form DNA" in entry["summary"]
@@ -532,7 +532,7 @@ def test_dna_cli_logs_title_and_citations(tmp_path):
     assert read_log(str(proj))[-1]["status"] == "failed"
     mut = tmp_path / "mut.pdb"
     assert main(["build", "mutate", str(l_dna), "A:1U", "--no-compensatory", "-o", str(mut)]) == 0  # U read as T
-    assert [r.name for r in pt.read_pdb(str(mut)).residues()][:2] == ["LDT5", "LDG"]
+    assert [r.name for r in pt.read_pdb(str(mut)).residues()][:2] == ["LDT", "LDG"]
     assert main(["build", "mutate", str(rna), "A:1T", "-o", str(mut)]) == 1  # RNA: no T
 
 
