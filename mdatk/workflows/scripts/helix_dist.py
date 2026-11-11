@@ -39,13 +39,19 @@ def read_parm7_names(path):
 
 
 def base_letter(label):
-    """Nucleotide letter of an Amber residue label (G, G5, G3, RG, LG, GN ... -> G)."""
+    """Nucleotide letter of an Amber residue label: RNA G, G5, G3, RG, LG, GN ..., DNA DG, DG5, DGN and L-DNA
+    LDG, LDG5, LDGN ... -> G (DNA T stays T: :func:`same_base` matches it with U)."""
     core = label.strip().upper().rstrip("0123456789")
     if core.endswith("N") and len(core) > 1:
         core = core[:-1]
-    if len(core) > 1 and core[0] in "RLD":
+    while len(core) > 1 and core[0] in "RLD":
         core = core[1:]
     return core
+
+
+def same_base(a, b):
+    """Whether two base letters name the same base, T and U alike (the secondary structure reads T as U)."""
+    return a.replace("T", "U") == b.replace("T", "U")
 
 
 def atom_index(names, labels, pointers, resnum, atom):
@@ -65,7 +71,7 @@ def restraint_text(names, labels, pointers, pairs, bonds, window, offset=0):
     for a, b, kind in pairs:
         ra, rb = a + offset, b + offset
         for res, letter in ((ra, kind[0]), (rb, kind[1])):
-            if 1 <= res <= len(labels) and base_letter(labels[res - 1]) != letter:
+            if 1 <= res <= len(labels) and not same_base(base_letter(labels[res - 1]), letter):
                 raise ValueError(f"residue {res} is {labels[res - 1]} in the topology but the secondary "
                                  f"structure expects {letter}: check the sequence and residue offset")
         for an, bn in bonds[kind]:

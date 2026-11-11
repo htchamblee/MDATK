@@ -12,6 +12,15 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Fix: helix restraints on DNA
+
+- The *Amber · helix restraints* step failed on every DNA build: its helper read DNA residue names (DT, DG5,
+  L-DNA LDA, LDG3 ...) as RNA names and refused the pairs (`residue 2 is DT in the topology but the secondary
+  structure expects U`). It now reads DNA and L-DNA names and matches T with the U of the secondary
+  structure; RNA restraints are unchanged.
+
 ## 0.0.15 (2026-11-11)
 
 ### RNAdo planner: boxes keep apart, outlined connections
