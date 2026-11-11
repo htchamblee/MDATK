@@ -12,6 +12,35 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Structure builder: D/L chimeras with linked partner strands
+
+- New option of the D/L chimera mode: **link the partner strands** (`mdatk build chimera --link-partners`,
+  `link_partners=True` of `mdatk.chimera.build_chimera`, *Link the partner strands* of the planner step's
+  *D/L chimera* section and of RNAdo's *Chimera* page). Each segment's partner strand used to be a chain of its
+  own, nicked at every junction; with the option the partner strands are joined too, by a phosphodiester at
+  every junction, into one continuous chain (two chains in all). For `D-DNA:CTGGCGTCTT 3'-5'
+  L-DNA:AAGACGCCAG`: strand 1 `5'-D(CTGGCGTCTT)-p-L(AAGACGCCAG)-3'` (chain A), strand 2
+  `5'-L(CTGGCGTCTT)-p-D(AAGACGCCAG)-3'` (chain B, 1-20, no TER inside it). The partner 3' end that faces a
+  junction is bonded to the other partner's 5' end, which gets P / OP1 / OP2; the junction residues have
+  internal names (three characters, as before: L-DNA LDA ... everywhere, D-DNA DA5 / DA3 only at the free ends).
+- The junction fit places the next segment so that both phosphodiesters close at once (O3'-P 1.60 Å, C3'-O3'-P
+  119.7°, O3'-P-O5' 104°, both phosphates rebuilt), the γ / β of both P residues turning (RNA ones too: a rigid
+  body cannot close two links), with the contacts through either link and the end pairs stacked as well as the
+  two backbones allow; every start is fitted with the rigid body alone and with the turns, and the 8 best poses
+  are refitted with the contacts. The design and its twin still give exact mirror images. RNA junctions stack as
+  without the option (D-RNA:GGCAUC 3'-5' L-RNA:GAUGCC: end pairs 4.59 Å apart); a D/L B-DNA junction cannot stack
+  with both backbones closed (the L pair's backbones run on the other side of the pair): its pairs stay coaxial
+  but about 6.4-7.5 Å apart (rise about 5.2 Å, offset about 4 Å), which the closure warning names. Minimise.
+- A bridging link (3'-3', 5'-5') or a single-strand segment cannot be linked: an error of the design check (the
+  planner step shows it on the option) and of the build. `chain_count(design, link_partners=True)` counts the
+  two chains, and the chain ids are checked against them.
+- The notes and the `REMARK 951 JUNCTION` header give the partners' phosphodiester too (a line of its own,
+  ending `PARTNER STRANDS`). With linked partners of one nucleic acid, the planner step's *Secondary structure*
+  port carries the duplex pairs (strand 1 and the continuous partner), e.g. for helix restraints.
+- Off by default: every build without the option is byte-identical to 0.0.17.
+
 ## 0.0.17 (2026-11-11)
 
 ### Fix: L-DNA chain ends bonded
