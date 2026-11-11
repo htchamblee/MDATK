@@ -269,8 +269,7 @@ def test_dna_names_l_dna_components_and_a_fix_that_works(tmp_path, tool):
               "first: 'mdatk pdb clean' renames RNA only, and the structure builder writes these names with "
               "Residue names 'CCD for Coot / Phenix' ('mdatk build ... --scheme ccd')")
     for name, chirality, listed in (("ddna_amber.pdb", "D", "DG5 x1, DT3 x1, DA5 x1, DC3 x1"),
-                                    ("ldna_amber.pdb", "L", "LDG x2, LDC x2, LDG5 x1, LDA x1, LDT3 x1, LDA5 x1, "
-                                                            "LDT x1, LDC3 x1")):
+                                    ("ldna_amber.pdb", "L", "LDG x3, LDC x3, LDA x2, LDT x2")):
         st, path = issues(name, builder.build_helix("GGCAT", chirality=chirality, na="dna", scheme="amber"))
         assert messages(st, "warning") == [f"{program} does not recognise the DNA residue names {listed} "
                                            f"(Amber-style names); {rename}"]

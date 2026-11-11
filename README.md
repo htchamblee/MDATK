@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.16](#whats-new-in-0016)
+- [What's new in 0.0.17](#whats-new-in-0017)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,29 +82,21 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.16
+## What's new in 0.0.17
+
+- **Fix: L-DNA chain ends bonded.** tleap reads three characters of a PDB residue name, so the L-DNA end
+  residues (LDG3, LDC5 …) were built as internal units and left unbonded to their neighbours. The Amber build
+  now maps L-DNA residues at a chain's 5' / 3' end to the terminal units; rebuild topologies with L-DNA ends
+  made by earlier versions. Builds without L-DNA are unchanged.
+- **Three-character residue names only:** L-DNA is LDA LDC LDG LDT at every position, chain ends included, in
+  every PDB file MDATK writes and in the generated library's residue names (so in topologies too); older
+  files with LDA5 / LDA3 / LDAN are still read.
+
+### Also new in 0.0.16
 
 - **Fix: helix restraints on DNA.** The *Amber · helix restraints* step refused every DNA build (it read DNA
   and L-DNA residue names such as `DT` and `LDA` as RNA names); DNA and L-DNA pairs are now restrained, and
   RNA restraints are unchanged.
-
-### Also new in 0.0.15
-
-- **Planner boxes keep apart:** a box dragged onto another stops at its edge and slides along it (Shift:
-  put it anywhere); *Duplicate* and *Arrange* place boxes clear of the others.
-- **Outlined connections:** every connection has a dark outline, so light wires (coordinates, text) show on
-  the canvas and where wires cross boxes or each other.
-- **Missing programs named before a step runs:** MDATK checks the programs a script calls (the Amber MD
-  engine, `tleap`, NAMD, `sander` …) in the environment it will run in, and stops the step at once with the
-  program's name and why, the same from a terminal or the applications menu; a script that exits 127 has
-  the command named too. New *Setup file* in every step's Environment (sourced if it exists).
-- **NAMD MDFF restraints as plan settings:** extra distance walls between named atoms
-  (`[[extra_bonds]]`), positional restraints on chosen residues, and continuation steps (a second fit
-  from the first one's final coordinates), all listed by `mdatk workflow check` and the plan summary.
-- **README fix:** the *Running steps* section rendered as plain text on GitHub after a `<script>` at the
-  start of a line.
-- **Generated workflow files** are unchanged with default settings, apart from the version in their
-  headers and the NAMD MDFF helper (it embeds the new preparation code; see [CHANGELOG.md](CHANGELOG.md)).
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -1311,12 +1303,15 @@ and the χOL3 glycosidic torsion), **OL21** (JCTC 2021: OL15 with refined α / �
 `leaprc.DNA.OL24` / `OL21` / `OL15`. A structure without DNA is built exactly as before. The DNA types are
 not RNA's (C3′ C7, C5′ CJ, χ on CK / CM / C1 / C2 against RNA's C5 / CP / C4 / CS), so RNA and DNA in one
 structure each keep their own terms. The naming step then gives DNA its Amber names too (DA5 / DA3 …, and
-L-DNA MDATK's LDA, LDA5, LDA3, LDAN …, also from the CCD's 0DA …).
+L-DNA MDATK's LDA LDC LDG LDT, three characters at the chain ends too, also from the CCD's 0DA …). A PDB
+residue name has three characters, and tleap reads no more: the build maps an L-DNA residue at a chain's
+5′ / 3′ end to the library's end unit (LDA5 / LDA3 …), as `leaprc.DNA` maps DA to DA5 / DA3.
 
 *L-DNA library* (Automatic: generated when the structure has L-DNA; or Generated / My own files) works as
 the generated L-RNA library does, from the DNA force field's own files (`ff-nucleic-OL24.lib` with
 `parm10.dat`, `frcmod.ff14SB` and `ff-nucleic-OL24.frcmod`; the OL21 / OL15 equivalents): `LDNA.lib` holds
-the D units mirrored and named LDA LDC LDG LDT / LDA5 LDA3 LDAN …, and `frcmod.ldna` the terms of the new
+the D units mirrored and named LDA LDC LDG LDT (end units LDA5 LDA3 LDAN …, whose residues are still named
+LDA …, so topologies and the PDB files written from them keep three-character names), and `frcmod.ldna` the terms of the new
 types with mirrored phases. In DNA two oxygens are not enough: OL15 / OL21 have ε and ζ terms through O3′
 (C2′/C4′-C3′-O3′-P, C3′-O3′-P-OP) and OL24 adds δ (O3′-C3′-C4′-C5′) and τ1 (O4′-C1′-C2′-C3′), so every
 sugar and backbone oxygen gets a twin: O5′, O4′ and O3′ typed OS become **LS**, the 5′/3′-OH (OH) **LT**
@@ -1995,7 +1990,7 @@ keeps coordinates, occupancies and B-factors verbatim:
   names as they are and needs no copy; a warning says that the names no longer record the hand, so the
   copy is never meant for tleap, refinement or name-based analyses). Any of these, plus common aliases
   (RA, G5, ADE …) and the DNA names of the [structure builder](#structure-builder) (DA …, the CCD's
-  L-DNA 0DA 0DC 0DG 0DT, MDATK's Amber-style LDA, LDA5, LDA3, LDAN …), is recognised on input; DNA and
+  L-DNA 0DA 0DC 0DG 0DT, MDATK's Amber-style LDA …, and the LDA5, LDA3, LDAN … of files from before 0.0.17), is recognised on input; DNA and
   unknown residues pass through (the PDB tools rename RNA only; the builder names DNA in every scheme). A
   name alone is no nucleotide: the readers that see the atoms want a backbone atom (a primed name or P),
   so the CCD's detergent LDA, the ligand LDT and the ions LA, LU and RA are not taken for nucleotides.
@@ -2027,7 +2022,8 @@ keeps coordinates, occupancies and B-factors verbatim:
   and kept gaps; **SEQRES** records and an optional **FASTA** file (L chains are marked). Residues made
   only of phosphate atoms (a chimera's PO2 bridge, a lone 5′-phosphate) are left out of the sequences, as
   in `mdatk pdb check`, and SEQRES names have three characters: a four-character nucleotide name
-  (MDATK's LDA5, LDG3 …) is written as its CCD component (0DA, 0DG …), any other long name as UNK.
+  (the LDA5, LDG3 … of files from before 0.0.17) is written as its CCD component (0DA, 0DG …), any other long name
+  as UNK; MDATK's LDA … are written as 0DA … too (the CCD's LDA is another compound).
 
 `mdatk pdb check` also measures every sugar: `--expect-l` / `--expect-d RANGES` give the hands
 expected (`C:45-73`, `A,B`, `*:45-73` for every chain), `--strict` exits with status 1 when a residue
@@ -2277,7 +2273,7 @@ the schemes of the [PDB clean-up](#pdb-clean-up); the records are ATOM but for t
 | `--scheme` | D-RNA | L-RNA | D-DNA | L-DNA |
 |---|---|---|---|---|
 | default, `rosetta` | A C G U | 0A 0C 0G 0U | DA DC DG DT | 0DA 0DC 0DG 0DT |
-| `amber` | A …; A5 / A3, one residue AN | LA …; LA5 / LA3, one residue LA5 | DA …; DA5 / DA3, DAN | LDA …; LDA5 / LDA3, LDAN |
+| `amber` | A …; A5 / A3, one residue AN | LA …; LA5 / LA3, one residue LA5 | DA …; DA5 / DA3, DAN | LDA … (ends too: tleap maps them) |
 | `ccd` | A … | 0A …; 0A5 / 0A3 | DA … | 0DA … |
 | `pdb` | A … | 0A … (HETATM) | DA … | 0DA … (HETATM) |
 | `standard` | A … | A … (the hand is lost) | DA … | DA … (the hand is lost) |

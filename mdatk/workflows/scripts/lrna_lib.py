@@ -254,6 +254,14 @@ def twin_map(types: Dict[str, str]) -> Dict[str, str]:
     return twins
 
 
+def residue_name(unit: str) -> str:
+    """The residue name inside the L unit of D unit ``unit``: L + the D name, with three characters at most (a PDB
+    residue name has three, and tleap reads no more): an end unit of L-DNA (LDA5 / LDA3 / LDAN) keeps the name
+    of its internal unit, LDA, so topologies and the PDB files written from them never carry a longer name."""
+    name = "L" + unit
+    return name if len(name) <= 3 else "L" + unit.rstrip("35N")
+
+
 def l_library(text: str, twins: Dict[str, str]) -> Tuple[str, List[str]]:
     """The nucleotide units mirrored, renamed L... and with O5' / O4' retyped; returns (text, units)."""
     units = [m for m in re.findall(r"^!entry\.([^.]+)\.unit\.name", text, re.MULTILINE) if re.match(NUCLEOTIDE_PATTERN, m)]
@@ -270,8 +278,11 @@ def l_library(text: str, twins: Dict[str, str]) -> Tuple[str, List[str]]:
                 if parts[1] in TWIN_ATOMS and parts[3] in twins:
                     parts[3] = twins[parts[3]]
                 ln = '"'.join(parts)
-            elif field in ("unit.name", "unit.residues") and len(parts) >= 3 and parts[1] == unit:
+            elif field == "unit.name" and len(parts) >= 3 and parts[1] == unit:
                 parts[1] = "L" + unit
+                ln = '"'.join(parts)
+            elif field == "unit.residues" and len(parts) >= 3 and parts[1] == unit:
+                parts[1] = residue_name(unit)
                 ln = '"'.join(parts)
             elif field == "unit.positions":
                 x, y, z = (float(v) for v in ln.split())

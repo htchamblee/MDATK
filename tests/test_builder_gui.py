@@ -142,7 +142,8 @@ def test_dna_leaves_the_pairing_controls_insensitive_and_builds_the_b_form(windo
     w.run_current()
     assert w.worker is None  # a Watson-Crick duplex is built at once
     s = pt.read_pdb(str(out))
-    assert s.chain_ids() == ["A", "B"] and [r.name for r in s.segments[0]] == ["LDG5", "LDG", "LDC", "LDA", "LDT3"]
+    # three-character names at the chain ends too (0.0.17)
+    assert s.chain_ids() == ["A", "B"] and [r.name for r in s.segments[0]] == ["LDG", "LDG", "LDC", "LDA", "LDT"]
     assert s.header[0].startswith("REMARK 951 MDATK IDEAL B-FORM DNA (left-handed")
     assert report(w).startswith(f"Wrote {out}\n") and "Phosphates turned" in report(w)
     assert w.host.lines == [f"Structure builder: wrote {out}"]

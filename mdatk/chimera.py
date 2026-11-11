@@ -1419,8 +1419,9 @@ def _name_notes(segments, s: Structure, scheme: str, chosen: Optional[str], spec
                    "a hydrogen): " + _listed(special["single_l"]))
     if special["l_dna"]:
         out.append(f"L-DNA: {len(special['l_dna'])} residue(s) ({pdbtools.ranges_text(special['l_dna'])}) have MDATK's "
-                   "Amber-style names LDA, LDC, LDG, LDT (5'/3'/single: LDA5, LDA3, LDAN ...); AmberTools ships no "
-                   "L-DNA library, so tleap needs residue units of these names")
+                   "Amber-style names LDA, LDC, LDG, LDT (three characters at the chain ends too: the Amber build maps "
+                   "the ends to the terminal units); AmberTools ships no L-DNA library, so tleap needs residue units "
+                   "of these names (the Amber build generates them)")
     if special["plain_l"]:
         out.append(f"WARNING: the standard scheme gives {len(special['plain_l'])} L residue(s) plain D names "
                    f"({pdbtools.ranges_text(special['plain_l'])}): the names no longer record the hand. Use this copy "
@@ -1429,7 +1430,7 @@ def _name_notes(segments, s: Structure, scheme: str, chosen: Optional[str], spec
     if phosphate5 and scheme == "amber":
         dna = any(seg.na == "dna" for seg in segments)
         out.append("WARNING: the Amber 5' units have no 5'-phosphate (tleap cannot type P/OP1/OP2/OP3 of "
-                   f"{'A5/LA5, DA5/LDA5' if dna else 'A5/LA5'} ...); build without the 5'-phosphate for tleap")
+                   f"{'A5/LA5, DA5 / LDA (L-DNA 5 prime end)' if dna else 'A5/LA5'} ...); build without the 5'-phosphate for tleap")
     return out
 
 

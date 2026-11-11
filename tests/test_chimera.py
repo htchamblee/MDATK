@@ -739,8 +739,8 @@ def test_names_per_scheme_with_internal_names_at_the_junction(scheme, terminals,
 
 def test_dna_names_phosphate5_and_the_ccd_l_component():
     s, _text, notes = build("D-DNA:GC 3'-5' L-DNA:GC", scheme="amber")
-    assert [(r.chain, r.name) for r in s.residues()] == [("A", "DG5"), ("A", "DC"), ("A", "LDG"), ("A", "LDC3"),
-                                                         ("B", "DG5"), ("B", "DC3"), ("C", "LDG5"), ("C", "LDC3")]
+    assert [(r.chain, r.name) for r in s.residues()] == [("A", "DG5"), ("A", "DC"), ("A", "LDG"), ("A", "LDC"),
+                                                         ("B", "DG5"), ("B", "DC3"), ("C", "LDG"), ("C", "LDC")]
     assert any(n.startswith("L-DNA: 4 residue(s) (A:3-4, C:1-2) have MDATK's Amber-style names") for n in notes)
     assert any(n.startswith("B-DNA phosphates turned 6° about O3'-O5'") for n in notes)
     # OP3 only on the free 5' ends (not B:1, the partner's 5' end at the junction); the CCD names an L 5' end with
