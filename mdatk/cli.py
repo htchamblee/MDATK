@@ -1545,7 +1545,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 RNADO_TOOLS = ("wizard", "pdb", "builder")  # mdatk.gui.launch.TOOLS (that module stays free of the CLI)
-WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "manifest", "generate", "template",
+WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "jobs", "status", "manifest", "generate", "template",
                     "restraints")
 
 
