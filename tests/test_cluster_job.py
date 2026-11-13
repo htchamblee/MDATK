@@ -78,7 +78,7 @@ def test_a_slurm_job_runs_the_step_and_the_submit_script_submits_it(tmp_path):
         in text
     assert 'if [ -n "${MDATK_LOCAL:-}" ]; then' in (folder / prod).read_text()
     submit = (tmp_path / "plan" / f"apt1_00_submit_{STAMP}.sh").read_text()
-    assert f"JOB_01_0=$(cd 01_amber-md && sbatch --parsable --job-name=apt1_01 apt1_01_job_{STAMP}.slurm)" in submit
+    assert f"JOB_01=$(cd 01_amber-md && sbatch --parsable --job-name=apt1_01 apt1_01_job_{STAMP}.slurm)" in submit
     master = (tmp_path / "plan" / f"apt1_00_plan_{STAMP}.sh").read_text()
     assert f"#   cluster job: 01_amber-md/apt1_01_job_{STAMP}.slurm" in master
     assert [i.level for i in plan.steps["md"].issues if "job_header" in i.keys] == []

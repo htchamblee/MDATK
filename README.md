@@ -979,41 +979,63 @@ asks you to write it again (and does not run such a main script again after its 
 
 #### Cluster job scripts
 
-The Amber MD and GROMACS steps have a *Cluster job* section. Give it a *Job header* - the lines a job
-script of your cluster starts with: the scheduler's directives and the module loads - and a step with a
-separately run script also gets `<project>_<NN>_job_<stamp>.<ext>` in its folder (`.slurm` for `#SBATCH`
-lines, `.pbs` for `#PBS`, `.lsf` for `#BSUB`, `.sge` for `#$`, else `.job`). `{project}`, `{step}`,
-`{job_name}` (`<project>_<NN>`) and `{folder}` in the header are filled in, e.g. `#SBATCH --output={job_name}.%j`.
+The Amber MD and GROMACS steps have a *Cluster job* section. A step with a separately run script and a *Cluster
+profile* (or a *Job header* of its own) also writes `<project>_<NN>_job_<stamp>.<ext>` in its folder (`.slurm` for
+`#SBATCH` lines, `.pbs` for `#PBS`, `.lsf` for `#BSUB`, `.sge` for `#$`, else `.job`), and the plan writes
+`<project>_00_submit_<stamp>.sh` beside its master script, which submits every step's job from that step's folder.
 
-```bash
-#SBATCH --time=12:00:00
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --output={job_name}.%j
-module purge
-module load Amber/24
-```
+**Cluster profiles** describe the clusters you use, once, outside project files: RNAdo's menu > *Cluster
+profiles…* (kept in `~/.config/mdatk/clusters.toml`, for every project on this computer; `mdatk cluster list`).
+*Duplicate* makes the profile of a similar cluster. A profile has:
 
-The job changes to its step folder (where it was submitted from: `$SLURM_SUBMIT_DIR`, `$PBS_O_WORKDIR` …;
-it stops with a message if the step's scripts are not there) and runs, with *The job runs: The whole step*
-(the default), the main script - the stages before the separate ones; finished stages are skipped, so it costs
-nothing when they ran here - then the separate script(s), then the main script again (the stages after them and
-the step's last files, such as the dry PDB): the step is complete when the job ends, and *Check previous runs*
-finds it done once its folder is back. *The separate script(s) only* leaves the main script to MDATK here,
-before and after the job. In the job the step's scripts skip their conda lines (`MDATK_JOB=1`; the header's
-modules set up the programs), unless *Conda in the separate script on a cluster too* is ticked; the main
-script of a step without a job header is written as before.
+- the *Job header*: the scheduler's directives and the module loads every job of the cluster starts with, without
+  the wall time and the queue (a wall-time line in it is left out, with a note); `{job_name}` (`<project>_<NN>`),
+  `{project}`, `{step}` and `{folder}` are filled in, e.g. `#SBATCH --output={job_name}.%j`;
+- the *GPU* the header asks for, as part of the name pmemd gives the device (`A100` for `NVIDIA A100-SXM4-40GB`);
+- the *Queues*: each with its wall-time limit and the lines that choose it (`#SBATCH --partition=gpu`);
+- the *Cushion*, 1-20 %, added to every estimate; how a job asks for its wall time (by default the scheduler's
+  `--time` / `walltime` / `-W` / `h_rt` line) and how it is submitted (by default `sbatch --job-name={name}
+  {file}`, `qsub -N …`, `bsub -J … <`);
+- the *Run speeds*: GPU, atoms, time step and seconds/ns of finished pmemd.cuda runs, read from their `.out` files
+  (*Learn from runs…*, `mdatk cluster learn PROFILE FOLDER…`, and *Write cluster jobs*, below).
 
-With any job script the plan also writes `<project>_00_submit_<stamp>.sh` beside its master script: run it on
-the cluster, in the plan folder, and it submits every step's job from that step's folder, in plan order -
-Slurm jobs with `--dependency=afterok` on the jobs of the steps they read from. The steps without a job
-(structures, builds, restraints …) must have run before. The *Submit command* overrides how a job is submitted
-(`{name}` the job name, `{file}` the job file); by default it follows the header's directives (`sbatch
---job-name={name} {file}`, `qsub -N {name} {file}`, `bsub -J {name} < {file}`; `bash {file}` without any).
+**The wall time** of an Amber pmemd.cuda job is estimated when its job file is written: the ns of the stages the
+job runs (each stage's `nstlim` × segments × `dt`) times the seconds/ns of the profile's nearest earlier runs on its
+GPU - the median of the three nearest in size, each scaled by the system's atoms (from the step's topology) and
+time step - plus 5 minutes and 2 per minimisation, plus the cushion, rounded up to 5 minutes. The job goes into
+the shortest queue whose limit holds it; a job longer than the longest queue is submitted as that many jobs in a row
+(Slurm `--dependency=afterany`; finished stages and segments are skipped). The job file says how its time was
+worked out (`# Wall time: 52,345 atoms, 206 ns at 159.7 s/ns (NVIDIA A100-…; from 3 earlier runs of …) + 9 min,
++ 10% = 10:15:00`), and so does the step's note in the planner. Without the topology yet (the build has not
+run), without an earlier run on the GPU, or for another engine, the job asks for the limit of the longest queue,
+with a note.
+
+**Keeping the estimates current.** A step's job file is written again by itself when its main script stops to wait
+for the separate script (its topology exists then). *Write cluster jobs* (RNAdo's menu; `mdatk workflow jobs`)
+writes the plan's job files and submit script again and nothing else - no completed run moves - after adding the
+speeds of the runs that came back from the cluster to the profiles: only those of the separate script's MD runs
+at least as new as the note `<job file>.started` that the step's first cluster job leaves (the host it ran on), so
+runs made on another computer never count as the cluster's.
+
+**The job** changes to its step folder (where it was submitted from: `$SLURM_SUBMIT_DIR`, `$PBS_O_WORKDIR` …; it
+stops with a message if the step's scripts are not there) and runs, with *The job runs: The whole step* (the
+default), the main script - the stages before the separate ones; finished stages are skipped, so it costs nothing
+when they ran here - then the separate script(s), then the main script again (the stages after them and the step's
+last files, such as the dry PDB): the step is complete when the job ends, and *Check previous runs* finds it done
+once its folder is back. *The separate script(s) only* leaves the main script to MDATK here, before and after the
+job. In the job the step's scripts skip their conda lines (`MDATK_JOB=1`; the header's modules set up the
+programs), unless *Conda in the separate script on a cluster too* is ticked; the main script of a step without a
+job is written as before. The step's *Job header / extra lines* adds lines after the profile's header (e.g. an
+account); without a profile it is the whole header, written as it is. *Submit command* overrides the profile's.
+
+The submit script submits the jobs in plan order, Slurm jobs with `--dependency=afterok` on the jobs of the steps
+they read from. The steps without a job (structures, builds, restraints …) must have run before.
 
 ```bash
 rsync -av runs/plan_workflow/ cluster:/scratch/me/plan_workflow/    # after the local steps have run
 ssh cluster 'bash /scratch/me/plan_workflow/plan_00_submit_20261113-1200.sh'
+rsync -av cluster:/scratch/me/plan_workflow/ runs/plan_workflow/    # when the jobs have finished
+mdatk workflow jobs -p plan.mdatk.toml                              # learn their speeds (and write the jobs again)
 ```
 
 ### File names

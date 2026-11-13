@@ -866,6 +866,55 @@ def cmd_workflow_run(args) -> int:
                              _budget(args, project))
 
 
+def cmd_workflow_jobs(args) -> int:
+    """Write the cluster job files and the submit script again (nothing else), after learning the speeds of the
+    runs that came back from the cluster."""
+    from .workflows import cluster
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    ids = _step_ids(project.workflow, args.step)
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    for line in cluster.refresh(plan, ids, learn=not args.no_learn):
+        print(line)
+    for nid in plan.order:
+        step = plan.steps[nid]
+        if (ids is None or nid in ids) and step.settings and cluster.wants_job(step.settings):
+            for issue in cluster.job_issues(step.settings, step.ctx, step.tool):
+                print(f"{issue.level.upper():8} {step.label}: {issue.message}")
+    return 0
+
+
+def cmd_cluster_list(args) -> int:
+    from . import clusters
+    profiles = clusters.load_profiles()
+    if not profiles:
+        print(f"no cluster profiles yet ({clusters.profiles_path()}): RNAdo menu > Cluster profiles…")
+        return 0
+    for p in profiles:
+        queues = ", ".join(f"{q.name} (≤ {q.max_hours:g} h)" for q in sorted(p.queues, key=lambda q: q.max_hours))
+        print(f"{p.name}: GPU {p.gpu or 'any'}, queues {queues}, cushion {p.cushion:g}%, "
+              f"{len(p.speeds())} run speed(s) on its GPU ({len(p.benchmarks)} in all)")
+        if args.verbose:
+            for b in p.benchmarks:
+                print(f"    {b.when}  {b.gpu}  {b.atoms:,} atoms  dt {b.dt:g}  {b.s_per_ns:g} s/ns  {b.source}")
+    return 0
+
+
+def cmd_cluster_learn(args) -> int:
+    from . import clusters
+    profiles = clusters.load_profiles()
+    profile = clusters.find(args.profile, profiles)
+    if profile is None:
+        raise ValueError(f"no cluster profile {args.profile!r} (there are: "
+                         f"{', '.join(p.name for p in profiles) or 'none'})")
+    new = clusters.learn(profile, args.paths)
+    clusters.save_profiles(profiles)
+    for b in new:
+        print(f"{b.gpu}  {b.atoms:,} atoms  dt {b.dt:g}  {b.s_per_ns:g} s/ns  {b.source}")
+    print(f"{len(new)} run speed(s) added to {profile.name} ({len(profile.speeds())} on its GPU)")
+    return 0
+
+
 def cmd_workflow_status(args) -> int:
     """Look for the outputs of earlier runs of the plan's steps; --adopt / --forget store the choice."""
     from .workflows import runstate
@@ -1347,6 +1396,18 @@ def build_parser() -> argparse.ArgumentParser:
         c.set_defaults(func=cmd_map)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
+    p = sub.add_parser("cluster", help="cluster profiles for the steps' cluster job scripts (kept on this "
+                                       "computer, edited in RNAdo: menu > Cluster profiles…)")
+    csub = p.add_subparsers(dest="ccommand", metavar="action")
+    c = csub.add_parser("list", help="the profiles: GPU, queues, cushion, run speeds")
+    c.add_argument("-v", "--verbose", action="store_true", help="also every run speed")
+    c.set_defaults(func=cmd_cluster_list)
+    c = csub.add_parser("learn", help="add the speeds of finished pmemd.cuda runs (their .out files) to a profile")
+    c.add_argument("profile", help="the profile's name")
+    c.add_argument("paths", nargs="+", help=".out files, or folders searched for them (superseded/ left out)")
+    c.set_defaults(func=cmd_cluster_learn)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
     p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
                                         "generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, NAMD, VMD, "
                                         "Phenix, Coot, custom scripts ...)")
@@ -1412,6 +1473,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "cluster), each after its step's main script, which then runs again for the rest of the "
                         "step, and before the steps that read from it")
     w.set_defaults(func=cmd_workflow_run)
+    w = wsub.add_parser("jobs", help="write the cluster job files and the submit script again (nothing else: no "
+                                     "run moves), with the atoms of the systems built so far, after learning "
+                                     "the speeds of the steps' runs that came back from the cluster")
+    naming(w)
+    w.add_argument("--step", metavar="STEP", help=STEP_HELP)
+    w.add_argument("--no-learn", action="store_true", help="do not add the speeds of finished cluster runs to "
+                                                          "the cluster profiles first")
+    w.set_defaults(func=cmd_workflow_jobs)
     w = wsub.add_parser("status", help="look in each step's folder for the output files of earlier runs "
                                        "(under the plan's time stamp or an earlier one): done, partial or "
                                        "missing")

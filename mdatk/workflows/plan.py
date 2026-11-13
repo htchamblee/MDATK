@@ -387,7 +387,7 @@ class Plan:
         try:
             step.issues.extend(tool.check(step.settings, step.ctx))
             if "job_header" in step.settings:
-                step.issues.extend(cluster.job_issues(step.settings))
+                step.issues.extend(cluster.job_issues(step.settings, step.ctx, tool))
             setup_file = (step.settings.get("env_file") or "").strip() if tool.generates else ""
             if setup_file and not os.path.isfile(setup_file):
                 step.issues.append(Issue("warning", f"setup file {setup_file} does not exist on this computer: "
@@ -745,7 +745,7 @@ def generate_step(step: ResolvedStep) -> List[GeneratedFile]:
 
     files = step.tool.generate(step.settings, step.ctx)
     if "job_header" in step.settings:
-        job = cluster.job_file(step.settings, step.ctx, files, step.ctx.title)
+        job = cluster.job_file(step.settings, step.ctx, files, step.ctx.title, step.tool)
         if job is not None:
             files = list(files) + [job]
     cite = comment_lines(step_resources(step))

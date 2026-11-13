@@ -354,7 +354,8 @@ def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
         if separate and not s.get("conda_separate"):
             conda = ["# conda only when MDATK runs this script on this computer; a cluster job skips it",
                      f'if [ -n "${{{LOCAL_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
-        elif not separate and not s.get("conda_separate") and (s.get("job_header") or "").strip():
+        elif not separate and not s.get("conda_separate") and ((s.get("job_header") or "").strip()
+                                                               or (s.get("cluster") or "").strip()):
             conda = ["# conda except in the step's cluster job, where the cluster's modules set up the programs",
                      f'if [ -z "${{{JOB_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
         lines += conda

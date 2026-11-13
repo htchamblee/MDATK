@@ -177,6 +177,9 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                          ("PDB clean-up…", self.open_pdb_tools),
                          ("Structure builder…", self.open_builder),
                          (None, None),
+                         ("Cluster profiles…", self.open_cluster_profiles),
+                         ("Write cluster jobs", self.write_cluster_jobs),
+                         (None, None),
                          ("Show the output log", self.show_log),
                          ("Project log…", self.show_project_log),
                          (None, None),
@@ -652,6 +655,30 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             self.builder.connect("destroy", lambda w: self.builder is w and setattr(self, "builder", None))
         self.builder.show_all()
         self.builder.present()
+
+    def open_cluster_profiles(self) -> None:
+        from .clusterdialog import ClusterProfilesWindow
+
+        if getattr(self, "cluster_profiles", None) is None:
+            self.cluster_profiles = ClusterProfilesWindow(self)
+            self.cluster_profiles.connect(
+                "destroy", lambda w: self.cluster_profiles is w and setattr(self, "cluster_profiles", None))
+        self.cluster_profiles.show_all()
+        self.cluster_profiles.present()
+
+    def write_cluster_jobs(self) -> None:
+        """The cluster job files and the submit script of the plan's steps written again (nothing else moves),
+        after learning the speeds of the runs that came back from the cluster."""
+        from ..workflows import cluster
+
+        try:
+            lines = cluster.refresh(self.planner.resolve())
+        except OSError as exc:
+            self.error("Cluster jobs not written", str(exc))
+            return
+        self.append_log("Write cluster jobs:\n" + ("\n".join(lines) or "no step has a cluster job (the Cluster job "
+                                                                     "section of the Amber MD and GROMACS steps)"))
+        self.show_log()
 
     def open_tool(self, name: str) -> None:
         """``rnado --open NAME``: one of :data:`mdatk.gui.launch.TOOLS`."""

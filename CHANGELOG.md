@@ -14,23 +14,34 @@ the notes below.
 
 ## Unreleased
 
-### Cluster job scripts
+### Cluster job scripts, cluster profiles and estimated wall times
 
-- New *Cluster job* section of the Amber MD and GROMACS steps (`job_header`, `job_scope`, `job_submit`). With a
-  *Job header* (the scheduler's directives and module loads; `{project}`, `{step}`, `{job_name}`, `{folder}`
-  filled in) a step with a separately run script also writes `<project>_<NN>_job_<stamp>.<ext>` (`.slurm`,
-  `.pbs`, `.lsf`, `.sge` or `.job` by the directives): it changes to the folder it was submitted from (and stops
-  if the step's scripts are not there), then runs the main script (exit status 75, waiting, goes on), the
-  separate script(s) and the main script again, so the step is complete when the job ends; *The separate
-  script(s) only* runs just those. The plan writes `<project>_00_submit_<stamp>.sh` beside its master script:
-  it submits every step's job from its folder in plan order (Slurm: `sbatch --parsable`, and
-  `--dependency=afterok` on the jobs of the steps a step reads from); the master script lists the jobs.
+- New *Cluster job* section of the Amber MD and GROMACS steps (`cluster`, `job_header`, `job_scope`,
+  `job_submit`). A step with a separately run script and a cluster profile (or a job header of its own) also
+  writes `<project>_<NN>_job_<stamp>.<ext>` (`.slurm`, `.pbs`, `.lsf`, `.sge` or `.job` by the directives): it
+  changes to the folder it was submitted from (and stops if the step's scripts are not there), leaves
+  `<job file>.started` the first time, then runs the main script (exit status 75, waiting, goes on), the separate
+  script(s) and the main script again, so the step is complete when the job ends; *The separate script(s) only*
+  runs just those. The plan writes `<project>_00_submit_<stamp>.sh` beside its master script: it submits every
+  step's job from its folder in plan order (Slurm: `sbatch --parsable`, `--dependency=afterok` on the jobs of the
+  steps a step reads from, and a job longer than the longest queue as several in a row, `--dependency=afterany`).
+- **Cluster profiles**, per user and outside project files (`<config>/mdatk/clusters.toml`; RNAdo's menu > *Cluster
+  profiles…*, with *Duplicate* for a similar cluster; `mdatk cluster list`): job header, GPU, queues (wall-time
+  limit and the lines that choose each), a 1-20 % cushion, the wall-time line and the submit command, and the run
+  speeds learnt from finished pmemd.cuda `.out` files (GPU, atoms, time step, seconds/ns; *Learn from runs…*,
+  `mdatk cluster learn`).
+- **Estimated wall time** of an Amber pmemd.cuda job: the ns of the stages it runs times the seconds/ns of the
+  three nearest earlier runs in size on the profile's GPU (median, scaled by atoms and time step), plus 5 minutes
+  and 2 per minimisation, plus the cushion, rounded up to 5 minutes, in the shortest queue that holds it; the job
+  file and the planner say how it was worked out. Without the topology, an earlier run on the GPU, or for another
+  engine: the longest queue's limit, with a note.
+- A step's job file is written again when its main script stops to wait for the separate script (the topology
+  exists then). *Write cluster jobs* (RNAdo's menu) / `mdatk workflow jobs` writes the job files and the submit
+  script again, nothing else (no completed run moves), after learning the speeds of the runs that came back - only
+  the separate script's MD runs at least as new as the step's `.started` note, so runs made elsewhere never count.
 - In the job the step's scripts skip their conda lines (`MDATK_JOB=1`), as the separate script already did on a
-  cluster (`MDATK_LOCAL`), unless *Conda in the separate script on a cluster too* is ticked; the header's
-  modules set up the programs. Only the main scripts of steps with a job header change; without one every
-  script is written as before.
-- Planner notes: no scheduler directives (the jobs run with bash), a submit command without `{file}` (error),
-  unknown `{...}` in the header, a Slurm job without a job name.
+  cluster (`MDATK_LOCAL`), unless *Conda in the separate script on a cluster too* is ticked. Only the main scripts
+  of steps with a cluster job change; without one every script is written as before.
 
 ## 0.0.19 (2026-11-13)
 

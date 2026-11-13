@@ -2604,6 +2604,32 @@ class AmberMDTool(Tool):
         return out + [(s["engine"], r"(^|[\s;(&|])\$PMEMD\s"), ("pmemd", r"(^|[\s;(&|])pmemd\s+-O\b"),
                       ("cpptraj", r"(^|[\s;(&|])cpptraj\b")]
 
+    # cluster job scripts (mdatk.workflows.cluster): the input whose file gives the system's atoms
+    cluster_atoms_port = "topology"
+
+    def cluster_work(self, s, separate_only: bool):
+        """What a cluster job of the step runs, for its wall time: the MD stages as (ns, time step in ps), and the
+        number of minimisations; None when MDATK cannot estimate it (an engine other than pmemd.cuda)."""
+        if not str(s.get("engine", "")).startswith("pmemd.cuda"):
+            return None
+        separate = self.roles(s).separate
+        md, minimisations = [], 0
+        for k, st in enumerate(s.get("stages", [])):
+            if separate_only and not separate[k]:
+                continue
+            if st.get("kind") == "min":
+                minimisations += 1
+                continue
+            dt = float(st.get("dt") or 0.002)
+            md.append((st.get("nstlim", 0) * max(1, int(st.get("segments") or 1)) * dt / 1000.0, dt))
+        return md, minimisations
+
+    def cluster_outputs(self, s, ctx) -> List[str]:
+        """The .out files (in the step folder) of the MD runs of its separate script: in a cluster job these ran on
+        the cluster, and their speeds are learnt for its profile."""
+        separate = self.roles(s).separate
+        return [r["out"] for r in self._segments(s, ctx) if separate[r["index"]] and r["stage"]["kind"] == "md"]
+
     def run_resources(self, s):
         # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
         # processes; pmemd: one core
