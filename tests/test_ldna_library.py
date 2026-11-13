@@ -427,3 +427,48 @@ def test_parmed_changes_no_dna_pair_for_nbfix19(tmp_path, cp):
     lpairs = {(k[0].replace("LDG:", "XG:").replace("LS", "OS"), k[1].replace("LDG:", "XG:").replace("LS", "OS"))
               for k in changed if "LDG:" in str(k) and "DG:" not in str(k).replace("LDG:", "")}
     assert d == lpairs, (sorted(d), sorted(lpairs))
+
+
+# the backbone across a phosphate: zeta C3'-O3'-P-O5' (C7-OS-P-OS) and alpha O3'-P-O5'-C5' (OS-P-OS-CJ), phases that
+# are not 0 / 180 - in a D/L chimera their twin variants with one L and one D oxygen join a D and an L residue
+JUNCTION_DAT = DAT.replace("C7-OS-P-O2     1    0.30        31.79698       3.",
+                           "C7-OS-P-O2     1    0.30        31.79698       3.\n"
+                           "C7-OS-P-OS     1    0.50        20.0           2.\n"
+                           "OS-P-OS-CJ     1    0.40        40.0          -1.\n"
+                           "OS-P-OS-CJ     1    0.10       180.0           3.")
+
+
+def _dihedrals(frc):
+    sections = dict(re.findall(r"^(MASS|BOND|ANGL|DIHE|IMPR|NONB)\n(.*?)\n\n", frc, re.S | re.M))
+    out = {}
+    for ln in sections["DIHE"].splitlines():
+        out.setdefault(tuple(t.strip() for t in ln[:11].split("-")), []).append(float(ln[11:].split()[2]))
+    return out
+
+
+def test_d_l_junction_dihedrals_take_the_hand_of_their_inner_oxygen(tmp_path, dna_mode):
+    """A D/L chimera and its mirror image have the same energy: a dihedral across the junction phosphate takes the
+    hand of the oxygen bonded to the sugar it hangs off (zeta: O3', alpha: O5'), so D-p-L and L-p-D get opposite
+    phases. (Until 0.0.19 every variant with an L oxygen was mirrored: zeta of the D residue before a junction and
+    alpha of the D residue after one were L terms.)"""
+    (tmp_path / "DNA.lib").write_text(LIB)
+    (tmp_path / "mini.dat").write_text(JUNCTION_DAT)
+    assert lrna_lib.main([str(tmp_path / "DNA.lib"), str(tmp_path / "mini.dat"), str(tmp_path / "out")]) == 0
+    dihe = _dihedrals((tmp_path / "out" / "frcmod.ldna").read_text())
+    # zeta: D residue before an L one (O3' OS, O5' LS) keeps the D phase, L before D (O3' LS) is mirrored
+    assert dihe[("C7", "OS", "P", "LS")] == [20.0] and dihe[("C7", "LS", "P", "OS")] == [340.0]
+    assert dihe[("C7", "LS", "P", "LS")] == [340.0]  # L-p-L
+    # alpha: an L residue after a D one (O5' LS) is mirrored, a D residue after an L one (O5' OS) keeps the D phase
+    assert dihe[("OS", "P", "LS", "CJ")] == [320.0, 180.0] and dihe[("LS", "P", "OS", "CJ")] == [40.0, 180.0]
+    assert dihe[("LS", "P", "LS", "CJ")] == [320.0, 180.0]
+    # every generated dihedral: its mirror image (every oxygen's hand swapped) is there too with opposite phases,
+    # read from either end, or is the D term itself
+    base = {}
+    for key, lines in lrna_lib.read_dat(JUNCTION_DAT)["DIHE"]:
+        base[key] = [float(ln[11:].split()[2]) for ln in lines]
+    swap = {"OS": "LS", "LS": "OS", "OH": "LT", "LT": "OH"}
+    for key, phases in dihe.items():
+        partner = tuple(swap.get(t, t) for t in key)
+        mirror = dihe.get(partner) or dihe.get(partner[::-1]) or base.get(partner) or base.get(partner[::-1])
+        assert mirror is not None, key
+        assert [(-p) % 360.0 for p in phases] == pytest.approx(mirror), (key, phases, mirror)

@@ -13,7 +13,8 @@ from O5''s - the CP case), and this script writes
   O5' and O4' retyped;
 * frcmod.lrna: masses and Lennard-Jones terms of the new types (those of their D twins) and every
   bond, angle, dihedral and improper term of the D parameters that involves a twinned type, repeated
-  for the new types in all combinations - dihedral and improper phases mirrored (-gamma).
+  for the new types in all combinations - dihedral and improper phases mirrored (-gamma); a dihedral with an L
+  and a D oxygen (across the phosphate of a D/L junction) takes the hand of its inner oxygen (l_handed).
 
 The result is checked the way it must hold: a D molecule and its mirror image have the same energy,
 term by term (MDATK's tests build both with tleap and compare sander single points).  Standard
@@ -165,8 +166,28 @@ def unmirrored(params: Dict[str, object], twins: Dict[str, str]) -> List[str]:
     return out
 
 
+def l_handed(section: str, size: int, idx: List[int], chosen: Tuple[int, ...]) -> bool:
+    """Whether a twin variant of a dihedral / improper is an L term (its phases mirrored).
+
+    Every twinnable position twinned: an L term, every one D: the D term itself.  A mixed variant (an L and a D
+    oxygen in one dihedral) only occurs across the phosphate of a D/L junction, where an L-DNA residue's O3' or
+    O5' (twinned) meets a D one: zeta C3'-O3'-P-O5' and alpha O3'-P-O5'-C5'.  It takes the hand of its inner
+    oxygen, the one bonded to the sugar the dihedral hangs off (zeta: O3', alpha: O5'), so that the term of
+    D-p-L and the term of its mirror image L-p-D have opposite phases, as a mirror image needs: a D/L chimera and
+    its mirror image then have the same energy.  The inner positions read the same from either end, so the rule
+    does not depend on the order tleap matches the types in.  Impropers, and a dihedral whose inner oxygens do
+    not decide, stay L terms.  Only where O3' has a twin (L-DNA): the L-RNA library twins O5' / O4' alone, so the
+    O3' of an L-RNA residue keeps its D type and a dihedral across its phosphate has one twinnable oxygen, O5' -
+    a variant with a twin there is the L term (the L-p-L zeta C3'-O3'(OS)-P-O5'(LD) too)."""
+    if len(chosen) == len(idx) or section != "DIHE" or "O3'" not in TWIN_ATOMS:
+        return True
+    inner = {i in chosen for i in idx if 0 < i < size - 1}
+    return inner.pop() if len(inner) == 1 else True
+
+
 def twin_terms(params: Dict[str, object], twins: Dict[str, str]) -> Dict[str, List[str]]:
-    """Every term with a twinned type repeated for the twins in all combinations; phases mirrored."""
+    """Every term with a twinned type repeated for the twins in all combinations; phases mirrored for the L
+    terms (:func:`l_handed`)."""
     out: Dict[str, List[str]] = {}
     for sec in WIDTH:
         lines, seen = [], set()
@@ -179,9 +200,10 @@ def twin_terms(params: Dict[str, object], twins: Dict[str, str]) -> Dict[str, Li
                         continue
                     seen.add(var)
                     head = "-".join(f"{t:<2}" for t in var)
+                    mirror = sec in ("DIHE", "IMPR") and l_handed(sec, len(key), idx, chosen)
                     for gl in glines:
                         body = head + gl[WIDTH[sec]:]
-                        lines.append(_mirror(body, sec) if sec in ("DIHE", "IMPR") else body)
+                        lines.append(_mirror(body, sec) if mirror else body)
         out[sec] = lines
     return out
 

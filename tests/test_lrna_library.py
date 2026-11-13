@@ -281,3 +281,17 @@ def test_generated_library_refuses_an_own_cp_residue_library(tmp_path):
 def test_no_stale_addatomtypes_hint_with_the_generated_library(tmp_path):
     st = _plan(tmp_path, ms.mixed_pdb(), lrna_fixes=False).steps["b"]
     assert not any("if leap reports unknown types" in i.message for i in st.issues), st.issues
+
+
+def test_l_rna_backbone_dihedrals_stay_mirrored(tmp_path):
+    """The L-RNA library twins O5' alone (O3' keeps its D type), so every variant with LD is an L term: the zeta of
+    an L-p-L step, C3'-O3'(OS)-P-O5'(LD), included (the D/L-junction rule of the L-DNA library does not apply)."""
+    (tmp_path / "RNA.lib").write_text(LIB)
+    (tmp_path / "mini.dat").write_text(DAT.replace("OH-CI-CT-CT    1    0.15         0.0           3.",
+                                                   "OH-CI-CT-CT    1    0.15         0.0           3.\n"
+                                                   "CT-OS-P-OS     1    0.50        20.0           2."))
+    assert lrna_lib.main([str(tmp_path / "RNA.lib"), str(tmp_path / "mini.dat"), str(tmp_path / "out")]) == 0
+    frc = (tmp_path / "out" / "frcmod.lrna").read_text()
+    zeta = {ln[:11].replace(" ", ""): ln[11:].split()[2] for ln in frc.splitlines() if ln.startswith("CT-")
+            and "-P -" in ln}
+    assert zeta == {"CT-LD-P-OS": "340", "CT-OS-P-LD": "340", "CT-LD-P-LD": "340"}, zeta
