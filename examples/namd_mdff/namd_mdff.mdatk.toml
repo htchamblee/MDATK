@@ -7,9 +7,9 @@ format = "mdatk-project"
 # Version of the project file layout.
 format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
-mdatk_version = "0.0.18"
+mdatk_version = "0.0.19"
 # When the settings were last saved.
-saved = 2026-11-11T21:30:02
+saved = 2026-11-13T04:12:18
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""

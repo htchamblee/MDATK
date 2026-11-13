@@ -1,6 +1,6 @@
 #!/bin/bash
 # NAMD MDFF on the Amber topology
-# Project mixeddl, step 02 - written by MDATK 0.0.18 on 2026-11-11.
+# Project mixeddl, step 02 - written by MDATK 0.0.19 on 2026-11-13.
 # MDATK only writes this script; review it, then run it with: bash mixeddl_02_namd-mdff_20261029-1200.sh
 # NAMD reads the Amber parm7 natively (amber on): CP / L-RNA types and dihedrals, NBfix19 / 0BPh /
 # Mg2+ pair terms and HMR masses are used exactly as built. Restraints are MDATK's L-RNA-safe ones;

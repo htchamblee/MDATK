@@ -5,12 +5,30 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+
+## 0.0.19 (2026-11-13)
+
+### Fix: L-DNA dihedrals across a D/L junction
+
+- The generated L-DNA library (`frcmod.ldna`) gave every dihedral with an L-DNA oxygen the mirrored (L) phase,
+  also those with an L and a D oxygen, which occur only across the phosphate of a D/L junction: the zeta
+  (C3'-O3'-P-O5') of a D residue before an L one and the alpha (O3'-P-O5'-C5') of a D residue after an L one
+  were L terms. A D-p-L junction and its mirror image L-p-D then had different energies, so a chimera was not
+  the mirror image of its twin, and a chimera that is its own mirror image (strands swapped) had different
+  backbone torsions at its two junctions. Such a dihedral now takes the hand of its inner oxygen, the one
+  bonded to the sugar it hangs off (zeta: O3', alpha: O5'): D-p-L and L-p-D get opposite phases, and a D/L
+  chimera and its mirror image have the same energy. The torsion parameters were fitted on D-D steps; across a
+  heterochiral link this is the mirror-consistent choice, not a refit.
+- Affects topologies with a D/L DNA junction built with the generated library (*L-DNA library: Generated /
+  Automatic*): rebuild them, and rerun what depends on the junction backbone. All-D, all-L and L-RNA builds are
+  unchanged (the L-RNA library twins O5' and O4' only, so its junction dihedrals were already mirror-consistent;
+  a test now holds it to that).
 
 ## 0.0.18 (2026-11-11)
 
