@@ -32,6 +32,7 @@ from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 
 from .. import PROJECT_ABBREV, __version__
 from ..config import PlanEdge, PlanNode, WorkflowParams
+from . import cluster
 from .base import PortValue, StepContext, Tool, waiting_file
 from .naming import (file_name, folder_tag_problem, new_stamp, sanitize_project, sanitize_tag, step_folder,
                      step_label)
@@ -385,6 +386,8 @@ class Plan:
             step.issues.append(Issue("error", "step numbers start at 1"))
         try:
             step.issues.extend(tool.check(step.settings, step.ctx))
+            if "job_header" in step.settings:
+                step.issues.extend(cluster.job_issues(step.settings))
             setup_file = (step.settings.get("env_file") or "").strip() if tool.generates else ""
             if setup_file and not os.path.isfile(setup_file):
                 step.issues.append(Issue("warning", f"setup file {setup_file} does not exist on this computer: "
@@ -649,6 +652,10 @@ class Plan:
             report.summary = os.path.join(self.root, file_name(self.project, 0, "plan", self.stamp, "md"))
             _write_text(report.summary, self.summary_text(), False)
             report.written += [report.master, report.summary]
+            submit = cluster.submit_script(self)
+            if submit is not None:
+                _write_text(cluster.submit_path(self), submit, True)
+                report.written.append(cluster.submit_path(self))
         report.manifest, report.identity, report.records_error = write_records(self, into, when)
         return report
 
@@ -680,6 +687,8 @@ class Plan:
                                      'separately run script; run that, then this script again" >&2; exit 0; fi')
                 elif f.role == "run-separate":
                     lines.append(f"#   run separately: bash {rel}")
+                elif f.role == "job":
+                    lines.append(f"#   cluster job: {rel} (the submit script submits it)")
             lines.append("")
         return "\n".join(lines)
 
@@ -735,6 +744,10 @@ def generate_step(step: ResolvedStep) -> List[GeneratedFile]:
     from ..citations import comment_lines, step_resources
 
     files = step.tool.generate(step.settings, step.ctx)
+    if "job_header" in step.settings:
+        job = cluster.job_file(step.settings, step.ctx, files, step.ctx.title)
+        if job is not None:
+            files = list(files) + [job]
     cite = comment_lines(step_resources(step))
     if not cite:
         return files

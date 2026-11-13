@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
+from .cluster import CLUSTER_SECTION
 from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, StepContext, Tool, env_section, extra_lines,
                    fortran_float, require_file, script_header, separate_check, shell_quote, skip_when_done,
                    waiting_done, waiting_file)
@@ -2130,6 +2131,7 @@ class AmberMDTool(Tool):
                    "dry labels)."),
         ]),
         env_section("source /opt/amber26/amber.sh   or   module load Amber/24", [SEPARATE_CONDA]),
+        CLUSTER_SECTION,
     ]
 
     # ----------------------------------------------------------- helpers

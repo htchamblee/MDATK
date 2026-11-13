@@ -977,6 +977,45 @@ $ mdatk workflow run -p plan.mdatk.toml --include-separate   # main, separate, m
 Main scripts written before 0.0.10 do not make this check; MDATK treats such a step as waiting and
 asks you to write it again (and does not run such a main script again after its separate scripts).
 
+#### Cluster job scripts
+
+The Amber MD and GROMACS steps have a *Cluster job* section. Give it a *Job header* - the lines a job
+script of your cluster starts with: the scheduler's directives and the module loads - and a step with a
+separately run script also gets `<project>_<NN>_job_<stamp>.<ext>` in its folder (`.slurm` for `#SBATCH`
+lines, `.pbs` for `#PBS`, `.lsf` for `#BSUB`, `.sge` for `#$`, else `.job`). `{project}`, `{step}`,
+`{job_name}` (`<project>_<NN>`) and `{folder}` in the header are filled in, e.g. `#SBATCH --output={job_name}.%j`.
+
+```bash
+#SBATCH --time=12:00:00
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:a100:1
+#SBATCH --output={job_name}.%j
+module purge
+module load Amber/24
+```
+
+The job changes to its step folder (where it was submitted from: `$SLURM_SUBMIT_DIR`, `$PBS_O_WORKDIR` …;
+it stops with a message if the step's scripts are not there) and runs, with *The job runs: The whole step*
+(the default), the main script - the stages before the separate ones; finished stages are skipped, so it costs
+nothing when they ran here - then the separate script(s), then the main script again (the stages after them and
+the step's last files, such as the dry PDB): the step is complete when the job ends, and *Check previous runs*
+finds it done once its folder is back. *The separate script(s) only* leaves the main script to MDATK here,
+before and after the job. In the job the step's scripts skip their conda lines (`MDATK_JOB=1`; the header's
+modules set up the programs), unless *Conda in the separate script on a cluster too* is ticked; the main
+script of a step without a job header is written as before.
+
+With any job script the plan also writes `<project>_00_submit_<stamp>.sh` beside its master script: run it on
+the cluster, in the plan folder, and it submits every step's job from that step's folder, in plan order -
+Slurm jobs with `--dependency=afterok` on the jobs of the steps they read from. The steps without a job
+(structures, builds, restraints …) must have run before. The *Submit command* overrides how a job is submitted
+(`{name}` the job name, `{file}` the job file); by default it follows the header's directives (`sbatch
+--job-name={name} {file}`, `qsub -N {name} {file}`, `bsub -J {name} < {file}`; `bash {file}` without any).
+
+```bash
+rsync -av runs/plan_workflow/ cluster:/scratch/me/plan_workflow/    # after the local steps have run
+ssh cluster 'bash /scratch/me/plan_workflow/plan_00_submit_20261113-1200.sh'
+```
+
 ### File names
 
 Every file is named `<project>_<step>_<tool>_<time>.<ext>`, e.g. `apt1_03_tleap_20261015-1432.parm7`:

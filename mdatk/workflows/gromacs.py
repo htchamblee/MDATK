@@ -8,6 +8,7 @@ import dataclasses
 from typing import Any, Dict, List, Tuple
 
 from .. import PROJECT_ABBREV, __version__
+from .cluster import CLUSTER_SECTION
 from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, Tool, env_section, extra_lines, fortran_float,
                    require_file, script_header, separate_check, skip_when_done, waiting_done, waiting_file)
 from .budget import ALL_CORES, Resources, env_gpus, gpu_step
@@ -146,6 +147,7 @@ class GromacsTool(Tool):
             dataclasses.replace(WAITING_EXIT, requires={"separate_production": True}),
         ]),
         env_section("module load GROMACS/2023.3-CUDA-11.8.0", [SEPARATE_CONDA]),
+        CLUSTER_SECTION,
     ]
 
     def output_ports(self, s):

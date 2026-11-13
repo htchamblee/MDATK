@@ -12,6 +12,26 @@ the notes below.
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
+## Unreleased
+
+### Cluster job scripts
+
+- New *Cluster job* section of the Amber MD and GROMACS steps (`job_header`, `job_scope`, `job_submit`). With a
+  *Job header* (the scheduler's directives and module loads; `{project}`, `{step}`, `{job_name}`, `{folder}`
+  filled in) a step with a separately run script also writes `<project>_<NN>_job_<stamp>.<ext>` (`.slurm`,
+  `.pbs`, `.lsf`, `.sge` or `.job` by the directives): it changes to the folder it was submitted from (and stops
+  if the step's scripts are not there), then runs the main script (exit status 75, waiting, goes on), the
+  separate script(s) and the main script again, so the step is complete when the job ends; *The separate
+  script(s) only* runs just those. The plan writes `<project>_00_submit_<stamp>.sh` beside its master script:
+  it submits every step's job from its folder in plan order (Slurm: `sbatch --parsable`, and
+  `--dependency=afterok` on the jobs of the steps a step reads from); the master script lists the jobs.
+- In the job the step's scripts skip their conda lines (`MDATK_JOB=1`), as the separate script already did on a
+  cluster (`MDATK_LOCAL`), unless *Conda in the separate script on a cluster too* is ticked; the header's
+  modules set up the programs. Only the main scripts of steps with a job header change; without one every
+  script is written as before.
+- Planner notes: no scheduler directives (the jobs run with bash), a submit command without `{file}` (error),
+  unknown `{...}` in the header, a Slurm job without a job name.
+
 ## 0.0.19 (2026-11-13)
 
 ### Fix: L-DNA dihedrals across a D/L junction

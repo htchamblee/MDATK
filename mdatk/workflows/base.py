@@ -330,25 +330,33 @@ def env_section(placeholder: str, extra: Sequence[Option] = ()) -> Section:
 
 # Set by MDATK for every script it runs itself (RNAdo, mdatk workflow run); a cluster job has not got it
 LOCAL_VAR = "MDATK_LOCAL"
+# Set by a step's cluster job script (mdatk.workflows.cluster) for the scripts it runs
+JOB_VAR = "MDATK_JOB"
 
 SEPARATE_CONDA = Option(
     "conda_separate", "Conda in the separate script on a cluster too", "bool", False,
     "The separately run script (production, e.g. on a cluster) activates the conda environment only when "
     f"MDATK runs it on this computer (RNAdo's 'Also run the scripts marked run separately here', or "
     f"{LOCAL_VAR}=1 bash <script>); a cluster job skips it, as clusters set up their own programs (the "
-    "Setup commands run everywhere). Tick to activate it on the cluster too.")
+    "Setup commands run everywhere). Tick to activate it on the cluster too. With a Cluster job header the "
+    "step's main script skips it as well while the job runs it (in the job, the cluster's modules set up the "
+    "programs).")
 
 
 def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
     """The Environment lines of a script: conda activation, the setup file, then the setup commands.  In a separately run
     script (``separate``) the conda lines run only when MDATK runs it here (``$MDATK_LOCAL``), unless the
-    step's ``conda_separate`` is set."""
+    step's ``conda_separate`` is set; in the main script of a step with a cluster job header
+    (:mod:`mdatk.workflows.cluster`) they run except in that job (``$MDATK_JOB``), likewise."""
     lines: List[str] = []
     if s.get("conda_env", "").strip():
         conda = ['eval "$(conda shell.bash hook)"', f"conda activate {s['conda_env'].strip()}"]
         if separate and not s.get("conda_separate"):
             conda = ["# conda only when MDATK runs this script on this computer; a cluster job skips it",
                      f'if [ -n "${{{LOCAL_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
+        elif not separate and not s.get("conda_separate") and (s.get("job_header") or "").strip():
+            conda = ["# conda except in the step's cluster job, where the cluster's modules set up the programs",
+                     f'if [ -z "${{{JOB_VAR}:-}}" ]; then'] + [f"  {c}" for c in conda] + ["fi"]
         lines += conda
     setup_file = (s.get("env_file") or "").strip()
     if setup_file:
