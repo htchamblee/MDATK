@@ -392,8 +392,29 @@ def _existing_log(path: str) -> Tuple[str, str]:
             except tomlio.TOMLDecodeError:
                 log_file = ""
             break
-    at = text.find("\n" + LOG_MARKER)
+    at = _log_start(text)
     return (text[at + 1:] if at >= 0 else ""), log_file
+
+
+def _log_start(text: str) -> int:
+    """Where the step log starts in the text of a project file: the line break before the marker line that
+    ends the settings (-1: no log).  The marker's text may also be part of the settings (pasted into the
+    notes or a custom script with a piece of a project file): there it stands inside a string, so the text
+    before it is not complete TOML and it does not start the log."""
+    first = at = text.find("\n" + LOG_MARKER)
+    while at >= 0:
+        try:
+            tomlio.loads(text[:at + 1])
+            return at
+        except tomlio.TOMLDecodeError:
+            at = text.find("\n" + LOG_MARKER, at + 1)
+    if first < 0:
+        return -1
+    try:  # no marker ends complete settings: they are all inside strings, unless the file itself is damaged
+        tomlio.loads(text)
+        return -1
+    except tomlio.TOMLDecodeError:
+        return first  # as written: the settings are replaced by the save, what follows the marker is kept
 
 
 def read(path: str) -> Dict[str, Any]:
@@ -464,8 +485,11 @@ def append_log(path: str, entry: LogEntry) -> str:
         target = log_path(path)
         if target == path and os.path.getsize(path) > LOG_SPLIT_BYTES:
             target = _split_log(path)
-        with open(target, "r", encoding="utf-8", errors="replace") as fh:
-            has_marker = LOG_MARKER in fh.read()
+        try:
+            with open(target, "r", encoding="utf-8", errors="replace") as fh:
+                has_marker = _log_start(fh.read()) >= 0
+        except FileNotFoundError:  # the separate log file is gone (deleted, or the project copied without
+            has_marker = False  # it): a new one starts
         with open(target, "a", encoding="utf-8") as fh:
             if not has_marker:
                 fh.write("\n" + LOG_MARKER + "\n")
@@ -481,7 +505,7 @@ def _split_log(path: str) -> str:
     sidecar = os.path.join(os.path.dirname(os.path.abspath(path)), name)
     with open(path, "r", encoding="utf-8") as fh:
         text = fh.read()
-    at = text.find("\n" + LOG_MARKER)
+    at = _log_start(text)
     head, log_part = (text[:at + 1], text[at + 1:]) if at >= 0 else (text, LOG_MARKER + "\n")
     with open(sidecar, "a", encoding="utf-8") as fh:
         if os.path.getsize(sidecar) == 0:

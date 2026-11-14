@@ -138,6 +138,58 @@ def test_step_log_append_keep_and_split(tmp_path, monkeypatch):
     assert 'log_file = "p.log.toml"' in open(path).read()
 
 
+def test_the_log_marker_inside_the_settings_is_not_the_log(tmp_path):
+    """Notes (or a custom script) holding the line that starts the step log, e.g. a piece of a project file
+    pasted in: the next save took the rest of the notes for the log and left a file that no longer opened."""
+    path = str(tmp_path / "p.mdatk.toml")
+    p = Project()
+    p.notes = "from another project:\n" + PF.LOG_MARKER + '\n[[log]]\nstep = "02"\n"""\nend of the notes'
+    p.save(path)
+    with PF.logged(path, "03", "md") as entry:  # the log starts after the settings, with a marker of its own
+        entry.output = "the output quotes it too:\n" + PF.LOG_MARKER + "\n[[log]]\n"
+    assert open(path).read().count("\n" + PF.LOG_MARKER + "\n") == 3
+    for _ in range(2):  # saving the settings keeps both, as often as it is done
+        Project.load(path).save(path)
+        assert Project.load(path).notes == p.notes
+        log = PF.read_log(path)
+        assert [e["step"] for e in log] == ["03"] and log[0]["output"] == entry.output
+    with PF.logged(path, "04", "more"):
+        pass
+    Project.load(path).save(path)
+    assert [e["step"] for e in PF.read_log(path)] == ["03", "04"] and Project.load(path).notes == p.notes
+    # a project without a log whose notes hold the marker: nothing of the notes is taken for a log
+    other = str(tmp_path / "q.mdatk.toml")
+    p.save(other)
+    p.save(other)
+    assert Project.load(other).notes == p.notes and PF.read_log(other) == []
+
+
+def test_a_missing_separate_log_file_starts_again(tmp_path, monkeypatch):
+    """A project whose log moved to <name>.log.toml, copied without that file (or the file deleted): every
+    later log entry was dropped with a warning."""
+    path = str(tmp_path / "p.mdatk.toml")
+    Project().save(path)
+    monkeypatch.setattr(PF, "LOG_SPLIT_BYTES", 1000)
+    with PF.logged(path, "01", "first"):
+        pass
+    side = tmp_path / "p.log.toml"
+    assert [e["step"] for e in PF.read_log(path)] == ["01"] and side.exists()
+    side.unlink()
+    with PF.logged(path, "02", "second"):
+        pass
+    assert side.exists() and [e["step"] for e in PF.read_log(path)] == ["02"]
+    Project.load(path).save(path)
+    with PF.logged(path, "03", "third"):
+        pass
+    assert [e["step"] for e in PF.read_log(path)] == ["02", "03"]
+
+
+def test_a_key_that_ends_with_a_line_break_is_quoted():
+    data = {"a\n": 1, "plain-key_1": 2, "t": {"b\n": {"c": 3}}}
+    text = tomlio.dumps(data)
+    assert tomlio.loads(text) == data and "plain-key_1 = 2" in text
+
+
 def test_params_log_is_never_logged_into(tmp_path):
     path = str(tmp_path / "MDATK_params_log.toml")
     PF.write_params_log(path, Project(), {"timestamp": "t"})
