@@ -270,6 +270,41 @@ def test_demo_system_signals(demo_dry):
     assert trace.shape == (len(hb), 24, 3)
 
 
+def _pdb_line(record, serial, name, resname, chain, resseq, x, el):
+    return (f"{record:<6}{serial:>5} {name:<4} {resname:>3} {chain}{resseq:>4}    {x:8.3f}{0.0:8.3f}{0.0:8.3f}"
+            f"  1.00  0.00          {el:>2}")
+
+
+def test_chains_of_a_pdb_with_conect_records_for_ligands_only(tmp_path):
+    """A one-chain PDB file whose only CONECT records are those of a ligand (as PyMOL, ChimeraX and the PDB
+    write them) has bonds, but they say nothing about chains: every nucleotide became a chain of its own,
+    so the structure view drew no backbone."""
+    import MDAnalysis as mda
+    from mdatk.analysis.structure import chain_ids
+
+    lines, serial = [], 0
+    for resseq in range(1, 5):
+        for name, el, dx in (("P", "P", 0.0), ("C4'", "C", 1.5), ("N1", "N", 3.0)):
+            serial += 1
+            lines.append(_pdb_line("ATOM", serial, name, "U", "A", resseq, 6.0 * resseq + dx, el))
+    for name, el, dx in (("C1", "C", 0.0), ("O1", "O", 1.4)):
+        serial += 1
+        lines.append(_pdb_line("HETATM", serial, name, "LIG", "A", 9, 40.0 + dx, el))
+    conect = [f"CONECT{serial - 1:>5}{serial:>5}", f"CONECT{serial:>5}{serial - 1:>5}"]
+    for name, extra in (("plain.pdb", []), ("ligand_bonds.pdb", conect)):
+        path = tmp_path / name
+        path.write_text("\n".join(lines + extra + ["END"]) + "\n")
+        u = mda.Universe(str(path))
+        np.testing.assert_array_equal(chain_ids(u.residues), [0, 0, 0, 0, 0])
+        p = micro_project({"Aptamer": "1-4", "Target": "9"})
+        res = run_one("trace", u, p)
+        np.testing.assert_array_equal(res.arrays["links"], [[0, 1], [1, 2], [2, 3]])
+    # complete bonds still tell the chains apart: two bonded strands without chain ids
+    atoms = [atom("P", k, "U", "P") for k in (1, 2, 3, 4)]
+    u = make_universe(atoms, [[[6.0 * k, 0, 0] for k in range(4)]], bonds=[(0, 1), (2, 3)])
+    np.testing.assert_array_equal(chain_ids(u.residues), [0, 0, 1, 1])
+
+
 def test_energy_excludes_bonded_pairs_across_groups():
     from mdatk.analysis.energy import _bonded_exclusions
 

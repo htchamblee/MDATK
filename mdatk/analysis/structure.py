@@ -73,10 +73,15 @@ def chain_ids(residues) -> np.ndarray:
     if len(set(segs)) > 1:
         return np.unique(segs, return_inverse=True)[1].astype(np.int64)
     try:
-        frag = np.asarray(first_atoms.fragindices)
-        return np.unique(frag, return_inverse=True)[1].astype(np.int64)
+        frag = np.asarray(residues.atoms.fragindices)
     except Exception:
         return np.zeros(n, dtype=np.int64)
+    uniq, first, rows = np.unique(residues.atoms.resindices, return_index=True, return_inverse=True)
+    if np.any(frag != frag[first][rows]):
+        # the bonds do not even hold the residues together (a PDB file with CONECT records for its ligands
+        # only: every other atom is a fragment of its own), so they say nothing about chains
+        return np.zeros(n, dtype=np.int64)
+    return np.unique(frag[first], return_inverse=True)[1].astype(np.int64)
 
 
 def chain_names(residues) -> np.ndarray:
