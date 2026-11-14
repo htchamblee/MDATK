@@ -136,8 +136,12 @@ def tag_rows(tr, v) -> np.ndarray:
         wanted |= (resid % int(v.label_every)) == 0
     if v.label_residues.strip():
         try:
-            for _chain, a, b in parse_residue_ranges(v.label_residues):
-                wanted |= (resid >= a) & (resid <= b)
+            chains = chain_names(tr)
+            for chain, a, b in parse_residue_ranges(v.label_residues):
+                sel = (resid >= a) & (resid <= b)
+                if chain:  # "B:12" tags residue 12 of chain B only, as in residue_rows
+                    sel &= chains == chain
+                wanted |= sel
         except SelectionError:
             pass
     return np.flatnonzero(wanted)
