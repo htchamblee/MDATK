@@ -192,7 +192,7 @@ def job_plan(s: Dict[str, Any], ctx, tool=None, profiles: Optional[Sequence[clus
                                          "another scheduler)", ("job_header", "job_submit")))
     if "{file}" not in plan.submit:
         plan.issues.append(Issue("error", "the submit command needs {file}, the job file", ("job_submit",)))
-    unknown = sorted(set(re.findall(r"\{[a-z_]+\}", "\n".join(plan.lines))) - set(PLACEHOLDERS))
+    unknown = sorted(set(re.findall(r"(?<!\$)\{[a-z_]+\}", "\n".join(plan.lines))) - set(PLACEHOLDERS))
     if unknown:
         plan.issues.append(Issue("warning", f"left as written in the job header: {', '.join(unknown)} (replaced: "
                                             f"{', '.join(PLACEHOLDERS)})", ("job_header",)))
@@ -251,8 +251,8 @@ def job_file(s: Dict[str, Any], ctx, files: Sequence[GeneratedFile], title: str 
     lines = list(plan.lines)
     values = {"{project}": ctx.project, "{step}": f"{ctx.step:02d}", "{job_name}": job_name(ctx),
               "{folder}": ctx.folder or "."}
-    for key, value in values.items():
-        lines = [ln.replace(key, value) for ln in lines]
+    for key, value in values.items():  # not ${folder}: that is a variable of the header's own shell lines
+        lines = [re.sub(r"(?<!\$)" + re.escape(key), lambda _m, v=value: v, ln) for ln in lines]
     main = [f.name for f in files if f.role == "run"]
     name = ctx.name(JOB_TAG, plan.ext)
     whole = s.get("job_scope", "step") != "separate" and bool(main)

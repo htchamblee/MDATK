@@ -201,3 +201,13 @@ def test_a_slurm_job_waits_only_for_jobs_sbatch_submitted(tmp_path):
     assert f"(cd 01_amber-md && bash apt1_01_job_{STAMP}.job)" in submit
     assert f"JOB_02=$(cd 02_amber-md && sbatch --parsable --job-name=apt1_02 apt1_02_job_{STAMP}.slurm)" in submit
     assert "JOB_01" not in submit and "afterok" not in submit  # was: --dependency=afterok:$JOB_01, never set
+
+
+def test_shell_variables_of_the_header_are_not_placeholders(tmp_path):
+    # ${folder}, ${step} ... are variables of the header's own lines: 'cd ${folder}' became 'cd $01_amber-md'
+    header = SLURM + "\nfolder=/scratch/$USER\ncd ${folder}/${project:-none} && echo ${scratch_dir} {folder} {step}"
+    plan = plan_of(tmp_path, [md_node("md", 1, inputs(tmp_path), job_header=header)])
+    job = (tmp_path / "plan" / "01_amber-md" / f"apt1_01_job_{STAMP}.slurm").read_text()
+    assert "\ncd ${folder}/${project:-none} && echo ${scratch_dir} 01_amber-md 01\n" in job
+    assert "#SBATCH --output=apt1_01.%j\n" in job  # the placeholders themselves are filled as before
+    assert not [i for i in plan.steps["md"].issues if "left as written" in i.message]  # ${scratch_dir}: no warning
