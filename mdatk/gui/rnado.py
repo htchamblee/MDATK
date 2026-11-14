@@ -297,6 +297,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
 
     def _on_plan_changed(self) -> None:
         self.log.set_steps([(n.step, step_title(n)) for n in self.project.workflow.nodes if checkable(n)])
+        if self.wizard is not None:  # the stand-alone wizard shows the plan's project name and time stamp
+            self.wizard.schedule_refresh()
 
     def stored_log(self, step: int, title: str) -> str:
         """The step log entry of the last run of ``step`` (the one with this title when there are several)."""
@@ -631,7 +633,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         from .wizard import WizardWindow
 
         if self.wizard is None:
-            self.wizard = WizardWindow(self, tool=tool)
+            # the names it sets (project, time stamp, folder) are the plan's: the planner follows them
+            self.wizard = WizardWindow(self, tool=tool, on_changed=lambda: self.planner.follow_naming())
             self.wizard.connect("destroy", lambda w: self.wizard is w and setattr(self, "wizard", None))
         elif tool:
             self.wizard.select_tool(tool)

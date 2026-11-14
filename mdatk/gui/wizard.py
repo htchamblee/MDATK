@@ -774,8 +774,10 @@ class WizardWindow(Gtk.Window):
         return out
 
     def _port_signature(self) -> List[Tuple]:
-        """What the Files page shows of the input ports (records edit them in place, e.g. custom scripts)."""
-        return [(p.name, p.label, p.kinds, p.optional, p.multiple)
+        """What the Files page shows of the input ports (records edit them in place, e.g. custom scripts), and
+        which of them a connection feeds (the planner makes and deletes connections while the wizard is open)."""
+        connected = self._connected()
+        return [(p.name, p.label, p.kinds, p.optional, p.multiple, p.name in connected)
                 for p in self.tool.input_ports(self.node.settings)]
 
     def _fill_inputs(self) -> None:
@@ -839,15 +841,37 @@ class WizardWindow(Gtk.Window):
             self._fill_inputs()
         self.schedule_refresh()
 
-    def _on_naming(self, *_):
+    def _on_naming(self, widget=None, *_):
         if self._loading or self.node is None:
             return
-        self.node.step = int(self.step_spin.get_value())
-        self.node.title = self.title_entry.get_text().strip()
+        # only what was edited: the planner (its details pane, its naming bar) sets these values as well, and
+        # the fields here may not show its values yet
+        if widget in (None, self.step_spin):
+            self.node.step = int(self.step_spin.get_value())
+        if widget in (None, self.title_entry):
+            self.node.title = self.title_entry.get_text().strip()
         if not self.planner_mode:
-            self.workflow.project_name = self.project_entry.get_text().strip() or "project"
-            self.workflow.use_stamp = self.stamp_check.get_active()
+            if widget in (None, self.project_entry):
+                self.workflow.project_name = self.project_entry.get_text().strip() or "project"
+            if widget in (None, self.stamp_check):
+                self.workflow.use_stamp = self.stamp_check.get_active()
         self.schedule_refresh()
+
+    def _show_naming(self) -> None:
+        """The step's number and title and the plan's names as they are now: the planner edits them too."""
+        node, wf = self.node, self.workflow
+        loading, self._loading = self._loading, True
+        try:  # not while typing (a space at the end of the title, an empty project name)
+            if int(self.step_spin.get_value()) != node.step:
+                self.step_spin.set_value(node.step)
+            if self.title_entry.get_text().strip() != node.title.strip():
+                self.title_entry.set_text(node.title)
+            if (self.project_entry.get_text().strip() or "project") != wf.project_name:
+                self.project_entry.set_text(wf.project_name)
+            if self.stamp_check.get_active() != wf.use_stamp:
+                self.stamp_check.set_active(wf.use_stamp)
+        finally:
+            self._loading = loading
 
     def _new_stamp(self):
         self.workflow.stamp = new_stamp()
@@ -882,6 +906,9 @@ class WizardWindow(Gtk.Window):
     def refresh_now(self) -> None:
         if self.node is None:
             return
+        self._show_naming()
+        if self._port_signature() != self._ports_shown:  # a connection was made or deleted in the planner
+            self._fill_inputs()
         self.plan = plan = self._resolve()
         step = plan.steps.get(self.node.id)
         issues: List[Issue] = list(step.issues) if step else []
