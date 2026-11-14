@@ -4,7 +4,7 @@ import pytest
 from conftest import make_universe, micro_project, run_one
 from mdatk.analysis.energy import COULOMB, GENERIC_LJ
 from mdatk.io.parm7 import LJTable
-from mdatk.spatial import kabsch, pairs_within
+from mdatk.spatial import kabsch, minimum_image_vectors, pairs_within
 
 
 def atom(name, resid, resname, element, **kw):
@@ -23,6 +23,45 @@ def test_pairs_within_matches_brute_force_and_pbc():
     box = np.array([10.0, 10.0, 10.0, 90.0, 90.0, 90.0])
     i, j, d = pairs_within(np.array([[0.2, 5, 5]]), np.array([[9.2, 5, 5]]), 2.0, box)
     assert len(i) == 1 and d[0] == pytest.approx(1.0, abs=1e-4)
+
+
+def test_minimum_image_vectors_in_a_triclinic_box():
+    """A truncated octahedron (Amber's usual box): the pair that pairs_within finds across the boundary has the
+    vector of its distance, as in an orthorhombic box, and an H-bond to an acceptor in the next cell is counted."""
+    from MDAnalysis.lib.mdamath import triclinic_vectors
+
+    box = np.array([40.0, 40.0, 40.0, 109.4712190, 109.4712190, 109.4712190])
+    cell = triclinic_vectors(box).astype(np.float64)
+    a = np.array([[1.0, 1.0, 1.0]])
+    for shift in (cell[1], cell[2], -cell[0] + cell[2], cell[0] - cell[1] - cell[2]):
+        b = a + np.array([2.0, 0.0, 0.0]) + shift
+        i, j, d = pairs_within(a, b, 3.0, box)
+        assert len(i) == 1 and d[0] == pytest.approx(2.0, abs=1e-4)
+        v = minimum_image_vectors(b[j] - a[i], box)
+        np.testing.assert_allclose(v, [[2.0, 0.0, 0.0]], atol=1e-4)
+    rng = np.random.default_rng(3)
+    v = rng.uniform(-100.0, 100.0, (200, 3))
+    w = minimum_image_vectors(v, box)
+    steps = range(-7, 8)
+    images = np.array([[i, j, k] for i in steps for j in steps for k in steps]) @ cell
+    shortest = np.linalg.norm(v[:, None, :] + images[None], axis=2).min(axis=1)
+    np.testing.assert_allclose(np.linalg.norm(w, axis=1), shortest, atol=1e-4)
+    frac = (w - v) @ np.linalg.inv(cell)
+    np.testing.assert_allclose(frac, np.round(frac), atol=1e-4)  # moved by whole box vectors only
+    assert minimum_image_vectors(np.zeros((0, 3)), box).shape == (0, 3)
+    ortho = np.array([10.0, 10.0, 10.0, 90.0, 90.0, 90.0])  # as before
+    np.testing.assert_allclose(minimum_image_vectors(np.array([[9.0, 0.5, -6.0]]), ortho), [[-1.0, 0.5, 4.0]])
+    assert minimum_image_vectors(v, None) is v
+    # the hydrogen-bond angle of a pair across the boundary
+    atoms = [atom("N3", 1, "U", "N"), atom("H3", 1, "U", "H"), atom("O6", 2, "G", "O")]
+    frame = np.array([[1.0, 1.0, 1.0], [2.0, 1.0, 1.0], [3.9, 1.0, 1.0]])
+    frame[2] += cell[1]
+    u = make_universe(atoms, [frame], bonds=[(0, 1)])
+    for ts in u.trajectory:
+        ts.dimensions = box
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.use_pbc = True
+    np.testing.assert_array_equal(run_one("hbonds", u, p).arrays["count"], [1])
 
 
 def test_kabsch_recovers_rotation():
