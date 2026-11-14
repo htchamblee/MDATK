@@ -104,6 +104,29 @@ def test_hbond_distance_and_angle(with_bonds):
     np.testing.assert_array_equal(res.arrays["count"], [1, 1, 0])
 
 
+def test_hbond_distance_only_counts_an_atom_pair_once():
+    """Without the angle criterion (a topology without hydrogens, or use_angle off) two atoms that can
+    both donate and accept are one hydrogen bond: it was counted once per direction."""
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    # no hydrogens: G N1 / N2 / O6 against C N3 / O2 / N4, three contacts of 2.9 A, then all 4 A apart
+    atoms = [atom("O6", 1, "G", "O"), atom("N1", 1, "G", "N"), atom("N2", 1, "G", "N"),
+             atom("N4", 2, "C", "N"), atom("N3", 2, "C", "N"), atom("O2", 2, "C", "O")]
+    near = [[0, 0, 0], [0, 10, 0], [0, 20, 0], [2.9, 0, 0], [2.9, 10, 0], [2.9, 20, 0]]
+    far = [[0, 0, 0], [0, 10, 0], [0, 20, 0], [4.0, 0, 0], [4.0, 10, 0], [4.0, 20, 0]]
+    res = run_one("hbonds", make_universe(atoms, [near, far]), p)
+    assert not res.meta["used_angle"]
+    np.testing.assert_array_equal(res.arrays["count"], [3, 0])
+    np.testing.assert_array_equal(res.arrays["per_res_a"], [[3, 0]])
+    np.testing.assert_array_equal(res.arrays["map_v"], [3])
+    # with hydrogens and the angle switched off: two hydroxyls 2.8 A apart are one bond
+    atoms = [atom("O2'", 1, "A", "O"), atom("HO2'", 1, "A", "H"), atom("O2'", 2, "U", "O"), atom("HO2'", 2, "U", "H")]
+    xyz = [[0, 0, 0], [0.96, 0, 0], [2.8, 0, 0], [3.5, 0.6, 0]]
+    u = make_universe(atoms, [xyz], bonds=[(0, 1), (2, 3)])
+    np.testing.assert_array_equal(run_one("hbonds", u, p).arrays["count"], [1])  # the angle picks the donor
+    p.analyses.hbonds.use_angle = False
+    np.testing.assert_array_equal(run_one("hbonds", u, p).arrays["count"], [1])
+
+
 def test_mg_bridges_geometry_and_occupancy():
     atoms = [atom("OP1", 1, "A", "O"), atom("OP2", 2, "U", "O"), atom("MG", 3, "MG", "MG")]
     mg = np.array([5.0, 5.0, 5.0])

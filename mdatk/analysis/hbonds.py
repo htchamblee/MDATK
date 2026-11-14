@@ -158,6 +158,8 @@ class HBondAnalysis(Analysis):
         rows_a: List[np.ndarray] = []
         rows_b: List[np.ndarray] = []
         total = 0
+        counted = None  # distance only: the atom pairs counted with the donor in group A
+        n_atoms = len(pos)
         for s in (0, 1):
             don = self.donor_idx[s]
             acc = self.acc_idx[1 - s]
@@ -166,6 +168,14 @@ class HBondAnalysis(Analysis):
                 continue
             d_atoms = don[i]
             a_atoms = acc[j]
+            if not self.use_angle:
+                # without the angle nothing tells which atom donates: two atoms that can both donate and
+                # accept (every N / O of a topology without hydrogens, two hydroxyls) are one bond, not two
+                if s == 0:
+                    counted = d_atoms * n_atoms + a_atoms
+                elif counted is not None:
+                    new = ~np.isin(a_atoms * n_atoms + d_atoms, counted)
+                    d_atoms, a_atoms = d_atoms[new], a_atoms[new]
             if self.use_angle:
                 n_h = self.h_start[d_atoms + 1] - self.h_start[d_atoms]
                 rep_d = np.repeat(d_atoms, n_h)
