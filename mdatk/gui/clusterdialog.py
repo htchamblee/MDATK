@@ -6,14 +6,16 @@ the window closes, and with Save."""
 from __future__ import annotations
 
 import copy
-from typing import List, Optional
+import math
+import os
+from typing import Any, List, Optional, Tuple
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Pango  # noqa: E402
 
-from .. import clusters  # noqa: E402
+from .. import clusters, tomlio  # noqa: E402
 from . import widgets as W  # noqa: E402
 
 HEADER_TIP = ("The lines every job script of this cluster starts with (after #!/bin/bash): the scheduler's "
@@ -37,6 +39,51 @@ def _number(_column, cell, model, it, data) -> None:
     cell.set_property("text", fmt.format(model[it][col]))
 
 
+def _positive(value: Any) -> Optional[float]:
+    """``value`` as a positive number (a profiles file edited by hand may hold "48" or text); None if it is none."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else "" if value is None else str(value)
+
+
+def tidy(profile: clusters.ClusterProfile) -> clusters.ClusterProfile:
+    """The values of a profile read from a file edited by hand as the window (and a job) needs them: text as
+    text, a queue's limit a positive number (48 h otherwise), run speeds with their numbers (others are left
+    out)."""
+    for name in ("name", "header", "gpu", "time_directive", "submit"):
+        setattr(profile, name, _text(getattr(profile, name)))
+    profile.queues = [clusters.Queue(_text(q.name), _positive(q.max_hours) or 48.0, _text(q.directives))
+                      for q in profile.queues]
+    runs = []
+    for b in profile.benchmarks:
+        atoms, dt, speed = _positive(b.atoms), _positive(b.dt), _positive(b.s_per_ns)
+        if atoms and dt and speed:
+            runs.append(clusters.Benchmark(_text(b.gpu), int(atoms), dt, speed, _text(b.when), _text(b.source)))
+    profile.benchmarks = runs
+    return profile
+
+
+def read_profiles(path: str = "") -> Tuple[List[clusters.ClusterProfile], str]:
+    """The profiles of the profiles file (:func:`tidy`), and why the file could not be read ("": it could, or
+    there is none): such a file must not be replaced unseen by what the window holds."""
+    target = path or clusters.profiles_path()
+    if not os.path.exists(target):
+        return [], ""
+    try:
+        data = tomlio.load(target)
+        if not isinstance(data.get("profile", []), list):
+            raise ValueError("its 'profile' is not a list of tables ([[profile]])")
+        return [tidy(p) for p in clusters.load_profiles(path)], ""
+    except (OSError, TypeError, ValueError) as exc:  # ValueError: not TOML, not UTF-8
+        return [], str(exc) or type(exc).__name__
+
+
 class ClusterProfilesWindow(Gtk.Window):
     def __init__(self, host=None, path: str = ""):
         super().__init__(title="Cluster profiles")
@@ -45,7 +92,9 @@ class ClusterProfilesWindow(Gtk.Window):
         if host is not None and isinstance(host, Gtk.Window):
             self.set_transient_for(host)
         self.set_default_size(980, 640)
-        self.profiles: List[clusters.ClusterProfile] = clusters.load_profiles(path)
+        self.profiles: List[clusters.ClusterProfile]
+        # why the profiles file could not be read ("": it could): it is kept as a copy when the window saves
+        self.profiles, self.unreadable = read_profiles(path)
         self.current: Optional[int] = None
         self.dirty = False
         self._loading = False
@@ -91,11 +140,14 @@ class ClusterProfilesWindow(Gtk.Window):
         right.pack_start(W.frame("Job header", sw), False, False, 0)
 
         self.queues = Gtk.ListStore(str, float, str)
+        self._commit_cells: list = []
         qview = Gtk.TreeView(model=self.queues)
         qview.set_tooltip_text(QUEUES_TIP)
         for col, (title, kind) in enumerate((("Queue", str), ("Max hours", float), ("Directives", str))):
             cell = Gtk.CellRendererText(editable=True)
             cell.connect("edited", self._queue_edited, col)
+            # leaving a cell stores what was typed, and so do Save, another profile and closing the window
+            self._commit_cells.append(W.keep_edit_on_leave(cell, self.queues))
             column = Gtk.TreeViewColumn(title, cell, text=col)
             if kind is float:
                 column.set_cell_data_func(cell, _number, (col, "{:g}"))
@@ -158,6 +210,15 @@ class ClusterProfilesWindow(Gtk.Window):
         if self.profiles:
             self.listbox.select_row(self.listbox.get_row_at_index(0))
         self._sensitive()
+        if self.unreadable:
+            self.status.set_text(f"Could not read {self._target()}: {self.unreadable}. Its profiles are not shown; "
+                                 f"saving keeps the file as {os.path.basename(self._backup())}.")
+
+    def _target(self) -> str:
+        return self.path or clusters.profiles_path()
+
+    def _backup(self) -> str:
+        return self._target() + ".unreadable"
 
     # ------------------------------------------------------------ list
     def _fill_list(self) -> None:
@@ -255,6 +316,10 @@ class ClusterProfilesWindow(Gtk.Window):
         """The editor's values into the selected profile."""
         if self.current is None or self.current >= len(self.profiles):
             return
+        for commit in self._commit_cells:  # a queue cell still being edited
+            commit()
+        if self.cushion.is_focus():  # a number typed and not yet entered (closing the window moves no focus)
+            self.cushion.update()
         p = self.profiles[self.current]
         buf = self.header.get_buffer()
         old_name = p.name
@@ -298,9 +363,9 @@ class ClusterProfilesWindow(Gtk.Window):
         if self.current is None:
             return
         model, paths = self.speed_view.get_selection().get_selected_rows()
-        drop = {model[p][5] + "\0" + str(model[p][4]) for p in paths}
+        drop = {(model[p][5], float(model[p][4])) for p in paths}
         p = self.profiles[self.current]
-        p.benchmarks = [b for b in p.benchmarks if b.source + "\0" + str(b.s_per_ns) not in drop]
+        p.benchmarks = [b for b in p.benchmarks if (b.source, float(b.s_per_ns)) not in drop]
         self.dirty = True
         self._fill_speeds(p)
 
@@ -346,13 +411,18 @@ class ClusterProfilesWindow(Gtk.Window):
         if bad:
             self.status.set_text("Not saved: " + "; ".join(bad))
             return False
+        kept = ""
         try:
+            if self.unreadable and os.path.exists(self._target()):  # never replaced unseen: it may hold profiles
+                os.replace(self._target(), self._backup())
+                kept = f"; the file that could not be read is kept as {self._backup()}"
+            self.unreadable = ""
             clusters.save_profiles(self.profiles, self.path)
         except OSError as exc:
             self.status.set_text(f"Not saved: {exc}")
             return False
         self.dirty = False
-        self.status.set_text(f"Saved {len(self.profiles)} profile(s)")
+        self.status.set_text(f"Saved {len(self.profiles)} profile(s){kept}")
         if self.host is not None and hasattr(self.host, "append_log"):
             self.host.append_log(f"Cluster profiles saved: {', '.join(p.name for p in self.profiles) or 'none'}")
         return True
@@ -363,6 +433,9 @@ class ClusterProfilesWindow(Gtk.Window):
             return True  # stays open: the status line says why
         return False
 
-    def close_window(self) -> None:
-        if not self._on_delete():
-            self.destroy()
+    def close_window(self) -> bool:
+        """Close the window, saving the profiles first; False when they could not be saved (it stays open)."""
+        if self._on_delete():
+            return False
+        self.destroy()
+        return True

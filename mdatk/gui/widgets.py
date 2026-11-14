@@ -444,6 +444,57 @@ class Binder:
 # ---------------------------------------------------------------------------
 
 
+def keep_edit_on_leave(renderer: Gtk.CellRendererText, store: Gtk.ListStore) -> Callable[[], None]:
+    """Leaving a text cell that is being edited (a click on a button, on another row or field) stores what
+    was typed, as Enter does: GTK 3 itself drops the edit when the cell loses the focus.  Escape still
+    cancels.  The text goes through the renderer's 'edited' signal, i.e. the handlers Enter runs.  Returns
+    a function that stores the text of the cell being edited now, if any (before the table is read for
+    good: a save, a window that closes); the cell stays open."""
+    session: dict = {}
+
+    def commit(editable=None) -> None:
+        state = session.get("open")
+        if state is None or (editable is not None and state["editable"] is not editable):
+            return
+        text = state["editable"].get_text()
+        try:
+            same_row = list(store[state["path"]]) == state["row"]
+        except (IndexError, TypeError, ValueError):
+            same_row = False
+        if not same_row or state["editable"].get_property("editing-canceled") or text == state["text"]:
+            return
+        state["text"] = text  # first: the handlers may ask for another commit
+        renderer.emit("edited", state["path"], text)
+        try:
+            state["row"] = list(store[state["path"]])
+        except (IndexError, TypeError, ValueError):
+            session.pop("open", None)
+
+    def close(editable=None) -> None:
+        if editable is None or session.get("open", {}).get("editable") is editable:
+            session.pop("open", None)
+
+    def leave(editable, _event) -> bool:
+        commit(editable)
+        close(editable)
+        return False  # GTK's own handler follows and closes the cell
+
+    def started(_renderer, editable, path) -> None:
+        if not isinstance(editable, Gtk.Entry):
+            return
+        try:
+            row = list(store[path])
+        except (IndexError, TypeError, ValueError):
+            return
+        session["open"] = {"editable": editable, "path": path, "row": row, "text": editable.get_text()}
+        editable.connect("editing-done", close)  # Enter (stored by GTK) and Escape
+        editable.connect("focus-out-event", leave)
+
+    renderer.connect("editing-started", started)
+    renderer.connect("editing-canceled", lambda *_: close())
+    return lambda: commit()
+
+
 class ListEditor(Gtk.Box):
     """Editable table of string columns with add / remove / move buttons."""
 
@@ -465,6 +516,7 @@ class ListEditor(Gtk.Box):
                                              editable=True)
             else:
                 rend = Gtk.CellRendererText(editable=True)
+                keep_edit_on_leave(rend, self.store)  # leaving a cell stores what was typed
             rend.connect("edited", self._edited, k)
             col = Gtk.TreeViewColumn(title, rend, text=k)
             col.set_cell_data_func(rend, self._cell_flag, k)

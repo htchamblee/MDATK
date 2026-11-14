@@ -63,10 +63,11 @@ def window(demo_dry, tmp_path):
     win.destroy()
 
 
-def edit_name(win, row: int):
-    """Open the name cell of ``row`` like a click would; returns its entry."""
-    view = win.group_editor.view
-    col = view.get_column(0)
+def edit_name(win, row: int, column: int = 0, editor=None):
+    """Open the name cell of ``row`` (or the cell of ``column``, of ``editor``) like a click would; returns
+    its entry."""
+    view = (editor or win.group_editor).view
+    col = view.get_column(column)
     opened = []
     handler = col.get_cells()[0].connect("editing-started", lambda _c, e, _p: opened.append(e))
     view.grab_focus()
@@ -151,6 +152,50 @@ def test_group_names_are_checked_and_leaving_the_cell_commits(window):
     p = win.collect(validate=False)
     assert p.analyses.contacts.group_b == "Ligand" and p.visual.proximity_set == "Ligand"
     assert win.group_status.get_text().startswith("Renamed Target → Ligand")
+
+
+def test_leaving_any_cell_keeps_what_was_typed(window):
+    """Residues, selections, trajectory files ...: a click elsewhere (Render, Save, another field) stores the
+    text typed into a table cell, as Enter does (GTK 3 itself would drop it); Escape cancels."""
+    win = window
+    changes = []
+    win.traj_editor.on_change = lambda: changes.append(1)
+    entry = edit_name(win, 0, 1)  # the residues of the first group
+    entry.set_text("1-40")
+    win.render_button.grab_focus()
+    assert pump(lambda: win.group_editor.store[0][1] == "1-40", 5)
+    assert win.collect(validate=False).groups[0].residues == "1-40"
+
+    win.traj_editor.add_row([""])
+    n = len(win.traj_editor.store) - 1
+    entry = edit_name(win, n, 0, win.traj_editor)
+    entry.set_text("/data/run1.nc")
+    win.topology_entry.grab_focus()
+    assert pump(lambda: win.traj_editor.store[n][0] == "/data/run1.nc", 5)
+    assert "/data/run1.nc" in win.collect(validate=False).inputs.trajectories
+
+    entry = edit_name(win, n, 0, win.traj_editor)  # Escape, then the focus leaves: the cell keeps its text
+    entry.set_text("/data/other.nc")
+    ev = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+    ev.key.keyval = Gdk.KEY_Escape
+    ev.key.window = win.traj_editor.view.get_window()
+    entry.event(ev)
+    win.topology_entry.grab_focus()
+    pump(lambda: False, 0.3)
+    assert win.traj_editor.store[n][0] == "/data/run1.nc"
+
+    changes.clear()
+    entry = edit_name(win, n, 0, win.traj_editor)  # Enter stores once, leaving afterwards nothing more
+    entry.set_text("/data/run2.nc")
+    entry.activate()
+    win.topology_entry.grab_focus()
+    pump(lambda: False, 0.3)
+    assert win.traj_editor.store[n][0] == "/data/run2.nc" and len(changes) == 1
+
+    entry = edit_name(win, n, 0, win.traj_editor)  # opened and left untouched: no change
+    win.topology_entry.grab_focus()
+    pump(lambda: False, 0.3)
+    assert win.traj_editor.store[n][0] == "/data/run2.nc" and len(changes) == 1
 
 
 def test_deleting_a_used_group_says_where_it_is_used(window):

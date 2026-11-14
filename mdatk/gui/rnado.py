@@ -862,12 +862,21 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             choice = ask_unsaved(self, "the plan")
             if choice == "cancel" or (choice == "save" and not self.save_project()):
                 return True
+        profiles = getattr(self, "cluster_profiles", None)
+        if profiles is not None and not profiles.close_window():
+            # the Cluster profiles window saves when it closes; edits it cannot save as they are (a name
+            # used twice, a profile without a queue) would be lost with RNAdo: its status line says why
+            profiles.present()
+            return True
         return False
 
     def _on_destroy(self, *_) -> None:
         self.jobs.stop()
         # The tool windows are transient for this window but not attached to the application, so they never
         # keep RNAdo running; they close with it (the planner closes its step wizards the same way)
+        profiles = getattr(self, "cluster_profiles", None)
+        if profiles is not None:  # saves its profiles (a window destroyed without being asked to close)
+            profiles.close_window()
         for win in (self.wizard, self.pdb_tools, self.builder):
             if win is not None:
                 win.destroy()
