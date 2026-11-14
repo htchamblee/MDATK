@@ -751,14 +751,18 @@ def map_values(dmap, xyz: np.ndarray, interpolation: str = "linear") -> np.ndarr
     xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
     if not len(xyz):
         return np.empty(0)
-    order = 0 if interpolation == "nearest" else 1
-    vals = sample_map(dmap, xyz, cval=np.nan, order=order)
     ijk = dmap.xyz_to_index(xyz)
-    if order == 0:  # round as the scripts did; outside the grid after rounding is outside
+    if interpolation == "nearest":  # round as the scripts did; outside the grid after rounding is outside
         idx = np.rint(ijk)
         inside = np.all((idx >= 0) & (idx <= np.array(dmap.shape_xyz) - 1), axis=1)
-    else:
-        inside = np.all((ijk >= 0) & (ijk <= np.array(dmap.shape_xyz) - 1), axis=1)
+        # the voxel itself: an interpolating sampler calls a point up to half a voxel past the last voxel
+        # centre outside, although it rounds onto that voxel
+        k = idx[inside].astype(np.int64)
+        vals = np.full(len(xyz), np.nan)
+        vals[inside] = dmap.data[k[:, 2], k[:, 1], k[:, 0]]
+        return vals
+    vals = sample_map(dmap, xyz, cval=np.nan, order=1)
+    inside = np.all((ijk >= 0) & (ijk <= np.array(dmap.shape_xyz) - 1), axis=1)
     vals = np.where(inside, vals, np.nan)
     return vals
 

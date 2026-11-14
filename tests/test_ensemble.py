@@ -296,6 +296,25 @@ def test_occupancy_and_contour(tmp_path):
     assert ensemble.contour_level(np.array([np.nan])) is None
 
 
+def test_nearest_voxel_of_atoms_past_the_last_voxel_centre_regression():
+    """regression: 'nearest' called an atom up to half a voxel outside the outermost voxel centres outside the
+    map (NaN, not in density), although it rounds onto an edge voxel, the one a rounded index reads."""
+    from mdatk.io import mrc
+    data =np.arange(24, dtype=np.float32).reshape(2, 3, 4)  # [z, y, x]: value = 12 z + 4 y + x
+    dmap = mrc.DensityMap(data, np.array([10.0, 20.0, 30.0]), np.array([2.0, 2.0, 2.0]))
+    xyz = np.array([[16.8, 22.0, 32.0],   # x index 3.4: voxel (3, 1, 1)
+                    [9.2, 19.2, 29.2],    # index -0.4 on every axis: voxel (0, 0, 0)
+                    [13.0, 24.9, 30.9],   # index (1.5, 2.45, 0.45): x rounds to the even 2 -> voxel (2, 2, 0)
+                    [13.2, 22.0, 30.6],   # index (1.6, 1, 0.3), between the voxel centres: voxel (2, 1, 0)
+                    [17.2, 22.0, 32.0],   # x index 3.6 rounds to 4: outside
+                    [12.0, 22.0, 33.2]])  # z index 1.6 rounds to 2: outside
+    got = ensemble.map_values(dmap, xyz, "nearest")
+    np.testing.assert_array_equal(got[:4], [19.0, 0.0, 10.0, 6.0])
+    assert np.isnan(got[4:]).all()
+    linear = ensemble.map_values(dmap, xyz)  # trilinear: inside only between the voxel centres
+    assert np.isnan(linear[[0, 1, 2, 4, 5]]).all() and linear[3] == pytest.approx(0.3 * 12 + 4 + 1.6)
+
+
 # --- build conditions -------------------------------------------------------------------------------------
 
 REGS = [ensemble.parse_register(STEM), ensemble.parse_register(TIP)]
