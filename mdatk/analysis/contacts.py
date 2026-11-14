@@ -9,7 +9,6 @@ from ..selections import heavy
 from ..spatial import pairs_within
 from .base import Analysis, register
 from .common import labels, per_row_counts, residue_rows, without
-from .structure import chain_ids
 
 
 @register
@@ -70,6 +69,8 @@ class ContactAnalysis(Analysis):
         self.res_b, self.row_b = residue_rows(b)
         self.n_a, self.n_b = len(self.res_a), len(self.res_b)
         # a group against itself: the chain of every residue row (sequence neighbours are left out, below)
+        from .structure import chain_ids  # here: importing it above would register its analyses first
+
         self.chain = chain_ids(self.res_a) if self.same else None
         self.cutoff = p.cutoff
         self.atom_pairs = np.zeros(self.n_frames, dtype=np.int64)

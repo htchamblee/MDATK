@@ -157,6 +157,15 @@ def test_contacts_counts_and_native_fraction():
     assert key_label("contacts/atom_pairs", p) == "Aptamer–Target atom contacts"
 
 
+def test_analyses_are_registered_in_their_run_order():
+    """The registration order is the order analyses are set up and run in, and so decides which setting a
+    run-time selection error names first (the user's analyses before the structure view's internal ones)."""
+    from mdatk.analysis import ANALYSES
+
+    assert list(ANALYSES) == ["contacts", "energy", "hbonds", "mg", "rmsd", "stacking", "trace", "proximity",
+                              "atoms", "basepairs"]
+
+
 def test_contacts_of_a_group_with_itself():
     """A group against itself: every residue's contacts are counted (not only those with later residues),
     and the last residue of one strand and the first of the next are no sequence neighbours."""
