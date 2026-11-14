@@ -74,12 +74,44 @@ def _from_dict(d: Dict[str, Any]) -> ClusterProfile:
     def pick(cls, data):
         names = {f.name for f in dataclasses.fields(cls)}
         return {k: v for k, v in data.items() if k in names}
+    def rows(key):  # a file edited by hand may hold anything
+        value = d.get(key, [])
+        return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
     p = ClusterProfile(**{k: v for k, v in pick(ClusterProfile, d).items() if k not in ("queues", "benchmarks")})
-    p.queues = [Queue(**pick(Queue, q)) for q in d.get("queues", []) if isinstance(q, dict)] or [Queue()]
-    p.benchmarks = [Benchmark(**pick(Benchmark, b)) for b in d.get("benchmarks", []) if isinstance(b, dict)
-                    and {"gpu", "atoms", "dt", "s_per_ns"} <= set(b)]
+    for f in dataclasses.fields(ClusterProfile):
+        if f.type == "str":
+            setattr(p, f.name, str(getattr(p, f.name)))
+    p.queues = [_queue(pick(Queue, q)) for q in rows("queues")] or [Queue()]
+    p.benchmarks = [b for b in (_benchmark(pick(Benchmark, b)) for b in rows("benchmarks")) if b is not None]
     p.cushion = clamp_cushion(p.cushion)
     return p
+
+
+def _positive(value: Any) -> Optional[float]:
+    """``value`` as a finite number above zero, else None."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if not isinstance(value, bool) and math.isfinite(v) and v > 0 else None
+
+
+def _queue(data: Dict[str, Any]) -> Queue:
+    """A queue as read: a limit that is no number above zero is the default one (the estimate divides by it)."""
+    q = Queue(**data)
+    q.name, q.directives = str(q.name), str(q.directives)
+    q.max_hours = _positive(q.max_hours) or Queue().max_hours
+    return q
+
+
+def _benchmark(data: Dict[str, Any]) -> Optional[Benchmark]:
+    """A run speed as read; None for one without usable numbers (the estimate scales by them)."""
+    atoms, dt, s_per_ns = (_positive(data.get(k)) for k in ("atoms", "dt", "s_per_ns"))
+    if "gpu" not in data or not (atoms and dt and s_per_ns) or atoms < 1:
+        return None
+    return Benchmark(str(data["gpu"]), int(atoms), dt, s_per_ns, str(data.get("when", "")),
+                     str(data.get("source", "")))
 
 
 def load_profiles(path: str = "") -> List[ClusterProfile]:
@@ -115,6 +147,8 @@ def clamp_cushion(value: Any) -> float:
     try:
         v = float(value)
     except (TypeError, ValueError):
+        v = 10.0
+    if math.isnan(v):  # 'nan' is a TOML number
         v = 10.0
     return min(max(v, CUSHION_RANGE[0]), CUSHION_RANGE[1])
 
@@ -234,14 +268,20 @@ def estimate(profile: ClusterProfile, atoms: int, md: Sequence[Tuple[float, floa
     return Estimate(seconds, queue, 1, basis)
 
 
+def _minutes(seconds: float) -> int:
+    """Whole minutes, rounded up; a queue's limit in hours times 3600 may come a hair above its whole seconds
+    (1.1 h: 3960.0000000000005), which must not add a minute the queue refuses."""
+    return int(math.ceil(round(seconds, 3) / 60))
+
+
 def hms(seconds: float) -> str:
-    minutes = int(math.ceil(seconds / 60))
+    minutes = _minutes(seconds)
     return f"{minutes // 60}:{minutes % 60:02d}:00"
 
 
 def time_line(profile: ClusterProfile, scheduler: str, seconds: float) -> str:
     """The wall-time directive: the profile's own ({time}, {hhmm}, {minutes}) or the scheduler's."""
-    minutes = int(math.ceil(seconds / 60))
+    minutes = _minutes(seconds)
     values = {"{time}": hms(seconds), "{hhmm}": f"{minutes // 60}:{minutes % 60:02d}", "{minutes}": str(minutes)}
     template = profile.time_directive.strip() or {
         "Slurm": "#SBATCH --time={time}", "PBS / Torque": "#PBS -l walltime={time}", "LSF": "#BSUB -W {hhmm}",
@@ -255,10 +295,24 @@ def time_line(profile: ClusterProfile, scheduler: str, seconds: float) -> str:
 TIME_LINE = re.compile(r"^\s*(#SBATCH\s+(--time[= ]|-t\s)|#PBS\s+-l\s+walltime|#BSUB\s+-W\s|#\$\s+-l\s+h_rt)")
 
 
+# a PBS / Grid Engine resource list: '#PBS -l nodes=1:ppn=4,walltime=12:00:00', '#$ -l h_rt=12:00:00,gpu=1'
+_RESOURCE_LIST = re.compile(r"^(\s*(?:#PBS|#\$)\s+-l\s+)(\S+)\s*$")
+_TIME_RESOURCE = re.compile(r"(?:walltime|h_rt)=")
+
+
 def without_time(lines: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """(the lines without their wall time, what was left out): a wall-time line goes, and of a resource list
+    that asks for more than the wall time only that entry (the nodes, GPUs ... beside it stay)."""
     keep, dropped = [], []
     for ln in lines:
-        (dropped if TIME_LINE.match(ln) else keep).append(ln)
+        m = _RESOURCE_LIST.match(ln)
+        items = m.group(2).split(",") if m else []
+        times = [x for x in items if _TIME_RESOURCE.match(x)]
+        if times and len(times) < len(items):
+            keep.append(m.group(1) + ",".join(x for x in items if x not in times))
+            dropped.append(f"{','.join(times)} (of {ln.strip()})")
+        else:
+            (dropped if times or TIME_LINE.match(ln) else keep).append(ln)
     return keep, dropped
 
 

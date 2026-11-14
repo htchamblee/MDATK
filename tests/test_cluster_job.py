@@ -165,3 +165,39 @@ def test_the_submit_script_chains_dependent_slurm_jobs(tmp_path):
                              f"apt1_02_job_{STAMP}.slurm")
     assert "--dependency" not in calls[2]
     assert "02: job 102 (02_amber-md/" in res.stdout
+
+
+@needs_bash
+def test_steps_that_share_a_number_keep_their_own_job_ids(tmp_path):
+    # two MD steps numbered 03 (folder tags m1, m2); step 04 reads from the first one only
+    first = md_node("a", 3, inputs(tmp_path), job_header=SLURM)
+    twin = md_node("b", 3, inputs(tmp_path), job_header=SLURM)
+    first.folder_tag, twin.folder_tag = "m1", "m2"
+    after = md_node("c", 4, job_header=SLURM)
+    edges = [PlanEdge("a", "topology", "c", "topology"), PlanEdge("a", "restart", "c", "coordinates")]
+    plan_of(tmp_path, [first, twin, after], edges)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "sbatch.log"
+    _stub(bin_dir / "sbatch", f'n=$(( $(wc -l < {log} 2>/dev/null || echo 0) + 101 ))\n'
+                              f'echo "$PWD $*" >> {log}\necho "$n"\n')
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    res = subprocess.run(["bash", str(tmp_path / "plan" / f"apt1_00_submit_{STAMP}.sh")], env=env,
+                         capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    calls = log.read_text().splitlines()
+    assert "03_amber-md_m1 --parsable --job-name" in calls[0] and "03_amber-md_m2 --parsable --job-name" in calls[1]
+    # the job of step 04 waits for the job of the step it reads from (101), not for its twin's (102)
+    assert "04_amber-md --parsable --dependency=afterok:101 --job-name=apt1_04" in calls[2]
+
+
+def test_a_slurm_job_waits_only_for_jobs_sbatch_submitted(tmp_path):
+    # the step it reads from has a job without scheduler directives (run with bash): no job id to wait for
+    first = md_node("a", 1, inputs(tmp_path), job_header="module load amber")
+    second = md_node("b", 2, job_header=SLURM)
+    edges = [PlanEdge("a", "topology", "b", "topology"), PlanEdge("a", "restart", "b", "coordinates")]
+    plan_of(tmp_path, [first, second], edges)
+    submit = (tmp_path / "plan" / f"apt1_00_submit_{STAMP}.sh").read_text()
+    assert f"(cd 01_amber-md && bash apt1_01_job_{STAMP}.job)" in submit
+    assert f"JOB_02=$(cd 02_amber-md && sbatch --parsable --job-name=apt1_02 apt1_02_job_{STAMP}.slurm)" in submit
+    assert "JOB_01" not in submit and "afterok" not in submit  # was: --dependency=afterok:$JOB_01, never set

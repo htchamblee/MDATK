@@ -248,3 +248,59 @@ def test_cli_cluster_learn_and_list(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Grace: GPU A100, queues gpu (≤ 48 h), long (≤ 168 h), cushion 10%, 1 run speed(s)" in out
     assert "60,000 atoms" in out
+
+
+def test_a_queue_limit_in_tenths_of_an_hour_is_not_exceeded():
+    # 1.1 h x 3600 is 3960.0000000000005 s: rounded up to whole minutes it became 1:07:00, over the limit
+    assert clusters.hms(1.1 * 3600) == "1:06:00" and clusters.hms(4.4 * 3600) == "4:24:00"
+    assert clusters.hms(3961) == "1:07:00"  # a real second more still rounds up
+    p = grace(queues=[clusters.Queue("short", 2.2, "#SBATCH --partition=short")])
+    assert clusters.time_line(p, "Slurm", p.queues[0].max_hours * 3600) == "#SBATCH --time=2:12:00"
+    huge = clusters.estimate(p, 50000, [(5000.0, 0.004)])  # over the queue: jobs in a row, each at its limit
+    assert huge.jobs > 1 and clusters.hms(huge.seconds) == "2:12:00"
+
+
+def test_a_profiles_file_edited_by_hand_still_loads(config_home, capsys):
+    from mdatk.cli import main
+    path = config_home / "mdatk" / "clusters.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('[[profile]]\nname = "Odd"\ngpu = "A100"\ncushion = nan\n'
+                    '[[profile.queues]]\nname = "none"\nmax_hours = 0\n'
+                    '[[profile.queues]]\nname = "text"\nmax_hours = "72"\n'
+                    '[[profile.benchmarks]]\ngpu = "NVIDIA A100"\natoms = 50000\ndt = 0.004\ns_per_ns = 160.0\n'
+                    '[[profile.benchmarks]]\ngpu = "NVIDIA A100"\natoms = 0\ndt = 0.004\ns_per_ns = 160.0\n'
+                    '[[profile.benchmarks]]\ngpu = "NVIDIA A100"\natoms = "many"\ndt = 0.004\ns_per_ns = 1.0\n'
+                    '[[profile]]\nname = "NoQueues"\nqueues = 5\n')
+    odd, none = clusters.load_profiles()
+    # limits that are no number above zero are the default 48 h (was: ZeroDivisionError / TypeError in the estimate)
+    assert [(q.name, q.max_hours) for q in odd.queues] == [("none", 48.0), ("text", 72.0)]
+    assert odd.cushion == 10.0 and [b.atoms for b in odd.benchmarks] == [50000]
+    assert [q.max_hours for q in none.queues] == [48.0]
+    est = clusters.estimate(odd, 50000, [(1200.0, 0.004)])  # ~59 h
+    assert est is not None and est.queue.name == "text" and est.jobs == 1
+    assert main(["cluster", "list"]) == 0
+    assert "Odd: GPU A100, queues none (≤ 48 h), text (≤ 72 h), cushion 10%" in capsys.readouterr().out
+
+
+def test_only_the_wall_time_leaves_a_resource_list():
+    # '#$ -l h_rt=...,gpu=1' went as a whole: the job no longer asked for its GPU
+    keep, dropped = clusters.without_time(["#$ -cwd", "#$ -l h_rt=10:00:00,gpu=1", "#PBS -l nodes=1:ppn=4,walltime=12:00:00",
+                                           "#PBS -l walltime=12:00:00", "#SBATCH --time=1:00:00", "module load amber"])
+    assert keep == ["#$ -cwd", "#$ -l gpu=1", "#PBS -l nodes=1:ppn=4", "module load amber"]
+    assert dropped == ["h_rt=10:00:00 (of #$ -l h_rt=10:00:00,gpu=1)",
+                       "walltime=12:00:00 (of #PBS -l nodes=1:ppn=4,walltime=12:00:00)",
+                       "#PBS -l walltime=12:00:00", "#SBATCH --time=1:00:00"]
+
+
+def test_the_scheduler_is_told_from_any_queue(tmp_path):
+    # a header of commands only, the directives in the queues, the first queue listed without one: the job was
+    # written as <...>.job and submitted with bash, #SBATCH lines and all
+    p = grace(header="module load Amber/24", queues=[clusters.Queue("any", 4.0, ""),
+                                                      clusters.Queue("gpu", 48.0, "#SBATCH --partition=gpu")])
+    plan = md_plan(tmp_path, [p])
+    job = (tmp_path / "plan" / "04_amber-md" / f"dlval_04_job_{STAMP}.slurm").read_text()
+    assert "#SBATCH --partition=gpu\n#SBATCH --time=" in job
+    submit = (tmp_path / "plan" / f"dlval_00_submit_{STAMP}.sh").read_text()
+    assert "JOB_04=$(cd 04_amber-md && sbatch --parsable --job-name=dlval_04" in submit
+    assert not any("no scheduler directives" in m for _lv, m in
+                   [(i.level, i.message) for i in plan.steps["md"].issues])

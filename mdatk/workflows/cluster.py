@@ -177,8 +177,11 @@ def job_plan(s: Dict[str, Any], ctx, tool=None, profiles: Optional[Sequence[clus
     if dropped:
         issues.append(Issue("info", "the wall time comes from the estimate: left out of the header: "
                             + "; ".join(ln.strip() for ln in dropped), ("job_header", "cluster")))
-    sched, ext, submit = _scheduler_of(lines + (_lines(profile.queues[0].directives) if profile and
-                                                profile.queues else []))
+    # the scheduler: by the header's directives, else by those of the queues (any of them: the job may go into
+    # each, and the first one listed may have no line of its own)
+    sched, ext, submit = _scheduler_of(lines)
+    if not sched and profile:
+        sched, ext, submit = _scheduler_of([ln for q in profile.queues for ln in _lines(q.directives)])
     submit = (s.get("job_submit") or "").strip() or (profile.submit.strip() if profile else "") or submit
     plan = JobPlan(lines, sched, ext, submit, profile, issues=issues)
     if profile is not None:
@@ -343,7 +346,19 @@ def submit_script(plan) -> Optional[str]:
         entries.append((nid, step, step.ctx.folder or ".", job.name, jp, slurm))
     if not entries:
         return None
-    ids = {nid: f"JOB_{step.node.step:02d}" for nid, step, *_rest in entries}
+    # the shell variable of each job's id: JOB_<NN>; steps that share a number (told apart by their folder tags)
+    # each get their own, or a job would wait for another step's job
+    numbers = [step.node.step for _nid, step, *_rest in entries]
+    ids: Dict[str, str] = {}
+    for nid, step, *_rest in entries:
+        var = f"JOB_{step.node.step:02d}"
+        if numbers.count(step.node.step) > 1:
+            var += "_" + re.sub(r"[^A-Za-z0-9_]", "_", (step.node.folder_tag or "").strip() or nid)
+        base, k = var, 2
+        while var in ids.values():
+            var, k = f"{base}_{k}", k + 1
+        ids[nid] = var
+    by_sbatch = {nid for nid, _step, _folder, _name, _jp, slurm in entries if slurm}  # their variable is set
     parents: Dict[str, set] = {}
     for e in plan.workflow.edges:
         parents.setdefault(e.target, set()).add(e.source)
@@ -371,7 +386,11 @@ def submit_script(plan) -> Optional[str]:
         cmd = submit_line(jp, step.ctx, name)
         if slurm:
             var = ids[nid]
-            dep = (" --dependency=afterok:" + ":".join(f"${b}" for b in before)) if before else ""
+            # only the jobs sbatch submitted above have an id to wait for (another scheduler's leave none)
+            chained = [ids[a] for a in ancestors(nid) if a in by_sbatch]
+            if len(chained) < len(before):
+                lines.append("# reads from steps whose jobs sbatch did not submit: submit it once they have finished")
+            dep = (" --dependency=afterok:" + ":".join(f"${b}" for b in chained)) if chained else ""
             lines += [f"{var}=$(cd {shell_quote(folder)} && sbatch --parsable{dep}{cmd[len('sbatch'):]})",
                       f'echo "{step.node.step:02d}: job ${var} ({folder}/{name})"']
             for k in range(2, jp.jobs + 1):  # longer than the longest queue: the same job again after it
