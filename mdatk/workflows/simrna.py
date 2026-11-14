@@ -274,11 +274,15 @@ class SimRNATool(Tool):
                f"  {nice}{s['exe'].strip() or 'SimRNA'} {' '.join(args)} -R $(({s['seed_base']} + I)) "
                f"-o {out_base} \\",
                f"    > ../../{out_base}.log 2>&1 || {{ echo \"run $N failed - see {out_base}.log\" >&2; "
-               "return 1; }",
-               "}", "export -f run_one", "export SIMRNA_DIR", "",
-               "# a failed run does not stop the others, but the step has failed then",
-               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' \\",
-               '  || { echo "ERROR: not every SimRNA run finished (see above)" >&2; exit 1; }', ""]
+               ': > "$FAILED/$N"; return 1; }',
+               "}", "export -f run_one", "FAILED=$(mktemp -d)", "export SIMRNA_DIR FAILED", "",
+               "# a failed run does not stop the others and leaves fewer frames; the step fails when every run failed",
+               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' || true",
+               'NFAILED=$(ls "$FAILED" | wc -l); rm -rf "$FAILED"',
+               f'if [ "$NFAILED" -ge {s["runs"]} ]; then echo "ERROR: every SimRNA run failed (see above)" >&2; '
+               "exit 1; fi",
+               f'if [ "$NFAILED" -gt 0 ]; then echo "WARNING: $NFAILED of {s["runs"]} SimRNA runs failed (see '
+               'above): their trajectories are missing" >&2; fi', ""]
         if not s["cluster"]:  # the output 'trajectory' (with clustering its script writes it)
             all_trafl = n("simrna-all", "trafl")
             sh += ["# all replica trajectories of all runs",

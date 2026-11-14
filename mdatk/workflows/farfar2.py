@@ -491,14 +491,20 @@ class FarfarTool(Tool):
                '  N=$(printf "%02d" "$I")',
                f'  mkdir -p "{RUN_DIR}/r$N" && cd "{RUN_DIR}/r$N" || return 1',
                f"  {nice}{s['exe'].strip()} @{up}/$FLAGS -out:file:silent {up}/{silent}{seed} \\",
-               f"    > {up}/{log} 2>&1 || {{ echo \"run $N failed - see {log}\" >&2; return 1; }}",
+               f"    > {up}/{log} 2>&1 || {{ echo \"run $N failed - see {log}\" >&2; : > \"$FAILED/$N\"; "
+               "return 1; }",
                "}",
                "export -f run_one",
-               "export FLAGS",
+               "FAILED=$(mktemp -d)",
+               "export FLAGS FAILED",
                "",
-               "# a failed run does not stop the others, but the step has failed then",
-               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' \\",
-               '  || { echo "ERROR: not every rna_denovo run finished (see above)" >&2; exit 1; }',
+               "# a failed run does not stop the others and leaves fewer models; the step fails when every run failed",
+               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' || true",
+               'NFAILED=$(ls "$FAILED" | wc -l); rm -rf "$FAILED"',
+               f'if [ "$NFAILED" -ge {s["runs"]} ]; then echo "ERROR: every rna_denovo run failed (see above)" >&2; '
+               "exit 1; fi",
+               f'if [ "$NFAILED" -gt 0 ]; then echo "WARNING: $NFAILED of {s["runs"]} rna_denovo runs failed (see '
+               'above): their models are missing" >&2; fi',
                "",
                f'echo "Silent files: {ctx.name(self.tag + "-rRUNNUM", "out").replace("RUNNUM", "*")}"', ""]
         if s["extract_decoys"]:

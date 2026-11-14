@@ -629,11 +629,15 @@ def test_simrna_secondary_structure_file_without_a_sequence(tmp_path):
 
 
 def test_simrna_step_fails_when_a_run_fails(tmp_path):
-    # the runs are independent (a failed one does not stop the others), but the script ended with exit
-    # status 0 even when every run had failed, so the plan went on to the steps after it
+    # the runs are independent (a failed one does not stop the others, and leaves fewer frames: a warning),
+    # but the script ended with exit status 0 even when every run had failed, so the plan went on
     _plan, folder, run = _simrna(tmp_path)
+    proc = run("simrna", FAIL_RUNS="r01 r02 r03")
+    assert proc.returncode == 1 and "ERROR: every SimRNA run failed" in proc.stderr
+    assert proc.stderr.count("failed - see") == 3
     proc = run("simrna", FAIL_RUNS="r02")
-    assert proc.returncode == 1 and "run 02 failed" in proc.stderr and "ERROR: not every SimRNA run" in proc.stderr
+    assert proc.returncode == 0 and "run 02 failed" in proc.stderr
+    assert "WARNING: 1 of 3 SimRNA runs failed" in proc.stderr
     assert sorted(p.name for p in folder.glob("runs/r*/*_01.trafl")) == [
         f"apt1_01_simrna-r0{k}_{STAMP}_01.trafl" for k in (1, 3)]  # the other runs were made
     proc = run("simrna")

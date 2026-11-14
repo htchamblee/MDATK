@@ -285,8 +285,8 @@ def test_farfar2_decoys_feed_a_model_check(tmp_path):
 
 
 def test_farfar2_step_fails_when_a_run_fails(tmp_path):
-    # the runs are independent (a failed one does not stop the others), but the script ended with exit
-    # status 0 even when every rna_denovo run had failed, and then extracted the decoys of the runs left
+    # the runs are independent (a failed one does not stop the others and leaves fewer decoys: a warning,
+    # as the README says), but the script ended with exit status 0 even when every rna_denovo run had failed
     template = tmp_path / "helix.pdb"
     template.write_text(builder.build_helix("GGCGCC"))
     wf, fold = _plan(make_inputs=True, fixed_stems=False, runs=3, extract_decoys=True)
@@ -298,13 +298,15 @@ def test_farfar2_step_fails_when_a_run_fails(tmp_path):
     env = _fake_tools(tmp_path, {"rna_denovo": failing, "extract_pdbs": FAKE_EXTRACT}, TEMPLATE=str(template))
     folder = tmp_path / "01_farfar2"
     script = ["bash", str(folder / f"apt1_01_farfar2_{STAMP}.sh")]
-    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, FAIL="r02"))
-    assert proc.returncode == 1 and "run 02 failed" in proc.stderr
-    assert "ERROR: not every rna_denovo run finished" in proc.stderr
-    assert sorted(p.name for p in folder.glob("*.out")) == [f"apt1_01_farfar2-r0{k}_{STAMP}.out" for k in (1, 3)]
-    assert not (folder / "models").exists() and not (folder / f"apt1_01_decoys_{STAMP}.txt").exists()
     proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, FAIL="r*"))
     assert proc.returncode == 1 and proc.stderr.count("failed - see") == 3
+    assert "ERROR: every rna_denovo run failed" in proc.stderr
+    assert not (folder / "models").exists() and not (folder / f"apt1_01_decoys_{STAMP}.txt").exists()
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, FAIL="r02"))
+    assert proc.returncode == 0 and "run 02 failed" in proc.stderr, proc.stderr
+    assert "WARNING: 1 of 3 rna_denovo runs failed" in proc.stderr
+    assert sorted(p.name for p in folder.glob("*.out")) == [f"apt1_01_farfar2-r0{k}_{STAMP}.out" for k in (1, 3)]
+    assert len((folder / f"apt1_01_decoys_{STAMP}.txt").read_text().split()) == 6  # the decoys of the runs made
     proc = subprocess.run(script, capture_output=True, text=True, env=env)  # every run made: as before
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert len((folder / f"apt1_01_decoys_{STAMP}.txt").read_text().split()) == 9
