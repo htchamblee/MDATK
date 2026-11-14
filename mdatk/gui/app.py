@@ -2253,8 +2253,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.error("No topology", f"{step_title(node)}: connect a topology (and trajectories) to the "
                                       "analysis step in RNAdo first.")
             return False
-        self.apply_inputs(top, trajs, bool(plan.steps[node.id].settings.get("clean", True)))
-        return True
+        return self.apply_inputs(top, trajs, bool(plan.steps[node.id].settings.get("clean", True)))
 
     def _choose_box(self, boxes):
         from ..workflows.plan import step_title
@@ -2275,13 +2274,14 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg.destroy()
         return next((n for n in boxes if n.id == chosen), None) if ok else None
 
-    def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
-        """Use files of the plan as this project's analysis inputs."""
+    def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> bool:
+        """Use files of the plan as this project's analysis inputs (False: a setting must be put right first)."""
         try:
             project = self.collect(validate=False)
-        except ValueError:
-            project = self.project.copy()
-            project.workflow = self.project.workflow
+        except ValueError as exc:
+            # not from the settings as last saved: every edit since then would be gone from the side bar
+            self.error("Some settings are invalid", f"{exc}\n\nPut them right, then use the plan's files again.")
+            return False
         project.inputs.topology = topology
         project.inputs.trajectories = list(trajectories)
         if clean:
@@ -2297,6 +2297,7 @@ class MainWindow(Gtk.ApplicationWindow):
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
                         f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))
+        return True
 
     def _citation_resources(self):
         from ..citations import project_resources

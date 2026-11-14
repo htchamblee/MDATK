@@ -463,3 +463,55 @@ def test_run_time_selection_error_flags_the_setting_it_came_from(window):
     window.group_editor.store[1][1] = "13-24"  # the group is fixed: the run-time problem goes
     assert pump(lambda: not window.problem_view.badges["analyses"].get_visible(), 5)
     assert W.flag_of(combo) == ("", "")
+
+
+def test_the_plans_files_with_an_invalid_setting_keep_the_unsaved_edits(window):
+    """'Use the plan's files' while a field cannot be read (a number still being typed): it says so and
+    changes nothing; it loaded the settings as last saved, so every unsaved edit of the side bar was gone."""
+    win = window
+    _bound(win, "cleaning.solvent_mask").set_text(":WAT,HOH")
+    _bound(win, "output.video.fps").set_value(48)
+    topology = win.topology_entry.get_text()
+    _bound(win, "inputs.stop").set_text("abc")
+    assert win.apply_inputs("/x/sys.parm7", ["/x/a.nc"]) is False
+    assert win.messages and win.messages[-1][1] == "Some settings are invalid"
+    assert _bound(win, "cleaning.solvent_mask").get_text() == ":WAT,HOH"
+    assert _bound(win, "output.video.fps").get_value_as_int() == 48
+    assert _bound(win, "inputs.stop").get_text() == "abc" and win.topology_entry.get_text() == topology
+    _bound(win, "inputs.stop").set_text("")
+    assert win.apply_inputs("/x/sys.parm7", ["/x/a.nc"]) is True
+    assert win.topology_entry.get_text() == "/x/sys.parm7"
+    assert _bound(win, "cleaning.solvent_mask").get_text() == ":WAT,HOH"
+
+
+def test_save_as_asks_before_it_replaces_the_file_the_suffix_makes(tmp_path, monkeypatch):
+    """A name typed without .mdatk.toml: the file chooser asks about that name, the suffix is added afterwards;
+    an existing project file of the full name was replaced without a question."""
+    from mdatk.gui import projectui
+
+    existing = tmp_path / "apt1.mdatk.toml"
+    existing.write_text("# another project\n")
+    typed = [str(tmp_path / "apt1")]
+
+    class Chooser:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self):
+            return Gtk.ResponseType.OK  # 'apt1' does not exist: the dialog itself asks nothing
+
+        def get_filename(self):
+            return typed[0]
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    asked, answers = [], [Gtk.ResponseType.CANCEL, Gtk.ResponseType.ACCEPT]
+    monkeypatch.setattr(Gtk, "FileChooserDialog", Chooser)
+    monkeypatch.setattr(projectui, "ask", lambda _p, text, *a, **k: asked.append(text) or answers.pop(0))
+    assert projectui.choose_save_path(None, "apt1") is None and asked == ["Replace apt1.mdatk.toml?"]
+    assert projectui.choose_save_path(None, "apt1") == str(existing) and len(asked) == 2
+    typed[0] = str(tmp_path / "new")  # nothing of that name: no question
+    assert projectui.choose_save_path(None, "new") == str(tmp_path / "new.mdatk.toml") and len(asked) == 2
+    typed[0] = str(existing)  # the full name: the file chooser has asked
+    assert projectui.choose_save_path(None, "apt1") == str(existing) and len(asked) == 2
