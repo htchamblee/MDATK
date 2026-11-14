@@ -2191,7 +2191,10 @@ class PlannerPanel(Gtk.Box):
         if not os.path.isdir(path):
             self._message("Nothing written yet", f"{path} does not exist yet; use 'Write all files' first.")
             return
-        desktop.open_folder(path)
+        try:
+            desktop.open_folder(path)
+        except (OSError, RuntimeError, GLib.Error) as exc:  # e.g. no file manager on this computer
+            self._message("Could not open the folder", f"{path}\n\n{exc}", Gtk.MessageType.ERROR)
 
     def use_for_analysis(self, node: Optional[PlanNode]) -> None:
         """Hand the files an MDATK analysis step reads to the analysis window (through the host)."""

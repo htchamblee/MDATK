@@ -1080,7 +1080,10 @@ class WizardWindow(Gtk.Window):
         if not os.path.isdir(path):
             self._error("Nothing written yet", f"{path} does not exist yet; write the files first.")
             return
-        desktop.open_folder(path)
+        try:
+            desktop.open_folder(path)
+        except (OSError, RuntimeError, GLib.Error) as exc:  # e.g. no file manager on this computer
+            self._error("Could not open the folder", f"{path}\n\n{exc}")
 
     def _error(self, text: str, detail: str = "") -> None:
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
