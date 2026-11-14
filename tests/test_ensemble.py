@@ -511,6 +511,19 @@ def test_census_score_deciles_within_one_weight_set(tmp_path):
     assert res.report.count("by score decile") == 2 and "weight set W1" in res.report
 
 
+def test_census_score_deciles_are_tenths_regression(tmp_path):
+    """regression: every decile but the last held len // 10 decoys and the last one the rest: of 19 scored
+    decoys, 'decile 10' was the worse 10 (scores -91 to -82)."""
+    g = tmp_path / "g"
+    for k in range(19):
+        write(g / f"d{k:02d}.pdb", DUPLEX + f"label fa_atr total\nweights 0.23 0.12\npose -1 {-100 + k}\n")
+    res = ensemble.census(ensemble.expand_models([str(g)]), REGS[:1])
+    rows = [ln.split() for ln in res.report.splitlines() if " to " in ln]
+    assert [int(r[0]) for r in rows] == list(range(1, 11))
+    assert [int(r[5]) for r in rows] == [2] * 9 + [1]  # decoys per decile (all form the stem)
+    assert (rows[0][1], rows[0][3]) == ("-100.0", "-99.0") and (rows[9][1], rows[9][3]) == ("-82.0", "-82.0")
+
+
 def test_census_pools_only_within_one_condition(tmp_path):
     for name, ss in (("a", "(((.... ....)))"), ("b", "(((.... ....)))"), ("c", "....... .......")):
         write(tmp_path / name / "d.pdb", DUPLEX)

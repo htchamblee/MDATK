@@ -1386,9 +1386,10 @@ def _census_block(rows: Sequence[CensusRow], registers: Sequence[Register], titl
         scored.sort(key=lambda r: r.score)
         wl = f"weight set {weight_ids[w]}" if w else "weights not recorded"
         out.append(f"  by score decile, best first ({len(scored)} scored, {wl}):")
-        k = max(1, len(scored) // 10)
+        k, extra = divmod(len(scored), 10)  # ten parts as equal as they come: the first `extra` hold one more
         for d in range(10):
-            chunk = scored[d * k:(d + 1) * k] if d < 9 else scored[9 * k:]
+            first = d * k + min(d, extra)
+            chunk = scored[first:first + k + (d < extra)]
             if not chunk:
                 continue
             cells = []
