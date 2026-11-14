@@ -578,6 +578,105 @@ def test_simrna_files():
     assert any("trajectory interval exceeds" in m for m in messages(st, "error"))
 
 
+# stand-ins for SimRNA's programs, with the file names the scripts rely on: <out>_NN.trafl and
+# <out>_NN-000001.pdb per replica, <trafl>_thrs<T>A_clustNN.trafl per cluster, <cluster>-000001_AA.pdb
+FAKE_SIMRNA = {
+    "SimRNA": 'out=""; start=""\n'
+              'for ((i=1;i<=$#;i++)); do j=$((i+1)); [ "${!i}" = -o ] && out="${!j}"; '
+              '[ "${!i}" = -p ] && start="${!j}"; done\n'
+              'case " ${FAIL_RUNS:-} " in *" $(basename "$PWD") "*) echo boom >&2; exit 3;; esac\n'
+              '[ -z "$start" ] || [ -f "$start" ] || { echo "cannot open $start" >&2; exit 2; }\n'
+              'for e in $(seq 1 ${REPLICAS:-2}); do e=$(printf "%02d" $e); echo frame > "${out}_$e.trafl"; '
+              'echo ATOM > "${out}_$e-000001.pdb"; done\n',
+    "clustering": 'base="${1%.trafl}"; thr=$(printf "%.2f" "$3")\n'
+                  'for k in $(seq 1 ${NCLUST:-3}); do echo "thr $thr cluster $k" '
+                  '> "${base}_thrs${thr}A_clust$(printf "%02d" $k).trafl"; done\n',
+    "SimRNA_trafl2pdbs": 'cp "$2" "${2%.trafl}-000001_AA.pdb"\n',
+}
+
+
+def _simrna(tmp_path, files=None, **settings):
+    """A written SimRNA step; returns (plan, step folder, run(script tag, **environment))."""
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "simrna", settings=dict({"sequence": "GGGCACGUGCCC", "dotbracket": "((((....))))",
+                                                "runs": 3, "parallel": 2, "n_models": 4}, **settings))
+    node.files.update(files or {})
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    (tmp_path / "sim" / "data").mkdir(parents=True, exist_ok=True)
+    if not (tmp_path / "bin").exists():
+        _fake_tools(tmp_path, FAKE_SIMRNA)
+
+    def run(tag, **env):
+        env = dict(os.environ, PATH=f"{tmp_path / 'bin'}:{os.environ['PATH']}", SIMRNA=str(tmp_path / "sim"),
+                   **env)
+        return subprocess.run(["bash", str(tmp_path / "01_simrna" / f"apt1_01_{tag}_{STAMP}.sh")],
+                              capture_output=True, text=True, env=env)
+    return plan, tmp_path / "01_simrna", run
+
+
+def test_simrna_step_fails_when_a_run_fails(tmp_path):
+    # the runs are independent (a failed one does not stop the others), but the script ended with exit
+    # status 0 even when every run had failed, so the plan went on to the steps after it
+    _plan, folder, run = _simrna(tmp_path)
+    proc = run("simrna", FAIL_RUNS="r02")
+    assert proc.returncode == 1 and "run 02 failed" in proc.stderr and "ERROR: not every SimRNA run" in proc.stderr
+    assert sorted(p.name for p in folder.glob("runs/r*/*_01.trafl")) == [
+        f"apt1_01_simrna-r0{k}_{STAMP}_01.trafl" for k in (1, 3)]  # the other runs were made
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_simrna_without_clustering_writes_its_trajectory_output(tmp_path):
+    # the output 'trajectory' named <project>_<NN>_simrna-all_<stamp>.trafl, which only the clustering
+    # script wrote: without clustering no run of the step was ever complete
+    from mdatk.workflows import runstate
+    plan, folder, run = _simrna(tmp_path, cluster=False)
+    out = plan.steps[plan.order[0]].outputs
+    assert list(out) == ["trajectory"] and out["trajectory"].paths == [
+        f"01_simrna/apt1_01_simrna-all_{STAMP}.trafl"]
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr
+    assert (folder / f"apt1_01_simrna-all_{STAMP}.trafl").read_text() == "frame\n" * 6  # 3 runs x 2 replicas
+    assert runstate.check_step(plan, plan.order[0]).state == "done"
+
+
+def test_simrna_start_pdb_in_a_folder_with_a_space(tmp_path):
+    start = tmp_path / "my data" / "start.pdb"
+    start.parent.mkdir()
+    start.write_text("ATOM\n")
+    _plan, folder, run = _simrna(tmp_path, files={"structure": str(start)}, cluster=False)
+    assert f"-p '{start}' " in (folder / f"apt1_01_simrna_{STAMP}.sh").read_text()
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr  # the stand-in stops when the -p file does not exist
+
+
+def test_simrna_cluster_script_with_many_runs_and_after_another_threshold(tmp_path):
+    # 1. with many runs 'ls runs/r*/*-000001.pdb | head -n 1' ended with SIGPIPE, which under 'set -o
+    #    pipefail' stopped the script without a message (60 runs x 10 replicas: every time)
+    _plan, folder, run = _simrna(tmp_path, runs=60, parallel=8, threshold=3.5)
+    assert run("simrna", REPLICAS="10").returncode == 0
+    for _try in range(3):
+        proc = run("simrna-cluster", NCLUST="6")
+        assert proc.returncode == 0, proc.stderr
+    assert "thr 3.50 cluster 4" in (folder / f"apt1_01_model-04_{STAMP}.pdb").read_text()
+    # 2. the step written and run again with another threshold: the clusters of the first run are named
+    #    by theirs (..._thrs3.50A_clust01.trafl), sort first and were rebuilt as the models
+    _plan, folder, run = _simrna(tmp_path, runs=60, parallel=8, threshold=5.0)
+    assert run("simrna", REPLICAS="10").returncode == 0
+    proc = run("simrna-cluster", NCLUST="2")
+    assert proc.returncode == 0, proc.stderr
+    models = sorted(p.name for p in folder.glob("apt1_01_model-*.pdb"))
+    assert models == [f"apt1_01_model-0{k}_{STAMP}.pdb" for k in (1, 2)]  # no model of the earlier run
+    assert (folder / models[0]).read_text() == "thr 5.00 cluster 1\n"
+    # 3. no first-frame PDB: the message, not a silent stop at the 'ls'
+    for path in folder.glob("runs/r*/*-000001.pdb"):
+        path.unlink()
+    proc = run("simrna-cluster")
+    assert proc.returncode == 1 and "no first-frame PDB found" in proc.stderr
+
+
 def test_rnamake_commands():
     base = {"start_bp": "A222-A251", "end_bp": "A149-A154", "search_type": "mc", "thermo_fluc": True}
     plan, st = step("rnamake", base, {"structure": "/data/scaffold.pdb"})

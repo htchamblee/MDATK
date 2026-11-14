@@ -51,6 +51,15 @@ INTENDED = [
     # residue names (DT, DG5, LDA ...) and matches T with the U of the secondary structure: it refused every
     # DNA pair. RNA names give the same letters as before, so RNA restraints are unchanged
     (re.compile(r"(^|/)\d+_amber-restraints/[^/]*_helix_\d{8}-\d{4}\.py$"), None),
+    # 0.1.0: SimRNA's run script ends with an error when a run failed (a run still does not stop the others;
+    # the script ended with exit status 0 even when every run had failed), and without clustering it writes
+    # the step's 'trajectory' output itself (only the clustering script did). The config, sequence and
+    # restraint files and the SimRNA command line stay as they were
+    (re.compile(r"_simrna_\d{8}-\d{4}\.sh$"), None),
+    # ... and the clustering script no longer stops without a message at 'ls ... | head -n 1' (SIGPIPE under
+    # pipefail: most of the time from about 40 runs x 10 replicas on) and removes the clusters and models of
+    # an earlier run first (another threshold names its clusters differently, and they were rebuilt as models)
+    (re.compile(r"_simrna-cluster_\d{8}-\d{4}\.sh$"), None),
 ]
 
 
