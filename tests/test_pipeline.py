@@ -138,6 +138,27 @@ def test_time_step_override_sets_the_time_axis(demo_dry, tmp_path):
     assert ds.time_ps[list(ds.frames).index(5)] == pytest.approx(10.0)
 
 
+def test_trace_cache_follows_groups_that_are_not_shown(demo_dry, tmp_path):
+    """The trace records the residues of every group (they colour the structure view and choose the residues
+    of the 3D representations): editing a group the view does not show must not reuse the cached trace."""
+    from mdatk.config import ResidueGroup
+
+    p = small_project(demo_dry, tmp_path / "out6")
+    p.groups = [ResidueGroup("Loop", "5-8", "", "#ff0000"), ResidueGroup("RNA", "1-24", "", "#2a78d6")]
+    p.visual.structure_groups = ["RNA"]
+    tr = Pipeline(p).analyze(["trace"]).results["trace"]
+    assert np.flatnonzero(tr.arrays["group_member"][0]).tolist() == [4, 5, 6, 7]
+    p.groups[0].residues = "15-18"
+    logs = []
+    tr = Pipeline(p, Reporter(log_cb=logs.append)).analyze(["trace"]).results["trace"]
+    assert np.flatnonzero(tr.arrays["group_member"][0]).tolist() == [14, 15, 16, 17]
+    assert np.flatnonzero(tr.arrays["group_index"] == 0).tolist() == [14, 15, 16, 17]
+    logs.clear()
+    p.groups[0].color = "#00ff00"  # a colour is applied when drawing: the cache is reused
+    Pipeline(p, Reporter(log_cb=logs.append)).analyze(["trace"])
+    assert any("loaded from cache" in line for line in logs)
+
+
 def test_invalid_parameters_are_reported(tmp_path):
     p = Project()
     p.output.out_dir = str(tmp_path)

@@ -169,7 +169,9 @@ class TraceAnalysis(Analysis):
 
     @classmethod
     def selection_texts(cls, project):
-        return structure_groups(project) + [project.analyses.mg.mg_selection]
+        # every group, not only those shown: the result records each group's residues (group_member,
+        # group_index), which colour the view and choose the residues of the 3D representations
+        return project.group_names() + [project.analyses.mg.mg_selection]
 
     def setup(self, frame_indices):
         super().setup(frame_indices)
