@@ -1100,6 +1100,38 @@ def test_stages_without_a_ramp_keep_their_inputs_when_split_into_segments():
     assert ins["eq.in"].replace("irest=0, ntx=1", "irest=1, ntx=5").replace(", tempi=300.0", "") == ins["eq-cont.in"]
 
 
+def test_a_stage_named_like_another_stages_segment_files_is_an_error():
+    """A stage in segments writes <stage>-001 ... runs and, when its first segment starts differently,
+    <stage>-cont.in: a stage of that very name wrote the same files (its input replaced the other's, its
+    output and restart the segment's) and the check said nothing."""
+    def clash(st):
+        return [m for m in messages(st, "error") if "would write the same files" in m]
+
+    files = lambda plan: [f.name for f in __import__("mdatk.workflows.plan", fromlist=["x"]).generate_step(  # noqa: E731
+        plan.steps["md"])]
+    plan, st = md_step([md("eq", segments=2), md("eq-001")])
+    assert clash(st) == ["stages eq (segment 1) and eq-001 would write the same files (apt1_01_eq-001_…): rename "
+                         "one of them"]
+    from mdatk.workflows.plan import generate_step
+
+    main_sh = next(f.content for f in generate_step(st) if f.name.endswith("amber-md_" + STAMP + ".sh"))
+    outs = [ln.split(" -o ")[1].split()[0] for ln in pmemd_lines(main_sh)]
+    assert outs.count(f"apt1_01_eq-001_{STAMP}.out") == 2  # what the error is about: two runs, one output
+    plan, st = md_step([md("eq", segments=2, tempi=300.0), md("eq-cont")], input_velocities=False)
+    assert clash(st) == ["stages eq (its input for segments 2-2) and eq-cont would write the same files "
+                         "(apt1_01_eq-cont_…): rename one of them"]
+    assert len(set(files(plan))) < len(files(plan))
+    # no such input when every segment continues alike, and names that only look alike are fine
+    for stages, velocities in (([md("eq", segments=2), md("eq-cont")], True),
+                               ([md("eq", segments=2), md("eq-003"), md("eq-1")], True),
+                               ([md("eq"), md("eq-001"), md("eq-cont")], False)):
+        plan, st = md_step(stages, input_velocities=velocities)
+        assert clash(st) == [] and st.ok and len(set(files(plan))) == len(files(plan)), stages
+    # a name used twice is reported as that, once
+    _plan_, st = md_step([md("eq"), md("eq")])
+    assert clash(st) == [] and any("is used twice" in m for m in messages(st, "error"))
+
+
 @needs_bash
 def test_starting_files_in_a_folder_with_spaces_run(tmp_path, fake_bin):
     """Hand-picked starting coordinates keep their absolute path: pmemd gets it as one argument (-c, -ref)."""

@@ -2524,6 +2524,23 @@ class AmberMDTool(Tool):
                                         "instead: set ntwx above 0, or say with 'Pass the trajectory on' which "
                                         "stage goes out (No on every stage: none)",
                              tuple(f"stages.{j}.ntwx" for j in later) + (f"stages.{fell}.export",)))
+        # a stage in segments writes the runs <stage>-001 ... and, when its first segment starts differently (new
+        # velocities, a ramp), the input <stage>-cont.in: a stage of that very name would write the same files
+        for k, st in enumerate(stages):
+            nseg = st["segments"] if st["kind"] == "md" else 1
+            if nseg < 2 or tags.count(tags[k]) > 1:
+                continue
+            parts = [(f"{tags[k]}-{seg:03d}", f"segment {seg}", False) for seg in range(1, nseg + 1)]
+            if modes[k][0] == 0 or st["ramp"]:
+                parts.append((f"{tags[k]}-cont", f"its input for segments 2-{nseg}", True))
+            for tag, what, is_input in parts:
+                for j, other in enumerate(stages):
+                    # (the other stage's runs carry its own name only when it is not split itself; its input does)
+                    one_run = other["kind"] != "md" or other["segments"] < 2
+                    if tags[j] == tag and (is_input or one_run):
+                        out.append(Issue("error", f"stages {tags[k]} ({what}) and {tag} would write the same files "
+                                                  f"({ctx.project}_{ctx.step:02d}_{tag}_…): rename one of them",
+                                         (f"stages.{k}.name", f"stages.{j}.name")))
         files: Dict[str, List[str]] = {}  # dry trajectory file tag -> the labels that write it
         for dry in roles.dry:  # (a label the check refuses is none)
             files.setdefault(sanitize_tag(f"dry-{dry}"), []).append(dry)
