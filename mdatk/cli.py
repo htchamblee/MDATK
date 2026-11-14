@@ -1024,7 +1024,8 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
     """Run the main scripts of ``ids`` (all steps when None), with ``include_separate`` also the scripts
     marked 'run separately', at most ``parallel`` at once (0: no limit) within ``budget`` (CPU cores and
     GPUs; None: no limit); 0 when every script succeeded, WAITING_STATUS when a step waits for a
-    separately run script (its dependents were not started), 1 when a script failed."""
+    separately run script (its dependents were not started), 1 when a script failed or a step of ``ids`` has
+    errors (it is not run, nor are the steps that read from it; the others are)."""
     from .workflows.base import WAITING_STATUS
     from .workflows.runner import ScriptFailed, adopted_steps, plan_jobs, run_jobs
     kept = adopted_steps(plan, ids)
@@ -1032,8 +1033,35 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
         step = plan.steps[nid]
         print(f"{step.label} uses the outputs of its run of {step.adopted}: "
               f"not run again (to run it: mdatk workflow status --forget --step {_step_arg(plan, nid)})")
+    # a step of the selection with errors has no script to run (plan_jobs leaves it out): say so, and do not
+    # start the steps that read from it on whatever an earlier run left in its folder
+    chosen = [n for n in list(plan.order) + [n for n in plan.steps if n not in plan.order]
+              if ids is None or n in ids]
+    broken = [n for n in chosen if plan.steps[n].tool is not None and plan.steps[n].tool.generates
+              and not plan.steps[n].ok and not plan.steps[n].adopted]
+    if broken:
+        readers: dict = {}
+        for e in plan.workflow.edges:
+            readers.setdefault(e.source, set()).add(e.target)
+        after, todo = set(), list(broken)
+        while todo:
+            for nid in readers.get(todo.pop(), ()):
+                if nid not in after:
+                    after.add(nid)
+                    todo.append(nid)
+        for nid in broken:
+            why = "; ".join(i.message for i in plan.steps[nid].issues if i.level == "error")
+            print(f"error: {plan.steps[nid].label} has errors and was not run: {why}", file=sys.stderr)
+        for nid in chosen:
+            step = plan.steps[nid]
+            if nid in after and nid not in broken and step.tool is not None and step.tool.generates \
+                    and not step.adopted:
+                print(f"{step.label}: not started (it reads from a step with errors)", file=sys.stderr)
+        ids = [n for n in chosen if n not in broken and n not in after]
     jobs = plan_jobs(plan, ids, include_separate)
     if not jobs:
+        if broken:
+            return 1
         if kept:
             return 0
         print("no scripts to run", file=sys.stderr)
@@ -1063,8 +1091,8 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
         skipped = sum(1 for r in results if r.status == "skipped")
         if skipped:
             print(f"{skipped} script(s) of later steps not started")
-        return WAITING_STATUS
-    return 0
+        return 1 if broken else WAITING_STATUS
+    return 1 if broken else 0
 
 
 def cmd_workflow_generate(args) -> int:

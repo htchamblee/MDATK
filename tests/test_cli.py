@@ -74,3 +74,38 @@ def test_cli_errors(tmp_path, capsys):
     assert main([]) == 2
     assert main(["render", "-q", "-o", str(tmp_path)]) == 1
     assert "topology" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs bash")
+def test_workflow_run_does_not_start_the_steps_after_a_step_with_errors(tmp_path, capsys):
+    """'mdatk workflow run' left a step with errors out without a word, ran the steps reading from it on the
+    files its earlier run had left and returned 0."""
+    from mdatk.workflows.plan import add_node, connect
+    project = Project()
+    wf = project.workflow
+    wf.project_name, wf.stamp, wf.out_dir = "apt1", "20261113-1200", str(tmp_path / "plan")
+    out = [{"name": "result", "kind": "text", "file": "result.txt"}]
+    first = add_node(wf, "user-script", settings={"script": 'echo first > "$MDATK_OUT_RESULT"\n', "outputs": out})
+    reader = add_node(wf, "user-script", settings={
+        "script": 'cat "$MDATK_IN_INPUT" > "$MDATK_OUT_RESULT"\necho ran >> runs.log\n',
+        "inputs": [{"name": "input", "kind": "any"}], "outputs": out})
+    other = add_node(wf, "user-script", settings={"script": 'echo ran >> runs.log\n'})
+    connect(wf, first.id, "result", reader.id, "input")
+    path = str(tmp_path / "p.mdatk.toml")
+    project.save(path)
+    assert main(["workflow", "write", "-p", path, "--run", "-q"]) == 0
+    runs = {n: tmp_path / "plan" / f"0{n}_custom" / "runs.log" for n in (2, 3)}
+    assert runs[2].read_text() == runs[3].read_text() == "ran\n"
+    # the first step gets an error (its script is emptied); its files of the earlier run are still there
+    project = Project.load(path)
+    project.workflow.nodes[0].settings["script"] = ""
+    project.save(path)
+    capsys.readouterr()
+    assert main(["workflow", "run", "-p", path]) == 1
+    err = capsys.readouterr().err
+    assert "error: 01 · Custom script has errors and was not run: the script is empty" in err
+    assert "02 · Custom script: not started (it reads from a step with errors)" in err
+    assert runs[2].read_text() == "ran\n" and runs[3].read_text() == "ran\nran\n"  # the independent step ran
+    # asked for by itself, the reader runs (on the files that are there), as before
+    assert main(["workflow", "run", "-p", path, "--step", "2"]) == 0
+    assert runs[2].read_text() == "ran\nran\n"
