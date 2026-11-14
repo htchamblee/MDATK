@@ -188,6 +188,19 @@ def test_hbond_distance_and_angle(with_bonds):
     np.testing.assert_array_equal(res.arrays["count"], [1, 1, 0])
 
 
+@pytest.mark.parametrize("with_bonds", [True, False])
+def test_hbond_nitrogen_carrying_hydrogen_is_no_acceptor(with_bonds):
+    """N3-H3 points at N1 (2.9 A, linear), which carries H1 itself: no acceptor, no bond - also when the
+    topology has no bonds and the hydrogens are assigned by distance."""
+    atoms = [atom("N3", 1, "U", "N"), atom("H3", 1, "U", "H"), atom("N1", 2, "G", "N"), atom("H1", 2, "G", "H"),
+             atom("N7", 2, "G", "N")]
+    to_nh = [[0, 0, 0], [1.0, 0, 0], [2.9, 0, 0], [3.9, 0, 0], [0, 50, 0]]
+    to_bare_n = [[0, 0, 0], [1.0, 0, 0], [50, 0, 0], [51, 0, 0], [2.9, 0, 0]]  # N7 carries no hydrogen
+    u = make_universe(atoms, [to_nh, to_bare_n], bonds=[(0, 1), (2, 3)] if with_bonds else ())
+    res = run_one("hbonds", u, micro_project({"Aptamer": "1", "Target": "2"}))
+    np.testing.assert_array_equal(res.arrays["count"], [0, 1])
+
+
 def test_hbond_distance_only_counts_an_atom_pair_once():
     """Without the angle criterion (a topology without hydrogens, or use_angle off) two atoms that can
     both donate and accept are one hydrogen bond: it was counted once per direction."""

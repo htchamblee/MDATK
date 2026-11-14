@@ -64,6 +64,7 @@ class HBondAnalysis(Analysis):
         self.ab = a | b  # sorted union; positions fetched once per frame
         self.side = np.where(np.isin(self.ab.ix, a.ix), 0, 1)
         el = atom_elements(self.ab)
+        self.el = el
         self.is_h = el == "H"
         self.has_h = bool(self.is_h.any())
         donor_el = {e.upper() for e in split_csv(p.donor_elements)}
@@ -146,6 +147,9 @@ class HBondAnalysis(Analysis):
                 best[hi] = (hj, dist)
         for hi, (hj, _) in best.items():
             self.h_of.setdefault(int(heavy_idx[hj]), []).append(int(h_idx[hi]))
+        for x in self.h_of:  # as with bonds from the topology: a nitrogen carrying H is no acceptor
+            if self.el[x] == "N":
+                self.cand_acc[x] = False
         self._build_donor_lists()
 
     # ---------------------------------------------------------------- frames
