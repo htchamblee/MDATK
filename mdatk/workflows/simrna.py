@@ -124,6 +124,10 @@ class SimRNATool(Tool):
     def model(self, s, ctx) -> Tuple[Optional[rna.RNAModel], List[Issue]]:
         from .amber import secondary_structure
         model, _src, issues = secondary_structure(s, ctx)
+        if model is not None and not model.chains:  # a chosen file with the dot-bracket only, no sequence typed
+            issues.append(Issue("error", "the secondary-structure file has no sequence line: type the sequence",
+                                ("sequence", "input:secstruct")))
+            model = None
         if model is None and not issues and s["sequence"].strip():
             try:
                 model = rna.build_model(s["sequence"], "")

@@ -616,6 +616,18 @@ def _simrna(tmp_path, files=None, **settings):
     return plan, tmp_path / "01_simrna", run
 
 
+def test_simrna_secondary_structure_file_without_a_sequence(tmp_path):
+    # a chosen file with the dot-bracket only (a hand-written Rosetta secstruct file) and no sequence typed:
+    # the check stopped with "internal error while checking this step: string index out of range"
+    ss = tmp_path / "x.secstruct"
+    ss.write_text("((((....))))\n")
+    _plan, st = step("simrna", {}, {"secstruct": str(ss)})
+    assert messages(st, "error") == ["the secondary-structure file has no sequence line: type the sequence"]
+    plan, st = step("simrna", {"sequence": "GGGCACGUGCCC"}, {"secstruct": str(ss)})
+    assert not messages(st, "error")
+    assert generated(plan)["apt1_01_simrna_20261015-1432.ss"].content == "((((....))))\n"
+
+
 def test_simrna_step_fails_when_a_run_fails(tmp_path):
     # the runs are independent (a failed one does not stop the others), but the script ended with exit
     # status 0 even when every run had failed, so the plan went on to the steps after it
