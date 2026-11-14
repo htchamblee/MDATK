@@ -160,3 +160,33 @@ def test_external_files_of_one_name_keep_their_series_regression(tmp_path):
     res = load_external([ExternalSeries(path=str(csv), columns=["d (A)", "d [A]", "d (A)"])], ds)
     assert list(res.outputs["series"]) == ["e.d_A", "e.d_A-2"]  # a column named twice is one series
     np.testing.assert_allclose(res.arrays[res.outputs["series"]["e.d_A-2"]["array"]], [5, 6, 7])
+
+
+def test_time_step_override_replaces_the_time_stamps_of_a_netcdf_trajectory_regression(demo_dry, tmp_path):
+    """regression: the time-step override (inputs.dt_ps) reached MDAnalysis as ``dt``, which only fills in for
+    trajectories without time stamps: a NetCDF trajectory kept its stored times on every time axis, while the
+    PDB export by time counted frame x dt and so picked another frame than the one shown at that time."""
+    import shutil
+
+    from mdatk.io.loader import load_universe
+    from mdatk.io.pdb_export import frames_from_specs
+
+    def times(u):
+        return [float(ts.time) for ts in u.trajectory]
+
+    top, nc = demo_dry["topology"], demo_dry["trajectory"]
+    plain = load_universe(top, [nc])
+    n = plain.trajectory.n_frames
+    assert times(plain) == pytest.approx(10.0 * np.arange(n))  # the demo's own time stamps: 10 ps apart
+    u = load_universe(top, [nc], dt_ps=2.0)
+    assert times(u) == pytest.approx(2.0 * np.arange(n))
+    assert float(u.trajectory[5].time) == pytest.approx(10.0) and float(u.trajectory[0].time) == 0.0
+    # the frame exported for a time is the frame that has that time
+    assert frames_from_specs(u, "", "8", "ps", 2.0) == [4] and float(u.trajectory[4].time) == pytest.approx(8.0)
+    assert frames_from_specs(plain, "", "40", "ps") == [4]
+    # two files: the override numbers the frames through, where the stored times start again
+    second = str(tmp_path / "second.nc")
+    shutil.copy(nc, second)
+    both = load_universe(top, [nc, second], dt_ps=2.0)
+    assert times(both) == pytest.approx(2.0 * np.arange(2 * n))
+    np.testing.assert_array_equal(u.trajectory[3].positions, plain.trajectory[3].positions)
