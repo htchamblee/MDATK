@@ -145,8 +145,14 @@ class Pipeline:
                     top = os.path.join(out, CLEAN_REF)
                 traj = os.path.join(out, CLEAN_TRAJ)
                 if os.path.exists(marker) and os.path.exists(top) and os.path.exists(traj):
-                    return ResolvedInputs(top, [traj], None)
-            except OSError:
+                    import json
+                    with open(marker, "r", encoding="utf-8") as fh:
+                        info = json.load(fh)
+                    # a folder chosen with cleaning.output_dir is not named after the key: its files
+                    # match only when they were cleaned from these inputs with these settings (as clean())
+                    if isinstance(info, dict) and info.get("key") == key:
+                        return ResolvedInputs(top, [traj], None)
+            except (OSError, ValueError):
                 pass
         return ResolvedInputs(p.inputs.topology, list(p.inputs.trajectories), None)
 
