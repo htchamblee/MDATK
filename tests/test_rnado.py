@@ -1036,3 +1036,36 @@ def test_cat_proof_mode_ignores_the_keyboard_everywhere_but_not_the_mouse(app, w
     win2.cat_proof.set_active(False)
     pump(0.1)
     assert not catproof.guard().active
+
+
+def test_a_project_file_that_cannot_be_opened_at_the_start_is_named_in_the_log(tmp_path):
+    """rnado / mdatk-gui started on a file that does not load (from the applications menu: no terminal shows
+    the warning): the window says why it shows an empty plan / the default settings."""
+    from mdatk.gui import app as analysis
+    from mdatk.gui import rnado
+
+    bad = tmp_path / "broken.mdatk.toml"
+    bad.write_text("[workflow\nproject_name = 'x'\n")
+    a = rnado.RNAdoApplication(str(bad), None)
+    a.register(None)
+    a.activate()
+    pump(0.3)
+    try:
+        text = a.window.log.text()
+        assert "ERROR: Could not open" in text and "broken.mdatk.toml" in text
+        assert a.window.project_path is None and not a.window.plan_changed()
+    finally:
+        a.window.destroy()
+    pump(0.2)
+    b = analysis.MDATKApplication(str(bad))
+    b.register(None)
+    b.activate()
+    pump(0.5)
+    try:
+        buf = b.window.log_buffer
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        assert "ERROR: Could not open" in text and b.window.log_expander.get_expanded()
+        assert b.window.project_path is None
+    finally:
+        b.window.destroy()
+    pump(0.2)

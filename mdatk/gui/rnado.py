@@ -891,7 +891,7 @@ class RNAdoApplication(Gtk.Application):
 
     def do_activate(self):
         if self.window is None:
-            project, path = None, None
+            project, path, problem = None, None, ""
             if self.preset:
                 from ..projectfile import add_recent, is_params_log
                 try:
@@ -901,8 +901,11 @@ class RNAdoApplication(Gtk.Application):
                     else:
                         add_recent(path)
                 except (OSError, ValueError) as exc:
+                    problem = f"Could not open {self.preset}: {exc}"
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = RNAdoWindow(self, project, path)
+            if problem and project is None:  # started from the applications menu: no terminal shows the warning
+                self.window.append_log(f"ERROR: {problem}\nThis is an empty, unsaved plan instead.")
             handler = LogHandler(self.window.log)
             logging.getLogger("mdatk").addHandler(handler)
             self.window.connect("destroy", self._on_window_destroy, handler)
