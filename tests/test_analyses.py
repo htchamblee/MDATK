@@ -372,6 +372,7 @@ def _pdb_line(record, serial, name, resname, chain, resseq, x, el):
             f"  1.00  0.00          {el:>2}")
 
 
+@pytest.mark.filterwarnings("ignore:Reader has no dt information")  # a PDB file has no time step
 def test_chains_of_a_pdb_with_conect_records_for_ligands_only(tmp_path):
     """A one-chain PDB file whose only CONECT records are those of a ligand (as PyMOL, ChimeraX and the PDB
     write them) has bonds, but they say nothing about chains: every nucleotide became a chain of its own,
