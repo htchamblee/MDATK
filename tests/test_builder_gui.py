@@ -467,3 +467,21 @@ def test_cancel_stops_a_running_density_fit(window, tmp_path, monkeypatch):
     assert not (tmp_path / "helix_fit.pdb").exists() and not w.cancel_button.get_visible()
     entry = read_log(w.host.project_path)[-1]
     assert (entry["step"], entry["status"]) == ("build fit", "cancelled")
+
+
+def test_check_of_a_file_that_is_not_text_says_so(window, tmp_path):
+    """Check on the Mutate page with an input that is not UTF-8 text: an error in the report (the handler
+    raised, and the report of the check before stayed)."""
+    w = window
+    w.set_page("mutate")
+    model = tmp_path / "helix.pdb"
+    model.write_text(B.build_helix("GGCAU"))
+    w.mut_input.entry.set_text(str(model))
+    w.mutations.set_text("A:2C")
+    w.check_current()
+    assert report(w).startswith("A:2 -> C")
+    other = tmp_path / "latin1.pdb"
+    other.write_bytes(b"REMARK   2 RESOLUTION.    2.50 \xc5\n" + model.read_bytes())
+    w.mut_input.entry.set_text(str(other))
+    w.check_current()
+    assert report(w).startswith("ERROR:")

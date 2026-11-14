@@ -260,6 +260,13 @@ def test_pdb_tools_window_checks_and_cleans(rnado, tmp_path):
     buf = dlg.report.get_buffer()
     report = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
     assert "Chain B" in report and "chirality 2 L" in report
+    binary = tmp_path / "latin1.pdb"  # not UTF-8: the check says so (it raised, and the report stayed)
+    binary.write_bytes(b"REMARK   2 RESOLUTION.    2.50 \xc5\n" + src.read_bytes())
+    dlg.input.entry.set_text(str(binary))
+    dlg.run_check()
+    report = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    assert report.startswith("ERROR:") and "Chain B" not in report
+    dlg.input.entry.set_text(str(src))
     dlg.scheme.set_active_id("amber")
     dlg.renumber.set_active(True)
     dlg.run_clean()
