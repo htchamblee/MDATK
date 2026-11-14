@@ -676,6 +676,23 @@ def test_compare_counts_decoys_without_atoms_and_empty_arms_regression(tmp_path)
     assert "power:" not in text  # no statement without decoys in arm B
 
 
+def test_compare_best_score_with_a_nan_score_listed_first_regression(tmp_path):
+    """regression: a decoy whose score is 'nan' (Rosetta writes one for a decoy it could not score) and that
+    comes first in its arm was reported as the arm's best closed score: min() never gets past a NaN."""
+    a, b, table = _arms(tmp_path, 4, 4)  # scores -50 ... -53; decoys 0 and 2 closed (linear_chainbreak 1)
+    with open(table) as fh:
+        text = fh.read()
+    write(table, text.replace("a/d0.pdb\t-50\t", "a/d0.pdb\tnan\t"))
+    scores = ensemble.read_score_index([table], root=str(tmp_path / "plan"))
+    reg = ensemble.parse_register(STEM)
+    arms = [ensemble.collect_arm(lbl, paths, reg, scores=scores) for lbl, paths in (("A", a), ("B", b))]
+    assert math.isnan(arms[0].decoys[0].score)
+    report = ensemble.compare_arms(*arms, mode="sweep")
+    assert "best closed score, A: -52.0 (d2.pdb" in report and "best closed score, B: -52.0 (d2.pdb" in report
+    among = [ln.split() for ln in report.split("among decoys that close AND pair")[1].splitlines()[1:3]]
+    assert [(ln[0], ln[4]) for ln in among] == [("A", "-52"), ("B", "-50")]  # arm, best (in B only d0 pairs)
+
+
 def test_compare_cli_pilot_matched_runs_geometry(tmp_path):
     from mdatk.cli import main
     a, b, table = _arms(tmp_path)

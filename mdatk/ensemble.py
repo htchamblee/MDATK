@@ -1794,7 +1794,8 @@ def compare_arms(a: Arm, b: Arm, *, mode: str = "compare", closure: Optional[Clo
                               if d.occupancy is not None and _is_closed(d, closure, cut)]) for arm in (a, b)]
         out.append(f"  {'region atoms in density, closed':<30} {cells[0]:<32} {cells[1]}")
     for arm in (a, b):
-        closed = [d for d in arm.decoys if d.score is not None and _is_closed(d, closure, cut)]
+        closed = [d for d in arm.decoys  # (a NaN score is no score: min() would stop at one listed first)
+                  if d.score is not None and d.score == d.score and _is_closed(d, closure, cut)]
         if not closed:
             continue
         best = min(closed, key=lambda d: d.score)
@@ -1824,7 +1825,7 @@ def compare_arms(a: Arm, b: Arm, *, mode: str = "compare", closure: Optional[Clo
         out += ["", "--- score and density among decoys that close AND pair ---"]
         for arm in (a, b):
             sel = [d for d in arm.decoys if _both(d, closure, cut)]
-            sc = [d.score for d in sel if d.score is not None]
+            sc = [d.score for d in sel if d.score is not None and d.score == d.score]
             oc = [d.occupancy for d in sel if d.occupancy is not None]
             best = _fmt(min(sc) if sc else None, ".0f")
             out.append(f"  {arm.label:<16} n={len(sel):5d}  best {best:>8}  "
