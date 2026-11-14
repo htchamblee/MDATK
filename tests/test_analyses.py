@@ -64,6 +64,66 @@ def test_minimum_image_vectors_in_a_triclinic_box():
     np.testing.assert_array_equal(run_one("hbonds", u, p).arrays["count"], [1])
 
 
+OCTAHEDRON = np.array([30.0, 30.0, 30.0, 109.4712190, 109.4712190, 109.4712190], dtype=np.float32)
+
+
+def test_minimum_image_vectors_in_a_triclinic_box_are_the_shortest_images():
+    """Amber's truncated octahedron is a triclinic cell: the vectors of pairs found across a box face
+    were returned as they are (only orthorhombic boxes were imaged)."""
+    from MDAnalysis.lib.mdamath import triclinic_vectors
+
+    cell = triclinic_vectors(OCTAHEDRON).astype(np.float64)
+    rng = np.random.default_rng(4)
+    v = rng.uniform(-60, 60, (300, 3))
+    out = minimum_image_vectors(v, OCTAHEDRON)
+    shifts = np.array([(i, j, k) for i in range(-3, 4) for j in range(-3, 4) for k in range(-3, 4)]) @ cell
+    brute = np.linalg.norm(v[:, None, :] + shifts[None], axis=2).min(axis=1)
+    np.testing.assert_allclose(np.linalg.norm(out, axis=1), brute, atol=1e-9)
+    frac = (out - v) @ np.linalg.inv(cell)  # each result is the vector moved by whole cell vectors
+    np.testing.assert_allclose(frac, np.round(frac), atol=1e-9)
+    # the length is the distance pairs_within reports for the pair
+    a, b = np.array([[1.0, 1.0, 1.0]]), np.array([[1.0, 1.0, 1.0]]) + cell[2] + [2.0, 0.0, 0.0]
+    i, j, d = pairs_within(a, b, 3.0, OCTAHEDRON)
+    assert len(i) == 1 and d[0] == pytest.approx(2.0, abs=1e-4)
+    np.testing.assert_allclose(minimum_image_vectors(b - a, OCTAHEDRON), [[2.0, 0.0, 0.0]], atol=1e-4)
+    # orthorhombic boxes and no box: as before
+    box = np.array([10.0, 10.0, 10.0, 90.0, 90.0, 90.0])
+    np.testing.assert_allclose(minimum_image_vectors(np.array([[9.0, -6.0, 4.0]]), box), [[-1.0, 4.0, 4.0]])
+    np.testing.assert_allclose(minimum_image_vectors(np.array([[9.0, -6.0, 4.0]]), None), [[9.0, -6.0, 4.0]])
+
+
+def _in_box(u, box):
+    u.trajectory.dimensions_array[:] = box
+    u.trajectory[0]
+    return u
+
+
+def test_hbond_angle_and_mg_geometry_across_a_triclinic_box_face():
+    from MDAnalysis.lib.mdamath import triclinic_vectors
+
+    cell = triclinic_vectors(OCTAHEDRON).astype(np.float64)
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.use_pbc = True
+    # a linear N-H...O bond (2.9 A), the acceptor stored as its image one cell vector away
+    atoms = [atom("N3", 1, "U", "N"), atom("H3", 1, "U", "H"), atom("O6", 2, "G", "O")]
+    xyz = np.array([[5.0, 5.0, 5.0], [6.0, 5.0, 5.0], [7.9, 5.0, 5.0]])
+    for shift in (np.zeros(3), cell[1], cell[2], -cell[1] - cell[2]):
+        moved = xyz.copy()
+        moved[2] += shift
+        u = _in_box(make_universe(atoms, [moved], bonds=[(0, 1)]), OCTAHEDRON)
+        np.testing.assert_array_equal(run_one("hbonds", u, p).arrays["count"], [1])
+    # an octahedral (90 degree) O-Mg-O bridge, one oxygen stored as its image
+    atoms = [atom("OP1", 1, "A", "O"), atom("OP2", 2, "U", "O"), atom("MG", 3, "MG", "MG")]
+    mg = np.array([5.0, 5.0, 5.0])
+    p.analyses.mg.mg_selection = "resname MG"
+    p.analyses.mg.geometry = True
+    for shift in (np.zeros(3), cell[0], cell[2]):
+        u = _in_box(make_universe(atoms, [[mg + [2.1, 0, 0], mg + [0, 2.1, 0] + shift, mg]]), OCTAHEDRON)
+        res = run_one("mg", u, p)
+        np.testing.assert_array_equal(res.arrays["contacts"], [2])
+        np.testing.assert_array_equal(res.arrays["inter"], [1])
+
+
 def test_kabsch_recovers_rotation():
     rng = np.random.default_rng(2)
     x = rng.normal(size=(20, 3))
