@@ -453,6 +453,16 @@ def test_audit_controlled_residues_are_chain_aware(tmp_path):
     assert c.flags["[controlled in -input_res]"] == "A:2"
 
 
+def test_audit_controlled_residues_of_a_fasta_tagged_in_part_regression(tmp_path):
+    """regression: with a FASTA of which one record has a chain tag and another has none, the paired
+    controlled residues were sorted as (chain, number) with chains 'A' and None: a TypeError ended the audit."""
+    _condition(str(tmp_path / "c1"), "-fasta ../seq.fasta -secstruct_file ../ss.txt\n",
+               files={"seq.fasta": ">a A:1-6\ngggccc\n>b\ngggccc\n", "ss.txt": "(((((())))))\n"}, logs=1)
+    c = rosetta.collect(str(tmp_path / "c1"), controlled=rosetta.parse_residues("4-9"))
+    assert c.flags["[controlled paired in secstruct]"] == "paired 7-9,A:4-6"  # untagged record: 7-12, no chain
+    assert c.flags["[effective condition]"] == "imposed: secstruct pairs 7-9,A:4-6"
+
+
 def test_audit_runs_disagree_and_restarts(tmp_path):
     folder = str(tmp_path / "c")
     _condition(folder, "-cycles 100\n", logs=2)
