@@ -147,6 +147,14 @@ def test_contacts_counts_and_native_fraction():
     np.testing.assert_array_equal(res.arrays["q_native"], [1.0, 0.0])
     assert res.arrays["per_res_a"].shape == (1, 2)
     assert res.meta["labels_a"] == ["A1"] and res.meta["labels_b"] == ["U2"]
+    assert res.outputs["series"]["atom_pairs"]["label"] == "Aptamer–Target heavy-atom contacts"
+    # with the hydrogens counted (O1-N1 and O1-H1) the series is not called heavy-atom contacts
+    from mdatk.analysis.base import key_label
+    p.analyses.contacts.heavy_only = False
+    res = run_one("contacts", u, p)
+    np.testing.assert_array_equal(res.arrays["atom_pairs"], [2, 0])
+    assert res.outputs["series"]["atom_pairs"]["label"] == "Aptamer–Target atom contacts"
+    assert key_label("contacts/atom_pairs", p) == "Aptamer–Target atom contacts"
 
 
 def test_contacts_of_a_group_with_itself():

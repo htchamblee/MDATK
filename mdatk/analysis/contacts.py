@@ -31,6 +31,13 @@ class ContactAnalysis(Analysis):
         return project.analyses.contacts.enabled
 
     @classmethod
+    def output_label(cls, project, out):
+        label = super().output_label(project, out)
+        if out == "atom_pairs" and not project.analyses.contacts.heavy_only:
+            label = label.replace("heavy-atom contacts", "atom contacts")  # hydrogens are counted too
+        return label
+
+    @classmethod
     def params_for(cls, project):
         return dict(vars(project.analyses.contacts), enabled=None)
 
@@ -114,7 +121,7 @@ class ContactAnalysis(Analysis):
         res.arrays["per_res_a"] = per_a
         res.arrays["per_res_b"] = per_b
         ga, gb = self.ga, self.gb
-        res.add_series("atom_pairs", "atom_pairs", f"{ga}–{gb} heavy-atom contacts", "count")
+        res.add_series("atom_pairs", "atom_pairs", self.output_label(self.project, "atom_pairs"), "count")
         res.add_series("residue_pairs", "residue_pairs", f"{ga}–{gb} residue contacts", "count")
         res.add_series("q_native", "q_native", "Fraction of native contacts (Q)", "")
         res.add_matrix("per_residue_a", "per_res_a", "labels_a",
