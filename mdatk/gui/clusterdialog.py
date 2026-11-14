@@ -39,6 +39,16 @@ def _number(_column, cell, model, it, data) -> None:
     cell.set_property("text", fmt.format(model[it][col]))
 
 
+def _scroller(child: Gtk.Widget, height: int) -> Gtk.ScrolledWindow:
+    """``child`` (a text view or a table) scrolled both ways, at least ``height`` tall: a long line scrolls
+    instead of making the window wider than the screen, and the window fits a small screen."""
+    sw = Gtk.ScrolledWindow()
+    sw.set_shadow_type(Gtk.ShadowType.IN)
+    sw.set_min_content_height(height)
+    sw.add(child)
+    return sw
+
+
 def _positive(value: Any) -> Optional[float]:
     """``value`` as a positive number (a profiles file edited by hand may hold "48" or text); None if it is none."""
     try:
@@ -91,7 +101,7 @@ class ClusterProfilesWindow(Gtk.Window):
         self.path = path
         if host is not None and isinstance(host, Gtk.Window):
             self.set_transient_for(host)
-        self.set_default_size(980, 640)
+        self.set_default_size(980, 700)
         self.profiles: List[clusters.ClusterProfile]
         # why the profiles file could not be read ("": it could): it is kept as a copy when the window saves
         self.profiles, self.unreadable = read_profiles(path)
@@ -135,9 +145,7 @@ class ClusterProfilesWindow(Gtk.Window):
         self.header = Gtk.TextView(monospace=True, wrap_mode=Gtk.WrapMode.NONE)
         self.header.set_tooltip_text(HEADER_TIP)
         self.header.get_buffer().connect("changed", self._changed)
-        sw = W.scrolled(self.header)
-        sw.set_size_request(-1, 150)
-        right.pack_start(W.frame("Job header", sw), False, False, 0)
+        right.pack_start(W.frame("Job header", _scroller(self.header, 70)), True, True, 0)
 
         self.queues = Gtk.ListStore(str, float, str)
         self._commit_cells: list = []
@@ -156,9 +164,7 @@ class ClusterProfilesWindow(Gtk.Window):
             qview.append_column(column)
         self.queue_view = qview
         qbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        qsw = W.scrolled(qview)
-        qsw.set_size_request(-1, 90)
-        qbox.pack_start(qsw, True, True, 0)
+        qbox.pack_start(_scroller(qview, 90), True, True, 0)
         qb = Gtk.Box(spacing=4)
         qb.pack_start(W.button("Add queue", self.add_queue), False, False, 0)
         qb.pack_start(W.button("Remove queue", self.remove_queue), False, False, 0)
@@ -181,9 +187,7 @@ class ClusterProfilesWindow(Gtk.Window):
         sview.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
         self.speed_view = sview
         sbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        ssw = W.scrolled(sview)
-        ssw.set_size_request(-1, 120)
-        sbox.pack_start(ssw, True, True, 0)
+        sbox.pack_start(_scroller(sview, 70), True, True, 0)
         sb = Gtk.Box(spacing=4)
         sb.pack_start(W.button("Learn from runs…", self.learn_from_folder,
                                "Read the speeds of the finished pmemd.cuda runs (.out files) in a folder"),

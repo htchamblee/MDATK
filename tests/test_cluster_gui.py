@@ -247,3 +247,19 @@ def test_closing_rnado_saves_the_cluster_profiles(tmp_path, monkeypatch):
     finally:
         win.destroy()
         pump()
+
+
+def test_the_window_fits_a_small_screen_whatever_the_profile_holds(window):
+    """A long line of the job header or of a queue's directives scrolls: it made the window (and the place of
+    Save and Close) wider than the screen; the window was taller than a 768-pixel screen."""
+    w = window
+    w.new_profile()
+    pump()
+    w.header.get_buffer().set_text("#SBATCH --nodes=1\nexport PATH=" + "/opt/amber24/bin:" * 40 + "$PATH\n"
+                                   + "\n".join(f"module load tool{k}" for k in range(40)))
+    w.queues.append(["all", 24.0, "; ".join(f"#SBATCH --constraint=feature{k}" for k in range(30))])
+    for k in range(12):
+        w.queues.append([f"q{k}", 1.0, ""])
+    pump(0.3)
+    minimum, _natural = w.get_preferred_size()
+    assert minimum.width <= 1000 and minimum.height <= 720, (minimum.width, minimum.height)
