@@ -506,6 +506,27 @@ def test_audit_of_mdatk_plan_and_step(tmp_path):
         "connect the silent files" in i.message for i in st.issues)
 
 
+def test_audit_step_takes_a_pair_suffix_that_starts_with_a_hyphen(tmp_path):
+    # conditions named run and run-nopairs: '--pair-suffix -nopairs' is no value to argparse ("expected one
+    # argument"), so the suffix is written as --pair-suffix=-nopairs, as the register census writes its own
+    flags = "-fasta t.fasta\n-nstruct 2\n"
+    for name in ("run", "run-nopairs"):
+        _condition(str(tmp_path / "campaign" / name), flags, files={"t.fasta": ">t A:1-4\nggcc\n"})
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    add_node(wf, "rosetta-audit", settings={"folders": str(tmp_path / "campaign"), "pair_suffix": "-nopairs",
+                                            "python": sys.executable})
+    plan = Plan(wf, str(tmp_path / "plan"))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    folder = tmp_path / "plan" / "01_rosetta-audit"
+    script = folder / f"apt1_01_rosetta-audit_{STAMP}.sh"
+    assert " --pair-suffix=-nopairs " in script.read_text()
+    proc = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=REPO))
+    assert proc.returncode == 0, proc.stderr
+    assert "run-nopairs" in (folder / f"apt1_01_rosetta-audit_{STAMP}.txt").read_text()
+
+
 def _single(tool, settings, files=None, groups=None):
     wf = WorkflowParams(project_name="apt1", stamp=STAMP)
     node = PlanNode(id="x", tool=tool, step=1, settings=TOOLS[tool].normalise(settings),

@@ -693,6 +693,55 @@ def test_rnamake_commands():
     assert len(messages(st, "error")) >= 2
 
 
+def test_rnamake_script_runs_again_and_takes_a_scaffold_in_a_folder_with_a_space(tmp_path):
+    scaffold = tmp_path / "my data" / "scaffold.pdb"
+    scaffold.parent.mkdir()
+    scaffold.write_text("ATOM\n")
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "rnamake", settings={"start_bp": "A1-A12", "end_bp": "A6-A7", "designs": 4})
+    node.files["structure"] = str(scaffold)
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    # design_rna_scaffold: $NDESIGN designs as design.0.pdb ..., as RNAMake names them
+    env = _fake_tools(tmp_path, {"design_rna_scaffold":
+                                 'pdb=""; score=""\nfor ((i=1;i<=$#;i++)); do j=$((i+1)); '
+                                 '[ "${!i}" = --pdb ] && pdb="${!j}"; [ "${!i}" = --score_file ] && score="${!j}"; '
+                                 'done\n[ -f "$pdb" ] || { echo "cannot open $pdb"; exit 1; }\necho s > "$score"\n'
+                                 'for k in $(seq 0 $(($NDESIGN - 1))); do echo "design $k of $RUN" > design.$k.pdb; '
+                                 'done\n'})
+    folder = tmp_path / "01_rnamake"
+    script = ["bash", str(folder / f"apt1_01_rnamake_{STAMP}.sh")]
+    assert f"--pdb '{scaffold}' " in (folder / f"apt1_01_rnamake_{STAMP}.sh").read_text()
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, RNAMAKE="/opt", NDESIGN="4", RUN="1"))
+    assert proc.returncode == 0, proc.stderr + (folder / f"apt1_01_design_{STAMP}.log").read_text()
+    assert len(list(folder.glob("apt1_01_design-*.pdb"))) == 4
+    # run again, RNAMake finds two designs: the third and fourth of the first run are no outputs of this one
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, RNAMAKE="/opt", NDESIGN="2", RUN="2"))
+    assert proc.returncode == 0, proc.stderr
+    designs = sorted(folder.glob("apt1_01_design-*.pdb"))
+    assert [p.read_text() for p in designs] == ["design 0 of 2\n", "design 1 of 2\n"]
+
+
+def test_vmd_movie_rendered_again_has_no_frame_of_the_earlier_run(tmp_path):
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "vmd", settings={"render": "movie"})
+    node.files.update({"topology": "/d/dry.parm7", "trajectory": "/d/a.nc"})
+    plan = Plan(wf, str(tmp_path))
+    plan.write()
+    # vmd: $NFRAMES frames as the Tcl script names them; ffmpeg: the number of frames it is given
+    env = _fake_tools(tmp_path, {
+        "vmd": 'mkdir -p frames\nfor k in $(seq 0 $(($NFRAMES - 1))); do '
+               'echo f > frames/frame.$(printf "%05d" $k).tga; done\n',
+        "ffmpeg": 'ls frames | wc -l > "${@: -1}"\n'})
+    folder = tmp_path / "01_vmd"
+    for frames in ("5", "3"):  # e.g. the trajectory loaded with a larger stride the second time
+        proc = subprocess.run(["bash", str(folder / f"apt1_01_vmd_{STAMP}.sh")], capture_output=True, text=True,
+                              env=dict(env, NFRAMES=frames))
+        assert proc.returncode == 0, proc.stderr
+        assert (folder / f"apt1_01_movie_{STAMP}.mp4").read_text().strip() == frames
+
+
 # ---------------------------------------------------------------------------
 # GROMACS / VMD
 # ---------------------------------------------------------------------------

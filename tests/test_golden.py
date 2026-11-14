@@ -68,6 +68,15 @@ INTENDED = [
     # extracts (the list was appended to, and a model the new run did not write was passed on as its own),
     # and annotates every model with DSSR (model-[0-9][0-9] left out the models from 100 on)
     (re.compile(r"_farfar2-models_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: the RNAMake script removes the design PDBs of an earlier run first (with fewer designs than that
+    # run wrote, its last ones stayed as outputs of the step); every case that writes design PDBs
+    (re.compile(r"_rnamake_\d{8}-\d{4}\.sh$"),
+     {f"tool:rnamake:{v}" for v in ("default", "app=design_rna", "dump_scaffold=True", "no_bp_checks=True",
+                                    "no_sterics=True", "search_type=exhaustive", "search_type=mc",
+                                    "skip_seq_opt=True", "thermo_fluc=True")}),
+    # 0.1.0: the VMD script of a movie removes the frames of an earlier run first (with fewer frames than that
+    # run rendered, its last ones were joined into the movie); snapshots and interactive scripts are unchanged
+    (re.compile(r"_vmd_\d{8}-\d{4}\.sh$"), {"tool:vmd:render=movie"}),
 ]
 
 

@@ -142,8 +142,8 @@ class RosettaAuditTool(Tool):
         words = StructureBuilderTool.mdatk(s) + ["rosetta", "audit"] + [q(r) for r in self._roots(s, ctx)]
         for line in _lines(s["pairs"]):
             words += ["--pair", q(re.sub(r"\s*=\s*", "=", line))]
-        if s["pair_suffix"].strip():
-            words += ["--pair-suffix", q(s["pair_suffix"].strip())]
+        if s["pair_suffix"].strip():  # '=': a suffix may start with '-'
+            words.append(f"--pair-suffix={q(s['pair_suffix'].strip())}")
         if s["controlled"].strip():
             words += ["--controlled", q(re.sub(r"\s+", ",", s["controlled"].strip()))]
         for key, flag in (("allowed", "--allow"), ("ignored", "--ignore")):

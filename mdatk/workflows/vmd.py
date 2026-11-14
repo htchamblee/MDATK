@@ -309,6 +309,8 @@ class VMDTool(Tool):
             sh.append(f"{exe} -e {tcl}")
         else:
             batch = "-dispdev text " if s["renderer"] == "TachyonInternal" else ""
+            if s["render"] == "movie":  # fewer frames than an earlier run rendered: its last ones would be joined in
+                sh += ["# the frames of an earlier run go first", "rm -f frames/frame.*.tga"]
             sh.append(f"{exe} {batch}-e {tcl}")
             if s["render"] == "movie":
                 movie = ctx.name("movie", "mp4")
