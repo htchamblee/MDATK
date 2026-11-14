@@ -48,6 +48,7 @@ FORCE_FIELDS: Dict[str, Tuple[str, str, str]] = {
     "yil": ("YIL (Yildirim et al. 2010)", "leaprc.RNA.YIL", "YIL"),
     "shaw": ("DESRES RNA (Tan et al. 2018)", "leaprc.RNA.Shaw", "DESRES-RNA"),
 }
+NO_RNA = "none"  # the 'RNA force field' choice of a system without RNA: no RNA leaprc, nothing RNA-only is written
 
 # DNA force fields of AmberTools 26 (the Olomouc series): id -> (label, leaprc, short name, D library and the
 # parameter files its leaprc loads, in load order - what the L-DNA helper mirrors)
@@ -399,8 +400,10 @@ class AmberBuildTool(Tool):
         Section("forcefield", "Force field", [
             Option("rna_ff", "RNA force field", "choice", "ol3cp",
                    "leaprc file for RNA. 'OL3 + CP' adds the phosphate oxygen vdW correction of "
-                   "Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it.",
-                   choices=[(k, v[0]) for k, v in FORCE_FIELDS.items()]),
+                   "Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it. None: no RNA "
+                   "leaprc is sourced, for a system without RNA (e.g. DNA only, with the DNA force field below); "
+                   "the RNA-only settings (NBfix19, 0BPh, a generated L-RNA library) must be off then.",
+                   choices=[(k, v[0]) for k, v in FORCE_FIELDS.items()] + [(NO_RNA, "None (no RNA in the system)")]),
             Option("cp_source", "CP parameters", "radio", "lib",
                    "Retyped library: the build script writes RNA_CP.lib (AmberTools' RNA.lib with the "
                    "phosphate oxygens retyped OP / OR) and frcmod.cp (the CP Lennard-Jones values plus "
@@ -617,9 +620,20 @@ class AmberBuildTool(Tool):
     def programs(self, s):
         return [(p, r"(^|[\s;(&|])" + p + r"\s") for p in ("tleap", "parmed", "ambpdb", "cpptraj", "python3")]
 
+    @staticmethod
+    def _effective(s):
+        """The settings a build is written from.  Without an RNA force field ('RNA force field: None') nothing
+        RNA-only is written, whatever its box says (the check reports NBfix19 / 0BPh left on as errors): no
+        NBfix19 / 0BPh pairs and no L-RNA atom types.  (The CP library and the generated L-RNA library follow
+        the force field themselves: _cp_lib, lrna_generated.)"""
+        if s["rna_ff"] != NO_RNA:
+            return s
+        return dict(s, nbfix19=False, bph0=False, lrna_fixes=False)
+
     def resources(self, s):
+        s = self._effective(s)
         out = ["ambertools"] + {"ol3cp": ["ol3", "cp"], "ol3": ["ol3"], "ljbb": ["ol3", "ljbb"], "roc": ["roc"],
-                                "yil": ["yil"], "shaw": ["shaw"]}[s["rna_ff"]]
+                                "yil": ["yil"], "shaw": ["shaw"]}.get(s["rna_ff"], [])
         if self._solvated(s):
             out.append("water_" + s["water"])
             if s["neutralize"] or s["salt_pairs"] or (s["mg_balance"] and s["mg_count"]):
@@ -639,7 +653,11 @@ class AmberBuildTool(Tool):
         return out
 
     def describe(self, s):
-        parts = [FORCE_FIELDS[s["rna_ff"]][2]]
+        s = self._effective(s)
+        if s["rna_ff"] == NO_RNA:
+            parts = [DNA_FORCE_FIELDS[s["dna_ff"]][2] if s["dna_ff"] in DNA_FORCE_FIELDS else "no RNA force field"]
+        else:
+            parts = [FORCE_FIELDS[s["rna_ff"]][2]]
         if self._solvated(s):
             parts.append(WATERS[s["water"]][0])
         mods = [m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]), ("HMR", s["hmr"]))
@@ -692,10 +710,10 @@ class AmberBuildTool(Tool):
     def _ff_names(self, s, ctx) -> str:
         """The force fields the tleap inputs source, as the titles of the generated files name them: 'OL3+CP',
         with the DNA force field 'OL3+CP + OL24'."""
-        names = [FORCE_FIELDS[s["rna_ff"]][2]]
+        names = [FORCE_FIELDS[s["rna_ff"]][2]] if s["rna_ff"] != NO_RNA else []
         if self.dna_loaded(s, ctx):
             names.append(DNA_FORCE_FIELDS[s["dna_ff"]][2])
-        return " + ".join(names)
+        return " + ".join(names) or "no RNA or DNA force field"
 
     @staticmethod
     def _cp_lib(s) -> bool:
@@ -822,7 +840,7 @@ class AmberBuildTool(Tool):
 
     def lrna_generated(self, s, ctx) -> bool:
         """Whether the build writes its own L-RNA library (LRNA.lib + frcmod.lrna)."""
-        if not s["lrna"] or s["lrna_library"] == "own":
+        if not s["lrna"] or s["lrna_library"] == "own" or s["rna_ff"] == NO_RNA:
             return False
         if s["lrna_library"] == "generated":
             return True
@@ -1008,7 +1026,8 @@ class AmberBuildTool(Tool):
         if not self.dna_loaded(s, ctx):
             return out
         ff = DNA_FORCE_FIELDS[s["dna_ff"]]
-        out.append(Issue("info", f"DNA: {ff[0]} ({ff[1]}, sourced after the RNA force field)", ("dna_ff",)))
+        out.append(Issue("info", f"DNA: {ff[0]} ({ff[1]}" + (", sourced after the RNA force field"
+                                                              if s["rna_ff"] != NO_RNA else "") + ")", ("dna_ff",)))
         if self._cp_frcmod(s):
             out.append(Issue("warning", "the own CP frcmod changes the O2 / OS types for every residue: the DNA "
                                         "phosphates and O4' get the correction too (the retyped CP library changes "
@@ -1071,8 +1090,32 @@ class AmberBuildTool(Tool):
         return out
 
     # checks -----------------------------------------------------------
+    def _check_no_rna(self, s, ctx) -> List[Issue]:
+        """'RNA force field: None': RNA in the structure and RNA-only settings left on are errors (nothing of
+        them is written)."""
+        out: List[Issue] = []
+        if self.nucleic_content(s, ctx)["rna"]:
+            out.append(Issue("error", "the structure has RNA but no RNA force field is chosen", ("rna_ff",)))
+        on = [name for name, value in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"])) if value]
+        if on:
+            out.append(Issue("error", f"{' / '.join(on)} {'modifies' if len(on) == 1 else 'modify'} RNA atom types "
+                                      "and cannot be applied without an RNA force field: switch "
+                                      f"{'it' if len(on) == 1 else 'them'} off, or choose an RNA force field",
+                             ("rna_ff",) + tuple(k for k in ("nbfix19", "bph0") if s[k])))
+        if s["lrna"] and s["lrna_library"] == "generated":
+            out.append(Issue("error", "the generated L-RNA library mirrors the RNA force field, and none is "
+                                      "chosen: set 'L-RNA library' to Automatic, or choose an RNA force field",
+                             ("rna_ff", "lrna_library")))
+        out.append(Issue("info", "no RNA force field: no leaprc.RNA file is sourced, and nothing RNA-only is "
+                                 "written (CP library, NBfix19 / 0BPh pairs, L-RNA atom types and library)",
+                         ("rna_ff",)))
+        return out
+
     def check(self, s, ctx):
         out: List[Issue] = []
+        if s["rna_ff"] == NO_RNA:
+            out += self._check_no_rna(s, ctx)
+            s = self._effective(s)  # the checks below see what is written
         if (s["nbfix19"] or s["bph0"]) and s["rna_ff"] != "ol3cp":
             out.append(Issue("error", "NBfix19 / 0BPh masks assume the OL3 + CP force field; choose "
                                       "'OL3 + CP' or switch the modifications off",
@@ -1221,7 +1264,7 @@ class AmberBuildTool(Tool):
         if s["mg_count"] == 0:
             out.append(Issue("warning", f"{name} is selected but no Mg²⁺ is added; it only matters when "
                                         "the input already contains MG ions", ("mg_model", "mg_count")))
-        if s["rna_ff"] not in ("ol3", "ol3cp"):
+        if s["rna_ff"] not in ("ol3", "ol3cp", NO_RNA):
             out.append(Issue("warning", f"the {name} Mg²⁺-RNA pair terms were fitted with parmBSC0χOL3 "
                                         "atom types; RNA atom types of this force field outside that set "
                                         "get no pair term - map them under 'Extra Mg²⁺ pair types'"
@@ -1293,6 +1336,7 @@ class AmberBuildTool(Tool):
         return out
 
     def output_values(self, s, ctx):
+        s = self._effective(s)
         nres = None
         path = ctx.existing("structure")
         if path:
@@ -1318,8 +1362,9 @@ class AmberBuildTool(Tool):
 
     # files ------------------------------------------------------------
     def _leap(self, s, ctx, title, pdb_in, stem, wet, save_pdb) -> str:
-        lines = [f"# {title}", f"# written by {PROJECT_ABBREV} {__version__}",
-                 f"source {FORCE_FIELDS[s['rna_ff']][1]}"]
+        lines = [f"# {title}", f"# written by {PROJECT_ABBREV} {__version__}"]
+        if s["rna_ff"] != NO_RNA:
+            lines.append(f"source {FORCE_FIELDS[s['rna_ff']][1]}")
         if self.dna_loaded(s, ctx):
             lines.append(f"source {DNA_FORCE_FIELDS[s['dna_ff']][1]}")
         solvated = wet and self._solvated(s)
@@ -1489,6 +1534,7 @@ class AmberBuildTool(Tool):
                 "fi", ""]
 
     def generate(self, s, ctx):
+        s = self._effective(s)
         files: List[GeneratedFile] = []
         n = ctx.name
         script_name = n(self.tag, "sh")

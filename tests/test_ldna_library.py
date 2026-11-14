@@ -215,6 +215,112 @@ def test_dna_from_the_structure_builder_is_known_before_the_pdb_exists(tmp_path)
     assert "source leaprc.DNA.OL24" in leap and "loadOff LDNA.lib" in leap
 
 
+NO_RNA = dict(rna_ff="none", nbfix19=False, bph0=False)
+
+
+def _forced(plan):
+    """The files of a step the planner refuses to write (errors): its generator still runs."""
+    from mdatk.workflows.plan import generate_step
+
+    return {f.name.replace(f"_{STAMP}", "").replace("apt1_01_", ""): f.content for f in generate_step(plan.steps["b"])}
+
+
+def test_rna_force_field_none_builds_dna_without_an_rna_leaprc(tmp_path):
+    """'RNA force field: None (no RNA in the system)': a DNA-only build sources no leaprc.RNA file and writes
+    nothing RNA-only."""
+    tool = TOOLS["amber-build"]
+    choices = dict(tool.flat_options()["rna_ff"].choices)
+    assert choices["none"] == "None (no RNA in the system)" and tool.defaults()["rna_ff"] == "ol3cp"
+    plan, st = _plan(tmp_path, builder.build_helix("GACT", na="dna", scheme="amber"), **NO_RNA)
+    assert st.ok, st.issues
+    files = _files(plan)
+    assert sorted(files) == ["amber-build.sh", "check.py", "pdbtools.py", "prep.py", "tleap.leap"]
+    leap = files["tleap.leap"].splitlines()
+    assert leap[0] == "# Solvate and add ions (OL24) for project apt1, step 01"
+    assert leap[2:5] == ["source leaprc.DNA.OL24", "source leaprc.water.opc", 'mol = loadpdb "apt1_01_lrna_20261015-1432.pdb"']
+    sh = files["amber-build.sh"]
+    assert sh.splitlines()[1] == "# Amber system build (OL24) - tleap / ParmEd"
+    for text in ("leaprc.RNA", "RNA_CP", "frcmod.cp", "cp-lib", "lrna-lib", "LRNA.lib", "parmed", "addAtomTypes"):
+        assert not any(text in files[name] for name in ("tleap.leap", "amber-build.sh")), text
+    assert "--scheme amber --dna" in sh  # the residues are still named for tleap (DA5 / DA3 ...)
+    top = st.outputs["topology"]
+    assert top.paths == [f"01_amber-build/apt1_01_tleap_{STAMP}.parm7"]  # no ParmEd step
+    assert top.data["nbfix"] is False and top.data["forcefield"] == "none"
+    assert tool.describe(st.settings) == "OL24, OPC"
+    resources = tool.step_resources(st.settings, st.ctx)
+    assert "dna_ol24" in resources and not {"ol3", "cp", "nbfix19", "bph0", "lrna"} & set(resources)
+    infos = [i.message for i in st.issues if i.level == "info"]
+    assert any(m.startswith("no RNA force field: no leaprc.RNA file is sourced") for m in infos)
+    assert "DNA: OL24 (OL21 + δ, sugar τ1, χOL3) (leaprc.DNA.OL24)" in infos  # (not 'after the RNA force field')
+    # L-DNA: the generated library and its chain-end map as with an RNA force field, two passes, 12-6-4, HMR
+    plan, st = _plan(tmp_path, builder.build_helix("GACT", na="dna", chirality="L", scheme="amber"),
+                     two_pass=True, mg_model="1264", mg_count=2, hmr=True, **NO_RNA)
+    assert st.ok, st.issues
+    files = _files(plan)
+    assert sorted(files) == ["amber-build.sh", "check.py", "ldna-lib.py", "parmed.in", "pdbtools.py", "prep.py",
+                             "tleap-dry.leap", "tleap.leap"]
+    for name in ("tleap-dry.leap", "tleap.leap"):
+        leap = [ln for ln in files[name].splitlines() if not ln.startswith("#")]
+        assert leap[0] == "source leaprc.DNA.OL24" and not any("leaprc.RNA" in ln for ln in leap)
+        assert 'addAtomTypes { { "LS" "O" "sp3" } { "LT" "O" "sp3" } }' in leap  # the L-DNA twins alone
+        assert leap.index("loadOff LDNA.lib") + 1 == leap.index(amber.LDNA_TERMINAL_MAP)
+    pm = [ln for ln in files["parmed.in"].splitlines() if not ln.startswith("#")]
+    assert pm == [f"add12_6_4 :MG watermodel OPC polfile {amber.POL_1264}", "HMassRepartition",
+                  "outparm apt1_01_parmed_20261015-1432.parm7"]
+    sh = files["amber-build.sh"]
+    assert 'cp "$AMBERHOME/dat/leap/parm/lj_1264_pol.dat" lj_1264_pol_mdatk.dat' in sh  # (not the CP table)
+    assert "parmed-dry" not in sh and "# First parameterisation (dry), OL24" in sh
+    # no DNA force field either (e.g. units of one's own): the titles say so
+    plan, st = _plan(tmp_path, builder.build_helix("GACT", na="dna", scheme="amber"), dna_ff="none", **NO_RNA)
+    assert _forced(plan)["tleap.leap"].splitlines()[0] == ("# Solvate and add ions (no RNA or DNA force field) for "
+                                                           "project apt1, step 01")
+    assert tool.describe(st.settings) == "no RNA force field, OPC"
+
+
+def test_rna_force_field_none_refuses_rna_and_rna_only_settings(tmp_path):
+    def errors(st):
+        return [i.message for i in st.issues if i.level == "error"]
+
+    d_dna = builder.build_helix("GACT", na="dna", scheme="amber")
+    # RNA in the structure: an existing PDB (D or L, alone or beside DNA), or what the structure builder says
+    for rna in (builder.build_helix("GACU", scheme="amber"), builder.build_helix("GACU", chirality="L", scheme="amber"),
+                d_dna.replace("END\n", "") + builder.build_helix("GACU", chains=("C", "D"), scheme="amber")):
+        _plan_, st = _plan(tmp_path, rna, **NO_RNA)
+        assert "the structure has RNA but no RNA force field is chosen" in errors(st), errors(st)
+    from mdatk.config import PlanEdge
+
+    for na, has_rna in (("rna", True), ("dna", False)):
+        b = PlanNode(id="s", tool="structure-builder", step=1,
+                     settings=TOOLS["structure-builder"].normalise({"sequence": "GCAC", "nucleic_acid": na}))
+        a = PlanNode(id="b", tool="amber-build", step=2,
+                     settings=TOOLS["amber-build"].normalise(dict({"water": "opc"}, **NO_RNA)))
+        plan = Plan(WorkflowParams(project_name="apt1", stamp=STAMP, nodes=[b, a],
+                                   edges=[PlanEdge(source="s", output="pdb", target="b", input="structure")]),
+                    str(tmp_path / f"plan-{na}"))
+        assert ("the structure has RNA but no RNA force field is chosen" in errors(plan.steps["b"])) is has_rna
+        assert plan.steps["b"].ok is not has_rna
+    # NBfix19 / 0BPh left on (they are by default): an error naming them, and nothing of them is written
+    plan, st = _plan(tmp_path, d_dna, rna_ff="none")
+    assert errors(st) == ["NBfix19 / 0BPh modify RNA atom types and cannot be applied without an RNA force field: "
+                          "switch them off, or choose an RNA force field"]
+    assert {"rna_ff", "nbfix19", "bph0"} == {k for i in st.issues if i.level == "error" for k in i.keys}
+    files = _forced(plan)
+    assert sorted(files) == ["amber-build.sh", "check.py", "pdbtools.py", "prep.py", "tleap.leap"]
+    assert "leaprc.RNA" not in files["tleap.leap"] and "parmed" not in files["amber-build.sh"]
+    _plan_, st = _plan(tmp_path, d_dna, rna_ff="none", nbfix19=False)
+    assert errors(st) == ["0BPh modifies RNA atom types and cannot be applied without an RNA force field: switch it "
+                          "off, or choose an RNA force field"]
+    # a generated L-RNA library has no force field to mirror
+    plan, st = _plan(tmp_path, d_dna, lrna_library="generated", **NO_RNA)
+    assert errors(st) == ["the generated L-RNA library mirrors the RNA force field, and none is chosen: set 'L-RNA "
+                          "library' to Automatic, or choose an RNA force field"]
+    files = _forced(plan)
+    assert "lrna-lib.py" not in files and "LRNA.lib" not in files["tleap.leap"] + files["amber-build.sh"]
+    # with an RNA force field the same settings are fine, and written as before
+    plan, st = _plan(tmp_path, d_dna)
+    assert st.ok and _files(plan)["tleap.leap"].splitlines()[2:4] == ["source leaprc.RNA.OL3", "source leaprc.DNA.OL24"]
+
+
 def test_titles_name_the_force_fields(tmp_path):
     """The comment lines that name the force field name it (0.0.19 printed the DNA force field's table row, a
     Python tuple, in every build that generates the L-DNA library)."""
