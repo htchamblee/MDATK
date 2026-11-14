@@ -489,14 +489,16 @@ class FarfarTool(Tool):
                "run_one() {",
                "  I=$1",
                '  N=$(printf "%02d" "$I")',
-               f'  mkdir -p "{RUN_DIR}/r$N" && cd "{RUN_DIR}/r$N" || return 0',
+               f'  mkdir -p "{RUN_DIR}/r$N" && cd "{RUN_DIR}/r$N" || return 1',
                f"  {nice}{s['exe'].strip()} @{up}/$FLAGS -out:file:silent {up}/{silent}{seed} \\",
-               f"    > {up}/{log} 2>&1 || echo \"run $N failed - see {log}\" >&2",
+               f"    > {up}/{log} 2>&1 || {{ echo \"run $N failed - see {log}\" >&2; return 1; }}",
                "}",
                "export -f run_one",
                "export FLAGS",
                "",
-               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}'",
+               "# a failed run does not stop the others, but the step has failed then",
+               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' \\",
+               '  || { echo "ERROR: not every rna_denovo run finished (see above)" >&2; exit 1; }',
                "",
                f'echo "Silent files: {ctx.name(self.tag + "-rRUNNUM", "out").replace("RUNNUM", "*")}"', ""]
         if s["extract_decoys"]:
@@ -911,6 +913,7 @@ class FarfarModelsTool(Tool):
                    f"python3 {helper} keep" + (f" --valid {validity_tsv}" if valid else "")
                    + (cut if score_before else ""), ""]
             silents = [f for _l, _p, f in runs]
+        listed = " ".join(shell_quote(f) for f in silents)  # silent files chosen by hand: any path
         ranking = n("ranking", "txt")
         if s["cluster"]:
             clustered = n("cluster", "out")
@@ -920,21 +923,23 @@ class FarfarModelsTool(Tool):
             flags += extra_flags(s["cluster_extra"])
             sh += ["# Cluster all models (best cluster first)",
                    f"rm -f {clustered}",
-                   f"{s['cluster_exe'].strip()}{db} -in:file:silent {' '.join(silents)} "
+                   f"{s['cluster_exe'].strip()}{db} -in:file:silent {listed} "
                    f"-out:file:silent {clustered} {' '.join(flags)} > {n('cluster', 'log')} 2>&1",
                    require_file(clustered, "rna_cluster"),
                    f"rank_models {clustered} > {ranking}", ""]
         else:
             sh += ["# Rank every model of every run by total score",
-                   f"for f in {' '.join(silents)}; do rank_models \"$f\"; done | sort -g -k1,1 > {ranking}", ""]
+                   f"for f in {listed}; do rank_models \"$f\"; done | sort -g -k1,1 > {ranking}", ""]
         if s["filter"] and s["filter_when"] == "after":
             sh += [f"# Quality filter (after clustering): skip the ranked models outside {cut_text} (terms "
                    "by column name)", f"python3 {helper} filter-ranking {ranking}{cut}", ""]
         model = n("model-MODELNUM", "pdb").replace("MODELNUM", "${N}")
-        sh += [f"# Extract the best {s['n_models']} models as numbered PDB files"]
-        if table:  # the decoy table reads this list: no lines of an earlier run
-            sh += [f"rm -f {n('models', 'txt')}"]
-        sh += ["K=0",
+        every = n("model-MODELNUM", "pdb").replace("MODELNUM", "[0-9]*")
+        # the models and their list of an earlier run go first: the list is appended to, and a model this run
+        # does not write (fewer clusters, fewer decoys) would be passed on as this run's
+        sh += [f"# Extract the best {s['n_models']} models as numbered PDB files (those of an earlier run go first)",
+               f"rm -f {n('models', 'txt')} {every}",
+               "K=0",
                "while read -r SCORE TAG FILE; do",
                "  K=$((K + 1))",
                f"  [ $K -gt {s['n_models']} ] && break",
@@ -948,9 +953,8 @@ class FarfarModelsTool(Tool):
                f"done < {ranking}", ""]
         if s["dssr"]:
             exe = s["dssr_exe"].strip() or "x3dna-dssr"
-            pattern = n("model-MODELNUM", "pdb").replace("MODELNUM", "[0-9][0-9]")
             sh += ["# Annotate every model with DSSR",
-                   f"for f in {pattern}; do",
+                   f"for f in {every}; do",
                    '  [ -e "$f" ] || continue',
                    f'  {exe} -i="$f" -o="${{f%.pdb}}.dssr"' +
                    (f'\n  {exe} -i="$f" --json -o="${{f%.pdb}}.json"' if s["dssr_json"] else ""),

@@ -284,6 +284,83 @@ def test_farfar2_models_table_names_the_ranked_models(tmp_path):
     assert by["r01/S_000002"] and by["r02/S_000002"] and not by["r01/S_000003"]
 
 
+def test_farfar2_models_run_again_leaves_no_model_of_the_earlier_run(tmp_path):
+    # default settings: the list of the ranked models was appended to, and the models an earlier run had
+    # written beyond those of the new one stayed, as outputs of the step
+    plan, mid = _models_plan(tmp_path, n_models=4, cluster=False, dssr=False)
+    plan.write([mid])
+    folder = tmp_path / "02_farfar2-models"
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT})
+    script = ["bash", str(folder / f"apt1_02_farfar2-models_{STAMP}.sh")]
+
+    def models():
+        return sorted(p.name for p in folder.glob("apt1_02_model-*.pdb"))
+
+    for k in (1, 2):
+        write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out", silent_text(DECOYS))
+    proc = subprocess.run(script, capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert models() == [f"apt1_02_model-0{k}_{STAMP}.pdb" for k in (1, 2, 3, 4)]
+    # the FARFAR2 step was run again and left one decoy per run
+    for k in (1, 2):
+        write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out", silent_text(DECOYS[:1]))
+    proc = subprocess.run(script, capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert models() == [f"apt1_02_model-0{k}_{STAMP}.pdb" for k in (1, 2)]
+    ranked = (folder / f"apt1_02_models_{STAMP}.txt").read_text().splitlines()
+    assert [ln.split()[:3] for ln in ranked] == [["01", "-10.5", "S_000001"], ["02", "-10.5", "S_000001"]]
+
+
+def test_farfar2_models_silent_files_in_a_folder_with_a_space(tmp_path):
+    # silent files chosen by hand keep their path: one with a space was split into two words on the
+    # rna_cluster line and in the ranking loop, and cut short where the ranking and the models list are read
+    silents = [write(tmp_path / "my runs" / f"run{k}.out", silent_text(DECOYS)) for k in (1, 2)]
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT, "rna_cluster": FAKE_CLUSTER})
+    for k, settings in enumerate(({"cluster": True},
+                                  {"cluster": False, "filter": True, "filter_limits": "linear_chainbreak <= 5"},
+                                  {"cluster": False, "write_scores": True})):
+        wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+        node = add_node(wf, "farfar2-models", settings=dict({"n_models": 2, "dssr": False}, **settings))
+        node.files["silent"] = ";".join(silents)
+        plan = Plan(wf, str(tmp_path / f"plan{k}"))
+        assert not plan.has_errors(), plan.all_issues()
+        plan.write()
+        folder = tmp_path / f"plan{k}" / "01_farfar2-models"
+        proc = subprocess.run(["bash", str(folder / f"apt1_01_farfar2-models_{STAMP}.sh")], capture_output=True,
+                              text=True, env=env, cwd=str(folder))
+        assert proc.returncode == 0, proc.stderr
+        assert (folder / f"apt1_01_model-02_{STAMP}.pdb").exists()
+        if settings["cluster"]:
+            assert (folder / "cluster_args.txt").read_text().count("my runs/run") == 2
+        elif "filter" in settings:  # S_000002 (linear_chainbreak 7) is skipped in both runs
+            ranked = (folder / f"apt1_01_models_{STAMP}.txt").read_text().splitlines()
+            assert [ln.split()[2] for ln in ranked] == ["S_000003", "S_000003"]
+            assert ranked[0].endswith("my runs/run1.out") or ranked[0].endswith("my runs/run2.out")
+        else:  # the decoy table names the ranked models of both runs
+            rows = rosetta.read_decoy_table(str(folder / f"apt1_01_scores_{STAMP}.tsv")).rows
+            assert sorted(r.pdb for r in rows if r.pdb) == [
+                f"01_farfar2-models/apt1_01_model-0{n}_{STAMP}.pdb" for n in (1, 2)]
+
+
+def test_farfar2_models_dssr_annotates_the_models_from_100_on(tmp_path):
+    silent = write(tmp_path / "runs" / "run1.out",
+                   silent_text([(f"S_{k:06d}", (-1.0 * k, 1.0, 0.5)) for k in range(1, 106)]))
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "farfar2-models", settings={"n_models": 102, "cluster": False})
+    node.files["silent"] = silent
+    plan = Plan(wf, str(tmp_path / "plan"))
+    plan.write()
+    folder = tmp_path / "plan" / "01_farfar2-models"
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT, "x3dna-dssr":
+                                 'for a in "$@"; do case "$a" in -o=*) echo dssr > "${a#-o=}";; esac; done'})
+    proc = subprocess.run(["bash", str(folder / f"apt1_01_farfar2-models_{STAMP}.sh")], capture_output=True,
+                          text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert len(list(folder.glob("apt1_01_model-*.pdb"))) == 102
+    assert len(list(folder.glob("apt1_01_model-*.dssr"))) == 102
+    assert (folder / f"apt1_01_model-102_{STAMP}.dssr").exists()
+
+
 def test_farfar2_models_filter_after_clustering(tmp_path):
     plan, mid = _models_plan(tmp_path, n_models=2, dssr=False, filter=True,
                              filter_limits="linear_chainbreak<=5")

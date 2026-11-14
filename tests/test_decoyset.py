@@ -284,6 +284,32 @@ def test_farfar2_decoys_feed_a_model_check(tmp_path):
     assert proc.returncode == 1 and "is missing: run the step that lists the set first" in proc.stderr
 
 
+def test_farfar2_step_fails_when_a_run_fails(tmp_path):
+    # the runs are independent (a failed one does not stop the others), but the script ended with exit
+    # status 0 even when every rna_denovo run had failed, and then extracted the decoys of the runs left
+    template = tmp_path / "helix.pdb"
+    template.write_text(builder.build_helix("GGCGCC"))
+    wf, fold = _plan(make_inputs=True, fixed_stems=False, runs=3, extract_decoys=True)
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    failing = ('case "$(basename "$PWD")" in ${FAIL:-none}) echo "ERROR: cannot fold" >&2; exit 1;; esac\n'
+               + FAKE_DENOVO)
+    env = _fake_tools(tmp_path, {"rna_denovo": failing, "extract_pdbs": FAKE_EXTRACT}, TEMPLATE=str(template))
+    folder = tmp_path / "01_farfar2"
+    script = ["bash", str(folder / f"apt1_01_farfar2_{STAMP}.sh")]
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, FAIL="r02"))
+    assert proc.returncode == 1 and "run 02 failed" in proc.stderr
+    assert "ERROR: not every rna_denovo run finished" in proc.stderr
+    assert sorted(p.name for p in folder.glob("*.out")) == [f"apt1_01_farfar2-r0{k}_{STAMP}.out" for k in (1, 3)]
+    assert not (folder / "models").exists() and not (folder / f"apt1_01_decoys_{STAMP}.txt").exists()
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, FAIL="r*"))
+    assert proc.returncode == 1 and proc.stderr.count("failed - see") == 3
+    proc = subprocess.run(script, capture_output=True, text=True, env=env)  # every run made: as before
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert len((folder / f"apt1_01_decoys_{STAMP}.txt").read_text().split()) == 9
+
+
 def test_without_step_folders_every_step_extracts_into_a_folder_of_its_own(tmp_path):
     # in a plan without step folders every FARFAR2 step (and FARFAR2 models step) extracted into models/ of
     # the plan folder: each removed the other's decoys, and both decoy lists named models/r01/... (whichever

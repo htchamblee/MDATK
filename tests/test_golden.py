@@ -60,6 +60,14 @@ INTENDED = [
     # pipefail: most of the time from about 40 runs x 10 replicas on) and removes the clusters and models of
     # an earlier run first (another threshold names its clusters differently, and they were rebuilt as models)
     (re.compile(r"_simrna-cluster_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: FARFAR2's run script, likewise, ends with an error when an rna_denovo run failed (exit status 0
+    # even when every run had failed, or rna_denovo was not found). The flags, FASTA and secstruct files and
+    # the rna_denovo command line stay as they were
+    (re.compile(r"_farfar2_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: the FARFAR2 models script removes the numbered models and their list of an earlier run before it
+    # extracts (the list was appended to, and a model the new run did not write was passed on as its own),
+    # and annotates every model with DSSR (model-[0-9][0-9] left out the models from 100 on)
+    (re.compile(r"_farfar2-models_\d{8}-\d{4}\.sh$"), None),
 ]
 
 
