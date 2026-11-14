@@ -9,6 +9,7 @@ from ..selections import heavy
 from ..spatial import pairs_within
 from .base import Analysis, register
 from .common import labels, per_row_counts, residue_rows, without
+from .structure import chain_ids
 
 
 @register
@@ -60,6 +61,8 @@ class ContactAnalysis(Analysis):
         self.res_a, self.row_a = residue_rows(a)
         self.res_b, self.row_b = residue_rows(b)
         self.n_a, self.n_b = len(self.res_a), len(self.res_b)
+        # a group against itself: the chain of every residue row (sequence neighbours are left out, below)
+        self.chain = chain_ids(self.res_a) if self.same else None
         self.cutoff = p.cutoff
         self.atom_pairs = np.zeros(self.n_frames, dtype=np.int64)
         self.residue_pairs = np.zeros(self.n_frames, dtype=np.int64)
@@ -71,7 +74,10 @@ class ContactAnalysis(Analysis):
         if self.same and len(i):
             ri = self.a.resindices[i]
             rj = self.b.resindices[j]
-            keep = (self.a.ix[i] < self.b.ix[j]) & (np.abs(ri - rj) > 1)
+            # each pair once, without a residue's own atoms and its bonded neighbours in the chain; the last
+            # residue of a strand and the first of the next are no neighbours (a duplex's closing base pair)
+            bonded = (np.abs(ri - rj) <= 1) & (self.chain[self.row_a[i]] == self.chain[self.row_b[j]])
+            keep = (self.a.ix[i] < self.b.ix[j]) & ~bonded
             i, j = i[keep], j[keep]
         self.atom_pairs[k] = len(i)
         if len(i) == 0:
@@ -101,8 +107,12 @@ class ContactAnalysis(Analysis):
         res.arrays["atom_pairs"] = self.atom_pairs
         res.arrays["residue_pairs"] = self.residue_pairs
         res.arrays["q_native"] = q
-        res.arrays["per_res_a"] = per_row_counts(offsets, mi, mv, self.n_a)
-        res.arrays["per_res_b"] = per_row_counts(offsets, mj, mv, self.n_b)
+        per_a = per_row_counts(offsets, mi, mv, self.n_a)
+        per_b = per_row_counts(offsets, mj, mv, self.n_b)
+        if self.same:  # the map holds each pair once (i < j): a residue's contacts are its row plus its column
+            per_a = per_b = per_a + per_b
+        res.arrays["per_res_a"] = per_a
+        res.arrays["per_res_b"] = per_b
         ga, gb = self.ga, self.gb
         res.add_series("atom_pairs", "atom_pairs", f"{ga}–{gb} heavy-atom contacts", "count")
         res.add_series("residue_pairs", "residue_pairs", f"{ga}–{gb} residue contacts", "count")

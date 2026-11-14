@@ -89,6 +89,30 @@ def test_contacts_counts_and_native_fraction():
     assert res.meta["labels_a"] == ["A1"] and res.meta["labels_b"] == ["U2"]
 
 
+def test_contacts_of_a_group_with_itself():
+    """A group against itself: every residue's contacts are counted (not only those with later residues),
+    and the last residue of one strand and the first of the next are no sequence neighbours."""
+    # two bonded strands 1-2 and 3-4 on a 3 A square: 2 faces 3 and 1 faces 4, as in an antiparallel duplex
+    atoms = [atom("C1", k, "A", "C") for k in (1, 2, 3, 4)]
+    square = [[0, 0, 0], [3, 0, 0], [3, 3, 0], [0, 3, 0]]
+    line = [[0, 0, 0], [3, 0, 0], [30, 0, 0], [33, 0, 0]]
+    p = micro_project({"Aptamer": "1-4", "Target": "1-4"})
+    p.analyses.contacts.cutoff = 4.5
+    u = make_universe(atoms, [square, line], bonds=[(0, 1), (2, 3)])
+    res = run_one("contacts", u, p)
+    # 1-3, 1-4, 2-3 and 2-4; the bonded neighbours 1-2 and 3-4 are left out
+    np.testing.assert_array_equal(res.arrays["atom_pairs"], [4, 0])
+    np.testing.assert_array_equal(res.arrays["residue_pairs"], [4, 0])
+    pairs = set(zip(res.arrays["map_i"].tolist(), res.arrays["map_j"].tolist()))
+    assert pairs == {(0, 2), (0, 3), (1, 2), (1, 3)}  # each pair once
+    np.testing.assert_array_equal(res.arrays["per_res_a"][:, 0], [2, 2, 2, 2])
+    np.testing.assert_array_equal(res.arrays["per_res_b"][:, 0], [2, 2, 2, 2])
+    # one chain (no bonds, one segment): 2-3 are sequence neighbours as before
+    res = run_one("contacts", make_universe(atoms, [square]), p)
+    np.testing.assert_array_equal(res.arrays["atom_pairs"], [3])
+    np.testing.assert_array_equal(res.arrays["per_res_a"][:, 0], [2, 1, 1, 2])
+
+
 @pytest.mark.parametrize("with_bonds", [True, False])
 def test_hbond_distance_and_angle(with_bonds):
     atoms = [atom("N3", 1, "U", "N"), atom("H3", 1, "U", "H"), atom("O6", 2, "G", "O")]
