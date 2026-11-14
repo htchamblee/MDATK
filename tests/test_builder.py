@@ -380,6 +380,23 @@ def test_mutation_options_and_errors():
     assert B.mutated_name("RA3", "G") == "RG3"
 
 
+def test_a_mutation_without_a_chain_id_reads_the_whole_residue_number():
+    """'15G' is residue 15 of the blank chain, as '5G' is residue 5 (it was read as residue 5 of chain '1'), and
+    '-5U' residue -5 (it was residue 5 of chain '-'); a chain id that is a digit or '-' takes its colon."""
+    def read(spec):
+        return [(m.chain, m.resseq, m.icode, m.base) for m in B.parse_mutations(spec)]
+
+    assert read("5G") == [("", 5, "", "G")] and read("15G") == [("", 15, "", "G")]
+    assert read("120c") == [("", 120, "", "C")] and read("-5U") == [("", -5, "", "U")]
+    assert read("1:5G, -:7A, A5G, A:15>G, :15G, A-3C, B:20AC") == [
+        ("1", 5, "", "G"), ("-", 7, "", "A"), ("A", 5, "", "G"), ("A", 15, "", "G"), ("", 15, "", "G"),
+        ("A", -3, "", "C"), ("B", 20, "A", "C")]
+    # a strand without chain ids (cpptraj output), residue 11
+    strand = B.build_helix("GGCAUCGGCAUC", partner="none", chains=" ")
+    text, notes = B.mutate(strand, "11G")
+    assert [r.name for r in pt.read_pdb(text).residues()][10] == "G" and "Mutated 1 residue(s)" in notes
+
+
 # --- rigid-body fit ---------------------------------------------------------------------------------
 
 def _moved_map(tmp_path, text, rotvec, shift, resolution=4.0):
