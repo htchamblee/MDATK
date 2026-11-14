@@ -177,6 +177,14 @@ def group_ranges(name: str, groups: Sequence[Any]) -> str:
             if not residues.strip():
                 raise EnsembleError(f"residue group {name!r} has no residue ranges"
                                     + (" (only an MDAnalysis selection)" if selection.strip() else ""))
+            from .selections import SelectionError, parse_residue_ranges
+            try:  # as the project reads its groups: '1:40' and '1 - 40' are the residues 1 to 40
+                ranges = parse_residue_ranges(residues)
+            except SelectionError:
+                ranges = None  # text of this module's syntax only (a whole chain, a blank chain id): below
+            if ranges is not None:
+                return ",".join(f"{'*' if c is None else c}:{a}" + ("" if a == b else f"-{b}")
+                                for c, a, b in ranges)
             items = []
             for tok in re.split(r"[,;\s]+", residues.strip()):
                 if not tok:

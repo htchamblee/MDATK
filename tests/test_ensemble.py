@@ -161,6 +161,20 @@ def test_registers_selections_and_offsets():
     assert ensemble.parse_offsets("B:-367, C:44") == {"B": -367, "C": 44}
 
 
+def test_group_residues_are_read_as_the_project_reads_them_regression():
+    """regression: a group's residues in the forms the project accepts besides '1-40' were misread without a
+    word: '1:40' as residue 40 of a chain '1', '1 - 40' as the residues 1 and 40 and a whole chain '-'."""
+    want = [(None, 1, 40)]
+    for residues in ("1-40", "1:40", "1 - 40"):
+        groups = [{"name": "Aptamer", "residues": residues}]
+        assert ensemble.parse_selection("group:Aptamer", groups) == want
+        assert mapscore.parse_region("apt=group:Aptamer", groups).selection == want
+    groups = [{"name": "T", "residues": "A:50 - 60, 45, B:7:9"}, {"name": "Whole", "residues": "C, :5-9"}]
+    assert ensemble.parse_selection("group:T", groups) == [("A", 50, 60), (None, 45, 45), ("B", 7, 9)]
+    # what only this module's syntax can say (a whole chain, a blank chain id) is read as before
+    assert ensemble.parse_selection("group:Whole", groups) == [("C", None, None), ("", 5, 9)]
+
+
 def test_reference_forms():
     r = ensemble.parse_reference(REFERENCE)
     assert r.bases == "GGGAAAAUUUUCCC" and r.chains[7] == "B" and r.numbers[7] == 8

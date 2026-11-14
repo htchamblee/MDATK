@@ -589,6 +589,18 @@ def test_selections_and_groups():
                                                         ("X", 47): ("C", 3)}
 
 
+def test_group_residues_are_read_as_the_project_reads_them_regression():
+    """regression: a group's residues in the forms the project accepts besides '1-8' were misread without a
+    word: '1:8' as residue 8 of a chain '1', '1 - 8' as the residues 1 and 8 and a whole chain '-'."""
+    for residues in ("1-8", "1:8", "1 - 8"):
+        assert frames.parse_selection("group:G", [ResidueGroup("G", residues)]) == [(None, 1, 8)]
+    groups = [ResidueGroup("G", "A:5 - 8, 12, B:7:9"), ResidueGroup("Whole", "C, :5-9")]
+    assert frames.parse_selection("G", groups) == [("A", 5, 8), (None, 12, 12), ("B", 7, 9)]
+    assert frames.selection_text("group:G", groups) == "A:5-8,12,B:7-9"
+    # what only this module's syntax can say (a whole chain, a blank chain id) is read as before
+    assert frames.parse_selection("group:Whole", groups) == [("C", None, None), ("", 5, 9)]
+
+
 def test_frame_check_is_chain_aware(tmp_path):
     ref = write(tmp_path / "ref.pdb", pdbtools.write_pdb(two_bodies()))
     # two models named alike in two runs (extract_pdbs reuses tags): helix_frame.py gave both one label
