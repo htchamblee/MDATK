@@ -513,7 +513,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.zoom_spin.set_value(min(50.0, max(0.05, self.zoom_spin.get_value() * factor)))
 
     def _on_canvas_swap(self, i: int, j: int) -> None:
-        specs = self._read_slots()
+        try:
+            specs = self._read_slots()
+        except ValueError as exc:  # options that are no JSON object: flagged in their field
+            self.append_log(f"Panels not swapped; fix this first: {exc}")
+            return
         if max(i, j) >= len(specs):
             return
         specs[i], specs[j] = specs[j], specs[i]
@@ -1704,8 +1708,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self.refresh_canvas()
 
     def _rebuild_slots(self, specs: Optional[List[PanelSpec]] = None):
+        kept: Dict[int, str] = {}  # slot -> options that are no JSON object: they stay in their field, flagged
         if specs is None:
-            specs = self._read_slots()
+            specs = self._read_slots(kept)
         for child in self.slot_box.get_children():
             self.slot_box.remove(child)
         self.slot_rows = []
@@ -1718,13 +1723,17 @@ class MainWindow(Gtk.ApplicationWindow):
                 row = self._slot_editor(k, spec, preset, project)
                 self.slot_rows.append(row)
                 self.slot_box.pack_start(row["frame"], False, False, 0)
+                if k in kept:
+                    row["opts"].set_text(kept[k])
         finally:
             self._loading = loading
         self.slot_box.show_all()
         W.watch_tree(self.slot_box, self.schedule_check)
         self.schedule_check()  # the new slot widgets get their flags back
 
-    def _read_slots(self) -> List[PanelSpec]:
+    def _read_slots(self, invalid: Optional[Dict[int, str]] = None) -> List[PanelSpec]:
+        """The panels as the slot editors show them.  Options that are no JSON object raise ValueError, or,
+        with ``invalid`` (rebuilding the editors), are returned in it by slot and read as none."""
         specs = []
         project = None
         for k, row in enumerate(self.slot_rows):
@@ -1734,9 +1743,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 if not isinstance(options, dict):
                     raise ValueError("options must be a JSON object")
             except ValueError as exc:
-                err = ValueError(f"panel options {text!r}: {exc}")
-                err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
-                raise err from exc
+                if invalid is not None:
+                    invalid[k], options = text, {}
+                else:
+                    err = ValueError(f"panel options {text!r}: {exc}")
+                    err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
+                    raise err from exc
             ptype = row["type"].get_active_id() or "timeseries"
             keys = []
             if PANEL_TYPES.get(ptype) is None or PANEL_TYPES[ptype].max_series > 0:

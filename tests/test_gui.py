@@ -285,6 +285,32 @@ def test_citation_text_lists_project_resources(window):
     assert isinstance(text, str) and text
 
 
+def test_grid_preset_with_slot_options_that_are_no_json(window):
+    """Options still being typed (no JSON yet) and another grid preset: the slot editors follow the preset
+    (the handler raised: the editors of the old preset stayed, also once the options were put right), and the
+    options stay in their field, flagged."""
+    from mdatk.render.layout import n_slots
+
+    win = window
+    win.preset_combo.set_active_id("single")
+    pump(lambda: False, 0.3)
+    assert len(win.slot_rows) == 1
+    win.slot_rows[0]["opts"].set_text("{mode: frequency}")
+    win.preset_combo.set_active_id("large_plus_2")
+    pump(lambda: False, 0.3)
+    assert len(win.slot_rows) == n_slots("large_plus_2") == 3
+    assert win.slot_rows[0]["opts"].get_text() == "{mode: frequency}"
+    with pytest.raises(ValueError, match="panel options"):
+        win.collect(validate=False)
+    assert any(p.field == "layout.panels.0.options" for p in win.check_problems())
+    win._on_canvas_swap(0, 1)  # dragging a panel onto another: refused with a log line, not a traceback
+    assert "Panels not swapped" in win.log_buffer.get_text(*win.log_buffer.get_bounds(), False)
+    win.slot_rows[0]["opts"].set_text('{"mode": "frequency"}')
+    layout = win.collect(validate=False).layout
+    assert layout.preset == "large_plus_2" and len(layout.panels) == 3
+    assert layout.panels[0].options == {"mode": "frequency"}
+
+
 def test_slot_defaults_for_residue_panels_and_wheel_zoom(window):
     row = window.slot_rows[1]
     row["opts"].set_text("")
