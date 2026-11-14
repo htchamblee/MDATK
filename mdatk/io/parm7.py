@@ -17,7 +17,9 @@ import numpy as np
 
 AMBER_CHARGE_FACTOR = 18.2223  # parm7 charges are stored as q * 18.2223
 
-_FMT = re.compile(r"\(\s*(\d+)\s*([aAiIeEfF])\s*(\d+)(?:\.(\d+))?\s*\)")
+# '(20a4)', '(5E16.8)', also without a repeat count ('(a80)': CHAMBER's CTITLE) and with the item in
+# parentheses of its own ('(8(F9.5))': the CMAP parameters of ff19SB)
+_FMT = re.compile(r"\(\s*(\d*)\s*\(?\s*([aAiIeEfF])\s*(\d+)(?:\.(\d+))?\s*\)?\s*\)")
 
 
 @dataclass
@@ -65,8 +67,11 @@ def read_sections(path: str, wanted: Optional[Iterable[str]] = None) -> Dict[str
                     continue
                 m = _FMT.search(line)
                 if not m:
+                    if wanted_set is not None and current.name not in wanted_set:
+                        current = None  # a section nobody asked for (CHAMBER's '(i2,a78)'): not read
+                        continue
                     raise ValueError(f"{path}: cannot parse format line {line.strip()!r}")
-                current.count = int(m.group(1))
+                current.count = int(m.group(1) or 1)
                 current.kind = m.group(2).lower()
                 current.width = int(m.group(3))
                 continue
