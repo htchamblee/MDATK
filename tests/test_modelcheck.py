@@ -1027,6 +1027,21 @@ def test_qc_cli_report_filter_stop_and_outputs(tmp_path, capsys):
     assert main(["pdb", "qc", models[0], "--checks", "clashes,knots"]) == 1
 
 
+def test_order_by_score_with_a_nan_score_regression():
+    """regression: a model whose score is 'nan' went into the sort as it was; a NaN compares false both ways,
+    so the models around it stayed where they were given: -3 was ranked before -10."""
+    def reports(order):
+        out = []
+        for name in order:
+            r = mc.ModelReport(name)
+            r.score_row = {"score": {"m1": "-3", "m2": "nan", "m3": "-10", "m4": "-7", "m5": ""}[name]}
+            out.append(r)
+        return out
+    want = ["m3", "m4", "m1"]  # lowest first, then the models without a score in the order given
+    assert [r.path for r in mc.ranked(reports(["m1", "m2", "m3", "m4", "m5"]), "score")] == want + ["m2", "m5"]
+    assert [r.path for r in mc.ranked(reports(["m5", "m4", "m3", "m2", "m1"]), "score")] == want + ["m5", "m2"]
+
+
 # --- the embedded copy and the planner step -----------------------------------------------------------------
 
 def _top_level_names(module):
