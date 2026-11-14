@@ -214,7 +214,8 @@ class Analysis:
             "params": cls.params_for(project),
             "groups": referenced_groups(cls.selection_texts(project), project),
             "inputs": inputs,
-            "use_pbc": project.analyses.use_pbc,
+            # 2: pair vectors are imaged in triclinic boxes too (results cached with True came from before)
+            "use_pbc": 2 if project.analyses.use_pbc else False,
         })
 
     # ------------------------------------------------------- instance level

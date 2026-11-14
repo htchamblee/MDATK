@@ -25,6 +25,8 @@ from .common import labels, per_row_counts, residue_rows, without
 class HBondAnalysis(Analysis):
     name = "hbonds"
     label = "Hydrogen bonds"
+    # 2: without the angle an atom pair counts once; N carrying H is no acceptor without topology bonds either
+    version = 2
     group_slots = 2
     OUTPUT_LABELS = {
         "count": "{a}\u2013{b} H-bonds",

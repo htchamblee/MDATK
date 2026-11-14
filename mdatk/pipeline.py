@@ -164,9 +164,12 @@ class Pipeline:
 
     def input_fingerprint(self, inputs: ResolvedInputs) -> Dict[str, Any]:
         p = self.project.inputs
-        return {"topology": file_fingerprint(inputs.topology),
-                "trajectories": [file_fingerprint(t) for t in inputs.trajectories],
-                "frames": {"start": p.start, "stop": p.stop, "step": p.step}, "dt_ps": p.dt_ps}
+        fp = {"topology": file_fingerprint(inputs.topology),
+              "trajectories": [file_fingerprint(t) for t in inputs.trajectories],
+              "frames": {"start": p.start, "stop": p.stop, "step": p.step}, "dt_ps": p.dt_ps}
+        if p.dt_ps:  # results cached with an override before it set the time axis hold the file's times
+            fp["time_axis"] = "frame x dt_ps"
+        return fp
 
     # -------------------------------------------------------------- analyses
     def required_analyses(self, video: Optional[bool] = None, charts: Optional[bool] = None) -> List[str]:

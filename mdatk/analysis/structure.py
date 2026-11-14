@@ -162,7 +162,9 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
-    version = 4  # v2: residue numbers for tags; v3: group membership; v4: chain and residue names
+    # v2: residue numbers for tags; v3: group membership; v4: chain and residue names; v5: chains from bonds
+    # only when the bonds hold the residues together
+    version = 5
 
     @classmethod
     def params_for(cls, project):

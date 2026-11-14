@@ -16,6 +16,7 @@ from .structure import chain_ids
 class ContactAnalysis(Analysis):
     name = "contacts"
     label = "Pairwise contacts"
+    version = 2  # 2: a group with itself: whole per-residue counts, strand ends are no sequence neighbours
     group_slots = 2
     OUTPUT_LABELS = {
         "atom_pairs": "{a}\u2013{b} heavy-atom contacts",

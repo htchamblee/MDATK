@@ -159,6 +159,26 @@ def test_trace_cache_follows_groups_that_are_not_shown(demo_dry, tmp_path):
     assert any("loaded from cache" in line for line in logs)
 
 
+def test_results_cached_before_the_fixes_are_not_reused(demo_dry, tmp_path):
+    """Cache keys changed with the numbers: analyses whose results were corrected have a new version, and
+    results cached with periodic distances or a time step override (whose pair vectors / time axis were
+    wrong) get other keys; everything else keeps its key."""
+    from mdatk.analysis import ANALYSES
+
+    assert (ANALYSES["hbonds"].version, ANALYSES["contacts"].version, ANALYSES["trace"].version) == (2, 2, 5)
+    p = small_project(demo_dry, tmp_path / "out7")
+    pipe = Pipeline(p)
+    fp = pipe.input_fingerprint(pipe.resolve_inputs())
+    assert set(fp) == {"topology", "trajectories", "frames", "dt_ps"}  # as before: these caches stay valid
+    plain = ANALYSES["mg"].cache_key(p, fp)
+    p.analyses.use_pbc = True
+    periodic = ANALYSES["mg"].cache_key(p, fp)
+    p.analyses.use_pbc = False
+    assert periodic != plain == ANALYSES["mg"].cache_key(p, fp)
+    p.inputs.dt_ps = 2.0
+    assert pipe.input_fingerprint(pipe.resolve_inputs())["time_axis"] == "frame x dt_ps"
+
+
 def test_invalid_parameters_are_reported(tmp_path):
     p = Project()
     p.output.out_dir = str(tmp_path)
