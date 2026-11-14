@@ -362,7 +362,10 @@ def env_lines(s: Dict[str, Any], separate: bool = False) -> List[str]:
     setup_file = (s.get("env_file") or "").strip()
     if setup_file:
         q = shell_quote(setup_file)
-        lines.append(f'if [ -f {q} ]; then . {q}; else echo "WARNING: setup file {setup_file} not found" >&2; fi')
+        # in the message the path stands between double quotes: one with a character the shell reads there
+        # (a quote would end the script with a syntax error) is quoted on its own
+        shown = f'"{q}"' if any(c in setup_file for c in '"$`\\') else setup_file
+        lines.append(f'if [ -f {q} ]; then . {q}; else echo "WARNING: setup file {shown} not found" >&2; fi')
     for line in (s.get("env_setup") or "").splitlines():
         if line.strip():
             lines.append(line.rstrip())
