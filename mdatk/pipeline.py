@@ -223,7 +223,9 @@ class Pipeline:
             # nothing requested: still provide the frame axis
             u = self.universe()
             frames = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
-            time_ps = np.array([u.trajectory[int(f)].time for f in frames])
+            dt_ps = p.inputs.dt_ps  # as run_analyses: the override replaces the file's time stamps
+            time_ps = (frames * float(dt_ps) if dt_ps else
+                       np.array([u.trajectory[int(f)].time for f in frames]))
         dataset = Dataset(frames, time_ps, {n: results[n] for n in names if n in results},
                           time_unit=p.inputs.time_unit)
         self.apply_display_overrides(dataset)
