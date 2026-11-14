@@ -117,6 +117,29 @@ def test_cancel_stops_every_running_script(tmp_path):
         assert not (tmp_path / f"{name}.done").exists()
 
 
+@pytest.mark.parametrize("how", ["cancel", "stop"])
+def test_cancel_ends_a_program_the_script_left_running(tmp_path, how):
+    """A script that has ended but left a program running in the background (which keeps its output open, so
+    the run goes on) could not be cancelled or stopped: the run only returned when that program ended."""
+    from mdatk.workflows.runner import StepStops
+    script = tmp_path / "s.sh"
+    script.write_text('cd "$(dirname "$0")"\n(sleep 30; touch left.done) &\necho $! > left.pid\necho "script ended"\n')
+    cancel, stops = threading.Event(), StepStops()
+
+    def on_line(line):
+        if line == "script ended":  # bash is about to exit; its background program runs on
+            cancel.set() if how == "cancel" else stops.stop("n")
+
+    job = ScriptJob(1, "s", str(script), node_id="n")
+    if how == "cancel":
+        with pytest.raises(Cancelled):
+            run_jobs([job], None, on_line=on_line, cancel=cancel)
+    else:
+        assert [r.status for r in run_jobs([job], None, on_line=on_line, stops=stops)] == ["stopped"]
+    assert ended(int((tmp_path / "left.pid").read_text()))
+    assert not (tmp_path / "left.done").exists()  # ended by the cancel, not after its 30 s
+
+
 def test_plan_jobs_dependencies():
     from mdatk.workflows.plan import Plan
     from mdatk.workflows.runner import plan_jobs

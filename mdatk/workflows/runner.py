@@ -128,6 +128,15 @@ def _stop(proc) -> None:
                 proc.kill()
 
 
+def _signal_group(proc, sig) -> bool:
+    """Send ``sig`` to what is left of the script's process group; False when nothing is."""
+    try:
+        os.killpg(proc.pid, sig)
+        return True
+    except (OSError, AttributeError):  # no process left in the group (or no killpg: Windows)
+        return False
+
+
 @dataclass
 class ScriptJob:
     step: int
@@ -573,8 +582,13 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
 
     def watch():
         while not stop.wait(0.2):
-            if cancel is not None and cancel.is_set() and proc.poll() is None:
-                _stop(proc)
+            if cancel is not None and cancel.is_set():
+                if proc.poll() is None:
+                    _stop(proc)
+                else:  # the script has ended, but a program it left running keeps its output open (the run
+                    _signal_group(proc, signal.SIGTERM)  # goes on until that ends): end it too
+                if not stop.wait(10):  # still read: something in the group ignored SIGTERM
+                    _signal_group(proc, signal.SIGKILL)
                 return
 
     def read_stderr():
