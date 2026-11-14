@@ -108,8 +108,15 @@ def load_external(specs, dataset: Dataset) -> AnalysisResult:
             ci = _column_index(header, col, -1)
             y = data[order, ci]
             values = np.interp(target, x, y, left=np.nan, right=np.nan)
-            out = _sanitize(f"{label}.{header[ci]}")
+            out = base = _sanitize(f"{label}.{header[ci]}")
+            text = f"{label}: {header[ci]}"
             arr = f"s{n}_{ci}"
+            # two files of one name (run1/rmsd.dat, run2/rmsd.dat) or two columns whose names read alike:
+            # the later series gets a key of its own ('-2', '-3' ...) instead of replacing the earlier one
+            series, k = result.outputs.setdefault("series", {}), 1
+            while out in series and series[out]["array"] != arr:
+                k += 1
+                out, text = f"{base}-{k}", f"{label}: {header[ci]} ({k})"
             result.arrays[arr] = values
-            result.add_series(out, arr, f"{label}: {header[ci]}", "")
+            result.add_series(out, arr, text, "")
     return result

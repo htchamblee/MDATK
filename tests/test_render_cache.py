@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 import pytest
@@ -138,3 +139,24 @@ def test_parm7_formats_of_chamber_and_cmap_topologies(tmp_path):
     np.testing.assert_allclose(got["CMAP_PARAMETER_01"], [0.126, 0.768, -1.301])
     with pytest.raises(ValueError, match="cannot parse format line"):
         read_sections(str(top), {"FORCE_FIELD_TYPE"})  # asked for: said, not misread
+
+
+def test_external_files_of_one_name_keep_their_series_regression(tmp_path):
+    """regression: the series of two external files with the same name (run1/rmsd.dat, run2/rmsd.dat, no
+    label) had the same key, and the second replaced the first without a word; so did two columns whose
+    names differ only in characters a key cannot hold."""
+    for run, first in (("run1", 0.0), ("run2", 10.0)):
+        os.makedirs(tmp_path / run)
+        (tmp_path / run / "rmsd.dat").write_text(f"#Frame RMSD_00001\n1 {first}\n2 {first + 1}\n3 {first + 2}\n")
+    ds = Dataset(np.array([0, 1, 2]), np.array([0.0, 10.0, 20.0]))
+    specs = [ExternalSeries(path=str(tmp_path / run / "rmsd.dat"), x_unit="frame1") for run in ("run1", "run2")]
+    ds.add(load_external(specs, ds))
+    assert ds.series_keys() == ["external/rmsd.RMSD_00001", "external/rmsd.RMSD_00001-2"]
+    np.testing.assert_allclose(ds.series("external/rmsd.RMSD_00001").values, [0, 1, 2])
+    np.testing.assert_allclose(ds.series("external/rmsd.RMSD_00001-2").values, [10, 11, 12])
+    assert ds.series("external/rmsd.RMSD_00001-2").label == "rmsd: RMSD_00001 (2)"
+    csv = tmp_path / "e.csv"
+    csv.write_text("t,d (A),d [A]\n0,1,5\n10,2,6\n20,3,7\n")
+    res = load_external([ExternalSeries(path=str(csv), columns=["d (A)", "d [A]", "d (A)"])], ds)
+    assert list(res.outputs["series"]) == ["e.d_A", "e.d_A-2"]  # a column named twice is one series
+    np.testing.assert_allclose(res.arrays[res.outputs["series"]["e.d_A-2"]["array"]], [5, 6, 7])
