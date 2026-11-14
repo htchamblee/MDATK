@@ -274,6 +274,38 @@ def test_basepair_walls(tmp_path, system):
         nm.basepair_walls(top, [(1, 9, "GC")], rna.HBOND_ATOMS, 0, (2.7, 3.2, 10.0))
 
 
+@pytest.mark.parametrize("hand", ["D", "L"])
+def test_dna_topologies_get_their_base_pair_walls_and_hands(tmp_path, hand):
+    """DNA: the secondary structure reads T as U, and the topology of an L-DNA build names its residues LDA LDC
+    LDG LDT.  The base-pair walls refused every A-T pair ('residue 7 is DT in the topology but the secondary
+    structure expects U') and every pair of L-DNA, whose names were not read as nucleotide names at all (the
+    hand then came from the geometry alone, with a note per residue)."""
+    from mdatk import builder
+
+    atoms = ms.atoms_of(builder.build_helix("GATC", chirality=hand, scheme="amber", hydrogens=True, na="dna"))
+    ms.write_topology(str(tmp_path / "dna.parm7"), atoms)
+    top = nm.Topology(str(tmp_path / "dna.parm7"))
+    xyz = [a[5] for a in atoms]
+    assert top.labels[1:3] == (["DA", "DT"] if hand == "D" else ["LDA", "LDT"])
+    assert [(h, g) for _r, _lab, h, g, _a in nm.nucleotides(top, xyz)] == [(hand, hand)] * 8
+    assert [nm.residue_base(lab) for lab in top.labels[:4]] == ["G", "A", "T", "C"]
+    lines, problems, notes = nm.chirality_lines(top, xyz, 200.0, D_TARGETS)
+    assert not problems and not notes and sum(ln.startswith("improper") for ln in lines) == 24  # (no C2' centre)
+    pairs = rna.classify_pairs(rna.build_model("GATC GATC", "(((( ))))"), False)[0]
+    assert [k for _i, _j, k in pairs] == ["GC", "AU", "UA", "CG"]
+    lines, count = nm.basepair_walls(top, pairs, rna.HBOND_ATOMS, 0, (2.7, 3.2, 10.0))
+    assert count == 10  # two G-C pairs x three hydrogen bonds, two A-T pairs x two
+    walls = [ln.split() for ln in lines if ln.startswith("wall")]
+    a, b = int(walls[3][1]), int(walls[3][2])  # the first wall of A2 - T7
+    assert (top.names[a], top.residue[a], top.names[b], top.residue[b]) == ("N1", 1, "N3", 6)
+    # another base is still refused, by name
+    with pytest.raises(nm.PrepError, match=f"residue 2 is {top.labels[1]} in the topology"):
+        nm.basepair_walls(top, [(2, 7, "GC")], rna.HBOND_ATOMS, 0, (2.7, 3.2, 10.0))
+    # names that are no nucleotides stay unread (the L-RNA and D names as before)
+    assert [nm.residue_hand(n) for n in ("LA", "LG5", "0C", "A3", "RU", "DT5", "LDT", "LDG3", "WAT", "LD", "LIG")] == [
+        "L", "L", "L", "D", "D", "D", "L", "L", None, None, None]
+
+
 def test_superpose_and_cell_helpers():
     rng = np.random.default_rng(1)
     pts = rng.normal(size=(20, 3)) * 5

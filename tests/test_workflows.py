@@ -1407,3 +1407,135 @@ def test_prep_pdb_keeps_a_phosphate_only_residue():
     firsts = [ln for ln in lines if ln.startswith(("ATOM", "HETATM")) and ln[22:26].strip() == "1"]
     assert not any(ln[12:16].strip() in ("P", "OP1", "OP2", "OP3") for ln in firsts)  # the strands' 5' ends
     assert stats["phosphates"] > 0
+
+
+def _words(script, start):
+    """The words, as bash splits them, of the first command line of ``script`` that starts with ``start``."""
+    import shlex
+
+    return shlex.split(next(ln.strip() for ln in script.splitlines() if ln.strip().startswith(start)))
+
+
+def _after(words, flag):
+    return words[words.index(flag) + 1]
+
+
+def test_hand_picked_inputs_in_a_folder_with_spaces_stay_one_argument(tmp_path):
+    """A file chosen by hand keeps its absolute path, which may hold spaces ('/home/me/My models/model 1.pdb'):
+    every command line passes it as one word (they were written unquoted, so the PDB preparation got four
+    arguments and stopped, and pmemd / the conversion read '/home/me/My' as the file)."""
+    import shutil
+
+    from mdatk import builder
+
+    folder = tmp_path / "My models"
+    folder.mkdir()
+    pdb, top, crd = str(folder / "model 1.pdb"), str(folder / "sys 1.parm7"), str(folder / "sys 1.rst7")
+    (folder / "model 1.pdb").write_text(builder.build_helix("GCGC", scheme="amber"))
+    # Amber build: the preparation helper, run as the script runs it
+    files = generated(step("amber-build", {}, {"structure": pdb})[0])
+    sh = files["apt1_01_amber-build_20261015-1432.sh"].content
+    assert _words(sh, "python3 apt1_01_prep")[2:] == [pdb, "apt1_01_prep_20261015-1432.pdb"]
+    if shutil.which("bash") and shutil.which("python3"):
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "apt1_01_prep_20261015-1432.py").write_text(files["apt1_01_prep_20261015-1432.py"].content)
+        line = next(ln for ln in sh.splitlines() if ln.startswith("python3 apt1_01_prep"))
+        proc = subprocess.run(["bash", "-c", line], cwd=work, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "ATOM" in (work / "apt1_01_prep_20261015-1432.pdb").read_text()
+    # helix restraints: the topology
+    files = generated(step("amber-restraints", {"sequence": "GCGC GCGC", "dotbracket": "(((( ))))"},
+                           {"topology": top})[0])
+    assert _words(files["apt1_01_amber-restraints_20261015-1432.sh"].content, "python3 apt1_01_helix")[2:] == [
+        top, "apt1_01_helix_20261015-1432.dist"]
+    # MD stages: the starting coordinates (-c and -ref of the first run; with 'Starting coordinates' as the
+    # restraint reference, -ref of every run)
+    for ref in ("previous", "initial"):
+        files = generated(step("amber-md", {"restraint_ref": ref},
+                               {"topology": top, "coordinates": crd, "restraints": "/x.dist"})[0])
+        sh = files["apt1_01_amber-md_20261015-1432.sh"].content
+        first = _words(sh, "$PMEMD -O -i apt1_01_min1")
+        assert _after(first, "-c") == crd and _after(first, "-ref") == crd
+        assert f'TOP="{top}"' in sh
+        second = _words(sh, "$PMEMD -O -i apt1_01_min2")
+        assert _after(second, "-ref") == (crd if ref == "initial" else "apt1_01_min1_20261015-1432.rst7")
+    # GROMACS: the Amber files of the conversion, or GROMACS files used as they are
+    sh = generated(step("gromacs", {}, {"topology": top, "coordinates": crd})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    assert _words(sh, "python3 apt1_01_convert")[2:4] == [top, crd]
+    sh = generated(step("gromacs", {"convert": "acpype"}, {"topology": top, "coordinates": crd})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    acpype = _words(sh, "acpype ")
+    assert _after(acpype, "-p") == top and _after(acpype, "-x") == crd
+    gtop, gro = str(folder / "sys 1.top"), str(folder / "sys 1.gro")
+    sh = generated(step("gromacs", {"convert": "none"}, {"topology": gtop, "coordinates": gro})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    em = _words(sh, "$GMX grompp -f apt1_01_em")
+    assert _after(em, "-c") == gro and _after(em, "-p") == gtop
+    assert _after(_words(sh, "$GMX grompp -f apt1_01_nvt"), "-p") == gtop
+    # paths without such characters are written as they were
+    sh = generated(step("amber-md", {}, {"topology": "/x.parm7", "coordinates": "/x.rst7",
+                                         "restraints": "/x.dist"})[0])["apt1_01_amber-md_20261015-1432.sh"].content
+    assert " -c /x.rst7 -ref /x.rst7 " in sh
+
+
+def test_solute_residue_count_follows_the_residues_tleap_reads(tmp_path):
+    """The MD stages restrain the solute as ':1-N', N counted in the build's input PDB.  Strands that share a
+    chain id and their numbers (blank chain ids, each numbered from 1) were counted once, Rosetta's virtual
+    residue - which the preparation removes - as a residue, and waters named TIP3 / DOD as solute."""
+    from mdatk import builder
+    from mdatk.workflows.amber import count_solute_residues
+
+    duplex = builder.build_helix("GCGC", scheme="amber")  # chains A and B, both numbered 1-4, TER between
+    (tmp_path / "duplex.pdb").write_text(duplex)
+    assert count_solute_residues(str(tmp_path / "duplex.pdb")) == 8
+    blank = "\n".join(ln[:21] + " " + ln[22:] if ln.startswith("ATOM") else ln for ln in duplex.splitlines()) + "\n"
+    (tmp_path / "blank.pdb").write_text(blank)
+    assert count_solute_residues(str(tmp_path / "blank.pdb")) == 8
+    extra = duplex.replace("END\n", "") + textwrap.dedent("""\
+        HETATM 9001  O   TIP3W   1      20.000  20.000  20.000  1.00  0.00           O
+        HETATM 9002  O   DOD W   2      23.000  20.000  20.000  1.00  0.00           O
+        HETATM 9003 MG    MG M   1      26.000  20.000  20.000  1.00  0.00          MG
+        HETATM 9004 ORIG VRT X   1       0.000   0.000   0.000  1.00  0.00           X
+        HETATM 9005  X   VRT X   1       1.000   0.000   0.000  1.00  0.00           X
+        END
+        """)
+    (tmp_path / "extra.pdb").write_text(extra)
+    assert count_solute_residues(str(tmp_path / "extra.pdb"), drop_virtual=True) == 8
+    assert count_solute_residues(str(tmp_path / "extra.pdb")) == 9  # kept: tleap is given the virtual residue
+    # ... and the mask the MD stages write from it
+    for name, build, n in (("blank.pdb", {}, 8), ("extra.pdb", {}, 8), ("extra.pdb", {"drop_virtual": False}, 9)):
+        wf, b, _r, m = amber_plan(build=build, structure=str(tmp_path / name))
+        plan = Plan(wf, str(tmp_path / "plan"))
+        assert plan.steps[b.id].outputs["topology"].data["solute_residues"] == n
+        assert f"restraintmask=':1-{n}'," in generated(plan, m.id)["apt1_03_min1_20261015-1432.in"].content
+
+
+def test_gmx_posre_restrains_dna_and_l_dna():
+    """Position restraints are for 'nucleic-acid heavy atoms': L-DNA residues (LDA LDC LDG LDT, MDATK's names in
+    the generated library and so in the topology) were not recognised, so an L-DNA strand got no restraint file
+    and its -DPOSRES stages ran unrestrained."""
+    for name in ("G", "G5", "U3", "AN", "RA", "LA", "LC5", "LU3", "DA", "DT", "DG5", "DC3", "DTN",
+                 "LDA", "LDC", "LDG", "LDT"):
+        assert gmx_posre.is_nucleic(name), name
+    for name in ("WAT", "HOH", "MG", "Na+", "K+", "Cl-", "LIG", "D", "L", "N", "DN", "ALA", "GLY"):
+        assert not gmx_posre.is_nucleic(name), name
+    top = textwrap.dedent("""\
+        [ moleculetype ]
+        system1   3
+
+        [ atoms ]
+          1  LT  1  LDG  O5'  1 -0.6 16.0
+          2  HO  1  LDG  HO5' 1  0.4 1.0
+          3  CT  2  LDT  C1'  2  0.0 12.0
+          4  CT  3  LDA  C1'  3  0.0 12.0
+          5  CT  4  LDC  C1'  4  0.0 12.0
+
+        [ system ]
+        x
+        """)
+    text, itps = gmx_posre.add_posres(top, "apt1_04_posre-{mol}.itp", 1000.0)
+    assert list(itps) == ["apt1_04_posre-system1.itp"]
+    rows = [ln.split()[0] for ln in itps["apt1_04_posre-system1.itp"].splitlines() if ln[:1] == " "]
+    assert rows == ["1", "3", "4", "5"] and '#include "apt1_04_posre-system1.itp"' in text

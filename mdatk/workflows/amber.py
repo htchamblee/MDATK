@@ -311,22 +311,31 @@ def helix_script(pairs, s: Dict[str, Any], source: str) -> str:
                  "main(sys.argv[1:], PAIRS, BONDS, WINDOW, OFFSET)", doc)
 
 
-def count_solute_residues(pdb_path: str) -> Optional[int]:
-    """Residues in a PDB that are not water or ions (None if unreadable)."""
-    skip = {"HOH", "WAT", "SOL", "NA", "NA+", "CL", "CL-", "K", "K+", "MG", "MG2", "ZN", "CA"}
-    seen = set()
+def count_solute_residues(pdb_path: str, drop_virtual: bool = False) -> Optional[int]:
+    """Residues in a PDB that are not water or ions (None if unreadable), counted as tleap reads them: a new
+    residue wherever the name, chain or number changes or a TER intervenes, so strands that share a chain id
+    and their numbers (blank chain ids, every strand numbered from 1) are not counted once.  ``drop_virtual``:
+    Rosetta's virtual residues (VRT / XXX) do not count - the preparation removes them."""
+    skip = {"HOH", "WAT", "SOL", "NA", "NA+", "CL", "CL-", "K", "K+", "MG", "MG2", "ZN", "CA"} | _prep_pdb.WATERS
+    count, last = 0, None
     try:
         with open(pdb_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if line.startswith("ENDMDL"):
                     break
-                if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 26:
-                    if line[17:21].strip().upper() in skip:
+                if line.startswith("TER"):
+                    last = None
+                elif line.startswith(("ATOM  ", "HETATM")) and len(line) >= 26:
+                    name = line[17:21].strip().upper()
+                    if name in skip or (drop_virtual and line[17:20].strip().upper() in _prep_pdb.VIRTUAL):
                         continue
-                    seen.add((line[21], line[22:27]))
+                    key = (name, line[21], line[22:27])
+                    if key != last:
+                        count += 1
+                        last = key
     except OSError:
         return None
-    return len(seen) or None
+    return count or None
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +689,14 @@ class AmberBuildTool(Tool):
                     missing.remove(t)
         return out, missing
 
+    def _ff_names(self, s, ctx) -> str:
+        """The force fields the tleap inputs source, as the titles of the generated files name them: 'OL3+CP',
+        with the DNA force field 'OL3+CP + OL24'."""
+        names = [FORCE_FIELDS[s["rna_ff"]][2]]
+        if self.dna_loaded(s, ctx):
+            names.append(DNA_FORCE_FIELDS[s["dna_ff"]][2])
+        return " + ".join(names)
+
     @staticmethod
     def _cp_lib(s) -> bool:
         return s["rna_ff"] == "ol3cp" and s["cp_source"] == "lib"
@@ -1015,6 +1032,42 @@ class AmberBuildTool(Tool):
             if extra_lines(s["extra_libs"]):
                 out.append(Issue("warning", "own residue libraries are listed as well: a unit they define with an "
                                             "L-DNA name replaces the generated one", ("ldna_library", "extra_libs")))
+            single = self._single_ldna_chains(s, ctx)
+            if single:
+                units = ", ".join(sorted({unit for _where, unit in single}))
+                out.append(Issue("warning", f"{os.path.basename(ctx.existing('structure'))}: a chain of a single "
+                                            f"L-DNA residue ({', '.join(where for where, _unit in single)}). The "
+                                            "generated library maps an L-DNA residue at a chain's 5' end to its "
+                                            "5' unit and at a 3' end to its 3' unit; a residue that is both ends "
+                                            f"needs the nucleoside unit ({units}), which that map does not name, "
+                                            "and MDATK has not tested which unit tleap gives it: check the residue "
+                                            "in the tleap log and the built PDB (a nucleoside has HO5' and HO3' "
+                                            "and no phosphate)", ("ldna_library", "input:structure")))
+        return out
+
+    @staticmethod
+    def _single_ldna_chains(s, ctx) -> List[Tuple[str, str]]:
+        """(chain:number, nucleoside unit) of every L-DNA residue that is a chain of its own in an existing input
+        PDB as tleap will read it, i.e. alone between two TER records after the preparation the script applies."""
+        path = ctx.existing("structure")
+        if not path:
+            return []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+            if s["prep"]:
+                lines = _prep_pdb.prepare(lines, True, s["strip_5p"], s["gap_ter"], s["strip_water"], True,
+                                          s["drop_virtual"])[0]
+            struct = pdbtools.read_pdb("\n".join(lines) + "\n")
+            pdbtools.assign_chirality(struct, detect=True, l_ranges=s.get("lrna_ranges") or None)
+        except (OSError, pdbtools.PDBError):
+            return []
+        out = []
+        for seg in struct.segments:
+            nts = [(r, nt) for r, nt in ((r, pdbtools.nucleotide(r)) for r in seg) if nt is not None]
+            if len(nts) == 1 and nts[0][1].sugar == "dna" and nts[0][0].chirality == "L":
+                res, nt = nts[0]
+                out.append((f"{res.chain.strip() or '_'}:{res.resseq}{res.icode.strip()}", f"LD{nt.base}N"))
         return out
 
     # checks -----------------------------------------------------------
@@ -1228,8 +1281,8 @@ class AmberBuildTool(Tool):
                              ("mg_types", "lrna_types")))
         if extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]):
             out.append(Issue("warning" if not s["check_topology"] else "info",
-                             f"atom types from extra libraries or parameter files need Mg²⁺ pair terms "
-                             f"('Extra Mg²⁺ pair types', L-RNA atom types); "
+                             "atom types from extra libraries or parameter files need Mg²⁺ pair terms "
+                             "('Extra Mg²⁺ pair types', L-RNA atom types); "
                              + ("the topology check after the build lists any type still missing"
                                 if s["check_topology"] else
                                 "with the topology check off, a missing one goes unnoticed"),
@@ -1243,7 +1296,7 @@ class AmberBuildTool(Tool):
         nres = None
         path = ctx.existing("structure")
         if path:
-            nres = count_solute_residues(path)
+            nres = count_solute_residues(path, bool(s["prep"] and s["drop_virtual"]))
         data = {"nbfix": bool(s["nbfix19"] or s["bph0"]), "hmr": bool(s["hmr"]),
                 "c4": bool(self._solvated(s) and s["mg_model"] == "1264"),
                 "mg_pairs": mg_params.MODELS[s["mg_model"]] if self._mg_pairs(s) else "",
@@ -1439,7 +1492,7 @@ class AmberBuildTool(Tool):
         files: List[GeneratedFile] = []
         n = ctx.name
         script_name = n(self.tag, "sh")
-        ff = FORCE_FIELDS[s["rna_ff"]][2]
+        ff = self._ff_names(s, ctx)
         sh = script_header(f"Amber system build ({ff}) - tleap / ParmEd", ctx, s, script_name)
         pdb_in = ctx.inp("structure")
         existing = ctx.existing("structure")
@@ -1447,7 +1500,10 @@ class AmberBuildTool(Tool):
             sh += self._empty_slot_guard(pdb_in)  # a model check's slot, which may hold no model at all
         gen = self.lrna_generated(s, ctx)
         links = s["link_check"] != "off"
-        if self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005") or links:
+        # (the L-DNA helper and the 12-6-4 table of the twin types read AmberTools' files as well)
+        pol_twins = bool(self._solvated(s) and s["mg_model"] == "1264" and self.twin_refs(s, ctx))
+        if (self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005") or links
+                or self.ldna_generated(s, ctx) or pol_twins):
             sh += ["# AmberTools data folder (from tleap on PATH when AMBERHOME is not set)",
                    'AMBERHOME="${AMBERHOME:-$(dirname "$(dirname "$(readlink -f "$(command -v tleap)")")")}"',
                    '[ -f "$AMBERHOME/dat/leap/lib/RNA.lib" ] || { echo "ERROR: AmberTools data not found under '
@@ -1478,17 +1534,17 @@ class AmberBuildTool(Tool):
                 parms.append(f'"$P{k}"')
             sh += [f"python3 {lib_py} {d_lib} {' '.join(parms)} .", require_file("LRNA.lib", "the L-RNA helper"), ""]
         if self.ldna_generated(s, ctx):
-            ff = DNA_FORCE_FIELDS[s["dna_ff"]]
+            dff = DNA_FORCE_FIELDS[s["dna_ff"]]  # (not 'ff': the titles of the files below name the force fields)
             lib_py = n("ldna-lib", "py")
             files.append(GeneratedFile(lib_py, embed(
                 _lrna_lib, LDNA_SETTINGS, "main(sys.argv[1:])",
-                f"L-DNA library and parameters from the D-DNA force field {ff[2]} - written by {PROJECT_ABBREV} "
+                f"L-DNA library and parameters from the D-DNA force field {dff[2]} - written by {PROJECT_ABBREV} "
                 f"{__version__}.\n\nUsage: python3 THIS_SCRIPT D_LIBRARY PARM.dat [FRCMOD ...] OUTPUT_DIR"),
                 "helper", "writes LDNA.lib and frcmod.ldna: the D-DNA units mirrored, phases of the new types mirrored"))
-            parms = [f'"$AMBERHOME/dat/leap/parm/{f}"' for f in ff[4]]
-            sh += [f"# L-DNA library and parameters: {ff[2]} mirrored (LDNA.lib + frcmod.ldna; O5' / O4' / O3' "
+            parms = [f'"$AMBERHOME/dat/leap/parm/{f}"' for f in dff[4]]
+            sh += [f"# L-DNA library and parameters: {dff[2]} mirrored (LDNA.lib + frcmod.ldna; O5' / O4' / O3' "
                    "typed LS / LT with mirrored dihedral phases)",
-                   f'python3 {lib_py} "$AMBERHOME/dat/leap/lib/{ff[3]}" {" ".join(parms)} .',
+                   f'python3 {lib_py} "$AMBERHOME/dat/leap/lib/{dff[3]}" {" ".join(parms)} .',
                    require_file("LDNA.lib", "the L-DNA helper"), ""]
         twins = self.twin_refs(s, ctx)
         if self._solvated(s) and s["mg_model"] == "1264" and twins:
@@ -1522,7 +1578,7 @@ class AmberBuildTool(Tool):
                 "Usage: python3 THIS_SCRIPT INPUT.pdb OUTPUT.pdb"), "helper",
                 "cleans the starting PDB for tleap"))
             sh += ["# Prepare the starting structure for tleap (hydrogens, 5'-phosphates, TER records)",
-                   f"python3 {prep_py} {pdb_in} {prep_pdb}", ""]
+                   f"python3 {prep_py} {shell_quote(pdb_in)} {prep_pdb}", ""]
             pdb_in = prep_pdb
         if s["lrna"]:
             tools_py = n("pdbtools", "py")
@@ -1825,7 +1881,7 @@ class AmberRestraintsTool(Tool):
         script_name = n(self.tag, "sh")
         sh = script_header("Helix-preserving distance restraints (DISANG)", ctx, s, script_name)
         sh += [f"# {len(pairs)} base pairs from the {source}",
-               f"python3 {n('helix', 'py')} {top} {dist}", require_file(dist, "the restraint script"), ""]
+               f"python3 {n('helix', 'py')} {shell_quote(top)} {dist}", require_file(dist, "the restraint script"), ""]
         files.append(GeneratedFile(script_name, "\n".join(sh), "run", "writes the DISANG file"))
         return files
 
@@ -2664,7 +2720,8 @@ class AmberMDTool(Tool):
         modes = self._restart_modes(s, ctx)
         disang = ctx.inp("restraints")
         solute = self._solute_mask(ctx)
-        top, crd = ctx.inp("topology"), ctx.inp("coordinates")
+        # (the coordinates as a word of the pmemd command lines: a file chosen by hand may have spaces in its path)
+        top, crd = ctx.inp("topology"), shell_quote(ctx.inp("coordinates"))
         # one mdin per stage (plus one for the first segment when its restart mode differs)
         mdin_of: Dict[Tuple[int, int], str] = {}
         for k, st in enumerate(s["stages"]):
@@ -2676,9 +2733,11 @@ class AmberMDTool(Tool):
             nseg = st["segments"] if st["kind"] == "md" else 1
             for seg in range(1, nseg + 1):
                 mdin_of[(k, seg)] = name
-            if nseg > 1 and irest == 0:
+            if nseg > 1 and (irest == 0 or st["ramp"]):
+                # segments 2-N continue the first one: its velocities, and after its ramp (which the check keeps
+                # within a segment's nstlim) at temp0 - never through the TEMP0 schedule again
                 cont = ctx.name(f"{tag}-cont", "in")
-                files.append(GeneratedFile(cont, self.mdin(st, 1, 5, disang, solute), "input",
+                files.append(GeneratedFile(cont, self.mdin(dict(st, ramp=False), 1, 5, disang, solute), "input",
                                            f"pmemd input of stage {tag}, segments 2-{nseg}"))
                 for seg in range(2, nseg + 1):
                     mdin_of[(k, seg)] = cont

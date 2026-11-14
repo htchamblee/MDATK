@@ -215,6 +215,71 @@ def test_dna_from_the_structure_builder_is_known_before_the_pdb_exists(tmp_path)
     assert "source leaprc.DNA.OL24" in leap and "loadOff LDNA.lib" in leap
 
 
+def test_titles_name_the_force_fields(tmp_path):
+    """The comment lines that name the force field name it (0.0.19 printed the DNA force field's table row, a
+    Python tuple, in every build that generates the L-DNA library)."""
+    l_dna = builder.build_helix("GACT", na="dna", chirality="L", scheme="amber")
+    files = _files(_plan(tmp_path, l_dna, two_pass=True)[0])
+    assert files["tleap.leap"].splitlines()[0] == "# Solvate and add ions (OL3+CP + OL24) for project apt1, step 01"
+    assert files["tleap-dry.leap"].splitlines()[0] == "# Dry build (OL3+CP + OL24) for project apt1, step 01"
+    sh = files["amber-build.sh"].splitlines()
+    assert sh[1] == "# Amber system build (OL3+CP + OL24) - tleap / ParmEd"
+    assert "# First parameterisation (dry), OL3+CP + OL24" in sh
+    assert not any("('" in ln for name in ("tleap.leap", "tleap-dry.leap", "amber-build.sh")
+                   for ln in files[name].splitlines() if ln.startswith("#"))
+    # D-DNA names its force field the same way; a build without DNA names the RNA one alone, as before
+    d_dna = _files(_plan(tmp_path, builder.build_helix("GACT", na="dna", scheme="amber"), dna_ff="ol15")[0])
+    assert d_dna["tleap.leap"].splitlines()[0] == "# Solvate and add ions (OL3+CP + OL15) for project apt1, step 01"
+    rna = _files(_plan(tmp_path, builder.build_helix("GACU", scheme="amber"), two_pass=True)[0])
+    assert rna["tleap.leap"].splitlines()[0] == "# Solvate and add ions (OL3+CP) for project apt1, step 01"
+    assert rna["amber-build.sh"].splitlines()[1] == "# Amber system build (OL3+CP) - tleap / ParmEd"
+    assert "# First parameterisation (dry), OL3+CP" in rna["amber-build.sh"].splitlines()
+
+
+@pytest.mark.parametrize("settings", [
+    dict(rna_ff="ol3", nbfix19=False, bph0=False, lrna=False, ldna_library="generated"),  # the L-DNA helper
+    dict(rna_ff="ol3", nbfix19=False, bph0=False, mg_model="1264", mg_count=2),  # ... and the 12-6-4 twin table
+    dict(cp_source="frcmod", mg_model="1264", mg_count=2),
+], ids=["L-DNA library", "12-6-4 twins", "12-6-4 twins, own CP frcmod"])
+def test_scripts_that_read_ambertools_files_find_amberhome(tmp_path, settings):
+    """A script that reads $AMBERHOME/dat/leap/... takes AMBERHOME from tleap on PATH when it is not set, as
+    the builds with the CP library always did: without the CP library, the L-DNA helper and the 12-6-4 table of
+    the twin types used an AMBERHOME that nothing had set."""
+    plan, st = _plan(tmp_path, builder.build_helix("GACT", na="dna", chirality="L", scheme="amber"), **settings)
+    assert st.ok, st.issues
+    sh = _files(plan)["amber-build.sh"].splitlines()
+    uses = [k for k, ln in enumerate(sh) if '"$AMBERHOME/dat/leap/' in ln and not ln.startswith("[ -f")]
+    assert uses, sh
+    fallback = next((k for k, ln in enumerate(sh) if ln.startswith('AMBERHOME="${AMBERHOME:-$(dirname')), None)
+    assert fallback is not None and fallback < uses[0], "AMBERHOME is used but never taken from tleap on PATH"
+
+
+def _single_residue_warnings(st):
+    return [i.message for i in st.issues if i.level == "warning" and "single L-DNA residue" in i.message]
+
+
+def test_a_chain_of_one_l_dna_residue_is_reported(tmp_path):
+    """The chain-end map gives an L-DNA residue at a 5' end the unit LDx5 and at a 3' end LDx3; a residue that is
+    both ends (a nucleoside, unit LDxN) is not covered by it and has not been built with tleap: the planner says
+    so when the input PDB has one."""
+    duplex = builder.build_helix("GACT", na="dna", chirality="L", scheme="amber")
+    plan, st = _plan(tmp_path, duplex)
+    assert not _single_residue_warnings(st)
+    # the same duplex with strand 1 cut after its first residue (a TER), as tleap will read it
+    lines, done = [], False
+    for ln in duplex.splitlines():
+        if not done and ln.startswith("ATOM") and ln[21] == "A" and int(ln[22:26]) == 2:
+            lines.append("TER")
+            done = True
+        lines.append(ln)
+    plan, st = _plan(tmp_path, "\n".join(lines) + "\n")
+    found = _single_residue_warnings(st)
+    assert len(found) == 1 and "A:1" in found[0] and "LDGN" in found[0], [i.message for i in st.issues]
+    # without the generated library the chain-end map is not written: the units are the user's own
+    assert not _single_residue_warnings(_plan(tmp_path, "\n".join(lines) + "\n", ldna_library="own",
+                                              extra_libs="my_LDNA.lib")[1])
+
+
 # ------------------------------------------------------------------------------- with AmberTools only
 
 def _amberhome():

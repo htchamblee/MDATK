@@ -1057,3 +1057,67 @@ def test_gromacs_waits_with_exit_0_and_its_file(tmp_path, fake_bin):
     assert res.returncode == 0 and not os.path.exists(main_sh + ".waiting"), res.stderr
     results, _lines = run(plan_jobs(plan))
     assert [r.status for r in results] == ["ok"]
+
+
+# ---------------------------------------------------------------------------
+# a temperature ramp in a stage split into segments; starting files in a folder with spaces
+# ---------------------------------------------------------------------------
+
+
+def _mdins(plan):
+    return {f.name.replace("apt1_01_", "").replace(f"_{STAMP}", ""): f.content for f in plan.generate()["md"]
+            if f.name.endswith(".in")}
+
+
+@pytest.mark.parametrize("velocities", [False, True])
+def test_a_ramp_runs_once_in_a_stage_split_into_segments(velocities):
+    """Every segment is a pmemd run of nstlim steps.  The ramp belongs to the first one and 'the rest of the stage
+    runs at temp0': segments 2-N used to get the TEMP0 schedule too, so each of them set the thermostat back to
+    tempi and heated the system again."""
+    stages = [md("heat", tempi=100.0, temp0=300.0, ramp=True, ramp_steps=500, segments=3)]
+    plan, _st = md_step(stages, input_velocities=velocities)
+    ins = _mdins(plan)
+    assert sorted(ins) == ["heat-cont.in", "heat.in"]
+    first, rest = ins["heat.in"], ins["heat-cont.in"]
+    assert "&wt type='TEMP0', istep1=0, istep2=500, value1=100.0, value2=300.0 /" in first
+    assert "temp0=100.0" in first and "nmropt=1" in first
+    assert ("irest=1, ntx=5" in first) == velocities
+    assert "TEMP0" not in rest and "nmropt" not in rest and "&wt" not in rest
+    assert "irest=1, ntx=5" in rest and "temp0=300.0" in rest and "tempi" not in rest
+    main_sh, _prod = scripts(plan)
+    assert [ln.split(" -i ")[1].split()[0] for ln in pmemd_lines(main_sh)] == [
+        f"apt1_01_heat_{STAMP}.in", f"apt1_01_heat-cont_{STAMP}.in", f"apt1_01_heat-cont_{STAMP}.in"]
+
+
+def test_stages_without_a_ramp_keep_their_inputs_when_split_into_segments():
+    # continued from the input's velocities: one input for every segment, as before
+    plan, _st = md_step([md("eq", segments=3)], input_velocities=True)
+    assert sorted(_mdins(plan)) == ["eq.in"]
+    # new velocities in the first segment only: the second input differs in the restart mode alone, as before
+    plan, _st = md_step([md("eq", segments=3, tempi=300.0)], input_velocities=False)
+    ins = _mdins(plan)
+    assert sorted(ins) == ["eq-cont.in", "eq.in"]
+    assert ins["eq.in"].replace("irest=0, ntx=1", "irest=1, ntx=5").replace(", tempi=300.0", "") == ins["eq-cont.in"]
+
+
+@needs_bash
+def test_starting_files_in_a_folder_with_spaces_run(tmp_path, fake_bin):
+    """Hand-picked starting coordinates keep their absolute path: pmemd gets it as one argument (-c, -ref)."""
+    folder = tmp_path / "my system"
+    folder.mkdir()
+    for name in ("sys 1.parm7", "sys 1.rst7"):
+        (folder / name).write_text("x\n")
+    tool = TOOLS["amber-md"]
+    stages = [dict(name="min", kind="min", posres=True), md("eq")]
+    for ref in ("previous", "initial"):
+        fake_bin.write_text("")
+        node = PlanNode(id="md", tool="amber-md", step=1,
+                        settings=tool.normalise(dict(engine="pmemd", stages=stages, dry_pdb=False,
+                                                     restraint_ref=ref)),
+                        files={"topology": str(folder / "sys 1.parm7"), "coordinates": str(folder / "sys 1.rst7")})
+        plan = Plan(WorkflowParams(project_name="apt1", stamp=STAMP, nodes=[node]), str(tmp_path / f"plan {ref}"))
+        assert plan.steps["md"].ok, plan.steps["md"].issues
+        plan.write()
+        res = bash(str(tmp_path / f"plan {ref}" / "01_amber-md" / f"apt1_01_amber-md_{STAMP}.sh"))
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert calls(fake_bin) == [f"pmemd apt1_01_min_{STAMP}.out", f"pmemd apt1_01_eq_{STAMP}.out"]
