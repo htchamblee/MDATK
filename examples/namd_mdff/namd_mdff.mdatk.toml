@@ -9,7 +9,7 @@ format_version = 1
 # Molecular Dynamic Analysis Tool Kit (MDATK) version that wrote this file.
 mdatk_version = "0.0.19"
 # When the settings were last saved.
-saved = 2026-11-13T04:12:18
+saved = 2026-11-20T22:34:48
 # File next to the project that holds its step log ("": the log is at the end of this file; it moves
 # out once the project file would grow too large).
 log_file = ""
@@ -608,8 +608,10 @@ link_max = 2.0
 # 'Stop' ends the script before tleap.
 link_fail = 3.0
 # RNA force field: leaprc file for RNA. 'OL3 + CP' adds the phosphate oxygen vdW correction of
-# Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it. Choices: ol3cp,
-# ol3, ljbb, roc, yil, shaw.
+# Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it. None: no RNA
+# leaprc is sourced, for a system without RNA (e.g. DNA only, with the DNA force field below); the
+# RNA-only settings (NBfix19, 0BPh, a generated L-RNA library) must be off then. Choices: ol3cp,
+# ol3, ljbb, roc, yil, shaw, none.
 rna_ff = "ol3cp"
 # CP parameters: Retyped library: the build script writes RNA_CP.lib (AmberTools' RNA.lib with the
 # phosphate oxygens retyped OP / OR) and frcmod.cp (the CP Lennard-Jones values plus the parm10.dat
