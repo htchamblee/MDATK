@@ -328,3 +328,16 @@ def test_learning_a_run_again_adds_nothing_and_short_time_options_are_wall_times
     keep, dropped = clusters.without_time(["#SBATCH -t10:00", "#SBATCH -t 1-00:00:00", "#SBATCH --time=1:00:00",
                                            "#SBATCH --ntasks=1", "#SBATCH -p gpu"])
     assert keep == ["#SBATCH --ntasks=1", "#SBATCH -p gpu"] and len(dropped) == 3
+
+
+def test_a_profiles_file_that_is_no_text_or_no_list_gives_no_profiles(config_home):
+    """Not UTF-8, or [profile] for [[profile]]: no profiles (and no traceback from the job files that look one up);
+    RNAdo's Cluster profiles window says that the file could not be read."""
+    path = clusters.profiles_path()
+    os.makedirs(os.path.dirname(path))
+    with open(path, "wb") as fh:
+        fh.write('[[profile]]\nname = "Gr\u00e4ce"\n'.encode("latin-1"))
+    assert clusters.load_profiles() == [] and clusters.find("Grace") is None
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write('[profile]\nname = "Grace"\n')
+    assert clusters.load_profiles() == []

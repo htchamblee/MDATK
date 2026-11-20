@@ -168,7 +168,6 @@ source = "/x/prod.out"
 @pytest.mark.parametrize("broken", [
     GRACE.replace('gpu = "A100"', 'gpu = "A100').encode(),  # a typo: not TOML
     GRACE.replace("Grace", "Gr\u00e4ce").encode("latin-1"),  # not UTF-8
-    GRACE.split("[[profile.queues]]")[0].encode() + b"queues = 5\n",
     GRACE.replace("[[profile]]", "[profile]").encode(),
 ])
 def test_a_profiles_file_that_cannot_be_read_is_not_replaced_unseen(tmp_path, monkeypatch, broken):

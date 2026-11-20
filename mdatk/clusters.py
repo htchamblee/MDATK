@@ -117,9 +117,12 @@ def _benchmark(data: Dict[str, Any]) -> Optional[Benchmark]:
 def load_profiles(path: str = "") -> List[ClusterProfile]:
     try:
         data = tomlio.load(path or profiles_path())
-    except (OSError, tomlio.TOMLDecodeError):
+    except (OSError, ValueError):  # ValueError: not TOML, or not UTF-8 text
         return []
-    return [_from_dict(d) for d in data.get("profile", []) if isinstance(d, dict) and d.get("name")]
+    listed = data.get("profile", [])
+    if not isinstance(listed, list):  # [profile] written for [[profile]]
+        return []
+    return [_from_dict(d) for d in listed if isinstance(d, dict) and d.get("name")]
 
 
 def save_profiles(profiles: Sequence[ClusterProfile], path: str = "") -> None:
