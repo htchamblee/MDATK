@@ -140,6 +140,26 @@ reproduced first and has a regression test).
   list; `${folder}` … in a job header are left to the shell; run speeds take the time step pmemd reports; a
   profiles file edited by hand with odd values still loads.
 
+### Fixes: RNAdo and the analysis window
+
+- **Edits lost or put back:** text typed into a table cell (group residues, trajectory files, external data,
+  queue cells) is kept when the cell is left with a click (GTK dropped it without Enter). A step's title and
+  number edited in the details pane are no longer put back by its open wizard, nor the project name and time stamp
+  between the stand-alone wizard and the naming bar. The details pane's *Title* keeps a typed space and the cursor.
+  *Use the plan's files* no longer discards unsaved settings when a field is invalid.
+- **Selection and state:** selecting a step no longer counts as an unsaved change. A plan that replaces another has
+  no selection left over (Delete could remove a connection of the new plan). A step's open wizard follows
+  connections made or deleted in the planner. A previous run is no longer shown (or offered with *Use this run*)
+  for a step whose folder changed since the check.
+- **Save as** asks before replacing an existing project file when the name was typed without its `.mdatk.toml`
+  suffix (the file was overwritten unasked).
+- A project file that cannot be opened at start-up is named in the window's log. *Open folder* reports when no file
+  manager can be started. *Check* in the PDB clean-up and structure builder windows reports a file that is not
+  UTF-8 text. Changing the grid preset with unfinished panel options no longer leaves the slot editors out of step.
+- Cluster profiles window (new in this release): a queue cell or cushion still being typed is saved; closing RNAdo
+  saves the open window; a profiles file that cannot be read is reported and kept as `clusters.toml.unreadable`
+  instead of being replaced; the window fits small screens.
+
 ## 0.0.19 (2026-11-13)
 
 ### Fix: L-DNA dihedrals across a D/L junction

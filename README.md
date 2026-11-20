@@ -91,12 +91,13 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   seconds/ns of earlier runs on that GPU, and the job goes into the shortest queue that holds it. See
   [Cluster job scripts](#cluster-job-scripts).
 - **RNA force field *None*** in the Amber build, for DNA-only systems: tleap sources no RNA force field.
-- **A pre-release audit of the whole code base**: about 70 fixes, each reproduced first and covered by a test. The
+- **A pre-release audit of the whole code base**: about 90 fixes, each reproduced first and covered by a test. The
   ones that change results: periodic distances in triclinic boxes (hydrogen bonds across the boundary of a
   truncated octahedron were dropped), hydrogen bonds counted twice by distance only, the time step override
   ignored for NetCDF trajectories, a temperature ramp repeated in every segment of a split Amber MD stage, the
   default restraint mask of a duplex without chain ids, L-DNA without GROMACS position restraints, and modelling
-  steps that reused files of an earlier run. Cached results of the corrected analyses are recomputed once. The
+  steps that reused files of an earlier run; in the windows, text typed into a table cell and left with a click
+  was dropped. Cached results of the corrected analyses are recomputed once. The
   list is in [CHANGELOG.md](CHANGELOG.md#010-2026-11-20).
 
 ### Also new in 0.0.19
