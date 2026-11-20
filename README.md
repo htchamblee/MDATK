@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.19](#whats-new-in-0019)
+- [What's new in 0.1.0](#whats-new-in-010)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,25 +82,30 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.19
+## What's new in 0.1.0
+
+- **Cluster jobs.** The Amber MD and GROMACS steps write a job script for your cluster beside their production
+  script, and the plan a script that submits them all. Clusters are described once, in **cluster profiles** kept
+  outside project files (RNAdo's menu > *Cluster profiles…*): job header, GPU, queues and their limits, a
+  cushion. The wall time of each Amber job is estimated from the stages it runs, the system's atoms and the
+  seconds/ns of earlier runs on that GPU, and the job goes into the shortest queue that holds it. See
+  [Cluster job scripts](#cluster-job-scripts).
+- **RNA force field *None*** in the Amber build, for DNA-only systems: tleap sources no RNA force field.
+- **A pre-release audit of the whole code base**: about 70 fixes, each reproduced first and covered by a test. The
+  ones that change results: periodic distances in triclinic boxes (hydrogen bonds across the boundary of a
+  truncated octahedron were dropped), hydrogen bonds counted twice by distance only, the time step override
+  ignored for NetCDF trajectories, a temperature ramp repeated in every segment of a split Amber MD stage, the
+  default restraint mask of a duplex without chain ids, L-DNA without GROMACS position restraints, and modelling
+  steps that reused files of an earlier run. Cached results of the corrected analyses are recomputed once. The
+  list is in [CHANGELOG.md](CHANGELOG.md#010-2026-11-20).
+
+### Also new in 0.0.19
 
 - **Fix: L-DNA dihedrals across a D/L junction.** The generated L-DNA library gave the backbone dihedrals that
   cross a D/L junction's phosphate the L phase on both sides (the zeta of a D residue before an L one, the alpha
   of a D residue after an L one), so a D/L chimera was not the mirror image of its twin. Each such dihedral now
   takes the hand of the sugar it hangs off, and a chimera and its mirror image have the same energy. Rebuild
   topologies with a D/L DNA junction; all-D, all-L and L-RNA builds are unchanged.
-
-### Also new in 0.0.18
-
-- **D/L chimeras with linked partner strands.** The structure builder's chimera mode can now join the partner
-  strands too (*Link the partner strands* in the planner step and in RNAdo's *Chimera* page,
-  `mdatk build chimera --link-partners`): a phosphodiester at every junction on both strands, so a D|L duplex
-  comes out as two continuous chains instead of strand 1 plus one nicked partner per segment. Both
-  phosphodiesters of a junction are fitted together (O3'-P 1.60 Å); the design and its twin still give exact
-  mirror images. A D/L B-DNA junction cannot stack with both backbones closed: its end pairs stay coaxial but
-  about 6.4-7.5 Å apart, which the builder warns about (minimise). With linked partners of one nucleic acid the
-  step has a *Secondary structure* output, e.g. for helix restraints. Off by default: other builds are
-  byte-identical to 0.0.17.
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -1289,7 +1294,7 @@ OL3 + CP, whose atom types their masks assume), SPC/E water in a 15 Å truncated
 optional Mg²⁺ balanced with Cl⁻, and the stages min1 (solute restrained) → min2 → heat (Langevin from
 0 K) → NPT equilibration → NPT equilibration without positional restraints → production; the mdin files
 match the hand-written reference files line for line. Other choices: RNA force fields OL3, LJbb,
-ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4P/2005; four Mg²⁺
+ROC-RNA, YIL, DESRES, or *None* for a system without RNA (no RNA `leaprc` is sourced); waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4P/2005; four Mg²⁺
 models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;

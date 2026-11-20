@@ -5,14 +5,18 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.1.0](#010-2026-11-20) · [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
 
-## Unreleased
+## 0.1.0 (2026-11-20)
+
+Cluster job scripts with per-user cluster profiles and estimated wall times, an RNA force field choice *None* for
+DNA-only Amber builds, and the fixes of a pre-release audit of the whole code base (every fix below was
+reproduced first and has a regression test).
 
 ### Cluster job scripts, cluster profiles and estimated wall times
 
@@ -42,6 +46,99 @@ the notes below.
 - In the job the step's scripts skip their conda lines (`MDATK_JOB=1`), as the separate script already did on a
   cluster (`MDATK_LOCAL`), unless *Conda in the separate script on a cluster too* is ticked. Only the main scripts
   of steps with a cluster job change; without one every script is written as before.
+
+### Amber build: RNA force field *None*
+
+- New choice *None (no RNA in the system)* of the Amber build's *RNA force field* (`rna_ff = "none"`): the tleap
+  input sources no `leaprc.RNA.*`, and nothing RNA-only is written (CP library, NBfix19 / 0BPh, the generated
+  L-RNA library). The check refuses it for a structure with RNA and with NBfix19 / 0BPh ticked. The default
+  (OL3 + CP) and its output are unchanged.
+
+### Fixes: analyses
+
+- **Periodic distances in triclinic boxes.** With *minimum-image distances* on, the vectors of pairs found across
+  the boundary of a triclinic box (Amber's truncated octahedron) were not imaged: hydrogen-bond angles, Mg²⁺
+  bridge geometry, stacking offsets and the net force of the energy analysis used the un-imaged vector, and such
+  hydrogen bonds were dropped. Orthorhombic boxes were not affected.
+- **Hydrogen bonds by distance only** (topologies without hydrogens, or the angle switched off) were counted
+  twice; each donor-acceptor atom pair counts once. Without topology bonds a nitrogen carrying hydrogen is no
+  acceptor either (as with bonds, and as documented).
+- **Time step override** (`inputs.dt_ps`) was ignored for trajectories with their own time stamps (NetCDF, XTC,
+  TRR): time axes now use frame × override, as the PDB export by time did.
+- **Contacts of a group with itself:** per-residue counts include all partners (they held each pair on one residue
+  only), and the last residue of one strand and the first of the next are no longer taken for bonded neighbours;
+  the series is not labelled *heavy-atom* when hydrogens count.
+- A PDB topology whose only CONECT records belong to a ligand no longer turns every residue into its own chain
+  (missing backbone in the structure view). A chain-qualified residue tag (`B:12`) tags that chain only.
+- Caches: editing a residue group not listed in *Groups shown* no longer reuses a structure trace with its old
+  residues; previews no longer use cleaned files made with other cleaning settings in a custom output folder;
+  results of the corrected analyses are recomputed once.
+- The parm7 reader no longer stops at the format lines of CHAMBER and CMAP topologies (the energy analysis fell
+  back to generic Lennard-Jones parameters); the NAMD MDFF helper's reader likewise. Two external data files of
+  one name no longer replace each other's series.
+
+### Fixes: Amber, GROMACS and NAMD steps
+
+- **Amber MD:** a temperature ramp in a stage split into segments ran again in every segment (each reset the
+  thermostat to the start temperature); it runs in the first segment only. A stage named like another stage's
+  segment run or continuation input is an error.
+- **Default restraint mask:** the solute residue count behind the MD stages' default positional-restraint mask
+  `:1-N` follows the residues as tleap reads them (a duplex with blank chain ids and both strands numbered from 1
+  gave half the solute; a Rosetta virtual residue one too many).
+- **L-DNA and DNA:** GROMACS position restraints include L-DNA residues (they ran unrestrained); NAMD MDFF
+  base-pair restraints work on DNA and L-DNA topologies (the preparation stopped at every A-T pair).
+- **NAMD MDFF:** every run has whole cycles of steps: 50000 steps in 3 segments were written as `run 16666`, and
+  NAMD takes multiples of `stepspercycle` (10) only. Counts are rounded up, with a note in the planner.
+- The titles of the tleap inputs and the build script name the force fields (L-DNA builds printed a Python tuple
+  there). The build script finds AmberTools' data also when only the L-DNA helper or the 12-6-4 table of the twin
+  types needs it. The planner warns about a chain of a single L-DNA residue, which the chain-end map does not
+  cover.
+- Hand-picked input files whose path contains spaces are passed to the programs as one argument (Amber build
+  preparation, restraint helper, pmemd `-c` / `-ref`, GROMACS conversion and grompp; SimRNA, RNAMake and the
+  FARFAR2 models step).
+- A secondary-structure file with the dot-bracket only and no sequence typed is an error that says so, in the
+  Amber restraints, SimRNA and Phenix steps (it ended with an internal error).
+
+### Fixes: modelling steps
+
+- **Results of an earlier run:** the SimRNA clustering script rebuilt its models from the clusters of an earlier
+  run with another RMSD threshold; FARFAR2 models, RNAMake designs and VMD movie frames an earlier run had written
+  and the new run did not stayed as outputs. Each script removes them first.
+- **SimRNA:** the clustering script stopped without a message with many runs × replicas (`ls | head` under
+  `pipefail`); without clustering the step's trajectory output was never written.
+- **FARFAR2 and SimRNA run scripts** ended with exit status 0 when every run had failed (or the program was not
+  found): they end with an error then. Some failed runs still leave fewer models, now with a warning that counts
+  them.
+- DSSR annotates every extracted FARFAR2 model, also beyond 99. The Rosetta run audit accepts a pair suffix that
+  starts with a hyphen, and a FASTA whose records are only partly chain-tagged.
+
+### Fixes: ensembles, model check, PDB tools, builder
+
+- Residue groups written as `1:40` or `1 - 40` select residues 1-40 in the ensemble, map-score and frame commands
+  too (they were read as chain 1, residue 40). Score deciles of the register census are tenths of the scored
+  decoys for any count. Nearest-voxel map occupancy reads the edge voxel for atoms within half a voxel of the
+  map's edge. A decoy with a NaN score is no longer an arm's best score, and `mdatk pdb qc --order score` ranks
+  correctly with one.
+- `mdatk pdb clean` no longer gives RNA names to DNA written with CHARMM names (ADE, CYT, GUA) or old PDB names
+  (A, C, G): a 2'-deoxy residue is DNA whatever its name says. A nucleotide bonded to a chain-end residue the name
+  schemes do not know (a 5'-GTP, a modified nucleotide) keeps its internal name.
+- Mutation specs without a chain id read the whole residue number (`15G` is residue 15 of the blank chain, not
+  residue 5 of chain 1).
+
+### Fixes: running plans, project files, cluster jobs
+
+- `workflow run` reports a step with errors, does not start the steps that read from it and returns 1 (the step
+  was skipped silently and its readers ran on files of an earlier run). *Cancel* and *Stop* also end a program
+  that a finished script left running.
+- A project whose notes or custom script contain the step-log marker line is no longer corrupted by saving; a
+  missing separate log file is started again instead of losing every new log entry.
+- Deleting a completed run (instead of moving it aside) no longer removes unrelated empty folders. A setup file
+  whose path contains a quote, `$` or a backtick no longer breaks the step's scripts.
+- Cluster jobs (new in this release): the submit script chains a Slurm job to the right job when steps share a
+  number, never writes an empty `--dependency`, and keeps every step's job when one job file is written again; a
+  queue limit such as 1.1 h is not exceeded by a minute; only the wall time leaves a PBS / Grid Engine resource
+  list; `${folder}` … in a job header are left to the shell; run speeds take the time step pmemd reports; a
+  profiles file edited by hand with odd values still loads.
 
 ## 0.0.19 (2026-11-13)
 
