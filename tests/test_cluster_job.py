@@ -211,3 +211,22 @@ def test_shell_variables_of_the_header_are_not_placeholders(tmp_path):
     assert "\ncd ${folder}/${project:-none} && echo ${scratch_dir} 01_amber-md 01\n" in job
     assert "#SBATCH --output=apt1_01.%j\n" in job  # the placeholders themselves are filled as before
     assert not [i for i in plan.steps["md"].issues if "left as written" in i.message]  # ${scratch_dir}: no warning
+
+
+def test_refreshing_one_step_keeps_every_job_in_the_submit_script(tmp_path):
+    """The job file of one step written again (the runner does it when the step starts to wait): the submit
+    script it writes again still submits the other steps' jobs; and nothing is written for a plan whose files are
+    not there yet."""
+    from mdatk.workflows import cluster
+    nodes = [md_node("a", 1, inputs(tmp_path), job_header=SLURM), md_node("b", 2, inputs(tmp_path), job_header=SLURM)]
+    plan_of(tmp_path, nodes)
+    submit = tmp_path / "plan" / f"apt1_00_submit_{STAMP}.sh"
+    before = submit.read_text()
+    assert "JOB_01=" in before and "JOB_02=" in before
+    fresh = Plan(WorkflowParams(project_name="apt1", stamp=STAMP, nodes=nodes), str(tmp_path / "plan"))
+    lines = cluster.refresh(fresh, ["a"])
+    assert lines[-1] == f"wrote apt1_00_submit_{STAMP}.sh" and submit.read_text() == before
+    unwritten = Plan(WorkflowParams(project_name="apt1", stamp=STAMP, nodes=nodes), str(tmp_path / "elsewhere"))
+    lines = cluster.refresh(unwritten)
+    assert not (tmp_path / "elsewhere").exists()
+    assert "not written yet" in lines[0] and "not written: the job file of" in lines[-1]

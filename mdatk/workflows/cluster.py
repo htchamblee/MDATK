@@ -338,6 +338,9 @@ def submit_script(plan) -> Optional[str]:
         step = plan.steps[nid]
         if step.tool is None or not step.tool.generates or step.adopted or not step.ok or step.ctx is None:
             continue
+        if not step.files and wants_job(step.settings):  # a step this plan object has not written (yet)
+            from .plan import generate_step
+            step.files = generate_step(step)
         job = next((f for f in step.files if f.role == "job"), None)
         if job is None:
             continue
@@ -455,6 +458,14 @@ def refresh(plan, node_ids: Optional[Sequence[str]] = None, learn: bool = True) 
                    + (f" ({est.estimate.basis})" if est and est.estimate else ""))
     text = submit_script(plan)
     if text is not None and plan.root:
-        _write_text(submit_path(plan), text, True)
-        out.append(f"wrote {os.path.basename(submit_path(plan))}")
+        # every job of the plan, also of the steps not written again here: all their files must be there
+        missing = [step.label for step in plan.steps.values() if step.ctx is not None and any(
+            f.role == "job" and not os.path.isfile(os.path.join(plan.root, step.ctx.from_own(f.name)))
+            for f in step.files)]
+        if missing:
+            out.append(f"{os.path.basename(submit_path(plan))} not written: the job file of {', '.join(missing)} "
+                       "is not written yet")
+        else:
+            _write_text(submit_path(plan), text, True)
+            out.append(f"wrote {os.path.basename(submit_path(plan))}")
     return out

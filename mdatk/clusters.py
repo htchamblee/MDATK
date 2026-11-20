@@ -198,15 +198,18 @@ def out_files(paths: Iterable[str]) -> List[str]:
 
 def learn(profile: ClusterProfile, paths: Iterable[str]) -> List[Benchmark]:
     """Adds the speeds of the finished pmemd.cuda runs in ``paths`` (.out files, or folders searched for them) to the
-    profile (a file read before is replaced); returns the new ones.  Not saved: :func:`save_profiles`."""
+    profile (a file read before is replaced); returns the new ones - not those it already had, unchanged.  Not
+    saved: :func:`save_profiles`."""
     added = []
     for path in out_files(paths):
         bench = parse_out(path)
         if bench is None:
             continue
+        known = any(b == bench for b in profile.benchmarks)
         profile.benchmarks = [b for b in profile.benchmarks if b.source != bench.source]
         profile.benchmarks.append(bench)
-        added.append(bench)
+        if not known:
+            added.append(bench)
     profile.benchmarks = profile.benchmarks[-MAX_BENCHMARKS:]
     return added
 
@@ -295,7 +298,7 @@ def time_line(profile: ClusterProfile, scheduler: str, seconds: float) -> str:
 
 
 # a wall-time line the header already has: MDATK writes its own
-TIME_LINE = re.compile(r"^\s*(#SBATCH\s+(--time[= ]|-t\s)|#PBS\s+-l\s+walltime|#BSUB\s+-W\s|#\$\s+-l\s+h_rt)")
+TIME_LINE = re.compile(r"^\s*(#SBATCH\s+(--time[= ]|-t\s*\d)|#PBS\s+-l\s+walltime|#BSUB\s+-W\s|#\$\s+-l\s+h_rt)")
 
 
 # a PBS / Grid Engine resource list: '#PBS -l nodes=1:ppn=4,walltime=12:00:00', '#$ -l h_rt=12:00:00,gpu=1'

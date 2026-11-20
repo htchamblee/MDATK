@@ -316,3 +316,15 @@ def test_the_scheduler_is_told_from_any_queue(tmp_path):
     assert "JOB_04=$(cd 04_amber-md && sbatch --parsable --job-name=dlval_04" in submit
     assert not any("no scheduler directives" in m for _lv, m in
                    [(i.level, i.message) for i in plan.steps["md"].issues])
+
+
+def test_learning_a_run_again_adds_nothing_and_short_time_options_are_wall_times(tmp_path):
+    p = grace(benchmarks=[])
+    pmemd_out(tmp_path / "prod.out")
+    assert len(clusters.learn(p, [str(tmp_path)])) == 1
+    assert clusters.learn(p, [str(tmp_path)]) == [] and len(p.benchmarks) == 1  # read again: not new
+    pmemd_out(tmp_path / "prod.out", s_per_ns=170.0)  # the run made again: replaced, and new
+    assert [b.s_per_ns for b in clusters.learn(p, [str(tmp_path)])] == [170.0] and len(p.benchmarks) == 1
+    keep, dropped = clusters.without_time(["#SBATCH -t10:00", "#SBATCH -t 1-00:00:00", "#SBATCH --time=1:00:00",
+                                           "#SBATCH --ntasks=1", "#SBATCH -p gpu"])
+    assert keep == ["#SBATCH --ntasks=1", "#SBATCH -p gpu"] and len(dropped) == 3
