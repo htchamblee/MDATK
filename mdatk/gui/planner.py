@@ -1081,6 +1081,7 @@ class PlannerPanel(Gtk.Box):
         self.run_state: Dict[str, str] = {}
         self._this_run: Set[str] = set()  # the steps of the latest run (their marks were reset)
         self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
+        self._run_places: Dict[str, Tuple] = {}  # node id -> where its run in prev_runs was looked for
         self._spin_id = 0
         self._closed = False
         self._run_token = 0  # the run whose callbacks count (a newer run or a reload replaces it)
@@ -1150,6 +1151,7 @@ class PlannerPanel(Gtk.Box):
         self.checked.clear()
         self.run_state.clear()
         self.prev_runs.clear()
+        self._run_places.clear()
         self._tokens += 1
         self._run_token = self._tokens
         self.changed()
@@ -1189,14 +1191,41 @@ class PlannerPanel(Gtk.Box):
                 self.prev_runs[nid] = run
             elif node_ids is not None:
                 self.prev_runs.pop(nid, None)
+        self._note_run_places(runs)
         self.changed(resolve=False)
         return runs
+
+    def _run_place(self, node_id: str) -> Optional[Tuple]:
+        """Where the runs of a step are looked for: the plan folder, the project name, the plan's time stamp,
+        and the step's folder and number (None: the step is gone)."""
+        step = self.plan.steps.get(node_id) if self.plan else None
+        if step is None or step.ctx is None:
+            return None
+        return self.plan.root, self.plan.project, self.workflow.stamp, step.ctx.folder, step.ctx.step
+
+    def _note_run_places(self, node_ids) -> None:
+        for nid in node_ids:
+            self._run_places[nid] = self._run_place(nid)
+
+    def _drop_moved_runs(self) -> None:
+        """The runs found for steps that write somewhere else now (another step number, folder tag, project
+        name, time stamp or plan folder) are not theirs any more: their marks go, and the folders are looked
+        into again, quietly (also for a step that is back where a run of it was found)."""
+        places = {nid: self._run_place(nid) for nid in (self.plan.steps if self.plan else ())}
+        moved = [nid for nid, place in places.items()
+                 if nid in self._run_places and self._run_places[nid] != place]
+        self._run_places = places
+        for nid in moved:
+            self.prev_runs.pop(nid, None)
+        if moved and not self._closed:
+            GLib.idle_add(self._scan_after_load, self._run_token)
 
     def changed(self, resolve: bool = True) -> None:
         self.checked &= {n.id for n in self.workflow.nodes if checkable(n)}  # deleted steps
         self._update_run_selected()
         if resolve:
             self.resolve()
+            self._drop_moved_runs()
             self._update_status()
             self._refresh_naming()
             for win in list(self.wizards.values()):
@@ -1992,6 +2021,7 @@ class PlannerPanel(Gtk.Box):
             self.prev_runs = dict(runs)
         else:
             self.prev_runs.update(runs)
+        self._note_run_places(runs)
         counts = {s: sum(1 for r in runs.values() if r.state == s) for s in ("done", "partial", "missing")}
         self.set_status(f"Previous runs: {counts['done']} done, {counts['partial']} partial, "
                         f"{counts['missing']} missing (folder {plan.root})")
