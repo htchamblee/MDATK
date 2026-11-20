@@ -83,6 +83,18 @@ def test_speeds_come_from_finished_pmemd_cuda_runs(tmp_path):
     assert len(p.benchmarks) == 1
 
 
+@pytest.mark.parametrize("title, namelist", [("Production, dt=4fs with HMR", "dt=0.004,"),
+                                             ("Production", "dt=4.0d-3,"), ("Production", "dt = .004, ! was dt=0.002")])
+def test_the_time_step_is_the_one_pmemd_reports(tmp_path, title, namelist):
+    """pmemd echoes the input file before its own report: a title that mentions 'dt=4fs' or a Fortran 'dt=4.0d-3'
+    was read as a time step of 4 ps, and every wall time estimated from that run was a thousand times off."""
+    out = pmemd_out(tmp_path / "prod.out", dt=0.004)
+    report = out.read_text()
+    out.write_text(f" Here is the input file:\n\n{title}\n&cntrl\n  imin=0, nstlim=5000000, {namelist}\n/\n\n"
+                   + report)
+    assert clusters.parse_out(str(out)).dt == 0.004
+
+
 def test_the_wall_time_scales_with_atoms_time_step_and_ns():
     p = grace()
     # 200 ns + 6 ns at 4 fs on 50,000 atoms: 206 x 160 s, + 5 min + 2 x 2 min (minimisations), + 10%

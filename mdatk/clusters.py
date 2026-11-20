@@ -157,7 +157,10 @@ def clamp_cushion(value: Any) -> float:
 _GPU = re.compile(r"CUDA Device Name:\s*(.+)")
 _NATOM = re.compile(r"NATOM\s*=\s*(\d+)")
 _DT = re.compile(r"\bdt\s*=\s*([0-9.]+(?:[eE][-+]?\d+)?)")
-_ALL = re.compile(r"Average timings for all steps:.*?seconds/ns\s*=\s*([0-9.]+)", re.S)
+# the time step as pmemd reports it under 'Molecular dynamics:' ("t = 0.00000, dt = 0.00400, vlimit = ..."), not
+# as the echoed input file has it: its title line may say 'dt=4fs', its namelist 'dt=2.0d-3'
+_DT_RUN = re.compile(r"^\s*t\s*=\s*[-+0-9.]+\s*,\s*dt\s*=\s*([0-9.]+)", re.M)
+_ALL =re.compile(r"Average timings for all steps:.*?seconds/ns\s*=\s*([0-9.]+)", re.S)
 
 
 def parse_out(path: str) -> Optional[Benchmark]:
@@ -171,7 +174,7 @@ def parse_out(path: str) -> Optional[Benchmark]:
     gpu, natom, timing = _GPU.search(text), _NATOM.search(text), _ALL.findall(text)
     if not (gpu and natom and timing):
         return None
-    dt = _DT.search(text)
+    dt = _DT_RUN.search(text) or _DT.search(text)
     try:
         s_per_ns = float(timing[-1])
         bench = Benchmark(gpu.group(1).strip(), int(natom.group(1)), float(dt.group(1)) if dt else 0.002, s_per_ns,
