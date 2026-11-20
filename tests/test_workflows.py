@@ -1539,3 +1539,22 @@ def test_gmx_posre_restrains_dna_and_l_dna():
     assert list(itps) == ["apt1_04_posre-system1.itp"]
     rows = [ln.split()[0] for ln in itps["apt1_04_posre-system1.itp"].splitlines() if ln[:1] == " "]
     assert rows == ["1", "3", "4", "5"] and '#include "apt1_04_posre-system1.itp"' in text
+
+
+def test_amber_restraints_secondary_structure_file_without_a_sequence(tmp_path):
+    """A chosen file with the dot-bracket only and no sequence typed: an error that says so, in every step that
+    reads a secondary structure (the Amber restraints step ended with "internal error ... string index out of
+    range")."""
+    (tmp_path / "a.secstruct").write_text("((((....))))\n")
+    (tmp_path / "s.parm7").write_text("x\n")
+    tool = TOOLS["amber-restraints"]
+    node = PlanNode(id="r", tool="amber-restraints", step=1, settings=tool.normalise({}),
+                    files={"secstruct": str(tmp_path / "a.secstruct"), "topology": str(tmp_path / "s.parm7")})
+    plan = Plan(WorkflowParams(project_name="p", stamp=STAMP, nodes=[node]), str(tmp_path / "plan"))
+    errors = [i.message for i in plan.steps["r"].issues if i.level == "error"]
+    assert "the secondary-structure file has no sequence line: type the sequence" in errors
+    assert not any("internal error" in e for e in errors)
+    # with the sequence typed the file is read as before
+    node.settings = tool.normalise({"sequence": "GGGGAAAACCCC"})
+    plan = Plan(WorkflowParams(project_name="p", stamp=STAMP, nodes=[node]), str(tmp_path / "plan2"))
+    assert not any("sequence line" in i.message or "internal error" in i.message for i in plan.steps["r"].issues)

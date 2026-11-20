@@ -64,7 +64,9 @@ L_CHIRAL_SIGNS = (("C4'", ("O4'", "C3'", "C5'"), 1.0), ("C3'", ("O3'", "C4'", "C
 MIN_CHIRAL_VOLUME = 0.5
 CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 BACKBONE = ("P", "O5'", "C5'", "C4'", "C3'", "O3'")
-_FMT_RE = re.compile(r"\(\s*(\d+)\s*([aAiIeEfF])\s*(\d+)")
+# '(20a4)', '(5E16.8)'; also without a repeat count ('(a80)') and with the item in parentheses of its own
+# ('(8(F9.5))': the CMAP parameters of ff19SB)
+_FMT_RE = re.compile(r"\(\s*\d*\s*\(?\s*([aAiIeEfF])\s*(\d+)")
 _NT_RE = re.compile(r"^(LD|[RL0D]?)([ACGTU])([53N]?)$")  # (LD: L-DNA, the LDA LDC LDG LDT of MDATK's library)
 # 16:O3' (topology residue number) or A:16:O3' / A:16B:O3' (chain, number and insertion code of the fitted model)
 _ATOM_RE = re.compile(r"(?:([^:\s,]):)?(-?\d+)([A-Za-z]?):([^:\s,]+)")
@@ -91,10 +93,12 @@ def read_parm7(path, wanted):
                     sections[current] = []
                 continue
             if line.startswith("%FORMAT"):
+                if current is None:
+                    continue  # a section nobody asked for (e.g. CHAMBER's '(i2,a78)'): not read
                 m = _FMT_RE.search(line)
                 if m is None:
                     raise PrepError(f"{path}: cannot read the format line {line.strip()!r}")
-                kind, width = m.group(2).lower(), int(m.group(3))
+                kind, width = m.group(1).lower(), int(m.group(2))
                 continue
             if current is None or line.startswith("%"):
                 continue

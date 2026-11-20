@@ -826,3 +826,22 @@ def test_final_writes_the_whole_system_for_a_continuation(tmp_path, system):
     xyz, out_box, vel = nm.read_rst7(cfg["final_rst7"], n)  # every atom, topology order, the box
     assert out_box == pytest.approx(box) and not vel
     assert np.abs(np.array(xyz) - np.array(moved)).max() < 1e-6
+
+
+def test_topology_reader_skips_format_lines_of_sections_it_does_not_read(tmp_path):
+    """CHAMBER and CMAP topologies have format lines such as '(a80)', '(i2,a78)' and '(8(F9.5))': the reader
+    stopped at them ("cannot read the format line") although it only wanted POINTERS (as mdatk.io.parm7 did)."""
+    top = tmp_path / "chamber.parm7"
+    top.write_text("%VERSION  VERSION_STAMP = V0001.000\n"
+                   "%FLAG CTITLE\n%FORMAT(a80)\nchamber topology\n"
+                   "%FLAG FORCE_FIELD_TYPE\n%FORMAT(i2,a78)\n 1 CHARMM  36\n"
+                   "%FLAG POINTERS\n%FORMAT(10I8)\n       3       2\n"
+                   "%FLAG CHARMM_CMAP_PARAMETER_01\n%FORMAT(8(F9.5))\n  0.12600  0.77000\n"
+                   "%FLAG ATOM_NAME\n%FORMAT(20a4)\nN   CA  C   \n")
+    sections, flags = nm.read_parm7(str(top), ("POINTERS", "ATOM_NAME", "CHARMM_CMAP_PARAMETER_01"))
+    assert sections["POINTERS"][:2] == [3, 2] and sections["ATOM_NAME"] == ["N", "CA", "C"]
+    assert sections["CHARMM_CMAP_PARAMETER_01"] == pytest.approx([0.126, 0.77])
+    assert "FORCE_FIELD_TYPE" in flags
+    top.write_text("%FLAG POINTERS\n%FORMAT(what)\n 3\n")
+    with pytest.raises(nm.PrepError, match="cannot read the format line"):
+        nm.read_parm7(str(top), ("POINTERS",))

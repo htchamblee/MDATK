@@ -266,6 +266,10 @@ def secondary_structure(s: Dict[str, Any], ctx: StepContext,
         except (OSError, ValueError) as exc:
             issues.append(Issue("error", f"cannot read {os.path.basename(path)}: {exc}", (f"input:{port}",)))
             return None, "", issues
+        if not model.chains:  # the dot-bracket alone, and no sequence typed
+            issues.append(Issue("error", "the secondary-structure file has no sequence line: type the sequence",
+                                ("sequence", f"input:{port}")))
+            return None, "", issues
         return model, os.path.basename(path), issues
     if not (s.get("dotbracket") or "").strip():
         return None, "", issues
