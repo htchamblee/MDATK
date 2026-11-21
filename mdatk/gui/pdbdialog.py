@@ -246,7 +246,7 @@ class PDBToolsWindow(Gtk.Window):
         try:
             s = pdbtools.read_pdb(path)
             notes = pdbtools.assign_chirality(s, detect=True, l_ranges=self.l_ranges.get_text().strip() or None)
-        except (OSError, pdbtools.PDBError) as exc:
+        except (OSError, ValueError) as exc:  # ValueError: a PDBError, or a file that is not text (UTF-8)
             self._show(f"ERROR: {exc}")
             return
         info = pdbtools.summary(s)

@@ -584,6 +584,30 @@ def test_a_run_can_be_deleted_instead_of_moved(tmp_path):
     assert item.plain()["deleted"] is True
 
 
+def test_deleting_a_run_leaves_the_other_empty_folders(tmp_path):
+    """Deleting a completed run also removed every empty folder in the step folder and, in a plan without step
+    folders, in the whole plan folder: other steps' working folders and the user's own."""
+    for step_folders in (True, False):
+        wf = WorkflowParams(project_name="apt1", stamp=OLD, step_folders=step_folders)
+        out = [{"name": "result", "kind": "text", "file": ""}]
+        first = add_node(wf, "user-script", settings={"script": "true\n", "outputs": out})
+        second = add_node(wf, "user-script", settings={"script": "true\n", "outputs": out})
+        root = str(tmp_path / ("folders" if step_folders else "flat"))
+        plan = Plan(wf, root)
+        plan.write()
+        fake_run(plan, first.id, OLD)
+        fake_run(plan, second.id, OLD)
+        step_dir = os.path.join(root, "01_custom") if step_folders else root
+        other_dir = os.path.join(root, "02_custom") if step_folders else root
+        kept = [os.path.join(step_dir, "mine"), os.path.join(other_dir, "work", "scratch"),
+                os.path.join(root, "notes")]
+        for path in kept:
+            os.makedirs(path)
+        report = Plan(wf, root).write([first.id], discard=True)
+        assert report.superseded[first.id].deleted and not report.superseded[first.id].error
+        assert [p for p in kept if not os.path.isdir(p)] == [], step_folders
+
+
 def test_a_link_in_a_deleted_run_is_removed_not_followed(tmp_path):
     wf, build, _restraints, _md = amber_plan(tmp_path)
     root = str(tmp_path / "plan")

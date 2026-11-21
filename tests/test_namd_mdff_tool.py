@@ -819,3 +819,23 @@ def test_continuation_wiring_is_checked(tmp_path):
     p1.settings["continuation"] = False
     st2 = Plan(wf, "/tmp/mdatk-plan").steps[p2.id]
     assert any("does not produce this file" in m for m in messages(st2, "error")), messages(st2)
+
+
+def test_every_run_has_whole_cycles_of_steps():
+    """NAMD refuses a 'run' / 'minimize' count that is not a multiple of stepspercycle (10 in every configuration):
+    50000 steps in 3 segments were written as 'run 16666' three times."""
+    from mdatk.workflows.namd import STEPS_PER_CYCLE, NamdMDFFTool
+    assert STEPS_PER_CYCLE == 10
+    assert [NamdMDFFTool.run_steps(*a) for a in ((50000, 3), (50000, 5), (2000, 1), (25, 1), (7, 3), (1, 1))] == \
+        [16670, 10000, 2000, 30, 10, 10]
+    stages = [dict(name="min", kind="min", steps=2005), dict(name="fit", kind="md", steps=50000, segments=3),
+              dict(name="relax", kind="md", steps=20000, segments=2)]
+    plan, step = single({"stages": stages}, data={"four_site_water": False, "hmr": False})
+    files = {f.name: f.content for f in TOOLS["namd-mdff"].generate(step.settings, step.ctx)}
+    assert "\nminimize 2010\n" in files[f"apt1_02_min_{STAMP}.namd"]
+    assert all("\nrun 16670\n" in files[f"apt1_02_fit-00{k}_{STAMP}.namd"] for k in (1, 2, 3))
+    assert "\nrun 10000\n" in files[f"apt1_02_relax-001_{STAMP}.namd"]
+    notes = [m for m in messages(step, "info") if "whole cycles" in m]
+    assert notes == ["stage 1: 2010 steps in its run (2010 in all, not 2005): NAMD runs whole cycles of 10 steps",
+                     "stage 2: 16670 steps in each of its 3 runs (50010 in all, not 50000): NAMD runs whole cycles "
+                     "of 10 steps"]

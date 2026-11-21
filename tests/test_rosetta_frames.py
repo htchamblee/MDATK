@@ -284,6 +284,83 @@ def test_farfar2_models_table_names_the_ranked_models(tmp_path):
     assert by["r01/S_000002"] and by["r02/S_000002"] and not by["r01/S_000003"]
 
 
+def test_farfar2_models_run_again_leaves_no_model_of_the_earlier_run(tmp_path):
+    # default settings: the list of the ranked models was appended to, and the models an earlier run had
+    # written beyond those of the new one stayed, as outputs of the step
+    plan, mid = _models_plan(tmp_path, n_models=4, cluster=False, dssr=False)
+    plan.write([mid])
+    folder = tmp_path / "02_farfar2-models"
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT})
+    script = ["bash", str(folder / f"apt1_02_farfar2-models_{STAMP}.sh")]
+
+    def models():
+        return sorted(p.name for p in folder.glob("apt1_02_model-*.pdb"))
+
+    for k in (1, 2):
+        write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out", silent_text(DECOYS))
+    proc = subprocess.run(script, capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert models() == [f"apt1_02_model-0{k}_{STAMP}.pdb" for k in (1, 2, 3, 4)]
+    # the FARFAR2 step was run again and left one decoy per run
+    for k in (1, 2):
+        write(tmp_path / "01_farfar2" / f"apt1_01_farfar2-r0{k}_{STAMP}.out", silent_text(DECOYS[:1]))
+    proc = subprocess.run(script, capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert models() == [f"apt1_02_model-0{k}_{STAMP}.pdb" for k in (1, 2)]
+    ranked = (folder / f"apt1_02_models_{STAMP}.txt").read_text().splitlines()
+    assert [ln.split()[:3] for ln in ranked] == [["01", "-10.5", "S_000001"], ["02", "-10.5", "S_000001"]]
+
+
+def test_farfar2_models_silent_files_in_a_folder_with_a_space(tmp_path):
+    # silent files chosen by hand keep their path: one with a space was split into two words on the
+    # rna_cluster line and in the ranking loop, and cut short where the ranking and the models list are read
+    silents = [write(tmp_path / "my runs" / f"run{k}.out", silent_text(DECOYS)) for k in (1, 2)]
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT, "rna_cluster": FAKE_CLUSTER})
+    for k, settings in enumerate(({"cluster": True},
+                                  {"cluster": False, "filter": True, "filter_limits": "linear_chainbreak <= 5"},
+                                  {"cluster": False, "write_scores": True})):
+        wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+        node = add_node(wf, "farfar2-models", settings=dict({"n_models": 2, "dssr": False}, **settings))
+        node.files["silent"] = ";".join(silents)
+        plan = Plan(wf, str(tmp_path / f"plan{k}"))
+        assert not plan.has_errors(), plan.all_issues()
+        plan.write()
+        folder = tmp_path / f"plan{k}" / "01_farfar2-models"
+        proc = subprocess.run(["bash", str(folder / f"apt1_01_farfar2-models_{STAMP}.sh")], capture_output=True,
+                              text=True, env=env, cwd=str(folder))
+        assert proc.returncode == 0, proc.stderr
+        assert (folder / f"apt1_01_model-02_{STAMP}.pdb").exists()
+        if settings["cluster"]:
+            assert (folder / "cluster_args.txt").read_text().count("my runs/run") == 2
+        elif "filter" in settings:  # S_000002 (linear_chainbreak 7) is skipped in both runs
+            ranked = (folder / f"apt1_01_models_{STAMP}.txt").read_text().splitlines()
+            assert [ln.split()[2] for ln in ranked] == ["S_000003", "S_000003"]
+            assert ranked[0].endswith("my runs/run1.out") or ranked[0].endswith("my runs/run2.out")
+        else:  # the decoy table names the ranked models of both runs
+            rows = rosetta.read_decoy_table(str(folder / f"apt1_01_scores_{STAMP}.tsv")).rows
+            assert sorted(r.pdb for r in rows if r.pdb) == [
+                f"01_farfar2-models/apt1_01_model-0{n}_{STAMP}.pdb" for n in (1, 2)]
+
+
+def test_farfar2_models_dssr_annotates_the_models_from_100_on(tmp_path):
+    silent = write(tmp_path / "runs" / "run1.out",
+                   silent_text([(f"S_{k:06d}", (-1.0 * k, 1.0, 0.5)) for k in range(1, 106)]))
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "farfar2-models", settings={"n_models": 102, "cluster": False})
+    node.files["silent"] = silent
+    plan = Plan(wf, str(tmp_path / "plan"))
+    plan.write()
+    folder = tmp_path / "plan" / "01_farfar2-models"
+    env = _fake_tools(tmp_path, {"extract_pdbs": FAKE_EXTRACT, "x3dna-dssr":
+                                 'for a in "$@"; do case "$a" in -o=*) echo dssr > "${a#-o=}";; esac; done'})
+    proc = subprocess.run(["bash", str(folder / f"apt1_01_farfar2-models_{STAMP}.sh")], capture_output=True,
+                          text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert len(list(folder.glob("apt1_01_model-*.pdb"))) == 102
+    assert len(list(folder.glob("apt1_01_model-*.dssr"))) == 102
+    assert (folder / f"apt1_01_model-102_{STAMP}.dssr").exists()
+
+
 def test_farfar2_models_filter_after_clustering(tmp_path):
     plan, mid = _models_plan(tmp_path, n_models=2, dssr=False, filter=True,
                              filter_limits="linear_chainbreak<=5")
@@ -376,6 +453,16 @@ def test_audit_controlled_residues_are_chain_aware(tmp_path):
     assert c.flags["[controlled in -input_res]"] == "A:2"
 
 
+def test_audit_controlled_residues_of_a_fasta_tagged_in_part_regression(tmp_path):
+    """regression: with a FASTA of which one record has a chain tag and another has none, the paired
+    controlled residues were sorted as (chain, number) with chains 'A' and None: a TypeError ended the audit."""
+    _condition(str(tmp_path / "c1"), "-fasta ../seq.fasta -secstruct_file ../ss.txt\n",
+               files={"seq.fasta": ">a A:1-6\ngggccc\n>b\ngggccc\n", "ss.txt": "(((((())))))\n"}, logs=1)
+    c = rosetta.collect(str(tmp_path / "c1"), controlled=rosetta.parse_residues("4-9"))
+    assert c.flags["[controlled paired in secstruct]"] == "paired 7-9,A:4-6"  # untagged record: 7-12, no chain
+    assert c.flags["[effective condition]"] == "imposed: secstruct pairs 7-9,A:4-6"
+
+
 def test_audit_runs_disagree_and_restarts(tmp_path):
     folder = str(tmp_path / "c")
     _condition(folder, "-cycles 100\n", logs=2)
@@ -427,6 +514,27 @@ def test_audit_of_mdatk_plan_and_step(tmp_path):
     _p, st = _single("rosetta-audit", {"pairs": "x"})
     assert any("CONTROL=TREATMENT" in i.message for i in st.issues) and any(
         "connect the silent files" in i.message for i in st.issues)
+
+
+def test_audit_step_takes_a_pair_suffix_that_starts_with_a_hyphen(tmp_path):
+    # conditions named run and run-nopairs: '--pair-suffix -nopairs' is no value to argparse ("expected one
+    # argument"), so the suffix is written as --pair-suffix=-nopairs, as the register census writes its own
+    flags = "-fasta t.fasta\n-nstruct 2\n"
+    for name in ("run", "run-nopairs"):
+        _condition(str(tmp_path / "campaign" / name), flags, files={"t.fasta": ">t A:1-4\nggcc\n"})
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    add_node(wf, "rosetta-audit", settings={"folders": str(tmp_path / "campaign"), "pair_suffix": "-nopairs",
+                                            "python": sys.executable})
+    plan = Plan(wf, str(tmp_path / "plan"))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    folder = tmp_path / "plan" / "01_rosetta-audit"
+    script = folder / f"apt1_01_rosetta-audit_{STAMP}.sh"
+    assert " --pair-suffix=-nopairs " in script.read_text()
+    proc = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONPATH=REPO))
+    assert proc.returncode == 0, proc.stderr
+    assert "run-nopairs" in (folder / f"apt1_01_rosetta-audit_{STAMP}.txt").read_text()
 
 
 def _single(tool, settings, files=None, groups=None):
@@ -489,6 +597,18 @@ def test_selections_and_groups():
         frames.parse_selection("X", [ResidueGroup("X", "", "name P")])
     assert frames.parse_model_map("C:1-3=X:45-47") == {("X", 45): ("C", 1), ("X", 46): ("C", 2),
                                                         ("X", 47): ("C", 3)}
+
+
+def test_group_residues_are_read_as_the_project_reads_them_regression():
+    """regression: a group's residues in the forms the project accepts besides '1-8' were misread without a
+    word: '1:8' as residue 8 of a chain '1', '1 - 8' as the residues 1 and 8 and a whole chain '-'."""
+    for residues in ("1-8", "1:8", "1 - 8"):
+        assert frames.parse_selection("group:G", [ResidueGroup("G", residues)]) == [(None, 1, 8)]
+    groups = [ResidueGroup("G", "A:5 - 8, 12, B:7:9"), ResidueGroup("Whole", "C, :5-9")]
+    assert frames.parse_selection("G", groups) == [("A", 5, 8), (None, 12, 12), ("B", 7, 9)]
+    assert frames.selection_text("group:G", groups) == "A:5-8,12,B:7-9"
+    # what only this module's syntax can say (a whole chain, a blank chain id) is read as before
+    assert frames.parse_selection("group:Whole", groups) == [("C", None, None), ("", 5, 9)]
 
 
 def test_frame_check_is_chain_aware(tmp_path):

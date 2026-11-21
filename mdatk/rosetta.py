@@ -875,7 +875,8 @@ def derive(cmd: Command, bases: Sequence[str], controlled,
             notes.append(f"the FASTA has {len(numbering)} residues and the secstruct {len(db)}")
         index = {k + 1: numbering[k] for k in range(min(len(numbering), len(db)))}
         paired = sorted({index[k] for p in pairs for k in p
-                         if k in index and in_ranges(index[k], controlled)})
+                         if k in index and in_ranges(index[k], controlled)},
+                        key=lambda r: (r[0] or "", r[1]))  # (a FASTA record without a chain tag: chain None)
         state = ("paired" if wanted and len(paired) == len(wanted) else "unpaired" if not paired
                  else f"partly paired ({len(paired)} of {len(wanted)})")
         flags["[controlled paired in secstruct]"] = state + (f" {_ranges_text(paired)}" if paired else "")

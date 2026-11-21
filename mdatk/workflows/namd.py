@@ -39,6 +39,7 @@ from .scripts import namd_mdff as _namd_mdff
 # The same for every base.
 D_IMPROPERS = {"C1'": -35.01, "C2'": 40.03, "C3'": 38.30, "C4'": 33.31}
 FOUR_SITE = {"opc", "tip4pew", "tip4pd", "tip4p2005"}
+STEPS_PER_CYCLE = 10  # stepspercycle of every run's configuration
 # file tags of the step's own files (ctx.name): a stage or segment run of the same name would overwrite them
 RESERVED_TAGS = ("start", "prep", "potential", "coupling", "posres", "chirality", "ssdihedrals", "basepairs",
                  "extrabonds", "cell", "fitted", "fitted-system", "mdff", "energy", "energy-check", "namd-mdff")
@@ -300,13 +301,20 @@ class NamdMDFFTool(Tool):
         return [st["gscale"] + (end - st["gscale"]) * (seg / (nseg - 1) if nseg > 1 else 0.0)
                 for seg in range(nseg)]
 
+    @staticmethod
+    def run_steps(steps: int, runs: int) -> int:
+        """Steps of each NAMD run of a stage: the stage's steps over its runs, rounded up to whole cycles (NAMD
+        refuses a 'run' / 'minimize' count that is not a multiple of stepspercycle)."""
+        each = max(1, int(steps) // max(1, runs))
+        return -(-each // STEPS_PER_CYCLE) * STEPS_PER_CYCLE
+
     def runs(self, s, ctx) -> List[Dict[str, Any]]:
         """Stages expanded into NAMD runs (segments), with the coupling of each run."""
         out = []
         for k, st in enumerate(s["stages"]):
             tag = self.stage_tag(st, k)
             scales = self.stage_scales(st)
-            steps = max(1, st["steps"] // len(scales))
+            steps = self.run_steps(st["steps"], len(scales))
             for seg, gscale in enumerate(scales):
                 rtag = f"{tag}-{seg + 1:03d}" if len(scales) > 1 else tag
                 out.append({"stage": st, "index": k, "seg": seg, "tag": rtag, "steps": steps, "gscale": gscale,
@@ -604,6 +612,12 @@ class NamdMDFFTool(Tool):
                                         f"{', '.join(tags[k] for k in strong)} can invert sugar centres (of D and L "
                                         "residues alike)", tuple(f"stages.{k}.chirality" for k in strong)))
         for k, st in enumerate(s["stages"]):
+            nruns = len(self.stage_scales(st))
+            each = self.run_steps(st["steps"], nruns)
+            if each * nruns != st["steps"]:
+                out.append(Issue("info", f"stage {k + 1}: {each} steps in " + (f"each of its {nruns} runs" if nruns > 1
+                                 else "its run") + f" ({each * nruns} in all, not {st['steps']}): NAMD runs whole "
+                                 f"cycles of {STEPS_PER_CYCLE} steps", (f"stages.{k}.steps", f"stages.{k}.segments")))
             if st["kind"] == "md" and st["segments"] > st["steps"]:
                 out.append(Issue("error", f"stage {k + 1}: more segments than steps", (f"stages.{k}.segments",)))
             if (st["kind"] == "md" and st["gscale_end"] is not None and st["gscale_end"] != st["gscale"]
@@ -839,7 +853,7 @@ class NamdMDFFTool(Tool):
         else:
             lines += ["", "rigidBonds       all", "rigidTolerance   1.0e-8", "useSettle        on",
                       f"timestep         {fortran_float(self.timestep(s, ctx))}",
-                      "nonbondedFreq    1", "fullElectFrequency 1", "stepspercycle    10"]
+                      "nonbondedFreq    1", "fullElectFrequency 1", f"stepspercycle    {STEPS_PER_CYCLE}"]
         return lines
 
     def _conf(self, s, ctx, run, prev) -> str:

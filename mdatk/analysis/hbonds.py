@@ -25,6 +25,8 @@ from .common import labels, per_row_counts, residue_rows, without
 class HBondAnalysis(Analysis):
     name = "hbonds"
     label = "Hydrogen bonds"
+    # 2: without the angle an atom pair counts once; N carrying H is no acceptor without topology bonds either
+    version = 2
     group_slots = 2
     OUTPUT_LABELS = {
         "count": "{a}\u2013{b} H-bonds",
@@ -64,6 +66,7 @@ class HBondAnalysis(Analysis):
         self.ab = a | b  # sorted union; positions fetched once per frame
         self.side = np.where(np.isin(self.ab.ix, a.ix), 0, 1)
         el = atom_elements(self.ab)
+        self.el = el
         self.is_h = el == "H"
         self.has_h = bool(self.is_h.any())
         donor_el = {e.upper() for e in split_csv(p.donor_elements)}
@@ -146,6 +149,9 @@ class HBondAnalysis(Analysis):
                 best[hi] = (hj, dist)
         for hi, (hj, _) in best.items():
             self.h_of.setdefault(int(heavy_idx[hj]), []).append(int(h_idx[hi]))
+        for x in self.h_of:  # as with bonds from the topology: a nitrogen carrying H is no acceptor
+            if self.el[x] == "N":
+                self.cand_acc[x] = False
         self._build_donor_lists()
 
     # ---------------------------------------------------------------- frames
@@ -158,6 +164,8 @@ class HBondAnalysis(Analysis):
         rows_a: List[np.ndarray] = []
         rows_b: List[np.ndarray] = []
         total = 0
+        counted = None  # distance only: the atom pairs counted with the donor in group A
+        n_atoms = len(pos)
         for s in (0, 1):
             don = self.donor_idx[s]
             acc = self.acc_idx[1 - s]
@@ -166,6 +174,14 @@ class HBondAnalysis(Analysis):
                 continue
             d_atoms = don[i]
             a_atoms = acc[j]
+            if not self.use_angle:
+                # without the angle nothing tells which atom donates: two atoms that can both donate and
+                # accept (every N / O of a topology without hydrogens, two hydroxyls) are one bond, not two
+                if s == 0:
+                    counted = d_atoms * n_atoms + a_atoms
+                elif counted is not None:
+                    new = ~np.isin(a_atoms * n_atoms + d_atoms, counted)
+                    d_atoms, a_atoms = d_atoms[new], a_atoms[new]
             if self.use_angle:
                 n_h = self.h_start[d_atoms + 1] - self.h_start[d_atoms]
                 rep_d = np.repeat(d_atoms, n_h)

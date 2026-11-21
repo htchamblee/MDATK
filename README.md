@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.0.19](#whats-new-in-0019)
+- [What's new in 0.1.0](#whats-new-in-010)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,25 +82,31 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.0.19
+## What's new in 0.1.0
+
+- **Cluster jobs.** The Amber MD and GROMACS steps write a job script for your cluster beside their production
+  script, and the plan a script that submits them all. Clusters are described once, in **cluster profiles** kept
+  outside project files (RNAdo's menu > *Cluster profiles…*): job header, GPU, queues and their limits, a
+  cushion. The wall time of each Amber job is estimated from the stages it runs, the system's atoms and the
+  seconds/ns of earlier runs on that GPU, and the job goes into the shortest queue that holds it. See
+  [Cluster job scripts](#cluster-job-scripts).
+- **RNA force field *None*** in the Amber build, for DNA-only systems: tleap sources no RNA force field.
+- **A pre-release audit of the whole code base**: about 90 fixes, each reproduced first and covered by a test. The
+  ones that change results: periodic distances in triclinic boxes (hydrogen bonds across the boundary of a
+  truncated octahedron were dropped), hydrogen bonds counted twice by distance only, the time step override
+  ignored for NetCDF trajectories, a temperature ramp repeated in every segment of a split Amber MD stage, the
+  default restraint mask of a duplex without chain ids, L-DNA without GROMACS position restraints, and modelling
+  steps that reused files of an earlier run; in the windows, text typed into a table cell and left with a click
+  was dropped. Cached results of the corrected analyses are recomputed once. The
+  list is in [CHANGELOG.md](CHANGELOG.md#010-2026-11-20).
+
+### Also new in 0.0.19
 
 - **Fix: L-DNA dihedrals across a D/L junction.** The generated L-DNA library gave the backbone dihedrals that
   cross a D/L junction's phosphate the L phase on both sides (the zeta of a D residue before an L one, the alpha
   of a D residue after an L one), so a D/L chimera was not the mirror image of its twin. Each such dihedral now
   takes the hand of the sugar it hangs off, and a chimera and its mirror image have the same energy. Rebuild
   topologies with a D/L DNA junction; all-D, all-L and L-RNA builds are unchanged.
-
-### Also new in 0.0.18
-
-- **D/L chimeras with linked partner strands.** The structure builder's chimera mode can now join the partner
-  strands too (*Link the partner strands* in the planner step and in RNAdo's *Chimera* page,
-  `mdatk build chimera --link-partners`): a phosphodiester at every junction on both strands, so a D|L duplex
-  comes out as two continuous chains instead of strand 1 plus one nicked partner per segment. Both
-  phosphodiesters of a junction are fitted together (O3'-P 1.60 Å); the design and its twin still give exact
-  mirror images. A D/L B-DNA junction cannot stack with both backbones closed: its end pairs stay coaxial but
-  about 6.4-7.5 Å apart, which the builder warns about (minimise). With linked partners of one nucleic acid the
-  step has a *Secondary structure* output, e.g. for helix restraints. Off by default: other builds are
-  byte-identical to 0.0.17.
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -977,6 +983,67 @@ $ mdatk workflow run -p plan.mdatk.toml --include-separate   # main, separate, m
 Main scripts written before 0.0.10 do not make this check; MDATK treats such a step as waiting and
 asks you to write it again (and does not run such a main script again after its separate scripts).
 
+#### Cluster job scripts
+
+The Amber MD and GROMACS steps have a *Cluster job* section. A step with a separately run script and a *Cluster
+profile* (or a *Job header* of its own) also writes `<project>_<NN>_job_<stamp>.<ext>` in its folder (`.slurm` for
+`#SBATCH` lines, `.pbs` for `#PBS`, `.lsf` for `#BSUB`, `.sge` for `#$`, else `.job`), and the plan writes
+`<project>_00_submit_<stamp>.sh` beside its master script, which submits every step's job from that step's folder.
+
+**Cluster profiles** describe the clusters you use, once, outside project files: RNAdo's menu > *Cluster
+profiles…* (kept in `~/.config/mdatk/clusters.toml`, for every project on this computer; `mdatk cluster list`).
+*Duplicate* makes the profile of a similar cluster. A profile has:
+
+- the *Job header*: the scheduler's directives and the module loads every job of the cluster starts with, without
+  the wall time and the queue (a wall-time line in it is left out, with a note); `{job_name}` (`<project>_<NN>`),
+  `{project}`, `{step}` and `{folder}` are filled in, e.g. `#SBATCH --output={job_name}.%j`;
+- the *GPU* the header asks for, as part of the name pmemd gives the device (`A100` for `NVIDIA A100-SXM4-40GB`);
+- the *Queues*: each with its wall-time limit and the lines that choose it (`#SBATCH --partition=gpu`);
+- the *Cushion*, 1-20 %, added to every estimate; how a job asks for its wall time (by default the scheduler's
+  `--time` / `walltime` / `-W` / `h_rt` line) and how it is submitted (by default `sbatch --job-name={name}
+  {file}`, `qsub -N …`, `bsub -J … <`);
+- the *Run speeds*: GPU, atoms, time step and seconds/ns of finished pmemd.cuda runs, read from their `.out` files
+  (*Learn from runs…*, `mdatk cluster learn PROFILE FOLDER…`, and *Write cluster jobs*, below).
+
+**The wall time** of an Amber pmemd.cuda job is estimated when its job file is written: the ns of the stages the
+job runs (each stage's `nstlim` × segments × `dt`) times the seconds/ns of the profile's nearest earlier runs on its
+GPU - the median of the three nearest in size, each scaled by the system's atoms (from the step's topology) and
+time step - plus 5 minutes and 2 per minimisation, plus the cushion, rounded up to 5 minutes. The job goes into
+the shortest queue whose limit holds it; a job longer than the longest queue is submitted as that many jobs in a row
+(Slurm `--dependency=afterany`; finished stages and segments are skipped). The job file says how its time was
+worked out (`# Wall time: 52,345 atoms, 206 ns at 159.7 s/ns (NVIDIA A100-…; from 3 earlier runs of …) + 9 min,
++ 10% = 10:15:00`), and so does the step's note in the planner. Without the topology yet (the build has not
+run), without an earlier run on the GPU, or for another engine, the job asks for the limit of the longest queue,
+with a note.
+
+**Keeping the estimates current.** A step's job file is written again by itself when its main script stops to wait
+for the separate script (its topology exists then). *Write cluster jobs* (RNAdo's menu; `mdatk workflow jobs`)
+writes the plan's job files and submit script again and nothing else - no completed run moves - after adding the
+speeds of the runs that came back from the cluster to the profiles: only those of the separate script's MD runs
+at least as new as the note `<job file>.started` that the step's first cluster job leaves (the host it ran on), so
+runs made on another computer never count as the cluster's.
+
+**The job** changes to its step folder (where it was submitted from: `$SLURM_SUBMIT_DIR`, `$PBS_O_WORKDIR` …; it
+stops with a message if the step's scripts are not there) and runs, with *The job runs: The whole step* (the
+default), the main script - the stages before the separate ones; finished stages are skipped, so it costs nothing
+when they ran here - then the separate script(s), then the main script again (the stages after them and the step's
+last files, such as the dry PDB): the step is complete when the job ends, and *Check previous runs* finds it done
+once its folder is back. *The separate script(s) only* leaves the main script to MDATK here, before and after the
+job. In the job the step's scripts skip their conda lines (`MDATK_JOB=1`; the header's modules set up the
+programs), unless *Conda in the separate script on a cluster too* is ticked; the main script of a step without a
+job is written as before. The step's *Job header / extra lines* adds lines after the profile's header (e.g. an
+account); without a profile it is the whole header, written as it is. *Submit command* overrides the profile's.
+
+The submit script submits the jobs in plan order, Slurm jobs with `--dependency=afterok` on the jobs of the steps
+they read from. The steps without a job (structures, builds, restraints …) must have run before.
+
+```bash
+rsync -av runs/plan_workflow/ cluster:/scratch/me/plan_workflow/    # after the local steps have run
+ssh cluster 'bash /scratch/me/plan_workflow/plan_00_submit_20261113-1200.sh'
+rsync -av cluster:/scratch/me/plan_workflow/ runs/plan_workflow/    # when the jobs have finished
+mdatk workflow jobs -p plan.mdatk.toml                              # learn their speeds (and write the jobs again)
+```
+
 ### File names
 
 Every file is named `<project>_<step>_<tool>_<time>.<ext>`, e.g. `apt1_03_tleap_20261015-1432.parm7`:
@@ -1228,7 +1295,7 @@ OL3 + CP, whose atom types their masks assume), SPC/E water in a 15 Å truncated
 optional Mg²⁺ balanced with Cl⁻, and the stages min1 (solute restrained) → min2 → heat (Langevin from
 0 K) → NPT equilibration → NPT equilibration without positional restraints → production; the mdin files
 match the hand-written reference files line for line. Other choices: RNA force fields OL3, LJbb,
-ROC-RNA, YIL, DESRES; waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4P/2005; four Mg²⁺
+ROC-RNA, YIL, DESRES, or *None* for a system without RNA (no RNA `leaprc` is sourced); waters TIP3P, OPC, OPC3, TIP4P-Ew, TIP3P-FB, TIP4P-D, TIP4P/2005; four Mg²⁺
 models (see below); hydrogen mass repartitioning;
 positional restraints (mask, weight, reference); helix distance restraints with `LISTOUT=POUT`;
 temperature ramps; Berendsen / Monte Carlo barostat; stages split into segments for wall-time limits;

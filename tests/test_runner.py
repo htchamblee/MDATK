@@ -48,16 +48,23 @@ def run(jobs, parallel, **kw):
 
 
 def test_independent_steps_run_concurrently_and_dependents_wait(tmp_path):
-    # a and b are independent; c reads from both
-    jobs = [job(tmp_path, 1, "a"), job(tmp_path, 2, "b"), job(tmp_path, 3, "c", after=["a", "b"])]
-    t0 = time.monotonic()
+    # a and b are independent; c reads from both.  No wall-clock margins (they fail on a loaded machine): each
+    # of a and b ends only once it has seen the other one running, so both succeed only when they run at the
+    # same time (one after the other, the first would wait in vain and fail), and c checks that both have ended
+    def beside(me, other):
+        return (f"touch {me}.begun\n"
+                f"for _ in $(seq 1200); do [ -e {other}.begun ] && break; sleep 0.05; done\n"
+                f'[ -e {other}.begun ] || {{ echo "{other} did not run beside {me}"; exit 1; }}\n'
+                f"touch {me}.ended")
+    jobs = [job(tmp_path, 1, "a", body=beside("a", "b")), job(tmp_path, 2, "b", body=beside("b", "a")),
+            job(tmp_path, 3, "c", after=["a", "b"], body="[ -e a.ended ] && [ -e b.ended ] || exit 1")]
     results, lines, states = run(jobs, parallel=2)
     assert [r.status for r in results].count("ok") == 3
     t = times(lines)
-    assert t[("begin", "b")] < t[("end", "a")]  # a and b overlapped
+    assert t[("begin", "b")] < t[("end", "a")] and t[("begin", "a")] < t[("end", "b")]  # a and b overlapped
     assert t[("begin", "c")] >= max(t[("end", "a")], t[("end", "b")])
-    assert time.monotonic() - t0 < 1.6  # 0.6 + 0.6, not 3 x 0.6
     assert ("a", "queued") in states and states.index(("a", "running")) < states.index(("a", "ok"))
+    assert max(states.index(("a", "ok")), states.index(("b", "ok"))) < states.index(("c", "running"))
 
 
 def test_parallel_one_keeps_plan_order(tmp_path):
@@ -87,16 +94,50 @@ def test_jobs_without_step_ids_run_strictly_in_order(tmp_path):
 
 
 def test_cancel_stops_every_running_script(tmp_path):
-    jobs = [job(tmp_path, 1, "a", body="sleep 20"), job(tmp_path, 2, "b", body="sleep 20"),
+    body = "echo $$ > {0}.pid\nsleep 30\ntouch {0}.done"
+    jobs = [job(tmp_path, 1, "a", body=body.format("a")), job(tmp_path, 2, "b", body=body.format("b")),
             job(tmp_path, 3, "c", after=["a"])]
     cancel = threading.Event()
-    threading.Timer(0.8, cancel.set).start()
-    t0 = time.monotonic()
+
+    def cancel_when_both_run():  # not after a fixed time: on a loaded machine the scripts may not have begun
+        end = time.monotonic() + 60
+        while time.monotonic() < end and not all((tmp_path / f"{n}.pid").read_text().strip()
+                                                 if (tmp_path / f"{n}.pid").exists() else "" for n in "ab"):
+            time.sleep(0.05)
+        cancel.set()
+
+    threading.Thread(target=cancel_when_both_run, daemon=True).start()
     with pytest.raises(Cancelled):
         run(jobs, parallel=2, cancel=cancel)
-    assert time.monotonic() - t0 < 12
-    assert {s for n, s in run.states if n in ("a", "b")} >= {"cancelled"}
+    assert [s for n, s in run.states if n in ("a", "b")].count("cancelled") == 2
     assert ("c", "cancelled") in run.states and not any(line.startswith("begin c") for line in run.lines)
+    # both were stopped (not left to finish: the run would only have returned after their 30 s)
+    for name in "ab":
+        assert ended(int((tmp_path / f"{name}.pid").read_text())), name
+        assert not (tmp_path / f"{name}.done").exists()
+
+
+@pytest.mark.parametrize("how", ["cancel", "stop"])
+def test_cancel_ends_a_program_the_script_left_running(tmp_path, how):
+    """A script that has ended but left a program running in the background (which keeps its output open, so
+    the run goes on) could not be cancelled or stopped: the run only returned when that program ended."""
+    from mdatk.workflows.runner import StepStops
+    script = tmp_path / "s.sh"
+    script.write_text('cd "$(dirname "$0")"\n(sleep 30; touch left.done) &\necho $! > left.pid\necho "script ended"\n')
+    cancel, stops = threading.Event(), StepStops()
+
+    def on_line(line):
+        if line == "script ended":  # bash is about to exit; its background program runs on
+            cancel.set() if how == "cancel" else stops.stop("n")
+
+    job = ScriptJob(1, "s", str(script), node_id="n")
+    if how == "cancel":
+        with pytest.raises(Cancelled):
+            run_jobs([job], None, on_line=on_line, cancel=cancel)
+    else:
+        assert [r.status for r in run_jobs([job], None, on_line=on_line, stops=stops)] == ["stopped"]
+    assert ended(int((tmp_path / "left.pid").read_text()))
+    assert not (tmp_path / "left.done").exists()  # ended by the cancel, not after its 30 s
 
 
 def test_plan_jobs_dependencies():
@@ -170,16 +211,20 @@ def test_step_marks_and_stderr_apart(tmp_path):
 
 def test_a_broken_stderr_callback_stops_the_script(tmp_path):
     script = tmp_path / "s.sh"
-    script.write_text('echo "first" >&2\nsleep 5\necho "never"\n')
+    script.write_text('cd "$(dirname "$0")"\necho $$ > s.pid\necho "first" >&2\nsleep 30\ntouch s.done\n'
+                      'echo "never"\n')
 
     def broken(_line):
         raise BrokenPipeError("closed")
 
-    t0 = time.monotonic()
+    seen = []
     with pytest.raises(BrokenPipeError):
-        run_jobs([ScriptJob(1, "s", str(script), node_id="n")], None, on_line=lambda _l: None,
+        run_jobs([ScriptJob(1, "s", str(script), node_id="n")], None, on_line=seen.append,
                  on_stderr=broken)
-    assert time.monotonic() - t0 < 4
+    # stopped at its first line of standard error, not left to run to its end (no time limit to miss on a
+    # loaded machine: a script that was not stopped leaves s.done and prints "never")
+    assert ended(int((tmp_path / "s.pid").read_text()))
+    assert not (tmp_path / "s.done").exists() and "never" not in seen
 
 
 # ---------------------------------------------------------------------------
@@ -421,14 +466,16 @@ def test_each_run_leaves_an_output_log_with_a_timestamped_end(tmp_path):
 
 
 def test_a_stopped_step_says_so_in_its_output_log(tmp_path):
-    import threading as _th
-
     from mdatk.workflows.runner import StepStops, step_log_path
     script = tmp_path / "slow.sh"
-    script.write_text('echo "begun"\nsleep 20\n')
+    script.write_text('echo "begun"\nsleep 30\n')
     stops = StepStops()
-    _th.Timer(0.8, lambda: stops.stop("n")).start()
-    results = run_jobs([ScriptJob(1, "slow", str(script), node_id="n")], None, on_line=lambda _l: None,
+
+    def stop_once_begun(line):  # not after a fixed time: a script stopped before it starts leaves no log
+        if line == "begun":
+            stops.stop("n")
+
+    results = run_jobs([ScriptJob(1, "slow", str(script), node_id="n")], None, on_line=stop_once_begun,
                        stops=stops)
     assert results[0].status == "stopped"
     last = open(step_log_path(str(script))).read().splitlines()[-1]

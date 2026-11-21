@@ -200,8 +200,9 @@ class GeneratedFile:
     ``name`` is relative to the step folder.  ``role`` is ``"run"`` for the
     step's main script (called by the plan's master script),
     ``"run-separate"`` for scripts meant to be started by hand (e.g. a
-    production run submitted on a cluster), ``"input"`` for control files and
-    ``"helper"`` for small helper programs.
+    production run submitted on a cluster), ``"input"`` for control files,
+    ``"helper"`` for small helper programs and ``"job"`` for a cluster job script
+    (:mod:`mdatk.workflows.cluster`; submitted by hand, never run by MDATK).
     """
 
     name: str
@@ -211,7 +212,7 @@ class GeneratedFile:
 
     @property
     def executable(self) -> bool:
-        return self.role in ("run", "run-separate", "helper")
+        return self.role in ("run", "run-separate", "helper", "job")
 
 
 # File kinds carried by planner ports: id -> (label, typical extensions)

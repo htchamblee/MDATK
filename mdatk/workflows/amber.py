@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import PROJECT_ABBREV, __version__, pdbtools
 from . import mg_params, rna
+from .cluster import CLUSTER_SECTION
 from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, StepContext, Tool, env_section, extra_lines,
                    fortran_float, require_file, script_header, separate_check, shell_quote, skip_when_done,
                    waiting_done, waiting_file)
@@ -47,6 +48,7 @@ FORCE_FIELDS: Dict[str, Tuple[str, str, str]] = {
     "yil": ("YIL (Yildirim et al. 2010)", "leaprc.RNA.YIL", "YIL"),
     "shaw": ("DESRES RNA (Tan et al. 2018)", "leaprc.RNA.Shaw", "DESRES-RNA"),
 }
+NO_RNA = "none"  # the 'RNA force field' choice of a system without RNA: no RNA leaprc, nothing RNA-only is written
 
 # DNA force fields of AmberTools 26 (the Olomouc series): id -> (label, leaprc, short name, D library and the
 # parameter files its leaprc loads, in load order - what the L-DNA helper mirrors)
@@ -264,6 +266,10 @@ def secondary_structure(s: Dict[str, Any], ctx: StepContext,
         except (OSError, ValueError) as exc:
             issues.append(Issue("error", f"cannot read {os.path.basename(path)}: {exc}", (f"input:{port}",)))
             return None, "", issues
+        if not model.chains:  # the dot-bracket alone, and no sequence typed
+            issues.append(Issue("error", "the secondary-structure file has no sequence line: type the sequence",
+                                ("sequence", f"input:{port}")))
+            return None, "", issues
         return model, os.path.basename(path), issues
     if not (s.get("dotbracket") or "").strip():
         return None, "", issues
@@ -310,22 +316,31 @@ def helix_script(pairs, s: Dict[str, Any], source: str) -> str:
                  "main(sys.argv[1:], PAIRS, BONDS, WINDOW, OFFSET)", doc)
 
 
-def count_solute_residues(pdb_path: str) -> Optional[int]:
-    """Residues in a PDB that are not water or ions (None if unreadable)."""
-    skip = {"HOH", "WAT", "SOL", "NA", "NA+", "CL", "CL-", "K", "K+", "MG", "MG2", "ZN", "CA"}
-    seen = set()
+def count_solute_residues(pdb_path: str, drop_virtual: bool = False) -> Optional[int]:
+    """Residues in a PDB that are not water or ions (None if unreadable), counted as tleap reads them: a new
+    residue wherever the name, chain or number changes or a TER intervenes, so strands that share a chain id
+    and their numbers (blank chain ids, every strand numbered from 1) are not counted once.  ``drop_virtual``:
+    Rosetta's virtual residues (VRT / XXX) do not count - the preparation removes them."""
+    skip = {"HOH", "WAT", "SOL", "NA", "NA+", "CL", "CL-", "K", "K+", "MG", "MG2", "ZN", "CA"} | _prep_pdb.WATERS
+    count, last = 0, None
     try:
         with open(pdb_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if line.startswith("ENDMDL"):
                     break
-                if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 26:
-                    if line[17:21].strip().upper() in skip:
+                if line.startswith("TER"):
+                    last = None
+                elif line.startswith(("ATOM  ", "HETATM")) and len(line) >= 26:
+                    name = line[17:21].strip().upper()
+                    if name in skip or (drop_virtual and line[17:20].strip().upper() in _prep_pdb.VIRTUAL):
                         continue
-                    seen.add((line[21], line[22:27]))
+                    key = (name, line[21], line[22:27])
+                    if key != last:
+                        count += 1
+                        last = key
     except OSError:
         return None
-    return len(seen) or None
+    return count or None
 
 
 # ---------------------------------------------------------------------------
@@ -389,8 +404,10 @@ class AmberBuildTool(Tool):
         Section("forcefield", "Force field", [
             Option("rna_ff", "RNA force field", "choice", "ol3cp",
                    "leaprc file for RNA. 'OL3 + CP' adds the phosphate oxygen vdW correction of "
-                   "Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it.",
-                   choices=[(k, v[0]) for k, v in FORCE_FIELDS.items()]),
+                   "Steinbrecher et al. (JCTC 2012) from the frcmod below; NBfix19 / 0BPh assume it. None: no RNA "
+                   "leaprc is sourced, for a system without RNA (e.g. DNA only, with the DNA force field below); "
+                   "the RNA-only settings (NBfix19, 0BPh, a generated L-RNA library) must be off then.",
+                   choices=[(k, v[0]) for k, v in FORCE_FIELDS.items()] + [(NO_RNA, "None (no RNA in the system)")]),
             Option("cp_source", "CP parameters", "radio", "lib",
                    "Retyped library: the build script writes RNA_CP.lib (AmberTools' RNA.lib with the "
                    "phosphate oxygens retyped OP / OR) and frcmod.cp (the CP Lennard-Jones values plus "
@@ -607,9 +624,20 @@ class AmberBuildTool(Tool):
     def programs(self, s):
         return [(p, r"(^|[\s;(&|])" + p + r"\s") for p in ("tleap", "parmed", "ambpdb", "cpptraj", "python3")]
 
+    @staticmethod
+    def _effective(s):
+        """The settings a build is written from.  Without an RNA force field ('RNA force field: None') nothing
+        RNA-only is written, whatever its box says (the check reports NBfix19 / 0BPh left on as errors): no
+        NBfix19 / 0BPh pairs and no L-RNA atom types.  (The CP library and the generated L-RNA library follow
+        the force field themselves: _cp_lib, lrna_generated.)"""
+        if s["rna_ff"] != NO_RNA:
+            return s
+        return dict(s, nbfix19=False, bph0=False, lrna_fixes=False)
+
     def resources(self, s):
+        s = self._effective(s)
         out = ["ambertools"] + {"ol3cp": ["ol3", "cp"], "ol3": ["ol3"], "ljbb": ["ol3", "ljbb"], "roc": ["roc"],
-                                "yil": ["yil"], "shaw": ["shaw"]}[s["rna_ff"]]
+                                "yil": ["yil"], "shaw": ["shaw"]}.get(s["rna_ff"], [])
         if self._solvated(s):
             out.append("water_" + s["water"])
             if s["neutralize"] or s["salt_pairs"] or (s["mg_balance"] and s["mg_count"]):
@@ -629,7 +657,11 @@ class AmberBuildTool(Tool):
         return out
 
     def describe(self, s):
-        parts = [FORCE_FIELDS[s["rna_ff"]][2]]
+        s = self._effective(s)
+        if s["rna_ff"] == NO_RNA:
+            parts = [DNA_FORCE_FIELDS[s["dna_ff"]][2] if s["dna_ff"] in DNA_FORCE_FIELDS else "no RNA force field"]
+        else:
+            parts = [FORCE_FIELDS[s["rna_ff"]][2]]
         if self._solvated(s):
             parts.append(WATERS[s["water"]][0])
         mods = [m for m, on in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"]), ("HMR", s["hmr"]))
@@ -678,6 +710,14 @@ class AmberBuildTool(Tool):
                 if t in missing:
                     missing.remove(t)
         return out, missing
+
+    def _ff_names(self, s, ctx) -> str:
+        """The force fields the tleap inputs source, as the titles of the generated files name them: 'OL3+CP',
+        with the DNA force field 'OL3+CP + OL24'."""
+        names = [FORCE_FIELDS[s["rna_ff"]][2]] if s["rna_ff"] != NO_RNA else []
+        if self.dna_loaded(s, ctx):
+            names.append(DNA_FORCE_FIELDS[s["dna_ff"]][2])
+        return " + ".join(names) or "no RNA or DNA force field"
 
     @staticmethod
     def _cp_lib(s) -> bool:
@@ -804,7 +844,7 @@ class AmberBuildTool(Tool):
 
     def lrna_generated(self, s, ctx) -> bool:
         """Whether the build writes its own L-RNA library (LRNA.lib + frcmod.lrna)."""
-        if not s["lrna"] or s["lrna_library"] == "own":
+        if not s["lrna"] or s["lrna_library"] == "own" or s["rna_ff"] == NO_RNA:
             return False
         if s["lrna_library"] == "generated":
             return True
@@ -990,7 +1030,8 @@ class AmberBuildTool(Tool):
         if not self.dna_loaded(s, ctx):
             return out
         ff = DNA_FORCE_FIELDS[s["dna_ff"]]
-        out.append(Issue("info", f"DNA: {ff[0]} ({ff[1]}, sourced after the RNA force field)", ("dna_ff",)))
+        out.append(Issue("info", f"DNA: {ff[0]} ({ff[1]}" + (", sourced after the RNA force field"
+                                                              if s["rna_ff"] != NO_RNA else "") + ")", ("dna_ff",)))
         if self._cp_frcmod(s):
             out.append(Issue("warning", "the own CP frcmod changes the O2 / OS types for every residue: the DNA "
                                         "phosphates and O4' get the correction too (the retyped CP library changes "
@@ -1014,11 +1055,71 @@ class AmberBuildTool(Tool):
             if extra_lines(s["extra_libs"]):
                 out.append(Issue("warning", "own residue libraries are listed as well: a unit they define with an "
                                             "L-DNA name replaces the generated one", ("ldna_library", "extra_libs")))
+            single = self._single_ldna_chains(s, ctx)
+            if single:
+                units = ", ".join(sorted({unit for _where, unit in single}))
+                out.append(Issue("warning", f"{os.path.basename(ctx.existing('structure'))}: a chain of a single "
+                                            f"L-DNA residue ({', '.join(where for where, _unit in single)}). The "
+                                            "generated library maps an L-DNA residue at a chain's 5' end to its "
+                                            "5' unit and at a 3' end to its 3' unit; a residue that is both ends "
+                                            f"needs the nucleoside unit ({units}), which that map does not name, "
+                                            "and MDATK has not tested which unit tleap gives it: check the residue "
+                                            "in the tleap log and the built PDB (a nucleoside has HO5' and HO3' "
+                                            "and no phosphate)", ("ldna_library", "input:structure")))
+        return out
+
+    @staticmethod
+    def _single_ldna_chains(s, ctx) -> List[Tuple[str, str]]:
+        """(chain:number, nucleoside unit) of every L-DNA residue that is a chain of its own in an existing input
+        PDB as tleap will read it, i.e. alone between two TER records after the preparation the script applies."""
+        path = ctx.existing("structure")
+        if not path:
+            return []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+            if s["prep"]:
+                lines = _prep_pdb.prepare(lines, True, s["strip_5p"], s["gap_ter"], s["strip_water"], True,
+                                          s["drop_virtual"])[0]
+            struct = pdbtools.read_pdb("\n".join(lines) + "\n")
+            pdbtools.assign_chirality(struct, detect=True, l_ranges=s.get("lrna_ranges") or None)
+        except (OSError, pdbtools.PDBError):
+            return []
+        out = []
+        for seg in struct.segments:
+            nts = [(r, nt) for r, nt in ((r, pdbtools.nucleotide(r)) for r in seg) if nt is not None]
+            if len(nts) == 1 and nts[0][1].sugar == "dna" and nts[0][0].chirality == "L":
+                res, nt = nts[0]
+                out.append((f"{res.chain.strip() or '_'}:{res.resseq}{res.icode.strip()}", f"LD{nt.base}N"))
         return out
 
     # checks -----------------------------------------------------------
+    def _check_no_rna(self, s, ctx) -> List[Issue]:
+        """'RNA force field: None': RNA in the structure and RNA-only settings left on are errors (nothing of
+        them is written)."""
+        out: List[Issue] = []
+        if self.nucleic_content(s, ctx)["rna"]:
+            out.append(Issue("error", "the structure has RNA but no RNA force field is chosen", ("rna_ff",)))
+        on = [name for name, value in (("NBfix19", s["nbfix19"]), ("0BPh", s["bph0"])) if value]
+        if on:
+            out.append(Issue("error", f"{' / '.join(on)} {'modifies' if len(on) == 1 else 'modify'} RNA atom types "
+                                      "and cannot be applied without an RNA force field: switch "
+                                      f"{'it' if len(on) == 1 else 'them'} off, or choose an RNA force field",
+                             ("rna_ff",) + tuple(k for k in ("nbfix19", "bph0") if s[k])))
+        if s["lrna"] and s["lrna_library"] == "generated":
+            out.append(Issue("error", "the generated L-RNA library mirrors the RNA force field, and none is "
+                                      "chosen: set 'L-RNA library' to Automatic, or choose an RNA force field",
+                             ("rna_ff", "lrna_library")))
+        out.append(Issue("info", "no RNA force field: no leaprc.RNA file is sourced, and nothing RNA-only is "
+                                 "written (CP library, NBfix19 / 0BPh pairs, L-RNA atom types and library)",
+                         ("rna_ff",)))
+        return out
+
     def check(self, s, ctx):
         out: List[Issue] = []
+        if s["rna_ff"] == NO_RNA:
+            out += self._check_no_rna(s, ctx)
+            s = self._effective(s)  # the checks below see what is written
         if (s["nbfix19"] or s["bph0"]) and s["rna_ff"] != "ol3cp":
             out.append(Issue("error", "NBfix19 / 0BPh masks assume the OL3 + CP force field; choose "
                                       "'OL3 + CP' or switch the modifications off",
@@ -1167,7 +1268,7 @@ class AmberBuildTool(Tool):
         if s["mg_count"] == 0:
             out.append(Issue("warning", f"{name} is selected but no Mg²⁺ is added; it only matters when "
                                         "the input already contains MG ions", ("mg_model", "mg_count")))
-        if s["rna_ff"] not in ("ol3", "ol3cp"):
+        if s["rna_ff"] not in ("ol3", "ol3cp", NO_RNA):
             out.append(Issue("warning", f"the {name} Mg²⁺-RNA pair terms were fitted with parmBSC0χOL3 "
                                         "atom types; RNA atom types of this force field outside that set "
                                         "get no pair term - map them under 'Extra Mg²⁺ pair types'"
@@ -1227,8 +1328,8 @@ class AmberBuildTool(Tool):
                              ("mg_types", "lrna_types")))
         if extra_lines(s["extra_libs"]) or extra_lines(s["extra_frcmod"]):
             out.append(Issue("warning" if not s["check_topology"] else "info",
-                             f"atom types from extra libraries or parameter files need Mg²⁺ pair terms "
-                             f"('Extra Mg²⁺ pair types', L-RNA atom types); "
+                             "atom types from extra libraries or parameter files need Mg²⁺ pair terms "
+                             "('Extra Mg²⁺ pair types', L-RNA atom types); "
                              + ("the topology check after the build lists any type still missing"
                                 if s["check_topology"] else
                                 "with the topology check off, a missing one goes unnoticed"),
@@ -1239,10 +1340,11 @@ class AmberBuildTool(Tool):
         return out
 
     def output_values(self, s, ctx):
+        s = self._effective(s)
         nres = None
         path = ctx.existing("structure")
         if path:
-            nres = count_solute_residues(path)
+            nres = count_solute_residues(path, bool(s["prep"] and s["drop_virtual"]))
         data = {"nbfix": bool(s["nbfix19"] or s["bph0"]), "hmr": bool(s["hmr"]),
                 "c4": bool(self._solvated(s) and s["mg_model"] == "1264"),
                 "mg_pairs": mg_params.MODELS[s["mg_model"]] if self._mg_pairs(s) else "",
@@ -1264,8 +1366,9 @@ class AmberBuildTool(Tool):
 
     # files ------------------------------------------------------------
     def _leap(self, s, ctx, title, pdb_in, stem, wet, save_pdb) -> str:
-        lines = [f"# {title}", f"# written by {PROJECT_ABBREV} {__version__}",
-                 f"source {FORCE_FIELDS[s['rna_ff']][1]}"]
+        lines = [f"# {title}", f"# written by {PROJECT_ABBREV} {__version__}"]
+        if s["rna_ff"] != NO_RNA:
+            lines.append(f"source {FORCE_FIELDS[s['rna_ff']][1]}")
         if self.dna_loaded(s, ctx):
             lines.append(f"source {DNA_FORCE_FIELDS[s['dna_ff']][1]}")
         solvated = wet and self._solvated(s)
@@ -1435,10 +1538,11 @@ class AmberBuildTool(Tool):
                 "fi", ""]
 
     def generate(self, s, ctx):
+        s = self._effective(s)
         files: List[GeneratedFile] = []
         n = ctx.name
         script_name = n(self.tag, "sh")
-        ff = FORCE_FIELDS[s["rna_ff"]][2]
+        ff = self._ff_names(s, ctx)
         sh = script_header(f"Amber system build ({ff}) - tleap / ParmEd", ctx, s, script_name)
         pdb_in = ctx.inp("structure")
         existing = ctx.existing("structure")
@@ -1446,7 +1550,10 @@ class AmberBuildTool(Tool):
             sh += self._empty_slot_guard(pdb_in)  # a model check's slot, which may hold no model at all
         gen = self.lrna_generated(s, ctx)
         links = s["link_check"] != "off"
-        if self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005") or links:
+        # (the L-DNA helper and the 12-6-4 table of the twin types read AmberTools' files as well)
+        pol_twins = bool(self._solvated(s) and s["mg_model"] == "1264" and self.twin_refs(s, ctx))
+        if (self._cp_lib(s) or gen or (self._solvated(s) and s["water"] == "tip4p2005") or links
+                or self.ldna_generated(s, ctx) or pol_twins):
             sh += ["# AmberTools data folder (from tleap on PATH when AMBERHOME is not set)",
                    'AMBERHOME="${AMBERHOME:-$(dirname "$(dirname "$(readlink -f "$(command -v tleap)")")")}"',
                    '[ -f "$AMBERHOME/dat/leap/lib/RNA.lib" ] || { echo "ERROR: AmberTools data not found under '
@@ -1477,17 +1584,17 @@ class AmberBuildTool(Tool):
                 parms.append(f'"$P{k}"')
             sh += [f"python3 {lib_py} {d_lib} {' '.join(parms)} .", require_file("LRNA.lib", "the L-RNA helper"), ""]
         if self.ldna_generated(s, ctx):
-            ff = DNA_FORCE_FIELDS[s["dna_ff"]]
+            dff = DNA_FORCE_FIELDS[s["dna_ff"]]  # (not 'ff': the titles of the files below name the force fields)
             lib_py = n("ldna-lib", "py")
             files.append(GeneratedFile(lib_py, embed(
                 _lrna_lib, LDNA_SETTINGS, "main(sys.argv[1:])",
-                f"L-DNA library and parameters from the D-DNA force field {ff[2]} - written by {PROJECT_ABBREV} "
+                f"L-DNA library and parameters from the D-DNA force field {dff[2]} - written by {PROJECT_ABBREV} "
                 f"{__version__}.\n\nUsage: python3 THIS_SCRIPT D_LIBRARY PARM.dat [FRCMOD ...] OUTPUT_DIR"),
                 "helper", "writes LDNA.lib and frcmod.ldna: the D-DNA units mirrored, phases of the new types mirrored"))
-            parms = [f'"$AMBERHOME/dat/leap/parm/{f}"' for f in ff[4]]
-            sh += [f"# L-DNA library and parameters: {ff[2]} mirrored (LDNA.lib + frcmod.ldna; O5' / O4' / O3' "
+            parms = [f'"$AMBERHOME/dat/leap/parm/{f}"' for f in dff[4]]
+            sh += [f"# L-DNA library and parameters: {dff[2]} mirrored (LDNA.lib + frcmod.ldna; O5' / O4' / O3' "
                    "typed LS / LT with mirrored dihedral phases)",
-                   f'python3 {lib_py} "$AMBERHOME/dat/leap/lib/{ff[3]}" {" ".join(parms)} .',
+                   f'python3 {lib_py} "$AMBERHOME/dat/leap/lib/{dff[3]}" {" ".join(parms)} .',
                    require_file("LDNA.lib", "the L-DNA helper"), ""]
         twins = self.twin_refs(s, ctx)
         if self._solvated(s) and s["mg_model"] == "1264" and twins:
@@ -1521,7 +1628,7 @@ class AmberBuildTool(Tool):
                 "Usage: python3 THIS_SCRIPT INPUT.pdb OUTPUT.pdb"), "helper",
                 "cleans the starting PDB for tleap"))
             sh += ["# Prepare the starting structure for tleap (hydrogens, 5'-phosphates, TER records)",
-                   f"python3 {prep_py} {pdb_in} {prep_pdb}", ""]
+                   f"python3 {prep_py} {shell_quote(pdb_in)} {prep_pdb}", ""]
             pdb_in = prep_pdb
         if s["lrna"]:
             tools_py = n("pdbtools", "py")
@@ -1824,7 +1931,7 @@ class AmberRestraintsTool(Tool):
         script_name = n(self.tag, "sh")
         sh = script_header("Helix-preserving distance restraints (DISANG)", ctx, s, script_name)
         sh += [f"# {len(pairs)} base pairs from the {source}",
-               f"python3 {n('helix', 'py')} {top} {dist}", require_file(dist, "the restraint script"), ""]
+               f"python3 {n('helix', 'py')} {shell_quote(top)} {dist}", require_file(dist, "the restraint script"), ""]
         files.append(GeneratedFile(script_name, "\n".join(sh), "run", "writes the DISANG file"))
         return files
 
@@ -2130,6 +2237,7 @@ class AmberMDTool(Tool):
                    "dry labels)."),
         ]),
         env_section("source /opt/amber26/amber.sh   or   module load Amber/24", [SEPARATE_CONDA]),
+        CLUSTER_SECTION,
     ]
 
     # ----------------------------------------------------------- helpers
@@ -2420,6 +2528,23 @@ class AmberMDTool(Tool):
                                         "instead: set ntwx above 0, or say with 'Pass the trajectory on' which "
                                         "stage goes out (No on every stage: none)",
                              tuple(f"stages.{j}.ntwx" for j in later) + (f"stages.{fell}.export",)))
+        # a stage in segments writes the runs <stage>-001 ... and, when its first segment starts differently (new
+        # velocities, a ramp), the input <stage>-cont.in: a stage of that very name would write the same files
+        for k, st in enumerate(stages):
+            nseg = st["segments"] if st["kind"] == "md" else 1
+            if nseg < 2 or tags.count(tags[k]) > 1:
+                continue
+            parts = [(f"{tags[k]}-{seg:03d}", f"segment {seg}", False) for seg in range(1, nseg + 1)]
+            if modes[k][0] == 0 or st["ramp"]:
+                parts.append((f"{tags[k]}-cont", f"its input for segments 2-{nseg}", True))
+            for tag, what, is_input in parts:
+                for j, other in enumerate(stages):
+                    # (the other stage's runs carry its own name only when it is not split itself; its input does)
+                    one_run = other["kind"] != "md" or other["segments"] < 2
+                    if tags[j] == tag and (is_input or one_run):
+                        out.append(Issue("error", f"stages {tags[k]} ({what}) and {tag} would write the same files "
+                                                  f"({ctx.project}_{ctx.step:02d}_{tag}_…): rename one of them",
+                                         (f"stages.{k}.name", f"stages.{j}.name")))
         files: Dict[str, List[str]] = {}  # dry trajectory file tag -> the labels that write it
         for dry in roles.dry:  # (a label the check refuses is none)
             files.setdefault(sanitize_tag(f"dry-{dry}"), []).append(dry)
@@ -2602,6 +2727,32 @@ class AmberMDTool(Tool):
         return out + [(s["engine"], r"(^|[\s;(&|])\$PMEMD\s"), ("pmemd", r"(^|[\s;(&|])pmemd\s+-O\b"),
                       ("cpptraj", r"(^|[\s;(&|])cpptraj\b")]
 
+    # cluster job scripts (mdatk.workflows.cluster): the input whose file gives the system's atoms
+    cluster_atoms_port = "topology"
+
+    def cluster_work(self, s, separate_only: bool):
+        """What a cluster job of the step runs, for its wall time: the MD stages as (ns, time step in ps), and the
+        number of minimisations; None when MDATK cannot estimate it (an engine other than pmemd.cuda)."""
+        if not str(s.get("engine", "")).startswith("pmemd.cuda"):
+            return None
+        separate = self.roles(s).separate
+        md, minimisations = [], 0
+        for k, st in enumerate(s.get("stages", [])):
+            if separate_only and not separate[k]:
+                continue
+            if st.get("kind") == "min":
+                minimisations += 1
+                continue
+            dt = float(st.get("dt") or 0.002)
+            md.append((st.get("nstlim", 0) * max(1, int(st.get("segments") or 1)) * dt / 1000.0, dt))
+        return md, minimisations
+
+    def cluster_outputs(self, s, ctx) -> List[str]:
+        """The .out files (in the step folder) of the MD runs of its separate script: in a cluster job these ran on
+        the cluster, and their speeds are learnt for its profile."""
+        separate = self.roles(s).separate
+        return [r["out"] for r in self._segments(s, ctx) if separate[r["index"]] and r["stage"]["kind"] == "md"]
+
     def run_resources(self, s):
         # pmemd.cuda: one GPU (its GPU option names it) and the core that drives it; pmemd.MPI: its MPI
         # processes; pmemd: one core
@@ -2636,7 +2787,8 @@ class AmberMDTool(Tool):
         modes = self._restart_modes(s, ctx)
         disang = ctx.inp("restraints")
         solute = self._solute_mask(ctx)
-        top, crd = ctx.inp("topology"), ctx.inp("coordinates")
+        # (the coordinates as a word of the pmemd command lines: a file chosen by hand may have spaces in its path)
+        top, crd = ctx.inp("topology"), shell_quote(ctx.inp("coordinates"))
         # one mdin per stage (plus one for the first segment when its restart mode differs)
         mdin_of: Dict[Tuple[int, int], str] = {}
         for k, st in enumerate(s["stages"]):
@@ -2648,9 +2800,11 @@ class AmberMDTool(Tool):
             nseg = st["segments"] if st["kind"] == "md" else 1
             for seg in range(1, nseg + 1):
                 mdin_of[(k, seg)] = name
-            if nseg > 1 and irest == 0:
+            if nseg > 1 and (irest == 0 or st["ramp"]):
+                # segments 2-N continue the first one: its velocities, and after its ramp (which the check keeps
+                # within a segment's nstlim) at temp0 - never through the TEMP0 schedule again
                 cont = ctx.name(f"{tag}-cont", "in")
-                files.append(GeneratedFile(cont, self.mdin(st, 1, 5, disang, solute), "input",
+                files.append(GeneratedFile(cont, self.mdin(dict(st, ramp=False), 1, 5, disang, solute), "input",
                                            f"pmemd input of stage {tag}, segments 2-{nseg}"))
                 for seg in range(2, nseg + 1):
                     mdin_of[(k, seg)] = cont

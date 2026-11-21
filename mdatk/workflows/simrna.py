@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 from . import rna
 from .base import (PortValue, Tool, env_section, extra_lines, fortran_float, require_file,
-                   script_header)
+                   script_header, shell_quote)
 from .budget import Resources
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -124,6 +124,10 @@ class SimRNATool(Tool):
     def model(self, s, ctx) -> Tuple[Optional[rna.RNAModel], List[Issue]]:
         from .amber import secondary_structure
         model, _src, issues = secondary_structure(s, ctx)
+        if model is not None and not model.chains:  # a chosen file with the dot-bracket only, no sequence typed
+            issues.append(Issue("error", "the secondary-structure file has no sequence line: type the sequence",
+                                ("sequence", "input:secstruct")))
+            model = None
         if model is None and not issues and s["sequence"].strip():
             try:
                 model = rna.build_model(s["sequence"], "")
@@ -232,7 +236,7 @@ class SimRNATool(Tool):
         files.append(GeneratedFile(config, "\n".join(cfg) + "\n", "input", "SimRNA config.dat"))
         args = [f"-c ../../{config}"]
         if ctx.has("structure"):
-            args.append(f"-p {_up(ctx.inp('structure'))}")
+            args.append(f"-p {shell_quote(_up(ctx.inp('structure')))}")  # a chosen file: any path
         elif model is not None:
             seq = n(self.tag, "seq")
             files.append(GeneratedFile(seq, model.split(model.sequence.lower()) + "\n", "input",
@@ -265,13 +269,24 @@ class SimRNATool(Tool):
         nice = "nice " if s["nice"] else ""
         sh += ['[ -d "$SIMRNA_DIR/data" ] || { echo "ERROR: $SIMRNA_DIR/data not found" >&2; exit 1; }', "",
                "run_one() {", "  I=$1", '  N=$(printf "%02d" "$I")',
-               '  mkdir -p "runs/r$N" && cd "runs/r$N" || return 0',
+               '  mkdir -p "runs/r$N" && cd "runs/r$N" || return 1',
                '  ln -sfn "$SIMRNA_DIR/data" data',
                f"  {nice}{s['exe'].strip() or 'SimRNA'} {' '.join(args)} -R $(({s['seed_base']} + I)) "
                f"-o {out_base} \\",
-               f"    > ../../{out_base}.log 2>&1 || echo \"run $N failed - see {out_base}.log\" >&2",
-               "}", "export -f run_one", "export SIMRNA_DIR", "",
-               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}'", ""]
+               f"    > ../../{out_base}.log 2>&1 || {{ echo \"run $N failed - see {out_base}.log\" >&2; "
+               ': > "$FAILED/$N"; return 1; }',
+               "}", "export -f run_one", "FAILED=$(mktemp -d)", "export SIMRNA_DIR FAILED", "",
+               "# a failed run does not stop the others and leaves fewer frames; the step fails when every run failed",
+               f"seq 1 {s['runs']} | xargs -P {s['parallel']} -I{{}} bash -c 'run_one {{}}' || true",
+               'NFAILED=$(ls "$FAILED" | wc -l); rm -rf "$FAILED"',
+               f'if [ "$NFAILED" -ge {s["runs"]} ]; then echo "ERROR: every SimRNA run failed (see above)" >&2; '
+               "exit 1; fi",
+               f'if [ "$NFAILED" -gt 0 ]; then echo "WARNING: $NFAILED of {s["runs"]} SimRNA runs failed (see '
+               'above): their trajectories are missing" >&2; fi', ""]
+        if not s["cluster"]:  # the output 'trajectory' (with clustering its script writes it)
+            all_trafl = n("simrna-all", "trafl")
+            sh += ["# all replica trajectories of all runs",
+                   f"cat runs/r*/*.trafl > {all_trafl}", require_file(all_trafl, "SimRNA"), ""]
         files.append(GeneratedFile(script, "\n".join(sh), "run", "runs SimRNA"))
         if s["cluster"]:
             files.append(self._cluster_script(s, ctx, model))
@@ -290,8 +305,11 @@ class SimRNATool(Tool):
         sh += ['ln -sfn "$SIMRNA_DIR/data" data', "",
                "# all replica trajectories of all runs",
                f"cat runs/r*/*.trafl > {all_trafl}", require_file(all_trafl, "SimRNA"),
-               "REF=$(ls runs/r*/*-000001.pdb 2>/dev/null | head -n 1)",
+               "REF=$(ls runs/r*/*-000001.pdb 2>/dev/null | head -n 1 || true)",
                '[ -n "$REF" ] || { echo "ERROR: no first-frame PDB found in runs/" >&2; exit 1; }', "",
+               "# the clusters and models of an earlier run go first: another threshold names its clusters",
+               "# differently, and the loop below would read them",
+               f"rm -f {all_trafl[:-6]}_thrs*_clust* {n('model-MODELNUM', 'pdb').replace('MODELNUM', '[0-9]*')}",
                f"# cluster the lowest {s['fraction'] * 100:g} % of frames at {thr:g} Å",
                f"{s['cluster_exe'].strip() or 'clustering'} {all_trafl} {s['fraction']:g} {thr:g} "
                f"> {n('simrna-cluster', 'log')} 2>&1", "",

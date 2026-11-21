@@ -75,7 +75,11 @@ _GROUP_SELECTION = re.compile(r"^\s*(?:(?:chainID|segid|chain)\s+(\S+)\s+and\s+)
 def _group_ranges(group: Any) -> List[Range]:
     residues = _g(group, "residues").strip()
     if residues:
-        return parse_selection(residues)
+        from .selections import SelectionError, parse_residue_ranges
+        try:  # as the project reads its groups: '1:40' and '1 - 40' are the residues 1 to 40
+            return [(c, a, b) for c, a, b in parse_residue_ranges(residues)]
+        except SelectionError:
+            return parse_selection(residues)  # this module's syntax only (a whole chain, a blank chain id)
     sel = _g(group, "selection")
     m = _GROUP_SELECTION.match(sel)
     if m:  # the selections MDATK writes for chain groups: 'chainID A and resid 1:40'

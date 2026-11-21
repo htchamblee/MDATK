@@ -370,10 +370,10 @@ def filter_ranking(path, term=None, maximum=None, limits=()):
     cache = {}
     kept, failed, unread = [], 0, 0
     for ln in lines:
-        f = ln.split()
+        f = ln.split(None, 2)  # the file is the rest of the line: its path may hold spaces
         if len(f) < 3:
             continue
-        tag, src = f[1], f[2]
+        tag, src = f[1], f[2].strip()
         if src not in cache:
             s = read_silent(src)
             bad = [b for t, _op, _x in limits for b in missing_term([s], t)] if s.read else s.problems[:1]
@@ -427,10 +427,10 @@ def ranked_models(models_txt, pattern, runs):
     out = {}
     with open(models_txt, encoding="utf-8") as fh:
         for ln in fh:
-            f = ln.split()
+            f = ln.split(None, 3)  # the file is the rest of the line: its path may hold spaces
             if len(f) < 4:
                 continue
-            label = by_file.get(os.path.normpath(f[3]))
+            label = by_file.get(os.path.normpath(f[3].strip()))
             if label is not None:
                 out.setdefault((label, f[2]), pattern.replace("{N}", f[0]))
     return out

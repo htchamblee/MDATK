@@ -8,8 +8,10 @@ import dataclasses
 from typing import Any, Dict, List, Tuple
 
 from .. import PROJECT_ABBREV, __version__
+from .cluster import CLUSTER_SECTION
 from .base import (SEPARATE_CONDA, WAITING_EXIT, PortValue, Tool, env_section, extra_lines, fortran_float,
-                   require_file, script_header, separate_check, skip_when_done, waiting_done, waiting_file)
+                   require_file, script_header, separate_check, shell_quote, skip_when_done, waiting_done,
+                   waiting_file)
 from .budget import ALL_CORES, Resources, env_gpus, gpu_step
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
@@ -146,6 +148,7 @@ class GromacsTool(Tool):
             dataclasses.replace(WAITING_EXIT, requires={"separate_production": True}),
         ]),
         env_section("module load GROMACS/2023.3-CUDA-11.8.0", [SEPARATE_CONDA]),
+        CLUSTER_SECTION,
     ]
 
     def output_ports(self, s):
@@ -403,7 +406,10 @@ class GromacsTool(Tool):
         files: List[GeneratedFile] = []
         n = ctx.name
         tags = self._tags(s)
-        top, gro = self._top(s, ctx), self._gro(s, ctx)
+        # as words of the command lines: a file chosen by hand may have spaces in its path (the step's own
+        # names never do, and are written as they were)
+        top, gro = shell_quote(self._top(s, ctx)), shell_quote(self._gro(s, ctx))
+        amber_top, amber_crd = shell_quote(ctx.inp("topology")), shell_quote(ctx.inp("coordinates"))
         script = n(self.tag, "sh")
         prod_script = n("gromacs-prod", "sh")
         notes = [f"GROMACS {'2024+' if s['gmx_version'] == '2024' else '2023.3'}."]
@@ -431,13 +437,13 @@ class GromacsTool(Tool):
             files.append(GeneratedFile(conv, self._convert_script(s, ctx), "helper",
                                        "ParmEd conversion Amber -> GROMACS"))
             main += ["# Convert the Amber topology / coordinates with ParmEd",
-                     f"python3 {conv} {ctx.inp('topology')} {ctx.inp('coordinates')} {top} {gro}",
+                     f"python3 {conv} {amber_top} {amber_crd} {top} {gro}",
                      require_file(top, "ParmEd"), ""]
         elif s["convert"] == "acpype":
             base = n("acpype")
             main += ["# Convert the Amber topology / coordinates with acpype",
                      f"rm -rf {base}.amb2gmx",
-                     f"acpype -p {ctx.inp('topology')} -x {ctx.inp('coordinates')} -b {base}",
+                     f"acpype -p {amber_top} -x {amber_crd} -b {base}",
                      f"cp {base}.amb2gmx/{base}_GMX.top {top}",
                      f"cp {base}.amb2gmx/{base}_GMX.gro {gro}",
                      require_file(top, "acpype"), ""]

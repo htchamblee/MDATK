@@ -315,10 +315,16 @@ def has_backbone_atoms(atom_names) -> bool:
 
 
 def _nucleotide(res: Residue) -> Optional[ResidueName]:
-    """Name-based recognition, guarded by backbone atoms so that e.g. a lanthanum ion 'LA' is not RNA."""
+    """Name-based recognition, guarded by backbone atoms so that e.g. a lanthanum ion 'LA' is not RNA.  A name
+    that means RNA on a residue with a 2'-deoxy sugar (C2' and no O2') is DNA: CHARMM names both ADE, CYT, GUA
+    and PDB files of before 2007 A, C, G, beside a THY / T that only DNA has."""
     info = parse_residue_name(res.name)
     if info is None or not has_backbone_atoms(a.name for a in res.atoms):
         return None
+    if info.sugar == "rna":
+        names = {a.name.replace("*", "'") for a in res.atoms}
+        if "C2'" in names and "O2'" not in names:
+            info = info._replace(sugar="dna")
     return info
 
 
@@ -1346,25 +1352,40 @@ def _ends_state(five: bool, three: bool) -> str:
     return "N" if five and three else "5" if five else "3" if three else ""
 
 
+O3_P_BONDED = 2.0  # Å: O3' and P of two residues this close are bonded (a phosphodiester is 1.6 Å)
+
+
+def _bonded_on(before: Residue, after: Residue) -> bool:
+    """Whether the O3' of ``before`` is bonded to the P of ``after`` (by their distance)."""
+    o3, p = before.coords().get("O3'"), after.coords().get("P")
+    return o3 is not None and p is not None and math.dist(o3, p) <= O3_P_BONDED
+
+
 def _terminals(seg: Sequence[Residue], structure: Optional[Structure] = None,
                links: Optional[_LinkFollower] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
     """(id(residue) -> terminal state, id(residue) -> the state of the segment ends alone) over the nucleotides
     of a segment.  The first nucleotide is a 5' end and the last a 3' end unless LINK records (``links``, the
     follower of ``structure``) bond that end to another residue: then the end is a junction and gets no terminal
-    state; a single nucleotide is 'N' with both ends free."""
+    state; a single nucleotide is 'N' with both ends free.  Nor is it an end when the residue next to it in the
+    segment, one the schemes do not name (a 5'-GTP, a modified nucleotide), is bonded to it through O3'-P: the
+    chain goes on there."""
     nts = [r for r in seg if _nucleotide(r)]
     out = {id(r): "" for r in nts}
     plain = dict(out)
     if not nts:
         return out, plain
     first, last = nts[0], nts[-1]
-    five = not _linked_5prime(structure, links, first)
-    three = not _linked_3prime(structure, links, last)
+    k5, k3 = (next(k for k, r in enumerate(seg) if r is end) for end in (first, last))
+    free5 = not (k5 > 0 and _bonded_on(seg[k5 - 1], first))
+    # (a residue of phosphate atoms alone, such as a chimera's PO2, is a junction by its LINK records)
+    free3 = not (k3 + 1 < len(seg) and not _phosphate_only(seg[k3 + 1]) and _bonded_on(last, seg[k3 + 1]))
+    five = free5 and not _linked_5prime(structure, links, first)
+    three = free3 and not _linked_3prime(structure, links, last)
     if len(nts) == 1:
-        out[id(first)], plain[id(first)] = _ends_state(five, three), "N"
+        out[id(first)], plain[id(first)] = _ends_state(five, three), _ends_state(free5, free3)
     else:
         out[id(first)], out[id(last)] = _ends_state(five, False), _ends_state(False, three)
-        plain[id(first)], plain[id(last)] = "5", "3"
+        plain[id(first)], plain[id(last)] = _ends_state(free5, False), _ends_state(False, free3)
     return out, plain
 
 

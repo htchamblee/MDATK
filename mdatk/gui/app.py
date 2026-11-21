@@ -513,7 +513,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.zoom_spin.set_value(min(50.0, max(0.05, self.zoom_spin.get_value() * factor)))
 
     def _on_canvas_swap(self, i: int, j: int) -> None:
-        specs = self._read_slots()
+        try:
+            specs = self._read_slots()
+        except ValueError as exc:  # options that are no JSON object: flagged in their field
+            self.append_log(f"Panels not swapped; fix this first: {exc}")
+            return
         if max(i, j) >= len(specs):
             return
         specs[i], specs[j] = specs[j], specs[i]
@@ -1704,8 +1708,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self.refresh_canvas()
 
     def _rebuild_slots(self, specs: Optional[List[PanelSpec]] = None):
+        kept: Dict[int, str] = {}  # slot -> options that are no JSON object: they stay in their field, flagged
         if specs is None:
-            specs = self._read_slots()
+            specs = self._read_slots(kept)
         for child in self.slot_box.get_children():
             self.slot_box.remove(child)
         self.slot_rows = []
@@ -1718,13 +1723,17 @@ class MainWindow(Gtk.ApplicationWindow):
                 row = self._slot_editor(k, spec, preset, project)
                 self.slot_rows.append(row)
                 self.slot_box.pack_start(row["frame"], False, False, 0)
+                if k in kept:
+                    row["opts"].set_text(kept[k])
         finally:
             self._loading = loading
         self.slot_box.show_all()
         W.watch_tree(self.slot_box, self.schedule_check)
         self.schedule_check()  # the new slot widgets get their flags back
 
-    def _read_slots(self) -> List[PanelSpec]:
+    def _read_slots(self, invalid: Optional[Dict[int, str]] = None) -> List[PanelSpec]:
+        """The panels as the slot editors show them.  Options that are no JSON object raise ValueError, or,
+        with ``invalid`` (rebuilding the editors), are returned in it by slot and read as none."""
         specs = []
         project = None
         for k, row in enumerate(self.slot_rows):
@@ -1734,9 +1743,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 if not isinstance(options, dict):
                     raise ValueError("options must be a JSON object")
             except ValueError as exc:
-                err = ValueError(f"panel options {text!r}: {exc}")
-                err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
-                raise err from exc
+                if invalid is not None:
+                    invalid[k], options = text, {}
+                else:
+                    err = ValueError(f"panel options {text!r}: {exc}")
+                    err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
+                    raise err from exc
             ptype = row["type"].get_active_id() or "timeseries"
             keys = []
             if PANEL_TYPES.get(ptype) is None or PANEL_TYPES[ptype].max_series > 0:
@@ -2241,8 +2253,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.error("No topology", f"{step_title(node)}: connect a topology (and trajectories) to the "
                                       "analysis step in RNAdo first.")
             return False
-        self.apply_inputs(top, trajs, bool(plan.steps[node.id].settings.get("clean", True)))
-        return True
+        return self.apply_inputs(top, trajs, bool(plan.steps[node.id].settings.get("clean", True)))
 
     def _choose_box(self, boxes):
         from ..workflows.plan import step_title
@@ -2263,13 +2274,14 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg.destroy()
         return next((n for n in boxes if n.id == chosen), None) if ok else None
 
-    def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> None:
-        """Use files of the plan as this project's analysis inputs."""
+    def apply_inputs(self, topology: str, trajectories: List[str], clean: bool = True) -> bool:
+        """Use files of the plan as this project's analysis inputs (False: a setting must be put right first)."""
         try:
             project = self.collect(validate=False)
-        except ValueError:
-            project = self.project.copy()
-            project.workflow = self.project.workflow
+        except ValueError as exc:
+            # not from the settings as last saved: every edit since then would be gone from the side bar
+            self.error("Some settings are invalid", f"{exc}\n\nPut them right, then use the plan's files again.")
+            return False
         project.inputs.topology = topology
         project.inputs.trajectories = list(trajectories)
         if clean:
@@ -2285,6 +2297,7 @@ class MainWindow(Gtk.ApplicationWindow):
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
         self.append_log(f"Analysis inputs from the plan: {topology} + {len(trajectories)} trajectory "
                         f"file(s)" + (" (not created yet - run the plan's scripts first)" if missing else ""))
+        return True
 
     def _citation_resources(self):
         from ..citations import project_resources
@@ -2594,7 +2607,7 @@ class MDATKApplication(Gtk.Application):
 
     def do_activate(self):
         if self.window is None:
-            project, path = None, None
+            project, path, problem = None, None, ""
             if self.preset:
                 try:
                     project, path = Project.load(self.preset), self.preset
@@ -2602,8 +2615,12 @@ class MDATKApplication(Gtk.Application):
                     if is_params_log(path):  # replay a run: Save must not overwrite the log
                         path = None
                 except (OSError, ValueError) as exc:
+                    problem = f"Could not open {self.preset}: {exc}"
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = MainWindow(self, project, path)
+            if problem and project is None:  # started from the applications menu: no terminal shows the warning
+                self.window.append_log(f"ERROR: {problem}\nThese are the default settings instead (unsaved).")
+                self.window.log_expander.set_expanded(True)
             handler = GuiLogHandler(self.window)
             logging.getLogger("mdatk").addHandler(handler)
             self.window.connect("destroy", self._on_window_destroy, handler)

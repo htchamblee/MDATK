@@ -1445,3 +1445,62 @@ def test_dna_kept_by_a_scheme_gets_a_note_of_its_own():
     rna = pt.clean(builder.build_helix("GACU"), scheme="rosetta")
     assert "Residue names already follow the rosetta scheme" in rna.notes
     assert not any("DNA residue(s) keep their names" in n for n in rna.notes)
+
+
+def _renamed(text, names, only=None):
+    """PDB text with residue names replaced (``only``: the (chain, number) residues to rename)."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith(("ATOM", "HETATM", "TER")) and len(line) > 26:
+            old = line[17:21].strip()
+            if old in names and (only is None or (line[21], int(line[22:26])) in only):
+                line = line[:17] + f"{names[old]:>3} " + line[21:]
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def test_dna_under_names_that_also_mean_rna_is_not_renamed_as_rna():
+    """CHARMM names DNA ADE / CYT / GUA / THY and PDB files of before 2007 A / C / G / T: a residue with a
+    2'-deoxy sugar (C2' and no O2') is DNA whatever its name says, so a scheme does not give it RNA names
+    (G5, C3 beside a THY that kept its name), and --dna names all of it as DNA."""
+    dna = builder.build_helix("GGCATC", na="dna", hydrogens=True)
+    for names in ({"DA": "ADE", "DC": "CYT", "DG": "GUA", "DT": "THY"}, {"DA": "A", "DC": "C", "DG": "G", "DT": "T"}):
+        text = _renamed(dna, names)
+        s = pt.read_pdb(text)
+        assert {pt.nucleotide(r).sugar for r in s.residues()} == {"dna"}
+        assert pt.fasta(s).splitlines()[0] == ">structure_A chain A | DNA | 6 residues"
+        kept = pt.clean(text, scheme="amber")
+        assert [r.name for r in kept.structure.residues()] == [r.name for r in s.residues()]
+        assert any(n.startswith("12 DNA residue(s) keep their names") for n in kept.notes)
+        named = pt.clean(text, scheme="amber", rename_dna=True)
+        assert [r.name for r in named.structure.segments[0]] == ["DG5", "DG", "DC", "DA", "DT", "DC3"]
+        assert [r.name for r in named.structure.segments[1]] == ["DG5", "DA", "DT", "DG", "DC", "DC3"]
+    # RNA keeps its names' meaning: with O2' a residue is RNA, and one without a C2' (a trace) is what its name says
+    rna = pt.read_pdb(builder.build_helix("GGCAUC"))
+    assert {pt.nucleotide(r).sugar for r in rna.residues()} == {"rna"}
+    trace = pt.read_pdb(atom_line(1, "P", "G", "A", 1, (0.0, 0.0, 0.0)) + "\n"
+                        + atom_line(2, "C4'", "G", "A", 1, (1.5, 0.0, 0.0)) + "\nEND\n")
+    assert pt.nucleotide(next(trace.residues())).sugar == "rna"
+
+
+def test_a_nucleotide_bonded_to_a_residue_of_another_name_is_no_chain_end():
+    """A chain that starts or ends with a residue the schemes do not name (a 5'-GTP, a modified nucleotide): the
+    nucleotide bonded to it through O3'-P is no 5' / 3' end and keeps the internal name."""
+    rna = builder.build_helix("GGCAUC", "none", phosphate5=True)
+    five = pt.clean(_renamed(rna, {"G": "GTP"}, only={("A", 1)}), scheme="amber")
+    assert [r.name for r in five.structure.residues()] == ["GTP", "G", "C", "A", "U", "C3"]
+    assert not any("carry P/OP1/OP2" in n for n in five.notes)
+    three = pt.clean(_renamed(rna, {"C": "5MC"}, only={("A", 6)}), scheme="amber", strip_5p=True)
+    assert [r.name for r in three.structure.residues()] == ["G5", "G", "C", "A", "U", "5MC"]
+    both = _renamed(_renamed(rna, {"G": "GTP"}, only={("A", 1)}), {"C": "5MC"}, only={("A", 6)})
+    mirrored = "\n".join(ln[:30] + f"{-float(ln[30:38]):8.3f}" + ln[38:] if ln.startswith("ATOM") else ln
+                         for ln in both.splitlines()) + "\n"
+    for scheme, expected in (("amber", ["GTP", "LG", "LC", "LA", "LU", "5MC"]),
+                             ("ccd", ["GTP", "0G", "0C", "0A", "0U", "5MC"])):
+        assert [r.name for r in pt.clean(mirrored, scheme=scheme).structure.residues()] == expected
+    # a ligand in the chain's TER segment that is not bonded to it leaves the ends free
+    lines = rna.splitlines()
+    ter = next(k for k, ln in enumerate(lines) if ln.startswith("TER"))
+    ligand = atom_line(900, "C1", "LIG", "A", 7, (40.0, 40.0, 40.0), "HETATM")
+    free = pt.clean("\n".join(lines[:ter] + [ligand] + lines[ter:]) + "\n", scheme="amber", strip_5p=True)
+    assert [r.name for r in free.structure.residues()] == ["G5", "G", "C", "A", "U", "C3", "LIG"]

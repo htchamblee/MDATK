@@ -2089,7 +2089,9 @@ def _geometry_notes(labels: List[str], res_atoms: List[List[Tuple[str, np.ndarra
 
 # --- mutations ----------------------------------------------------------------------------------------
 
-_MUTATION_RE = re.compile(r"^([^:\s]?):?(-?\d+)([A-Za-z]?)(?:>|:|->)?([ACGTUacgtu])$")  # T: DNA residues
+# chain id (with its colon, or a letter without one: a digit or '-' there starts the residue number), residue
+# number, insertion code, new base (T: DNA residues)
+_MUTATION_RE = re.compile(r"^(?:([^:\s]?):|([^:\s\d\-]?))(-?\d+)([A-Za-z]?)(?:>|:|->)?([ACGTUacgtu])$")
 _ALIASES = {"A": "ADE", "C": "CYT", "G": "GUA", "U": "URA"}
 _SUGAR_EXTRA = frozenset({"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P", "HOP2", "HOP3", "H5T", "H3T"})
 _ALL_BASE_NAMES = frozenset(n for names in BASE_NAMES.values() for n in names) | frozenset(
@@ -2122,8 +2124,8 @@ def parse_mutations(spec) -> List[Mutation]:
         if not m:
             raise BuildError(f"cannot read mutation {item!r} (expected e.g. A:5G - chain, residue number, "
                              "new base)")
-        chain, num, icode, base = m.groups()
-        mut = Mutation(chain, int(num), icode, base.upper())
+        with_colon, bare, num, icode, base = m.groups()
+        mut = Mutation(with_colon or bare or "", int(num), icode, base.upper())
         if any((o.chain, o.resseq, o.icode) == (mut.chain, mut.resseq, mut.icode) for o in out):
             raise BuildError(f"residue {mut.where} is mutated twice")
         out.append(mut)

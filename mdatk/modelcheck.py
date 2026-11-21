@@ -1494,6 +1494,8 @@ def ranked(reports: Sequence[ModelReport], order: str = "input", rank_term: str 
     elif order == "score":
         def key(kr):
             v = DecoyTable.value(kr[1].score_row, rank_term)
+            if v is not None and v != v:
+                v = None  # a NaN score is no score: as a sort key it would leave the others unsorted
             return (bool(kr[1].error), v is None, v if v is not None else 0.0, kr[0])
         keyed.sort(key=key)
     return [r for _, r in keyed]

@@ -652,3 +652,25 @@ def test_run_scripts_waiting_and_the_separate_scripts_option(main, tmp_path, mon
     msgs = run(True)  # "Also run the scripts marked 'run separately'"
     assert msgs and msgs[0][1] == "Scripts finished", msgs
     assert (tmp_path / "prod.done").exists() and pl.run_state == {n.id: "ok"}
+
+
+def test_open_folder_without_a_file_manager_says_so(main, tmp_path, monkeypatch):
+    """No file manager can be started (a cluster's login node, a bare window manager): Open folder of the
+    planner and of the wizard report it; they raised in their handlers, so the buttons did nothing."""
+    from mdatk.gui import desktop
+
+    def no_manager(path):
+        raise RuntimeError("no file manager could be started")
+
+    monkeypatch.setattr(desktop, "open_folder", no_manager)
+    said = []
+    planner = main.planner
+    monkeypatch.setattr(planner, "_message", lambda text, detail="", kind=None: said.append((text, detail)))
+    os.makedirs(main.project.workflow_dir)
+    planner.open_folder()
+    assert said and said[0][0] == "Could not open the folder" and main.project.workflow_dir in said[0][1]
+    main.open_wizard("amber-md")
+    pump()
+    monkeypatch.setattr(main.wizard, "_error", lambda text, detail="": said.append((text, detail)))
+    main.wizard.open_folder()
+    assert len(said) == 2 and said[1][0] == "Could not open the folder" and "no file manager" in said[1][1]

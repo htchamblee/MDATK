@@ -21,6 +21,19 @@ _TRAJECTORY_FORMATS = {".nc": "NCDF", ".ncdf": "NCDF", ".netcdf": "NCDF",
                        ".rst7": "INPCRD", ".inpcrd": "INPCRD", ".ncrst": "NCRST"}
 
 
+class _FrameTimes:
+    """Trajectory transformation of the time-step override: the time of frame k is k * dt.  MDAnalysis' own
+    ``dt`` only fills in for trajectories without time stamps; a NetCDF file keeps the times stored in it (and
+    a second file starts again at its own first time)."""
+
+    def __init__(self, dt_ps: float):
+        self.dt_ps = dt_ps
+
+    def __call__(self, ts):
+        ts.time = ts.frame * self.dt_ps
+        return ts
+
+
 def is_parm7(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _TOPOLOGY_FORMATS
 
@@ -54,6 +67,8 @@ def load_universe(topology: str, trajectories: Sequence[str] = (), dt_ps: Option
         else:
             kwargs.pop("format", None)
             u = mda.Universe(topology, **kwargs)
+    if dt_ps and trajectories:
+        u.trajectory.add_transformations(_FrameTimes(float(dt_ps)))
     log.info("loaded %s: %d atoms, %d residues, %d frames", os.path.basename(topology),
              u.atoms.n_atoms, u.residues.n_residues, u.trajectory.n_frames)
     return u

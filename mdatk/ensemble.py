@@ -177,6 +177,14 @@ def group_ranges(name: str, groups: Sequence[Any]) -> str:
             if not residues.strip():
                 raise EnsembleError(f"residue group {name!r} has no residue ranges"
                                     + (" (only an MDAnalysis selection)" if selection.strip() else ""))
+            from .selections import SelectionError, parse_residue_ranges
+            try:  # as the project reads its groups: '1:40' and '1 - 40' are the residues 1 to 40
+                ranges = parse_residue_ranges(residues)
+            except SelectionError:
+                ranges = None  # text of this module's syntax only (a whole chain, a blank chain id): below
+            if ranges is not None:
+                return ",".join(f"{'*' if c is None else c}:{a}" + ("" if a == b else f"-{b}")
+                                for c, a, b in ranges)
             items = []
             for tok in re.split(r"[,;\s]+", residues.strip()):
                 if not tok:
@@ -751,14 +759,18 @@ def map_values(dmap, xyz: np.ndarray, interpolation: str = "linear") -> np.ndarr
     xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
     if not len(xyz):
         return np.empty(0)
-    order = 0 if interpolation == "nearest" else 1
-    vals = sample_map(dmap, xyz, cval=np.nan, order=order)
     ijk = dmap.xyz_to_index(xyz)
-    if order == 0:  # round as the scripts did; outside the grid after rounding is outside
+    if interpolation == "nearest":  # round as the scripts did; outside the grid after rounding is outside
         idx = np.rint(ijk)
         inside = np.all((idx >= 0) & (idx <= np.array(dmap.shape_xyz) - 1), axis=1)
-    else:
-        inside = np.all((ijk >= 0) & (ijk <= np.array(dmap.shape_xyz) - 1), axis=1)
+        # the voxel itself: an interpolating sampler calls a point up to half a voxel past the last voxel
+        # centre outside, although it rounds onto that voxel
+        k = idx[inside].astype(np.int64)
+        vals = np.full(len(xyz), np.nan)
+        vals[inside] = dmap.data[k[:, 2], k[:, 1], k[:, 0]]
+        return vals
+    vals = sample_map(dmap, xyz, cval=np.nan, order=1)
+    inside = np.all((ijk >= 0) & (ijk <= np.array(dmap.shape_xyz) - 1), axis=1)
     vals = np.where(inside, vals, np.nan)
     return vals
 
@@ -1386,9 +1398,10 @@ def _census_block(rows: Sequence[CensusRow], registers: Sequence[Register], titl
         scored.sort(key=lambda r: r.score)
         wl = f"weight set {weight_ids[w]}" if w else "weights not recorded"
         out.append(f"  by score decile, best first ({len(scored)} scored, {wl}):")
-        k = max(1, len(scored) // 10)
+        k, extra = divmod(len(scored), 10)  # ten parts as equal as they come: the first `extra` hold one more
         for d in range(10):
-            chunk = scored[d * k:(d + 1) * k] if d < 9 else scored[9 * k:]
+            first = d * k + min(d, extra)
+            chunk = scored[first:first + k + (d < extra)]
             if not chunk:
                 continue
             cells = []
@@ -1781,7 +1794,8 @@ def compare_arms(a: Arm, b: Arm, *, mode: str = "compare", closure: Optional[Clo
                               if d.occupancy is not None and _is_closed(d, closure, cut)]) for arm in (a, b)]
         out.append(f"  {'region atoms in density, closed':<30} {cells[0]:<32} {cells[1]}")
     for arm in (a, b):
-        closed = [d for d in arm.decoys if d.score is not None and _is_closed(d, closure, cut)]
+        closed = [d for d in arm.decoys  # (a NaN score is no score: min() would stop at one listed first)
+                  if d.score is not None and d.score == d.score and _is_closed(d, closure, cut)]
         if not closed:
             continue
         best = min(closed, key=lambda d: d.score)
@@ -1811,7 +1825,7 @@ def compare_arms(a: Arm, b: Arm, *, mode: str = "compare", closure: Optional[Clo
         out += ["", "--- score and density among decoys that close AND pair ---"]
         for arm in (a, b):
             sel = [d for d in arm.decoys if _both(d, closure, cut)]
-            sc = [d.score for d in sel if d.score is not None]
+            sc = [d.score for d in sel if d.score is not None and d.score == d.score]
             oc = [d.occupancy for d in sel if d.occupancy is not None]
             best = _fmt(min(sc) if sc else None, ".0f")
             out.append(f"  {arm.label:<16} n={len(sel):5d}  best {best:>8}  "

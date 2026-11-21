@@ -578,6 +578,121 @@ def test_simrna_files():
     assert any("trajectory interval exceeds" in m for m in messages(st, "error"))
 
 
+# stand-ins for SimRNA's programs, with the file names the scripts rely on: <out>_NN.trafl and
+# <out>_NN-000001.pdb per replica, <trafl>_thrs<T>A_clustNN.trafl per cluster, <cluster>-000001_AA.pdb
+FAKE_SIMRNA = {
+    "SimRNA": 'out=""; start=""\n'
+              'for ((i=1;i<=$#;i++)); do j=$((i+1)); [ "${!i}" = -o ] && out="${!j}"; '
+              '[ "${!i}" = -p ] && start="${!j}"; done\n'
+              'case " ${FAIL_RUNS:-} " in *" $(basename "$PWD") "*) echo boom >&2; exit 3;; esac\n'
+              '[ -z "$start" ] || [ -f "$start" ] || { echo "cannot open $start" >&2; exit 2; }\n'
+              'for e in $(seq 1 ${REPLICAS:-2}); do e=$(printf "%02d" $e); echo frame > "${out}_$e.trafl"; '
+              'echo ATOM > "${out}_$e-000001.pdb"; done\n',
+    "clustering": 'base="${1%.trafl}"; thr=$(printf "%.2f" "$3")\n'
+                  'for k in $(seq 1 ${NCLUST:-3}); do echo "thr $thr cluster $k" '
+                  '> "${base}_thrs${thr}A_clust$(printf "%02d" $k).trafl"; done\n',
+    "SimRNA_trafl2pdbs": 'cp "$2" "${2%.trafl}-000001_AA.pdb"\n',
+}
+
+
+def _simrna(tmp_path, files=None, **settings):
+    """A written SimRNA step; returns (plan, step folder, run(script tag, **environment))."""
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "simrna", settings=dict({"sequence": "GGGCACGUGCCC", "dotbracket": "((((....))))",
+                                                "runs": 3, "parallel": 2, "n_models": 4}, **settings))
+    node.files.update(files or {})
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    (tmp_path / "sim" / "data").mkdir(parents=True, exist_ok=True)
+    if not (tmp_path / "bin").exists():
+        _fake_tools(tmp_path, FAKE_SIMRNA)
+
+    def run(tag, **env):
+        env = dict(os.environ, PATH=f"{tmp_path / 'bin'}:{os.environ['PATH']}", SIMRNA=str(tmp_path / "sim"),
+                   **env)
+        return subprocess.run(["bash", str(tmp_path / "01_simrna" / f"apt1_01_{tag}_{STAMP}.sh")],
+                              capture_output=True, text=True, env=env)
+    return plan, tmp_path / "01_simrna", run
+
+
+def test_simrna_secondary_structure_file_without_a_sequence(tmp_path):
+    # a chosen file with the dot-bracket only (a hand-written Rosetta secstruct file) and no sequence typed:
+    # the check stopped with "internal error while checking this step: string index out of range"
+    ss = tmp_path / "x.secstruct"
+    ss.write_text("((((....))))\n")
+    _plan, st = step("simrna", {}, {"secstruct": str(ss)})
+    assert messages(st, "error") == ["the secondary-structure file has no sequence line: type the sequence"]
+    plan, st = step("simrna", {"sequence": "GGGCACGUGCCC"}, {"secstruct": str(ss)})
+    assert not messages(st, "error")
+    assert generated(plan)["apt1_01_simrna_20261015-1432.ss"].content == "((((....))))\n"
+
+
+def test_simrna_step_fails_when_a_run_fails(tmp_path):
+    # the runs are independent (a failed one does not stop the others, and leaves fewer frames: a warning),
+    # but the script ended with exit status 0 even when every run had failed, so the plan went on
+    _plan, folder, run = _simrna(tmp_path)
+    proc = run("simrna", FAIL_RUNS="r01 r02 r03")
+    assert proc.returncode == 1 and "ERROR: every SimRNA run failed" in proc.stderr
+    assert proc.stderr.count("failed - see") == 3
+    proc = run("simrna", FAIL_RUNS="r02")
+    assert proc.returncode == 0 and "run 02 failed" in proc.stderr
+    assert "WARNING: 1 of 3 SimRNA runs failed" in proc.stderr
+    assert sorted(p.name for p in folder.glob("runs/r*/*_01.trafl")) == [
+        f"apt1_01_simrna-r0{k}_{STAMP}_01.trafl" for k in (1, 3)]  # the other runs were made
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_simrna_without_clustering_writes_its_trajectory_output(tmp_path):
+    # the output 'trajectory' named <project>_<NN>_simrna-all_<stamp>.trafl, which only the clustering
+    # script wrote: without clustering no run of the step was ever complete
+    from mdatk.workflows import runstate
+    plan, folder, run = _simrna(tmp_path, cluster=False)
+    out = plan.steps[plan.order[0]].outputs
+    assert list(out) == ["trajectory"] and out["trajectory"].paths == [
+        f"01_simrna/apt1_01_simrna-all_{STAMP}.trafl"]
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr
+    assert (folder / f"apt1_01_simrna-all_{STAMP}.trafl").read_text() == "frame\n" * 6  # 3 runs x 2 replicas
+    assert runstate.check_step(plan, plan.order[0]).state == "done"
+
+
+def test_simrna_start_pdb_in_a_folder_with_a_space(tmp_path):
+    start = tmp_path / "my data" / "start.pdb"
+    start.parent.mkdir()
+    start.write_text("ATOM\n")
+    _plan, folder, run = _simrna(tmp_path, files={"structure": str(start)}, cluster=False)
+    assert f"-p '{start}' " in (folder / f"apt1_01_simrna_{STAMP}.sh").read_text()
+    proc = run("simrna")
+    assert proc.returncode == 0, proc.stderr  # the stand-in stops when the -p file does not exist
+
+
+def test_simrna_cluster_script_with_many_runs_and_after_another_threshold(tmp_path):
+    # 1. with many runs 'ls runs/r*/*-000001.pdb | head -n 1' ended with SIGPIPE, which under 'set -o
+    #    pipefail' stopped the script without a message (60 runs x 10 replicas: every time)
+    _plan, folder, run = _simrna(tmp_path, runs=60, parallel=8, threshold=3.5)
+    assert run("simrna", REPLICAS="10").returncode == 0
+    for _try in range(3):
+        proc = run("simrna-cluster", NCLUST="6")
+        assert proc.returncode == 0, proc.stderr
+    assert "thr 3.50 cluster 4" in (folder / f"apt1_01_model-04_{STAMP}.pdb").read_text()
+    # 2. the step written and run again with another threshold: the clusters of the first run are named
+    #    by theirs (..._thrs3.50A_clust01.trafl), sort first and were rebuilt as the models
+    _plan, folder, run = _simrna(tmp_path, runs=60, parallel=8, threshold=5.0)
+    assert run("simrna", REPLICAS="10").returncode == 0
+    proc = run("simrna-cluster", NCLUST="2")
+    assert proc.returncode == 0, proc.stderr
+    models = sorted(p.name for p in folder.glob("apt1_01_model-*.pdb"))
+    assert models == [f"apt1_01_model-0{k}_{STAMP}.pdb" for k in (1, 2)]  # no model of the earlier run
+    assert (folder / models[0]).read_text() == "thr 5.00 cluster 1\n"
+    # 3. no first-frame PDB: the message, not a silent stop at the 'ls'
+    for path in folder.glob("runs/r*/*-000001.pdb"):
+        path.unlink()
+    proc = run("simrna-cluster")
+    assert proc.returncode == 1 and "no first-frame PDB found" in proc.stderr
+
+
 def test_rnamake_commands():
     base = {"start_bp": "A222-A251", "end_bp": "A149-A154", "search_type": "mc", "thermo_fluc": True}
     plan, st = step("rnamake", base, {"structure": "/data/scaffold.pdb"})
@@ -592,6 +707,55 @@ def test_rnamake_commands():
     assert any("ignores: thermo_fluc" in m for m in messages(st, "warning"))
     _plan, st = step("rnamake", {"start_bp": "A1", "end_bp": "A1"}, {"structure": "/s.pdb"})
     assert len(messages(st, "error")) >= 2
+
+
+def test_rnamake_script_runs_again_and_takes_a_scaffold_in_a_folder_with_a_space(tmp_path):
+    scaffold = tmp_path / "my data" / "scaffold.pdb"
+    scaffold.parent.mkdir()
+    scaffold.write_text("ATOM\n")
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "rnamake", settings={"start_bp": "A1-A12", "end_bp": "A6-A7", "designs": 4})
+    node.files["structure"] = str(scaffold)
+    plan = Plan(wf, str(tmp_path))
+    assert not plan.has_errors(), plan.all_issues()
+    plan.write()
+    # design_rna_scaffold: $NDESIGN designs as design.0.pdb ..., as RNAMake names them
+    env = _fake_tools(tmp_path, {"design_rna_scaffold":
+                                 'pdb=""; score=""\nfor ((i=1;i<=$#;i++)); do j=$((i+1)); '
+                                 '[ "${!i}" = --pdb ] && pdb="${!j}"; [ "${!i}" = --score_file ] && score="${!j}"; '
+                                 'done\n[ -f "$pdb" ] || { echo "cannot open $pdb"; exit 1; }\necho s > "$score"\n'
+                                 'for k in $(seq 0 $(($NDESIGN - 1))); do echo "design $k of $RUN" > design.$k.pdb; '
+                                 'done\n'})
+    folder = tmp_path / "01_rnamake"
+    script = ["bash", str(folder / f"apt1_01_rnamake_{STAMP}.sh")]
+    assert f"--pdb '{scaffold}' " in (folder / f"apt1_01_rnamake_{STAMP}.sh").read_text()
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, RNAMAKE="/opt", NDESIGN="4", RUN="1"))
+    assert proc.returncode == 0, proc.stderr + (folder / f"apt1_01_design_{STAMP}.log").read_text()
+    assert len(list(folder.glob("apt1_01_design-*.pdb"))) == 4
+    # run again, RNAMake finds two designs: the third and fourth of the first run are no outputs of this one
+    proc = subprocess.run(script, capture_output=True, text=True, env=dict(env, RNAMAKE="/opt", NDESIGN="2", RUN="2"))
+    assert proc.returncode == 0, proc.stderr
+    designs = sorted(folder.glob("apt1_01_design-*.pdb"))
+    assert [p.read_text() for p in designs] == ["design 0 of 2\n", "design 1 of 2\n"]
+
+
+def test_vmd_movie_rendered_again_has_no_frame_of_the_earlier_run(tmp_path):
+    wf = WorkflowParams(project_name="apt1", stamp=STAMP)
+    node = add_node(wf, "vmd", settings={"render": "movie"})
+    node.files.update({"topology": "/d/dry.parm7", "trajectory": "/d/a.nc"})
+    plan = Plan(wf, str(tmp_path))
+    plan.write()
+    # vmd: $NFRAMES frames as the Tcl script names them; ffmpeg: the number of frames it is given
+    env = _fake_tools(tmp_path, {
+        "vmd": 'mkdir -p frames\nfor k in $(seq 0 $(($NFRAMES - 1))); do '
+               'echo f > frames/frame.$(printf "%05d" $k).tga; done\n',
+        "ffmpeg": 'ls frames | wc -l > "${@: -1}"\n'})
+    folder = tmp_path / "01_vmd"
+    for frames in ("5", "3"):  # e.g. the trajectory loaded with a larger stride the second time
+        proc = subprocess.run(["bash", str(folder / f"apt1_01_vmd_{STAMP}.sh")], capture_output=True, text=True,
+                              env=dict(env, NFRAMES=frames))
+        assert proc.returncode == 0, proc.stderr
+        assert (folder / f"apt1_01_movie_{STAMP}.mp4").read_text().strip() == frames
 
 
 # ---------------------------------------------------------------------------
@@ -1243,3 +1407,154 @@ def test_prep_pdb_keeps_a_phosphate_only_residue():
     firsts = [ln for ln in lines if ln.startswith(("ATOM", "HETATM")) and ln[22:26].strip() == "1"]
     assert not any(ln[12:16].strip() in ("P", "OP1", "OP2", "OP3") for ln in firsts)  # the strands' 5' ends
     assert stats["phosphates"] > 0
+
+
+def _words(script, start):
+    """The words, as bash splits them, of the first command line of ``script`` that starts with ``start``."""
+    import shlex
+
+    return shlex.split(next(ln.strip() for ln in script.splitlines() if ln.strip().startswith(start)))
+
+
+def _after(words, flag):
+    return words[words.index(flag) + 1]
+
+
+def test_hand_picked_inputs_in_a_folder_with_spaces_stay_one_argument(tmp_path):
+    """A file chosen by hand keeps its absolute path, which may hold spaces ('/home/me/My models/model 1.pdb'):
+    every command line passes it as one word (they were written unquoted, so the PDB preparation got four
+    arguments and stopped, and pmemd / the conversion read '/home/me/My' as the file)."""
+    import shutil
+
+    from mdatk import builder
+
+    folder = tmp_path / "My models"
+    folder.mkdir()
+    pdb, top, crd = str(folder / "model 1.pdb"), str(folder / "sys 1.parm7"), str(folder / "sys 1.rst7")
+    (folder / "model 1.pdb").write_text(builder.build_helix("GCGC", scheme="amber"))
+    # Amber build: the preparation helper, run as the script runs it
+    files = generated(step("amber-build", {}, {"structure": pdb})[0])
+    sh = files["apt1_01_amber-build_20261015-1432.sh"].content
+    assert _words(sh, "python3 apt1_01_prep")[2:] == [pdb, "apt1_01_prep_20261015-1432.pdb"]
+    if shutil.which("bash") and shutil.which("python3"):
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "apt1_01_prep_20261015-1432.py").write_text(files["apt1_01_prep_20261015-1432.py"].content)
+        line = next(ln for ln in sh.splitlines() if ln.startswith("python3 apt1_01_prep"))
+        proc = subprocess.run(["bash", "-c", line], cwd=work, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "ATOM" in (work / "apt1_01_prep_20261015-1432.pdb").read_text()
+    # helix restraints: the topology
+    files = generated(step("amber-restraints", {"sequence": "GCGC GCGC", "dotbracket": "(((( ))))"},
+                           {"topology": top})[0])
+    assert _words(files["apt1_01_amber-restraints_20261015-1432.sh"].content, "python3 apt1_01_helix")[2:] == [
+        top, "apt1_01_helix_20261015-1432.dist"]
+    # MD stages: the starting coordinates (-c and -ref of the first run; with 'Starting coordinates' as the
+    # restraint reference, -ref of every run)
+    for ref in ("previous", "initial"):
+        files = generated(step("amber-md", {"restraint_ref": ref},
+                               {"topology": top, "coordinates": crd, "restraints": "/x.dist"})[0])
+        sh = files["apt1_01_amber-md_20261015-1432.sh"].content
+        first = _words(sh, "$PMEMD -O -i apt1_01_min1")
+        assert _after(first, "-c") == crd and _after(first, "-ref") == crd
+        assert f'TOP="{top}"' in sh
+        second = _words(sh, "$PMEMD -O -i apt1_01_min2")
+        assert _after(second, "-ref") == (crd if ref == "initial" else "apt1_01_min1_20261015-1432.rst7")
+    # GROMACS: the Amber files of the conversion, or GROMACS files used as they are
+    sh = generated(step("gromacs", {}, {"topology": top, "coordinates": crd})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    assert _words(sh, "python3 apt1_01_convert")[2:4] == [top, crd]
+    sh = generated(step("gromacs", {"convert": "acpype"}, {"topology": top, "coordinates": crd})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    acpype = _words(sh, "acpype ")
+    assert _after(acpype, "-p") == top and _after(acpype, "-x") == crd
+    gtop, gro = str(folder / "sys 1.top"), str(folder / "sys 1.gro")
+    sh = generated(step("gromacs", {"convert": "none"}, {"topology": gtop, "coordinates": gro})[0])[
+        "apt1_01_gromacs_20261015-1432.sh"].content
+    em = _words(sh, "$GMX grompp -f apt1_01_em")
+    assert _after(em, "-c") == gro and _after(em, "-p") == gtop
+    assert _after(_words(sh, "$GMX grompp -f apt1_01_nvt"), "-p") == gtop
+    # paths without such characters are written as they were
+    sh = generated(step("amber-md", {}, {"topology": "/x.parm7", "coordinates": "/x.rst7",
+                                         "restraints": "/x.dist"})[0])["apt1_01_amber-md_20261015-1432.sh"].content
+    assert " -c /x.rst7 -ref /x.rst7 " in sh
+
+
+def test_solute_residue_count_follows_the_residues_tleap_reads(tmp_path):
+    """The MD stages restrain the solute as ':1-N', N counted in the build's input PDB.  Strands that share a
+    chain id and their numbers (blank chain ids, each numbered from 1) were counted once, Rosetta's virtual
+    residue - which the preparation removes - as a residue, and waters named TIP3 / DOD as solute."""
+    from mdatk import builder
+    from mdatk.workflows.amber import count_solute_residues
+
+    duplex = builder.build_helix("GCGC", scheme="amber")  # chains A and B, both numbered 1-4, TER between
+    (tmp_path / "duplex.pdb").write_text(duplex)
+    assert count_solute_residues(str(tmp_path / "duplex.pdb")) == 8
+    blank = "\n".join(ln[:21] + " " + ln[22:] if ln.startswith("ATOM") else ln for ln in duplex.splitlines()) + "\n"
+    (tmp_path / "blank.pdb").write_text(blank)
+    assert count_solute_residues(str(tmp_path / "blank.pdb")) == 8
+    extra = duplex.replace("END\n", "") + textwrap.dedent("""\
+        HETATM 9001  O   TIP3W   1      20.000  20.000  20.000  1.00  0.00           O
+        HETATM 9002  O   DOD W   2      23.000  20.000  20.000  1.00  0.00           O
+        HETATM 9003 MG    MG M   1      26.000  20.000  20.000  1.00  0.00          MG
+        HETATM 9004 ORIG VRT X   1       0.000   0.000   0.000  1.00  0.00           X
+        HETATM 9005  X   VRT X   1       1.000   0.000   0.000  1.00  0.00           X
+        END
+        """)
+    (tmp_path / "extra.pdb").write_text(extra)
+    assert count_solute_residues(str(tmp_path / "extra.pdb"), drop_virtual=True) == 8
+    assert count_solute_residues(str(tmp_path / "extra.pdb")) == 9  # kept: tleap is given the virtual residue
+    # ... and the mask the MD stages write from it
+    for name, build, n in (("blank.pdb", {}, 8), ("extra.pdb", {}, 8), ("extra.pdb", {"drop_virtual": False}, 9)):
+        wf, b, _r, m = amber_plan(build=build, structure=str(tmp_path / name))
+        plan = Plan(wf, str(tmp_path / "plan"))
+        assert plan.steps[b.id].outputs["topology"].data["solute_residues"] == n
+        assert f"restraintmask=':1-{n}'," in generated(plan, m.id)["apt1_03_min1_20261015-1432.in"].content
+
+
+def test_gmx_posre_restrains_dna_and_l_dna():
+    """Position restraints are for 'nucleic-acid heavy atoms': L-DNA residues (LDA LDC LDG LDT, MDATK's names in
+    the generated library and so in the topology) were not recognised, so an L-DNA strand got no restraint file
+    and its -DPOSRES stages ran unrestrained."""
+    for name in ("G", "G5", "U3", "AN", "RA", "LA", "LC5", "LU3", "DA", "DT", "DG5", "DC3", "DTN",
+                 "LDA", "LDC", "LDG", "LDT"):
+        assert gmx_posre.is_nucleic(name), name
+    for name in ("WAT", "HOH", "MG", "Na+", "K+", "Cl-", "LIG", "D", "L", "N", "DN", "ALA", "GLY"):
+        assert not gmx_posre.is_nucleic(name), name
+    top = textwrap.dedent("""\
+        [ moleculetype ]
+        system1   3
+
+        [ atoms ]
+          1  LT  1  LDG  O5'  1 -0.6 16.0
+          2  HO  1  LDG  HO5' 1  0.4 1.0
+          3  CT  2  LDT  C1'  2  0.0 12.0
+          4  CT  3  LDA  C1'  3  0.0 12.0
+          5  CT  4  LDC  C1'  4  0.0 12.0
+
+        [ system ]
+        x
+        """)
+    text, itps = gmx_posre.add_posres(top, "apt1_04_posre-{mol}.itp", 1000.0)
+    assert list(itps) == ["apt1_04_posre-system1.itp"]
+    rows = [ln.split()[0] for ln in itps["apt1_04_posre-system1.itp"].splitlines() if ln[:1] == " "]
+    assert rows == ["1", "3", "4", "5"] and '#include "apt1_04_posre-system1.itp"' in text
+
+
+def test_amber_restraints_secondary_structure_file_without_a_sequence(tmp_path):
+    """A chosen file with the dot-bracket only and no sequence typed: an error that says so, in every step that
+    reads a secondary structure (the Amber restraints step ended with "internal error ... string index out of
+    range")."""
+    (tmp_path / "a.secstruct").write_text("((((....))))\n")
+    (tmp_path / "s.parm7").write_text("x\n")
+    tool = TOOLS["amber-restraints"]
+    node = PlanNode(id="r", tool="amber-restraints", step=1, settings=tool.normalise({}),
+                    files={"secstruct": str(tmp_path / "a.secstruct"), "topology": str(tmp_path / "s.parm7")})
+    plan = Plan(WorkflowParams(project_name="p", stamp=STAMP, nodes=[node]), str(tmp_path / "plan"))
+    errors = [i.message for i in plan.steps["r"].issues if i.level == "error"]
+    assert "the secondary-structure file has no sequence line: type the sequence" in errors
+    assert not any("internal error" in e for e in errors)
+    # with the sequence typed the file is read as before
+    node.settings = tool.normalise({"sequence": "GGGGAAAACCCC"})
+    plan = Plan(WorkflowParams(project_name="p", stamp=STAMP, nodes=[node]), str(tmp_path / "plan2"))
+    assert not any("sequence line" in i.message or "internal error" in i.message for i in plan.steps["r"].issues)

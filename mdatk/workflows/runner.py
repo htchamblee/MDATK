@@ -39,6 +39,7 @@ from .. import PROJECT_ABBREV
 from ..frozen import child_env
 from ..progress import Cancelled
 from ..projectfile import logged
+from . import cluster
 from .base import LOCAL_VAR, WAITING_STATUS, env_lines, shell_quote, waiting_file
 from .budget import Budget, Grant, Resources, Slots, budget_notes, schedule
 from .runstate import stop_mark
@@ -127,6 +128,15 @@ def _stop(proc) -> None:
                 proc.kill()
 
 
+def _signal_group(proc, sig) -> bool:
+    """Send ``sig`` to what is left of the script's process group; False when nothing is."""
+    try:
+        os.killpg(proc.pid, sig)
+        return True
+    except (OSError, AttributeError):  # no process left in the group (or no killpg: Windows)
+        return False
+
+
 @dataclass
 class ScriptJob:
     step: int
@@ -147,6 +157,9 @@ class ScriptJob:
     # up the script's environment (its conda environment, setup file and setup commands; base.env_lines)
     programs: List[Tuple[str, str]] = field(default_factory=list)
     setup: List[str] = field(default_factory=list)
+    # called when the main script stops to wait for its separate script (the step's cluster job file is written
+    # again, now that its system exists: mdatk.workflows.cluster.refresh); returns lines for the output
+    on_wait: Optional[Callable[[], List[str]]] = None
 
     def waiting_message(self) -> str:
         names = ", ".join(os.path.basename(p) for p in self.separate) or "a separately run script"
@@ -207,6 +220,9 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
         except Exception:  # noqa: BLE001 - a generator bug: no check (the script still reports what it misses)
             programs = []
         passes = [("run", False)]
+        on_wait = None
+        if separate and cluster.wants_job(step.settings):
+            on_wait = (lambda n=nid: cluster.refresh(plan, [n]))
         if include_separate and separate:  # then its separate scripts, then its main scripts again
             passes += [("run-separate", False), ("run", True)]
         for role, again in passes:
@@ -214,7 +230,8 @@ def plan_jobs(plan, node_ids: Optional[Sequence[str]] = None,
                 if f.role == role:
                     jobs.append(ScriptJob(step.node.step, step.label, path[f.name], step_citations(step), nid,
                                           after, separate, role, needs, mark, again, programs,
-                                          env_lines(step.settings, separate=role == "run-separate")))
+                                          env_lines(step.settings, separate=role == "run-separate"),
+                                          on_wait if role == "run" else None))
     return jobs
 
 
@@ -565,8 +582,13 @@ def run_script(path: str, on_line: LineFn, cancel: Optional[Flag] = None,
 
     def watch():
         while not stop.wait(0.2):
-            if cancel is not None and cancel.is_set() and proc.poll() is None:
-                _stop(proc)
+            if cancel is not None and cancel.is_set():
+                if proc.poll() is None:
+                    _stop(proc)
+                else:  # the script has ended, but a program it left running keeps its output open (the run
+                    _signal_group(proc, signal.SIGTERM)  # goes on until that ends): end it too
+                if not stop.wait(10):  # still read: something in the group ignored SIGTERM
+                    _signal_group(proc, signal.SIGKILL)
                 return
 
     def read_stderr():
@@ -807,6 +829,13 @@ def run_jobs(jobs: Sequence[ScriptJob], project_path: Optional[str] = None,
                             entry.status, entry.summary = "waiting", f"exit status {code}: {message}"
                             line_fn(f"==== step {job.step:02d}: {job.title} - {message}")
                             outcome = "waiting"
+                            if job.on_wait is not None and not legacy:
+                                try:
+                                    for note in job.on_wait():
+                                        line_fn(f"[{job.step:02d}] cluster job: {note}")
+                                except Exception as exc:  # noqa: BLE001 - the run goes on; the job file is old
+                                    line_fn(f"[{job.step:02d}] WARNING: the cluster job file was not written "
+                                            f"again: {exc}")
                     elif code != 0:
                         message = f"exit status {code}"
                         missing = not_found(output) if code == 127 or "command not found" in output else []

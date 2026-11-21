@@ -51,6 +51,36 @@ INTENDED = [
     # residue names (DT, DG5, LDA ...) and matches T with the U of the secondary structure: it refused every
     # DNA pair. RNA names give the same letters as before, so RNA restraints are unchanged
     (re.compile(r"(^|/)\d+_amber-restraints/[^/]*_helix_\d{8}-\d{4}\.py$"), None),
+    # 0.1.0: SimRNA's run script ends with an error when every run failed (it ended with exit status 0 even
+    # then) and warns with the number of failed runs otherwise, and without clustering it writes
+    # the step's 'trajectory' output itself (only the clustering script did). The config, sequence and
+    # restraint files and the SimRNA command line stay as they were
+    (re.compile(r"_simrna_\d{8}-\d{4}\.sh$"), None),
+    # ... and the clustering script no longer stops without a message at 'ls ... | head -n 1' (SIGPIPE under
+    # pipefail: most of the time from about 40 runs x 10 replicas on) and removes the clusters and models of
+    # an earlier run first (another threshold names its clusters differently, and they were rebuilt as models)
+    (re.compile(r"_simrna-cluster_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: FARFAR2's run script, likewise, ends with an error when every rna_denovo run failed (exit status
+    # 0 even then, or when rna_denovo was not found) and warns otherwise. The flags, FASTA and secstruct files and
+    # the rna_denovo command line stay as they were
+    (re.compile(r"_farfar2_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: the FARFAR2 models script removes the numbered models and their list of an earlier run before it
+    # extracts (the list was appended to, and a model the new run did not write was passed on as its own),
+    # and annotates every model with DSSR (model-[0-9][0-9] left out the models from 100 on)
+    (re.compile(r"_farfar2-models_\d{8}-\d{4}\.sh$"), None),
+    # 0.1.0: the RNAMake script removes the design PDBs of an earlier run first (with fewer designs than that
+    # run wrote, its last ones stayed as outputs of the step); every case that writes design PDBs
+    (re.compile(r"_rnamake_\d{8}-\d{4}\.sh$"),
+     {f"tool:rnamake:{v}" for v in ("default", "app=design_rna", "dump_scaffold=True", "no_bp_checks=True",
+                                    "no_sterics=True", "search_type=exhaustive", "search_type=mc",
+                                    "skip_seq_opt=True", "thermo_fluc=True")}),
+    # 0.1.0: the VMD script of a movie removes the frames of an earlier run first (with fewer frames than that
+    # run rendered, its last ones were joined into the movie); snapshots and interactive scripts are unchanged
+    (re.compile(r"_vmd_\d{8}-\d{4}\.sh$"), {"tool:vmd:render=movie"}),
+    # 0.1.0: the GROMACS position-restraint helper (a copy of mdatk/workflows/scripts/gmx_posre.py) takes the
+    # L-DNA residues LDA LDC LDG LDT for nucleic acid too: an L-DNA strand got no restraints. Every name it
+    # recognised before is recognised as before, so the restraints of RNA and D-DNA are unchanged
+    (re.compile(r"(^|/)\d+_gromacs/[^/]*_posre_\d{8}-\d{4}\.py$"), None),
 ]
 
 

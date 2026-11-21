@@ -316,3 +316,30 @@ def test_steps_sharing_a_number_keep_their_own_step_log(main, monkeypatch, tmp_p
         del pl.canvas._text
     assert "01 · Custom script" in drawn and "01 · Custom script · model12" not in drawn
     assert "model12" in drawn_badges(pl.canvas, a)
+
+
+def test_a_run_found_is_not_shown_for_a_step_that_writes_somewhere_else_now(main, tmp_path):
+    """A step whose folder tag, number or project name changes after 'Check previous runs': the run found in
+    the folder it had is not its run any more (the box kept its check mark and 'done', and 'Use this run' let
+    the step use outputs that are not where it reads them); back in its folder, the run is found again."""
+    pl = main.planner
+    b = pl.add_step("user-script", 40, 40)
+    b.settings.update(script='echo m > "$MDATK_OUT_M"\n', outputs=[{"name": "m", "kind": "text"}])
+    pl.changed()
+    pl.canvas.select(b.id)
+    pump(0.3)
+    pl.write(None)
+    fake_run(pl.resolve(), b.id)
+    assert pl.scan_runs()[b.id].state == "done"
+    pump(0.2)
+    assert pl.mark_of(b.id) == "ok" and pl.canvas.run_info(b)[0].startswith("done") and pl.d_adopt.get_sensitive()
+    for edit, undo in ((lambda: pl.d_tag.set_text("model12"), lambda: pl.d_tag.set_text("")),
+                       (lambda: pl.d_step.set_value(5), lambda: pl.d_step.set_value(1)),
+                       (lambda: pl.project_entry.set_text("other"), lambda: pl.project_entry.set_text("apt1"))):
+        edit()
+        assert wait_for(lambda: b.id not in pl.prev_runs)
+        pump(0.3)
+        assert pl.mark_of(b.id) is None and pl.canvas.run_info(b) is None and not pl.d_adopt.get_sensitive()
+        assert "not checked" in pl.d_prev.get_text()
+        undo()
+        assert wait_for(lambda: b.id in pl.prev_runs and pl.mark_of(b.id) == "ok")

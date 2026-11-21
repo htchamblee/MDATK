@@ -73,10 +73,15 @@ def chain_ids(residues) -> np.ndarray:
     if len(set(segs)) > 1:
         return np.unique(segs, return_inverse=True)[1].astype(np.int64)
     try:
-        frag = np.asarray(first_atoms.fragindices)
-        return np.unique(frag, return_inverse=True)[1].astype(np.int64)
+        frag = np.asarray(residues.atoms.fragindices)
     except Exception:
         return np.zeros(n, dtype=np.int64)
+    uniq, first, rows = np.unique(residues.atoms.resindices, return_index=True, return_inverse=True)
+    if np.any(frag != frag[first][rows]):
+        # the bonds do not even hold the residues together (a PDB file with CONECT records for its ligands
+        # only: every other atom is a fragment of its own), so they say nothing about chains
+        return np.zeros(n, dtype=np.int64)
+    return np.unique(frag[first], return_inverse=True)[1].astype(np.int64)
 
 
 def chain_names(residues) -> np.ndarray:
@@ -157,7 +162,9 @@ class TraceAnalysis(Analysis):
     name = "trace"
     label = "Backbone trace"
     internal = True
-    version = 4  # v2: residue numbers for tags; v3: group membership; v4: chain and residue names
+    # v2: residue numbers for tags; v3: group membership; v4: chain and residue names; v5: chains from bonds
+    # only when the bonds hold the residues together
+    version = 5
 
     @classmethod
     def params_for(cls, project):
@@ -169,7 +176,9 @@ class TraceAnalysis(Analysis):
 
     @classmethod
     def selection_texts(cls, project):
-        return structure_groups(project) + [project.analyses.mg.mg_selection]
+        # every group, not only those shown: the result records each group's residues (group_member,
+        # group_index), which colour the view and choose the residues of the 3D representations
+        return project.group_names() + [project.analyses.mg.mg_selection]
 
     def setup(self, frame_indices):
         super().setup(frame_indices)

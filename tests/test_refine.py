@@ -182,6 +182,20 @@ def test_phenix_eff_from_annotation(tmp_path):
     assert any("must exist when the files are written" in m for m in messages(st, "error"))
 
 
+def test_phenix_secondary_structure_file_without_a_sequence(tmp_path):
+    # a chosen file with the dot-bracket only and no sequence typed, the model not there yet: the check
+    # stopped with "internal error while checking this step: string index out of range"
+    ss = write(tmp_path, "x.secstruct", "((((....))))\n")
+    for numbering in ("model", "continuous", "chain"):
+        _plan, st = phenix({"resolution": 3.0, "numbering": numbering},
+                           {"model": "/data/m.pdb", "map": "/data/m.mrc", "secstruct": ss})
+        errors = [i.message for i in st.issues if i.level == "error"]
+        assert errors == ["the secondary-structure file has no sequence line: type the sequence"], numbering
+    plan, st = phenix({"resolution": 3.0, "sequence": "GGGCACGUGCCC"},
+                      {"model": "/data/m.pdb", "map": "/data/m.mrc", "secstruct": ss})
+    assert not [i for i in st.issues if i.level == "error"]
+
+
 def test_phenix_checks():
     _, st = phenix({"resolution": None})
     assert any("give the resolution" in m for m in messages(st, "error"))

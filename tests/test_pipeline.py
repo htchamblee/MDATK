@@ -116,6 +116,69 @@ def test_frame_selection_and_external(demo_dry, tmp_path):
     np.testing.assert_allclose(ds.series("external/lab.signal").values, ds.frames * 2)
 
 
+def test_time_step_override_sets_the_time_axis(demo_dry, tmp_path):
+    """inputs.dt_ps replaces the time stamps of the trajectory (the demo's NetCDF file stores 10 ps per
+    frame): the time axis is frame number x dt, as the PDB export by time reads it."""
+    from mdatk.io.pdb_export import frames_from_specs
+
+    p = small_project(demo_dry, tmp_path / "out5")
+    p.inputs.start, p.inputs.step = 2, 3
+    pipe = Pipeline(p)
+    ds = pipe.analyze(["rmsd"])
+    np.testing.assert_allclose(ds.time_ps, ds.frames * 10.0)  # no override: the file's time stamps
+    p.inputs.dt_ps = 2.0
+    pipe = Pipeline(p)
+    ds = pipe.analyze(["rmsd"])
+    np.testing.assert_array_equal(ds.frames, [2, 5, 8, 11, 14, 17, 20, 23])
+    np.testing.assert_allclose(ds.time_ps, ds.frames * 2.0)
+    np.testing.assert_allclose(ds.time("ns"), ds.frames * 0.002)
+    np.testing.assert_allclose(pipe.analyze([]).time_ps, ds.frames * 2.0)  # no analysis: the same axis
+    # the frame exported for a time is the frame the charts show at that time
+    assert frames_from_specs(pipe.universe(), "", "10ps", "ps", p.inputs.dt_ps) == [5]
+    assert ds.time_ps[list(ds.frames).index(5)] == pytest.approx(10.0)
+
+
+def test_trace_cache_follows_groups_that_are_not_shown(demo_dry, tmp_path):
+    """The trace records the residues of every group (they colour the structure view and choose the residues
+    of the 3D representations): editing a group the view does not show must not reuse the cached trace."""
+    from mdatk.config import ResidueGroup
+
+    p = small_project(demo_dry, tmp_path / "out6")
+    p.groups = [ResidueGroup("Loop", "5-8", "", "#ff0000"), ResidueGroup("RNA", "1-24", "", "#2a78d6")]
+    p.visual.structure_groups = ["RNA"]
+    tr = Pipeline(p).analyze(["trace"]).results["trace"]
+    assert np.flatnonzero(tr.arrays["group_member"][0]).tolist() == [4, 5, 6, 7]
+    p.groups[0].residues = "15-18"
+    logs = []
+    tr = Pipeline(p, Reporter(log_cb=logs.append)).analyze(["trace"]).results["trace"]
+    assert np.flatnonzero(tr.arrays["group_member"][0]).tolist() == [14, 15, 16, 17]
+    assert np.flatnonzero(tr.arrays["group_index"] == 0).tolist() == [14, 15, 16, 17]
+    logs.clear()
+    p.groups[0].color = "#00ff00"  # a colour is applied when drawing: the cache is reused
+    Pipeline(p, Reporter(log_cb=logs.append)).analyze(["trace"])
+    assert any("loaded from cache" in line for line in logs)
+
+
+def test_results_cached_before_the_fixes_are_not_reused(demo_dry, tmp_path):
+    """Cache keys changed with the numbers: analyses whose results were corrected have a new version, and
+    results cached with periodic distances or a time step override (whose pair vectors / time axis were
+    wrong) get other keys; everything else keeps its key."""
+    from mdatk.analysis import ANALYSES
+
+    assert (ANALYSES["hbonds"].version, ANALYSES["contacts"].version, ANALYSES["trace"].version) == (2, 2, 5)
+    p = small_project(demo_dry, tmp_path / "out7")
+    pipe = Pipeline(p)
+    fp = pipe.input_fingerprint(pipe.resolve_inputs())
+    assert set(fp) == {"topology", "trajectories", "frames", "dt_ps"}  # as before: these caches stay valid
+    plain = ANALYSES["mg"].cache_key(p, fp)
+    p.analyses.use_pbc = True
+    periodic = ANALYSES["mg"].cache_key(p, fp)
+    p.analyses.use_pbc = False
+    assert periodic != plain == ANALYSES["mg"].cache_key(p, fp)
+    p.inputs.dt_ps = 2.0
+    assert pipe.input_fingerprint(pipe.resolve_inputs())["time_axis"] == "frame x dt_ps"
+
+
 def test_invalid_parameters_are_reported(tmp_path):
     p = Project()
     p.output.out_dir = str(tmp_path)

@@ -738,9 +738,6 @@ class PlannerCanvas(Gtk.DrawingArea):
         n = self.node_at(x, y)
         if n is not None:
             self.select(n.id)
-            # bring to front
-            self.workflow.nodes.remove(n)
-            self.workflow.nodes.append(n)
             self.drag = {"mode": "move", "node": n.id, "dx": x - n.x, "dy": y - n.y, "moved": False}
             self.queue_draw()
             return True
@@ -800,6 +797,9 @@ class PlannerCanvas(Gtk.DrawingArea):
                     spot = free_position(nx, ny, w, h, self.boxes(n), start=(n.x, n.y))
                     nx, ny = spot if spot is not None else (n.x, n.y)
                 if (nx, ny) != (n.x, n.y):
+                    if not d["moved"]:  # bring to front: only a step that moves (a click is no edit of the plan)
+                        self.workflow.nodes.remove(n)
+                        self.workflow.nodes.append(n)
                     n.x, n.y = nx, ny
                     d["moved"] = True
                     self.queue_draw()
@@ -1081,9 +1081,11 @@ class PlannerPanel(Gtk.Box):
         self.run_state: Dict[str, str] = {}
         self._this_run: Set[str] = set()  # the steps of the latest run (their marks were reset)
         self.prev_runs: Dict[str, runstate.RunStatus] = {}  # what 'Check previous runs' found (not saved)
+        self._run_places: Dict[str, Tuple] = {}  # node id -> where its run in prev_runs was looked for
         self._spin_id = 0
         self._closed = False
         self._run_token = 0  # the run whose callbacks count (a newer run or a reload replaces it)
+        self._naming_shown: Tuple = ()  # the names of the plan's files as the naming bar shows them
         self._tokens = 0  # the last token handed out
         outer = self
         outer.pack_start(self._toolbar(), False, False, 0)
@@ -1144,9 +1146,12 @@ class PlannerPanel(Gtk.Box):
         finally:
             self._loading = False
         self.canvas.selected = None
+        self.canvas.selected_edge = None  # of the plan before: nothing of the new one is selected
+        self.show_details(None)
         self.checked.clear()
         self.run_state.clear()
         self.prev_runs.clear()
+        self._run_places.clear()
         self._tokens += 1
         self._run_token = self._tokens
         self.changed()
@@ -1186,14 +1191,41 @@ class PlannerPanel(Gtk.Box):
                 self.prev_runs[nid] = run
             elif node_ids is not None:
                 self.prev_runs.pop(nid, None)
+        self._note_run_places(runs)
         self.changed(resolve=False)
         return runs
+
+    def _run_place(self, node_id: str) -> Optional[Tuple]:
+        """Where the runs of a step are looked for: the plan folder, the project name, the plan's time stamp,
+        and the step's folder and number (None: the step is gone)."""
+        step = self.plan.steps.get(node_id) if self.plan else None
+        if step is None or step.ctx is None:
+            return None
+        return self.plan.root, self.plan.project, self.workflow.stamp, step.ctx.folder, step.ctx.step
+
+    def _note_run_places(self, node_ids) -> None:
+        for nid in node_ids:
+            self._run_places[nid] = self._run_place(nid)
+
+    def _drop_moved_runs(self) -> None:
+        """The runs found for steps that write somewhere else now (another step number, folder tag, project
+        name, time stamp or plan folder) are not theirs any more: their marks go, and the folders are looked
+        into again, quietly (also for a step that is back where a run of it was found)."""
+        places = {nid: self._run_place(nid) for nid in (self.plan.steps if self.plan else ())}
+        moved = [nid for nid, place in places.items()
+                 if nid in self._run_places and self._run_places[nid] != place]
+        self._run_places = places
+        for nid in moved:
+            self.prev_runs.pop(nid, None)
+        if moved and not self._closed:
+            GLib.idle_add(self._scan_after_load, self._run_token)
 
     def changed(self, resolve: bool = True) -> None:
         self.checked &= {n.id for n in self.workflow.nodes if checkable(n)}  # deleted steps
         self._update_run_selected()
         if resolve:
             self.resolve()
+            self._drop_moved_runs()
             self._update_status()
             self._refresh_naming()
             for win in list(self.wizards.values()):
@@ -1418,6 +1450,15 @@ class PlannerPanel(Gtk.Box):
 
     def _refresh_naming(self) -> None:
         wf = self.workflow
+        loading, self._loading = self._loading, True
+        try:  # values set elsewhere (the stand-alone wizard); not while typing (an empty name is 'project')
+            if (self.project_entry.get_text().strip() or "project") != wf.project_name:
+                self.project_entry.set_text(wf.project_name)
+            if self.stamp_check.get_active() != wf.use_stamp:
+                self.stamp_check.set_active(wf.use_stamp)
+        finally:
+            self._loading = loading
+        self._naming_shown = self._naming()
         stamp = self.plan.stamp if self.plan else ""
         self.stamp_label.set_text((stamp + ("" if wf.stamp else " (set on first write)")) if wf.use_stamp
                                   else "")
@@ -1531,7 +1572,8 @@ class PlannerPanel(Gtk.Box):
             self.d_title.set_markup(f"<b>{GLib.markup_escape_text(step_title(n))}</b>")
             self.d_desc.set_text(tool.description if tool else f"unknown step type {n.tool}")
             self.d_name.set_sensitive(True)
-            self.d_name.set_text(n.title)
+            if self.d_name.get_text().strip() != n.title.strip():  # not while typing (a space, the cursor)
+                self.d_name.set_text(n.title)
             gen = bool(tool and tool.generates)
             self.d_step.set_sensitive(gen)
             self.d_step.set_value(max(1, n.step))
@@ -1745,15 +1787,31 @@ class PlannerPanel(Gtk.Box):
                 n.x, n.y = spot
         self.changed()
 
-    def _on_naming(self, *_):
+    def _on_naming(self, widget=None, *_):
         if self._loading:
             return
         wf = self.workflow
-        wf.project_name = self.project_entry.get_text().strip() or "project"
-        wf.use_stamp = self.stamp_check.get_active()
-        wf.step_folders = self.folders_check.get_active()
-        wf.supersede_runs = self.supersede_check.get_active()
+        # only what was edited: the stand-alone wizard sets the project name and the time stamp as well, and
+        # the fields here may not show its values yet
+        if widget in (None, self.project_entry):
+            wf.project_name = self.project_entry.get_text().strip() or "project"
+        if widget in (None, self.stamp_check):
+            wf.use_stamp = self.stamp_check.get_active()
+        if widget in (None, self.folders_check):
+            wf.step_folders = self.folders_check.get_active()
+        if widget in (None, self.supersede_check):
+            wf.supersede_runs = self.supersede_check.get_active()
         self.schedule_resolve()
+
+    def _naming(self) -> Tuple:
+        wf = self.workflow
+        return wf.project_name, wf.use_stamp, wf.stamp, wf.out_dir
+
+    def follow_naming(self) -> None:
+        """The stand-alone wizard may have changed the names the plan's files get (project name, time stamp,
+        folder): show them in the naming bar and resolve the plan with them."""
+        if self._naming() != self._naming_shown and not self._closed:
+            self.changed()
 
     def new_stamp(self) -> None:
         self.workflow.stamp = new_stamp()
@@ -1963,6 +2021,7 @@ class PlannerPanel(Gtk.Box):
             self.prev_runs = dict(runs)
         else:
             self.prev_runs.update(runs)
+        self._note_run_places(runs)
         counts = {s: sum(1 for r in runs.values() if r.state == s) for s in ("done", "partial", "missing")}
         self.set_status(f"Previous runs: {counts['done']} done, {counts['partial']} partial, "
                         f"{counts['missing']} missing (folder {plan.root})")
@@ -2162,7 +2221,10 @@ class PlannerPanel(Gtk.Box):
         if not os.path.isdir(path):
             self._message("Nothing written yet", f"{path} does not exist yet; use 'Write all files' first.")
             return
-        desktop.open_folder(path)
+        try:
+            desktop.open_folder(path)
+        except (OSError, RuntimeError, GLib.Error) as exc:  # e.g. no file manager on this computer
+            self._message("Could not open the folder", f"{path}\n\n{exc}", Gtk.MessageType.ERROR)
 
     def use_for_analysis(self, node: Optional[PlanNode]) -> None:
         """Hand the files an MDATK analysis step reads to the analysis window (through the host)."""

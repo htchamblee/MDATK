@@ -244,7 +244,16 @@ def choose_save_path(parent: Optional[Gtk.Window], name: str, title: str = "Save
     dlg.destroy()
     if resp != Gtk.ResponseType.OK or not path:
         return None
-    return path if path.endswith(".toml") else path + PROJECT_SUFFIX
+    if path.endswith(".toml"):
+        return path
+    path += PROJECT_SUFFIX
+    if os.path.exists(path):  # the dialog asked about the name as typed, not about the file that is written
+        if ask(parent, f"Replace {os.path.basename(path)}?",
+               f"{path} exists already (the name was typed without {PROJECT_SUFFIX}). Saving replaces it.",
+               [("Cancel", Gtk.ResponseType.CANCEL), ("Replace", Gtk.ResponseType.ACCEPT)],
+               Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING) != Gtk.ResponseType.ACCEPT:
+            return None
+    return path
 
 
 def ask(parent: Optional[Gtk.Window], text: str, detail: str, buttons: Sequence[Tuple[str, int]],

@@ -43,6 +43,25 @@ def test_residue_rows_by_chain_and_number():
         residue_rows(tr, "C:1")
 
 
+def test_residue_tags_keep_to_the_chain_named():
+    """visual.label_residues = "B:2" tags residue 2 of chain B, not residue 2 of every chain."""
+    from types import SimpleNamespace
+    from mdatk.data import AnalysisResult
+    from mdatk.render.residues import tag_rows
+
+    tr = AnalysisResult("trace", "", {}, {"resid": np.array([1, 2, 1, 2]), "chain": np.array([0, 0, 1, 1]),
+                                          "chain_name": np.array(["A", "A", "B", "B"])})
+
+    def rows(text, every=0):
+        return tag_rows(tr, SimpleNamespace(label_every=every, label_residues=text)).tolist()
+
+    assert rows("B:2") == [3]
+    assert rows("A:1, B:2") == [0, 3]
+    assert rows("2") == [1, 3]  # no chain: the number in every chain
+    assert rows("B:1", every=2) == [1, 2, 3]
+    assert rows("C:1") == [] and rows("") == []
+
+
 @pytest.mark.parametrize("preset", [k for k in layouts.PRESETS if k.endswith("_strip")])
 def test_strip_layouts_put_the_last_slot_across_the_bottom(preset):
     rows, cols, slots = layouts.preset(preset)

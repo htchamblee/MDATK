@@ -15,6 +15,7 @@ from .common import labels, per_row_counts, residue_rows, without
 class ContactAnalysis(Analysis):
     name = "contacts"
     label = "Pairwise contacts"
+    version = 2  # 2: a group with itself: whole per-residue counts, strand ends are no sequence neighbours
     group_slots = 2
     OUTPUT_LABELS = {
         "atom_pairs": "{a}\u2013{b} heavy-atom contacts",
@@ -28,6 +29,13 @@ class ContactAnalysis(Analysis):
     @classmethod
     def enabled(cls, project):
         return project.analyses.contacts.enabled
+
+    @classmethod
+    def output_label(cls, project, out):
+        label = super().output_label(project, out)
+        if out == "atom_pairs" and not project.analyses.contacts.heavy_only:
+            label = label.replace("heavy-atom contacts", "atom contacts")  # hydrogens are counted too
+        return label
 
     @classmethod
     def params_for(cls, project):
@@ -60,6 +68,10 @@ class ContactAnalysis(Analysis):
         self.res_a, self.row_a = residue_rows(a)
         self.res_b, self.row_b = residue_rows(b)
         self.n_a, self.n_b = len(self.res_a), len(self.res_b)
+        # a group against itself: the chain of every residue row (sequence neighbours are left out, below)
+        from .structure import chain_ids  # here: importing it above would register its analyses first
+
+        self.chain = chain_ids(self.res_a) if self.same else None
         self.cutoff = p.cutoff
         self.atom_pairs = np.zeros(self.n_frames, dtype=np.int64)
         self.residue_pairs = np.zeros(self.n_frames, dtype=np.int64)
@@ -71,7 +83,10 @@ class ContactAnalysis(Analysis):
         if self.same and len(i):
             ri = self.a.resindices[i]
             rj = self.b.resindices[j]
-            keep = (self.a.ix[i] < self.b.ix[j]) & (np.abs(ri - rj) > 1)
+            # each pair once, without a residue's own atoms and its bonded neighbours in the chain; the last
+            # residue of a strand and the first of the next are no neighbours (a duplex's closing base pair)
+            bonded = (np.abs(ri - rj) <= 1) & (self.chain[self.row_a[i]] == self.chain[self.row_b[j]])
+            keep = (self.a.ix[i] < self.b.ix[j]) & ~bonded
             i, j = i[keep], j[keep]
         self.atom_pairs[k] = len(i)
         if len(i) == 0:
@@ -101,10 +116,14 @@ class ContactAnalysis(Analysis):
         res.arrays["atom_pairs"] = self.atom_pairs
         res.arrays["residue_pairs"] = self.residue_pairs
         res.arrays["q_native"] = q
-        res.arrays["per_res_a"] = per_row_counts(offsets, mi, mv, self.n_a)
-        res.arrays["per_res_b"] = per_row_counts(offsets, mj, mv, self.n_b)
+        per_a = per_row_counts(offsets, mi, mv, self.n_a)
+        per_b = per_row_counts(offsets, mj, mv, self.n_b)
+        if self.same:  # the map holds each pair once (i < j): a residue's contacts are its row plus its column
+            per_a = per_b = per_a + per_b
+        res.arrays["per_res_a"] = per_a
+        res.arrays["per_res_b"] = per_b
         ga, gb = self.ga, self.gb
-        res.add_series("atom_pairs", "atom_pairs", f"{ga}–{gb} heavy-atom contacts", "count")
+        res.add_series("atom_pairs", "atom_pairs", self.output_label(self.project, "atom_pairs"), "count")
         res.add_series("residue_pairs", "residue_pairs", f"{ga}–{gb} residue contacts", "count")
         res.add_series("q_native", "q_native", "Fraction of native contacts (Q)", "")
         res.add_matrix("per_residue_a", "per_res_a", "labels_a",

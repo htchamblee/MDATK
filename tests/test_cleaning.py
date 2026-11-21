@@ -72,6 +72,28 @@ def test_clean_runs_once_and_reuses(tmp_path, fake_cpptraj):
         CleaningParams(), str(top), [str(tmp_path / "s.parm7")])
 
 
+def test_cleaned_files_of_other_settings_are_not_taken_for_the_preview(tmp_path, fake_cpptraj):
+    """The preview and 'Inspect system' use cleaned files only when they were cleaned with the current
+    settings - also in a folder chosen with cleaning.output_dir, whose name does not change with them."""
+    from mdatk.config import Project
+    from mdatk.pipeline import Pipeline
+
+    top, traj = tmp_path / "s.parm7", tmp_path / "s.nc"
+    top.write_text("x")
+    traj.write_text("x")
+    for folder in ("", str(tmp_path / "cleaned_here")):
+        p = Project()
+        p.inputs.topology, p.inputs.trajectories = str(top), [str(traj)]
+        p.output.out_dir = str(tmp_path / "out")
+        p.cleaning.enabled, p.cleaning.cpptraj_path, p.cleaning.output_dir = True, fake_cpptraj, folder
+        res = clean(p.cleaning, str(top), [str(traj)], p.cache_dir)
+        got = Pipeline(p).cleaned_if_available()
+        assert (got.topology, got.trajectories) == (res.topology, [res.trajectory])
+        p.cleaning.extra_strip_mask = ":MG"  # nothing was cleaned with this mask yet
+        got = Pipeline(p).cleaned_if_available()
+        assert (got.topology, got.trajectories) == (str(top), [str(traj)])
+
+
 def test_missing_cpptraj_is_reported(tmp_path):
     top = tmp_path / "s.parm7"
     top.write_text("x")

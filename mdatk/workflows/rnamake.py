@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from typing import List
 
-from .base import PortValue, Tool, env_section, extra_flags, fortran_float, require_file, script_header
+from .base import (PortValue, Tool, env_section, extra_flags, fortran_float, require_file, script_header,
+                   shell_quote)
 from .registry import register
 from .schema import GeneratedFile, Issue, Option, Port, Section
 
@@ -137,7 +138,7 @@ class RNAMakeTool(Tool):
         new = s["app"] == "design_rna_scaffold"
         d = "--" if new else "-"
         exe = s["exe"].strip() or s["app"]
-        args = [exe, f"{d}pdb {ctx.inp('structure')}", f"{d}start_bp {s['start_bp'].strip()}",
+        args = [exe, f"{d}pdb {shell_quote(ctx.inp('structure'))}", f"{d}start_bp {s['start_bp'].strip()}",
                 f"{d}end_bp {s['end_bp'].strip()}", f"{d}designs {s['designs']}",
                 f"{d}out_file {ctx.name('design', 'out')}", f"{d}score_file {ctx.name('design', 'scores')}"]
         if new:
@@ -190,6 +191,9 @@ class RNAMakeTool(Tool):
         sh.append('export RNAMAKE="${RNAMAKE:?set RNAMAKE to the RNAMake folder}"' if rdir == "$RNAMAKE"
                   else f'export RNAMAKE="{rdir}"')
         cmd = self._command(s, ctx)
+        if s["dump_pdbs"]:  # fewer designs than an earlier run wrote: its last ones would stay, as this run's
+            sh += ["", "# The design PDBs of an earlier run go first",
+                   "rm -f design.*.pdb " + n("design-MODELNUM", "pdb").replace("MODELNUM", "[0-9]*")]
         sh += ["", "# Build motif paths between the base pairs, optimise sequences, score designs",
                " \\\n  ".join(cmd) + f" > {n('design', 'log')} 2>&1",
                require_file(n("design", "scores"), s["app"]), ""]

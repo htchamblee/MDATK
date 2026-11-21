@@ -715,6 +715,10 @@ class PhenixRSRTool(Tool):
             return self._annotation_pairs(s, ctx)
         from .amber import secondary_structure
         model, source, issues = secondary_structure(s, ctx)
+        if model is not None and not model.chains:  # a chosen file with the dot-bracket only, no sequence typed
+            issues.append(Issue("error", "the secondary-structure file has no sequence line: type the sequence",
+                                ("sequence", "input:secstruct")))
+            return [], [], "", issues
         if model is None or not model.pairs:
             if model is not None and not issues:
                 issues.append(Issue("warning", "the secondary structure has no base pairs", ("dotbracket",)))

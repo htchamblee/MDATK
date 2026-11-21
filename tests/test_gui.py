@@ -260,6 +260,13 @@ def test_pdb_tools_window_checks_and_cleans(rnado, tmp_path):
     buf = dlg.report.get_buffer()
     report = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
     assert "Chain B" in report and "chirality 2 L" in report
+    binary = tmp_path / "latin1.pdb"  # not UTF-8: the check says so (it raised, and the report stayed)
+    binary.write_bytes(b"REMARK   2 RESOLUTION.    2.50 \xc5\n" + src.read_bytes())
+    dlg.input.entry.set_text(str(binary))
+    dlg.run_check()
+    report = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+    assert report.startswith("ERROR:") and "Chain B" not in report
+    dlg.input.entry.set_text(str(src))
     dlg.scheme.set_active_id("amber")
     dlg.renumber.set_active(True)
     dlg.run_clean()
@@ -283,6 +290,32 @@ def test_pdb_tools_window_checks_and_cleans(rnado, tmp_path):
 def test_citation_text_lists_project_resources(window):
     text = window.citation_text()
     assert isinstance(text, str) and text
+
+
+def test_grid_preset_with_slot_options_that_are_no_json(window):
+    """Options still being typed (no JSON yet) and another grid preset: the slot editors follow the preset
+    (the handler raised: the editors of the old preset stayed, also once the options were put right), and the
+    options stay in their field, flagged."""
+    from mdatk.render.layout import n_slots
+
+    win = window
+    win.preset_combo.set_active_id("single")
+    pump(lambda: False, 0.3)
+    assert len(win.slot_rows) == 1
+    win.slot_rows[0]["opts"].set_text("{mode: frequency}")
+    win.preset_combo.set_active_id("large_plus_2")
+    pump(lambda: False, 0.3)
+    assert len(win.slot_rows) == n_slots("large_plus_2") == 3
+    assert win.slot_rows[0]["opts"].get_text() == "{mode: frequency}"
+    with pytest.raises(ValueError, match="panel options"):
+        win.collect(validate=False)
+    assert any(p.field == "layout.panels.0.options" for p in win.check_problems())
+    win._on_canvas_swap(0, 1)  # dragging a panel onto another: refused with a log line, not a traceback
+    assert "Panels not swapped" in win.log_buffer.get_text(*win.log_buffer.get_bounds(), False)
+    win.slot_rows[0]["opts"].set_text('{"mode": "frequency"}')
+    layout = win.collect(validate=False).layout
+    assert layout.preset == "large_plus_2" and len(layout.panels) == 3
+    assert layout.panels[0].options == {"mode": "frequency"}
 
 
 def test_slot_defaults_for_residue_panels_and_wheel_zoom(window):
@@ -430,3 +463,55 @@ def test_run_time_selection_error_flags_the_setting_it_came_from(window):
     window.group_editor.store[1][1] = "13-24"  # the group is fixed: the run-time problem goes
     assert pump(lambda: not window.problem_view.badges["analyses"].get_visible(), 5)
     assert W.flag_of(combo) == ("", "")
+
+
+def test_the_plans_files_with_an_invalid_setting_keep_the_unsaved_edits(window):
+    """'Use the plan's files' while a field cannot be read (a number still being typed): it says so and
+    changes nothing; it loaded the settings as last saved, so every unsaved edit of the side bar was gone."""
+    win = window
+    _bound(win, "cleaning.solvent_mask").set_text(":WAT,HOH")
+    _bound(win, "output.video.fps").set_value(48)
+    topology = win.topology_entry.get_text()
+    _bound(win, "inputs.stop").set_text("abc")
+    assert win.apply_inputs("/x/sys.parm7", ["/x/a.nc"]) is False
+    assert win.messages and win.messages[-1][1] == "Some settings are invalid"
+    assert _bound(win, "cleaning.solvent_mask").get_text() == ":WAT,HOH"
+    assert _bound(win, "output.video.fps").get_value_as_int() == 48
+    assert _bound(win, "inputs.stop").get_text() == "abc" and win.topology_entry.get_text() == topology
+    _bound(win, "inputs.stop").set_text("")
+    assert win.apply_inputs("/x/sys.parm7", ["/x/a.nc"]) is True
+    assert win.topology_entry.get_text() == "/x/sys.parm7"
+    assert _bound(win, "cleaning.solvent_mask").get_text() == ":WAT,HOH"
+
+
+def test_save_as_asks_before_it_replaces_the_file_the_suffix_makes(tmp_path, monkeypatch):
+    """A name typed without .mdatk.toml: the file chooser asks about that name, the suffix is added afterwards;
+    an existing project file of the full name was replaced without a question."""
+    from mdatk.gui import projectui
+
+    existing = tmp_path / "apt1.mdatk.toml"
+    existing.write_text("# another project\n")
+    typed = [str(tmp_path / "apt1")]
+
+    class Chooser:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self):
+            return Gtk.ResponseType.OK  # 'apt1' does not exist: the dialog itself asks nothing
+
+        def get_filename(self):
+            return typed[0]
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    asked, answers = [], [Gtk.ResponseType.CANCEL, Gtk.ResponseType.ACCEPT]
+    monkeypatch.setattr(Gtk, "FileChooserDialog", Chooser)
+    monkeypatch.setattr(projectui, "ask", lambda _p, text, *a, **k: asked.append(text) or answers.pop(0))
+    assert projectui.choose_save_path(None, "apt1") is None and asked == ["Replace apt1.mdatk.toml?"]
+    assert projectui.choose_save_path(None, "apt1") == str(existing) and len(asked) == 2
+    typed[0] = str(tmp_path / "new")  # nothing of that name: no question
+    assert projectui.choose_save_path(None, "new") == str(tmp_path / "new.mdatk.toml") and len(asked) == 2
+    typed[0] = str(existing)  # the full name: the file chooser has asked
+    assert projectui.choose_save_path(None, "apt1") == str(existing) and len(asked) == 2

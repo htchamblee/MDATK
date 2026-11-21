@@ -161,6 +161,20 @@ def test_registers_selections_and_offsets():
     assert ensemble.parse_offsets("B:-367, C:44") == {"B": -367, "C": 44}
 
 
+def test_group_residues_are_read_as_the_project_reads_them_regression():
+    """regression: a group's residues in the forms the project accepts besides '1-40' were misread without a
+    word: '1:40' as residue 40 of a chain '1', '1 - 40' as the residues 1 and 40 and a whole chain '-'."""
+    want = [(None, 1, 40)]
+    for residues in ("1-40", "1:40", "1 - 40"):
+        groups = [{"name": "Aptamer", "residues": residues}]
+        assert ensemble.parse_selection("group:Aptamer", groups) == want
+        assert mapscore.parse_region("apt=group:Aptamer", groups).selection == want
+    groups = [{"name": "T", "residues": "A:50 - 60, 45, B:7:9"}, {"name": "Whole", "residues": "C, :5-9"}]
+    assert ensemble.parse_selection("group:T", groups) == [("A", 50, 60), (None, 45, 45), ("B", 7, 9)]
+    # what only this module's syntax can say (a whole chain, a blank chain id) is read as before
+    assert ensemble.parse_selection("group:Whole", groups) == [("C", None, None), ("", 5, 9)]
+
+
 def test_reference_forms():
     r = ensemble.parse_reference(REFERENCE)
     assert r.bases == "GGGAAAAUUUUCCC" and r.chains[7] == "B" and r.numbers[7] == 8
@@ -294,6 +308,25 @@ def test_occupancy_and_contour(tmp_path):
                                "nearest")
     assert np.allclose(near, inside, atol=0.25 * np.nanmax(inside))
     assert ensemble.contour_level(np.array([np.nan])) is None
+
+
+def test_nearest_voxel_of_atoms_past_the_last_voxel_centre_regression():
+    """regression: 'nearest' called an atom up to half a voxel outside the outermost voxel centres outside the
+    map (NaN, not in density), although it rounds onto an edge voxel, the one a rounded index reads."""
+    from mdatk.io import mrc
+    data =np.arange(24, dtype=np.float32).reshape(2, 3, 4)  # [z, y, x]: value = 12 z + 4 y + x
+    dmap = mrc.DensityMap(data, np.array([10.0, 20.0, 30.0]), np.array([2.0, 2.0, 2.0]))
+    xyz = np.array([[16.8, 22.0, 32.0],   # x index 3.4: voxel (3, 1, 1)
+                    [9.2, 19.2, 29.2],    # index -0.4 on every axis: voxel (0, 0, 0)
+                    [13.0, 24.9, 30.9],   # index (1.5, 2.45, 0.45): x rounds to the even 2 -> voxel (2, 2, 0)
+                    [13.2, 22.0, 30.6],   # index (1.6, 1, 0.3), between the voxel centres: voxel (2, 1, 0)
+                    [17.2, 22.0, 32.0],   # x index 3.6 rounds to 4: outside
+                    [12.0, 22.0, 33.2]])  # z index 1.6 rounds to 2: outside
+    got = ensemble.map_values(dmap, xyz, "nearest")
+    np.testing.assert_array_equal(got[:4], [19.0, 0.0, 10.0, 6.0])
+    assert np.isnan(got[4:]).all()
+    linear = ensemble.map_values(dmap, xyz)  # trilinear: inside only between the voxel centres
+    assert np.isnan(linear[[0, 1, 2, 4, 5]]).all() and linear[3] == pytest.approx(0.3 * 12 + 4 + 1.6)
 
 
 # --- build conditions -------------------------------------------------------------------------------------
@@ -511,6 +544,19 @@ def test_census_score_deciles_within_one_weight_set(tmp_path):
     assert res.report.count("by score decile") == 2 and "weight set W1" in res.report
 
 
+def test_census_score_deciles_are_tenths_regression(tmp_path):
+    """regression: every decile but the last held len // 10 decoys and the last one the rest: of 19 scored
+    decoys, 'decile 10' was the worse 10 (scores -91 to -82)."""
+    g = tmp_path / "g"
+    for k in range(19):
+        write(g / f"d{k:02d}.pdb", DUPLEX + f"label fa_atr total\nweights 0.23 0.12\npose -1 {-100 + k}\n")
+    res = ensemble.census(ensemble.expand_models([str(g)]), REGS[:1])
+    rows = [ln.split() for ln in res.report.splitlines() if " to " in ln]
+    assert [int(r[0]) for r in rows] == list(range(1, 11))
+    assert [int(r[5]) for r in rows] == [2] * 9 + [1]  # decoys per decile (all form the stem)
+    assert (rows[0][1], rows[0][3]) == ("-100.0", "-99.0") and (rows[9][1], rows[9][3]) == ("-82.0", "-82.0")
+
+
 def test_census_pools_only_within_one_condition(tmp_path):
     for name, ss in (("a", "(((.... ....)))"), ("b", "(((.... ....)))"), ("c", "....... .......")):
         write(tmp_path / name / "d.pdb", DUPLEX)
@@ -628,6 +674,23 @@ def test_compare_counts_decoys_without_atoms_and_empty_arms_regression(tmp_path)
     text = ensemble.compare_arms(arm, empty)
     assert "3 decoys: no calibration atoms" in text
     assert "power:" not in text  # no statement without decoys in arm B
+
+
+def test_compare_best_score_with_a_nan_score_listed_first_regression(tmp_path):
+    """regression: a decoy whose score is 'nan' (Rosetta writes one for a decoy it could not score) and that
+    comes first in its arm was reported as the arm's best closed score: min() never gets past a NaN."""
+    a, b, table = _arms(tmp_path, 4, 4)  # scores -50 ... -53; decoys 0 and 2 closed (linear_chainbreak 1)
+    with open(table) as fh:
+        text = fh.read()
+    write(table, text.replace("a/d0.pdb\t-50\t", "a/d0.pdb\tnan\t"))
+    scores = ensemble.read_score_index([table], root=str(tmp_path / "plan"))
+    reg = ensemble.parse_register(STEM)
+    arms = [ensemble.collect_arm(lbl, paths, reg, scores=scores) for lbl, paths in (("A", a), ("B", b))]
+    assert math.isnan(arms[0].decoys[0].score)
+    report = ensemble.compare_arms(*arms, mode="sweep")
+    assert "best closed score, A: -52.0 (d2.pdb" in report and "best closed score, B: -52.0 (d2.pdb" in report
+    among = [ln.split() for ln in report.split("among decoys that close AND pair")[1].splitlines()[1:3]]
+    assert [(ln[0], ln[4]) for ln in among] == [("A", "-52"), ("B", "-50")]  # arm, best (in B only d0 pairs)
 
 
 def test_compare_cli_pilot_matched_runs_geometry(tmp_path):

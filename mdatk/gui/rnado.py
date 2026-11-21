@@ -177,6 +177,9 @@ class RNAdoWindow(Gtk.ApplicationWindow):
                          ("PDB clean-up…", self.open_pdb_tools),
                          ("Structure builder…", self.open_builder),
                          (None, None),
+                         ("Cluster profiles…", self.open_cluster_profiles),
+                         ("Write cluster jobs", self.write_cluster_jobs),
+                         (None, None),
                          ("Show the output log", self.show_log),
                          ("Project log…", self.show_project_log),
                          (None, None),
@@ -294,6 +297,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
 
     def _on_plan_changed(self) -> None:
         self.log.set_steps([(n.step, step_title(n)) for n in self.project.workflow.nodes if checkable(n)])
+        if self.wizard is not None:  # the stand-alone wizard shows the plan's project name and time stamp
+            self.wizard.schedule_refresh()
 
     def stored_log(self, step: int, title: str) -> str:
         """The step log entry of the last run of ``step`` (the one with this title when there are several)."""
@@ -628,7 +633,8 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         from .wizard import WizardWindow
 
         if self.wizard is None:
-            self.wizard = WizardWindow(self, tool=tool)
+            # the names it sets (project, time stamp, folder) are the plan's: the planner follows them
+            self.wizard = WizardWindow(self, tool=tool, on_changed=lambda: self.planner.follow_naming())
             self.wizard.connect("destroy", lambda w: self.wizard is w and setattr(self, "wizard", None))
         elif tool:
             self.wizard.select_tool(tool)
@@ -652,6 +658,30 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             self.builder.connect("destroy", lambda w: self.builder is w and setattr(self, "builder", None))
         self.builder.show_all()
         self.builder.present()
+
+    def open_cluster_profiles(self) -> None:
+        from .clusterdialog import ClusterProfilesWindow
+
+        if getattr(self, "cluster_profiles", None) is None:
+            self.cluster_profiles = ClusterProfilesWindow(self)
+            self.cluster_profiles.connect(
+                "destroy", lambda w: self.cluster_profiles is w and setattr(self, "cluster_profiles", None))
+        self.cluster_profiles.show_all()
+        self.cluster_profiles.present()
+
+    def write_cluster_jobs(self) -> None:
+        """The cluster job files and the submit script of the plan's steps written again (nothing else moves),
+        after learning the speeds of the runs that came back from the cluster."""
+        from ..workflows import cluster
+
+        try:
+            lines = cluster.refresh(self.planner.resolve())
+        except OSError as exc:
+            self.error("Cluster jobs not written", str(exc))
+            return
+        self.append_log("Write cluster jobs:\n" + ("\n".join(lines) or "no step has a cluster job (the Cluster job "
+                                                                     "section of the Amber MD and GROMACS steps)"))
+        self.show_log()
 
     def open_tool(self, name: str) -> None:
         """``rnado --open NAME``: one of :data:`mdatk.gui.launch.TOOLS`."""
@@ -832,12 +862,21 @@ class RNAdoWindow(Gtk.ApplicationWindow):
             choice = ask_unsaved(self, "the plan")
             if choice == "cancel" or (choice == "save" and not self.save_project()):
                 return True
+        profiles = getattr(self, "cluster_profiles", None)
+        if profiles is not None and not profiles.close_window():
+            # the Cluster profiles window saves when it closes; edits it cannot save as they are (a name
+            # used twice, a profile without a queue) would be lost with RNAdo: its status line says why
+            profiles.present()
+            return True
         return False
 
     def _on_destroy(self, *_) -> None:
         self.jobs.stop()
         # The tool windows are transient for this window but not attached to the application, so they never
         # keep RNAdo running; they close with it (the planner closes its step wizards the same way)
+        profiles = getattr(self, "cluster_profiles", None)
+        if profiles is not None:  # saves its profiles (a window destroyed without being asked to close)
+            profiles.close_window()
         for win in (self.wizard, self.pdb_tools, self.builder):
             if win is not None:
                 win.destroy()
@@ -852,7 +891,7 @@ class RNAdoApplication(Gtk.Application):
 
     def do_activate(self):
         if self.window is None:
-            project, path = None, None
+            project, path, problem = None, None, ""
             if self.preset:
                 from ..projectfile import add_recent, is_params_log
                 try:
@@ -862,8 +901,11 @@ class RNAdoApplication(Gtk.Application):
                     else:
                         add_recent(path)
                 except (OSError, ValueError) as exc:
+                    problem = f"Could not open {self.preset}: {exc}"
                     print(f"warning: could not load {self.preset}: {exc}", file=sys.stderr)
             self.window = RNAdoWindow(self, project, path)
+            if problem and project is None:  # started from the applications menu: no terminal shows the warning
+                self.window.append_log(f"ERROR: {problem}\nThis is an empty, unsaved plan instead.")
             handler = LogHandler(self.window.log)
             logging.getLogger("mdatk").addHandler(handler)
             self.window.connect("destroy", self._on_window_destroy, handler)

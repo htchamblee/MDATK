@@ -145,8 +145,14 @@ class Pipeline:
                     top = os.path.join(out, CLEAN_REF)
                 traj = os.path.join(out, CLEAN_TRAJ)
                 if os.path.exists(marker) and os.path.exists(top) and os.path.exists(traj):
-                    return ResolvedInputs(top, [traj], None)
-            except OSError:
+                    import json
+                    with open(marker, "r", encoding="utf-8") as fh:
+                        info = json.load(fh)
+                    # a folder chosen with cleaning.output_dir is not named after the key: its files
+                    # match only when they were cleaned from these inputs with these settings (as clean())
+                    if isinstance(info, dict) and info.get("key") == key:
+                        return ResolvedInputs(top, [traj], None)
+            except (OSError, ValueError):
                 pass
         return ResolvedInputs(p.inputs.topology, list(p.inputs.trajectories), None)
 
@@ -158,9 +164,12 @@ class Pipeline:
 
     def input_fingerprint(self, inputs: ResolvedInputs) -> Dict[str, Any]:
         p = self.project.inputs
-        return {"topology": file_fingerprint(inputs.topology),
-                "trajectories": [file_fingerprint(t) for t in inputs.trajectories],
-                "frames": {"start": p.start, "stop": p.stop, "step": p.step}, "dt_ps": p.dt_ps}
+        fp = {"topology": file_fingerprint(inputs.topology),
+              "trajectories": [file_fingerprint(t) for t in inputs.trajectories],
+              "frames": {"start": p.start, "stop": p.stop, "step": p.step}, "dt_ps": p.dt_ps}
+        if p.dt_ps:  # results cached with an override before it set the time axis hold the file's times
+            fp["time_axis"] = "frame x dt_ps"
+        return fp
 
     # -------------------------------------------------------------- analyses
     def required_analyses(self, video: Optional[bool] = None, charts: Optional[bool] = None) -> List[str]:
@@ -223,7 +232,9 @@ class Pipeline:
             # nothing requested: still provide the frame axis
             u = self.universe()
             frames = frame_indices(u.trajectory.n_frames, p.inputs.start, p.inputs.stop, p.inputs.step)
-            time_ps = np.array([u.trajectory[int(f)].time for f in frames])
+            dt_ps = p.inputs.dt_ps  # as run_analyses: the override replaces the file's time stamps
+            time_ps = (frames * float(dt_ps) if dt_ps else
+                       np.array([u.trajectory[int(f)].time for f in frames]))
         dataset = Dataset(frames, time_ps, {n: results[n] for n in names if n in results},
                           time_unit=p.inputs.time_unit)
         self.apply_display_overrides(dataset)

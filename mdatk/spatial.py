@@ -50,10 +50,21 @@ def pairs_within(a: np.ndarray, b: np.ndarray, cutoff: float,
 
 
 def minimum_image_vectors(vectors: np.ndarray, box=None) -> np.ndarray:
-    """Apply the minimum image convention to difference vectors (orthorhombic only)."""
+    """Apply the minimum image convention to difference vectors (n, 3).  A triclinic box (Amber's truncated
+    octahedron) goes through MDAnalysis, as the pairs of :func:`pairs_within` do: a pair found across its
+    boundary gets the vector of the distance it was found at."""
     box = _usable_box(box)
-    if box is None or not np.allclose(box[3:], 90.0):
+    if box is None:
         return vectors
+    if not np.allclose(box[3:], 90.0):
+        if np.any(box[3:] <= 0.0) or np.any(box[3:] >= 180.0):
+            return vectors  # no cell
+        from MDAnalysis.lib.distances import minimize_vectors
+
+        vectors = np.asarray(vectors)
+        if vectors.dtype not in (np.float32, np.float64):
+            vectors = vectors.astype(np.float64)
+        return minimize_vectors(np.ascontiguousarray(vectors.reshape(-1, 3)), box).reshape(vectors.shape)
     lengths = box[:3]
     return vectors - lengths * np.round(vectors / lengths)
 

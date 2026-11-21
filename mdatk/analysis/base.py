@@ -214,7 +214,8 @@ class Analysis:
             "params": cls.params_for(project),
             "groups": referenced_groups(cls.selection_texts(project), project),
             "inputs": inputs,
-            "use_pbc": project.analyses.use_pbc,
+            # 2: pair vectors are imaged in triclinic boxes too (results cached with True came from before)
+            "use_pbc": 2 if project.analyses.use_pbc else False,
         })
 
     # ------------------------------------------------------- instance level
@@ -279,9 +280,10 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     traj = ctx.u.trajectory
     every = max(1, n // 200)
     reporter.log(f"Analysing {n} frame(s): {', '.join(a.label for a in analyses)}")
+    dt_ps = ctx.project.inputs.dt_ps  # the time step override: frame number x dt, whatever the file's time stamps
     for k, ts in enumerate(traj[frame_indices]):
         reporter.check_cancel()
-        times[k] = ts.time
+        times[k] = frame_indices[k] * float(dt_ps) if dt_ps else ts.time
         for a in analyses:
             a.process(k, ts)
         if k % every == 0 or k == n - 1:

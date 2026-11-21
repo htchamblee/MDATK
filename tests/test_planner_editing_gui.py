@@ -194,6 +194,130 @@ def test_close_project_returns_to_an_empty_unsaved_plan(main, tmp_path, monkeypa
     assert len(main.project.workflow.nodes) == 1
 
 
+def test_selecting_a_step_is_no_edit_of_the_plan(main, tmp_path):
+    """A click selects a step and leaves the plan as it is (no 'Save the changes?' for a look at a step); a step
+    that is moved goes in front of the others."""
+    from mdatk.gui.projectui import workflow_data
+
+    pl, src, b, c = _plan(main, tmp_path)
+    canvas = pl.canvas
+    main._mem_wf = workflow_data(main.project)  # as after a save
+    canvas._on_press(canvas, Ev(src.x + NODE_W / 2, src.y + 40))
+    canvas._on_release(canvas, Ev(src.x + NODE_W / 2, src.y + 40))
+    pump(0.4)
+    assert canvas.selected == src.id and not main.plan_changed()
+    assert [n.id for n in main.project.workflow.nodes] == [src.id, b.id, c.id]
+    canvas._on_press(canvas, Ev(src.x + NODE_W / 2, src.y + 40))
+    canvas._on_motion(canvas, Ev(src.x + NODE_W / 2, src.y + 300))
+    canvas._on_release(canvas, Ev(src.x + NODE_W / 2, src.y + 300))
+    assert main.plan_changed() and [n.id for n in main.project.workflow.nodes] == [b.id, c.id, src.id]
+
+
+def test_the_title_keeps_a_space_and_the_cursor_while_it_is_typed(main, tmp_path):
+    pl, src, b, c = _plan(main, tmp_path)
+    pl.canvas.select(b.id)
+    for text in ("My", "My "):  # typed slowly: the plan is resolved (and the details shown anew) in between
+        pl.d_name.set_text(text)
+        pl.d_name.set_position(-1)
+        pump(0.5)
+    assert pl.d_name.get_text() == "My " and pl.d_name.get_position() == 3 and b.title == "My"
+    pl.d_name.set_text("My step")
+    pump(0.5)
+    assert b.title == "My step" and pl.d_name.get_text() == "My step"
+
+
+def test_a_plan_that_replaces_another_has_no_selection(main, tmp_path, monkeypatch):
+    """Opening another project: the connection selected before is not selected in the new plan (Delete would
+    remove the new plan's connection of that number), and the details pane shows no step of the plan before."""
+    from mdatk.workflows.plan import add_node, connect
+
+    pl, src, b, c = _plan(main, tmp_path)
+    other = Project()
+    one, two = add_node(other.workflow, "amber-build"), add_node(other.workflow, "amber-md")
+    connect(other.workflow, one.id, "topology", two.id, "topology")
+    path = str(tmp_path / "other.mdatk.toml")
+    other.save(path)
+    monkeypatch.setattr(main, "_confirm_discard", lambda: True)
+    canvas = pl.canvas
+    canvas.selected, canvas.selected_edge = None, 0  # as a click on the connection
+    pl.show_details(None, edge=0)
+    assert "Connection" in pl.d_title.get_text()
+    assert main.open_path(path)
+    pump(0.2)
+    assert canvas.selected_edge is None and pl.d_title.get_text() == "Nothing selected"
+    pl.delete_selected()
+    assert len(main.project.workflow.edges) == 1
+    canvas.select(two.id)  # n2: the plan opened next has a step of that id as well
+    assert main.open_path(path)
+    pump(0.2)
+    assert canvas.selected is None and pl.d_title.get_text() == "Nothing selected" and not pl.d_name.get_sensitive()
+
+
+def test_a_step_edited_in_its_wizard_and_in_the_details_pane(main, tmp_path):
+    """The wizard's Step and Title show what the details pane set, and an edit of one of them in either
+    window leaves the other as it is."""
+    pl, src, b, c = _plan(main, tmp_path)
+    pl.canvas.select(b.id)
+    pl.open_wizard(b)
+    wz = pl.wizards[b.id]
+    pump(0.4)
+    pl.d_name.set_text("Build A")
+    pl.d_step.set_value(7)
+    pump(0.8)
+    assert (b.title, b.step) == ("Build A", 7)
+    assert wz.title_entry.get_text() == "Build A" and wz.step_spin.get_value_as_int() == 7
+    wz.step_spin.set_value(8)
+    pump(0.8)
+    assert (b.title, b.step) == ("Build A", 8) and pl.d_step.get_value_as_int() == 8
+    pl.d_step.set_value(3)
+    wz.title_entry.set_text("Build B")  # before the wizard has shown the new number
+    pump(0.8)
+    assert (b.title, b.step) == ("Build B", 3) and pl.d_name.get_text() == "Build B"
+    assert wz.step_spin.get_value_as_int() == 3
+
+
+def test_the_standalone_wizard_and_the_naming_bar_share_the_project_name(main, tmp_path):
+    pl, src, b, c = _plan(main, tmp_path)
+    wf = main.project.workflow
+    main.open_wizard("amber-md")
+    wz = main.wizard
+    pump(0.4)
+    wz.project_entry.set_text("fromwizard")
+    pump(0.8)
+    assert wf.project_name == "fromwizard" and pl.project_entry.get_text() == "fromwizard"
+    pl.folders_check.set_active(not pl.folders_check.get_active())  # another field of the naming bar
+    pump(0.6)
+    assert wf.project_name == "fromwizard"
+    pl.project_entry.set_text("fromplanner")
+    wz.title_entry.set_text("production")  # before the wizard has shown the new name
+    pump(0.8)
+    assert wf.project_name == "fromplanner" and wz.project_entry.get_text() == "fromplanner"
+    wz.stamp_check.set_active(False)
+    pump(0.8)
+    assert not wf.use_stamp and not pl.stamp_check.get_active() and wf.project_name == "fromplanner"
+
+
+def test_a_wizard_follows_the_connections_of_its_step(main, tmp_path):
+    """A connection deleted while the step's wizard is open: its input can be given a file there (it showed
+    'connected' for good); a connection made: the input shows where it comes from."""
+    pl, src, b, c = _plan(main, tmp_path)
+    pl.open_wizard(b)
+    wz = pl.wizards[b.id]
+    pump(0.4)
+    assert isinstance(wz.input_widgets["structure"], Gtk.Label)
+    pl.delete_edge(main.project.workflow.edges[0])
+    pump(0.8)
+    chooser = wz.input_widgets["structure"]
+    assert not isinstance(chooser, Gtk.Label)
+    chooser.entry.set_text(str(tmp_path / "m.pdb"))
+    assert b.files["structure"] == str(tmp_path / "m.pdb")
+    chooser.entry.set_text("")
+    pl.canvas._connect(src.id, "file", b.id, ["structure"])
+    pump(0.8)
+    shown = wz.input_widgets["structure"]
+    assert isinstance(shown, Gtk.Label) and shown.get_text().startswith("connected")
+
+
 def test_dialog_text_is_selectable_and_the_button_keeps_the_focus():
     dlg = Gtk.MessageDialog(modal=True, message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE,
                             text="Could not write the plan")

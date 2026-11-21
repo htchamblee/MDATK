@@ -512,7 +512,7 @@ class BuilderWindow(Gtk.Window):
             try:
                 muts = builder.parse_mutations(self.mutations.get_text())
                 s = pdbtools.read_pdb(path)
-            except (OSError, pdbtools.PDBError) as exc:
+            except (OSError, ValueError) as exc:  # ValueError: a PDBError, or a file that is not text (UTF-8)
                 self._show(f"ERROR: {exc}")
                 return
             have = {(r.chain, r.resseq, r.icode): r for r in s.residues()}

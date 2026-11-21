@@ -484,7 +484,9 @@ def delete(plan, item: Supersede) -> Supersede:
         except OSError as exc:
             failed.append(f"{item.inner(rel)} ({exc.strerror or exc})")
     for rel in item.moved:  # folders the run's files were in, emptied by the deletion
-        _prune(os.path.dirname(plan.node_path(rel)), step_dir)
+        parent = os.path.dirname(plan.node_path(rel))
+        if os.path.normpath(parent) != os.path.normpath(step_dir):  # not the step folder (without step folders:
+            _prune(parent, step_dir)  # the plan folder) itself: the other empty folders in it are not the run's
     if failed:
         item.error = f"{len(failed)} path(s) could not be deleted: " + ", ".join(failed[:5]) + \
             (" ..." if len(failed) > 5 else "")

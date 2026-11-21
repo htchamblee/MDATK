@@ -121,6 +121,22 @@ def test_no_setup_file_leaves_the_environment_lines_as_they_were():
                      "\"WARNING: setup file /opt/my amber/amber.sh not found\" >&2; fi"]
 
 
+@needs_bash
+def test_a_setup_file_with_a_quote_in_its_path_is_sourced(tmp_path):
+    """A double quote (or $, `) in the path ended the message's string: every script of the step stopped with
+    a syntax error, also when the file was there."""
+    import subprocess
+    folder = tmp_path / 'amber "26" $x'
+    folder.mkdir()
+    (folder / "amber.sh").write_text("echo sourced\n")
+    for name, expect in (("amber.sh", "sourced"), ("gone.sh", "")):
+        path = str(folder / name)
+        res = subprocess.run(["bash", "-c", "\n".join(env_lines({"env_file": path}))], capture_output=True,
+                             text=True, timeout=60)
+        assert res.returncode == 0 and res.stdout.strip() == expect, res.stderr
+        assert res.stderr.strip() == ("" if expect else f"WARNING: setup file {path} not found")
+
+
 def test_the_planner_warns_about_a_setup_file_that_is_not_here(tmp_path):
     plan = write_two_stage(tmp_path, env_file="/nonexistent/amber.sh")
     issues = [i for i in plan.steps["md"].issues if "env_file" in i.keys]

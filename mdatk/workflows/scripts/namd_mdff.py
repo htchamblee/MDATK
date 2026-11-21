@@ -64,8 +64,10 @@ L_CHIRAL_SIGNS = (("C4'", ("O4'", "C3'", "C5'"), 1.0), ("C3'", ("O3'", "C4'", "C
 MIN_CHIRAL_VOLUME = 0.5
 CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 BACKBONE = ("P", "O5'", "C5'", "C4'", "C3'", "O3'")
-_FMT_RE = re.compile(r"\(\s*(\d+)\s*([aAiIeEfF])\s*(\d+)")
-_NT_RE = re.compile(r"^([RL0D]?)([ACGTU])([53N]?)$")
+# '(20a4)', '(5E16.8)'; also without a repeat count ('(a80)') and with the item in parentheses of its own
+# ('(8(F9.5))': the CMAP parameters of ff19SB)
+_FMT_RE = re.compile(r"\(\s*\d*\s*\(?\s*([aAiIeEfF])\s*(\d+)")
+_NT_RE = re.compile(r"^(LD|[RL0D]?)([ACGTU])([53N]?)$")  # (LD: L-DNA, the LDA LDC LDG LDT of MDATK's library)
 # 16:O3' (topology residue number) or A:16:O3' / A:16B:O3' (chain, number and insertion code of the fitted model)
 _ATOM_RE = re.compile(r"(?:([^:\s,]):)?(-?\d+)([A-Za-z]?):([^:\s,]+)")
 # 16, 16-17 (topology residue numbers) or A:16-17 (chain and numbers of the fitted model)
@@ -91,10 +93,12 @@ def read_parm7(path, wanted):
                     sections[current] = []
                 continue
             if line.startswith("%FORMAT"):
+                if current is None:
+                    continue  # a section nobody asked for (e.g. CHAMBER's '(i2,a78)'): not read
                 m = _FMT_RE.search(line)
                 if m is None:
                     raise PrepError(f"{path}: cannot read the format line {line.strip()!r}")
-                kind, width = m.group(2).lower(), int(m.group(3))
+                kind, width = m.group(1).lower(), int(m.group(2))
                 continue
             if current is None or line.startswith("%"):
                 continue
@@ -657,11 +661,12 @@ def grid_reach(grid, vectors):
 
 # ------------------------------------------------------------------------------------- nucleotides
 def residue_hand(label):
-    """'D' / 'L' from an Amber residue label (LA, LA5, 0A, RA, A3 ...), None if not a nucleotide name."""
+    """'D' / 'L' from an Amber residue label (LA, LA5, 0A, RA, A3, DNA DT, L-DNA LDT ...), None if not a
+    nucleotide name."""
     m = _NT_RE.match(label.strip().upper())
     if not m:
         return None
-    return "L" if m.group(1) in ("L", "0") else "D"
+    return "L" if m.group(1) in ("L", "0", "LD") else "D"
 
 
 def residue_base(label):
@@ -847,7 +852,8 @@ def basepair_walls(top, pairs, bonds, offset, walls):
             if not 1 <= res <= top.nres:
                 raise PrepError(f"residue {res} does not exist (the topology has {top.nres} residues): "
                                 "check the residue offset")
-            if residue_base(top.labels[res - 1]) != letter:
+            # (T and U alike: the secondary structure reads the T of DNA as U)
+            if (residue_base(top.labels[res - 1]) or "").replace("T", "U") != letter.replace("T", "U"):
                 raise PrepError(f"residue {res} is {top.labels[res - 1]} in the topology but the secondary "
                                 f"structure expects {letter}: check the sequence and residue offset")
         out.append(f"# pair {ra} {top.labels[ra - 1]} - {rb} {top.labels[rb - 1]} ({kind})")

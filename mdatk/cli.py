@@ -866,6 +866,55 @@ def cmd_workflow_run(args) -> int:
                              _budget(args, project))
 
 
+def cmd_workflow_jobs(args) -> int:
+    """Write the cluster job files and the submit script again (nothing else), after learning the speeds of the
+    runs that came back from the cluster."""
+    from .workflows import cluster
+    from .workflows.plan import Plan
+    project = _workflow_project(args)
+    ids = _step_ids(project.workflow, args.step)
+    plan = Plan(project.workflow, project.workflow_dir, project.groups)
+    for line in cluster.refresh(plan, ids, learn=not args.no_learn):
+        print(line)
+    for nid in plan.order:
+        step = plan.steps[nid]
+        if (ids is None or nid in ids) and step.settings and cluster.wants_job(step.settings):
+            for issue in cluster.job_issues(step.settings, step.ctx, step.tool):
+                print(f"{issue.level.upper():8} {step.label}: {issue.message}")
+    return 0
+
+
+def cmd_cluster_list(args) -> int:
+    from . import clusters
+    profiles = clusters.load_profiles()
+    if not profiles:
+        print(f"no cluster profiles yet ({clusters.profiles_path()}): RNAdo menu > Cluster profiles…")
+        return 0
+    for p in profiles:
+        queues = ", ".join(f"{q.name} (≤ {q.max_hours:g} h)" for q in sorted(p.queues, key=lambda q: q.max_hours))
+        print(f"{p.name}: GPU {p.gpu or 'any'}, queues {queues}, cushion {p.cushion:g}%, "
+              f"{len(p.speeds())} run speed(s) on its GPU ({len(p.benchmarks)} in all)")
+        if args.verbose:
+            for b in p.benchmarks:
+                print(f"    {b.when}  {b.gpu}  {b.atoms:,} atoms  dt {b.dt:g}  {b.s_per_ns:g} s/ns  {b.source}")
+    return 0
+
+
+def cmd_cluster_learn(args) -> int:
+    from . import clusters
+    profiles = clusters.load_profiles()
+    profile = clusters.find(args.profile, profiles)
+    if profile is None:
+        raise ValueError(f"no cluster profile {args.profile!r} (there are: "
+                         f"{', '.join(p.name for p in profiles) or 'none'})")
+    new = clusters.learn(profile, args.paths)
+    clusters.save_profiles(profiles)
+    for b in new:
+        print(f"{b.gpu}  {b.atoms:,} atoms  dt {b.dt:g}  {b.s_per_ns:g} s/ns  {b.source}")
+    print(f"{len(new)} run speed(s) added to {profile.name} ({len(profile.speeds())} on its GPU)")
+    return 0
+
+
 def cmd_workflow_status(args) -> int:
     """Look for the outputs of earlier runs of the plan's steps; --adopt / --forget store the choice."""
     from .workflows import runstate
@@ -975,7 +1024,8 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
     """Run the main scripts of ``ids`` (all steps when None), with ``include_separate`` also the scripts
     marked 'run separately', at most ``parallel`` at once (0: no limit) within ``budget`` (CPU cores and
     GPUs; None: no limit); 0 when every script succeeded, WAITING_STATUS when a step waits for a
-    separately run script (its dependents were not started), 1 when a script failed."""
+    separately run script (its dependents were not started), 1 when a script failed or a step of ``ids`` has
+    errors (it is not run, nor are the steps that read from it; the others are)."""
     from .workflows.base import WAITING_STATUS
     from .workflows.runner import ScriptFailed, adopted_steps, plan_jobs, run_jobs
     kept = adopted_steps(plan, ids)
@@ -983,8 +1033,35 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
         step = plan.steps[nid]
         print(f"{step.label} uses the outputs of its run of {step.adopted}: "
               f"not run again (to run it: mdatk workflow status --forget --step {_step_arg(plan, nid)})")
+    # a step of the selection with errors has no script to run (plan_jobs leaves it out): say so, and do not
+    # start the steps that read from it on whatever an earlier run left in its folder
+    chosen = [n for n in list(plan.order) + [n for n in plan.steps if n not in plan.order]
+              if ids is None or n in ids]
+    broken = [n for n in chosen if plan.steps[n].tool is not None and plan.steps[n].tool.generates
+              and not plan.steps[n].ok and not plan.steps[n].adopted]
+    if broken:
+        readers: dict = {}
+        for e in plan.workflow.edges:
+            readers.setdefault(e.source, set()).add(e.target)
+        after, todo = set(), list(broken)
+        while todo:
+            for nid in readers.get(todo.pop(), ()):
+                if nid not in after:
+                    after.add(nid)
+                    todo.append(nid)
+        for nid in broken:
+            why = "; ".join(i.message for i in plan.steps[nid].issues if i.level == "error")
+            print(f"error: {plan.steps[nid].label} has errors and was not run: {why}", file=sys.stderr)
+        for nid in chosen:
+            step = plan.steps[nid]
+            if nid in after and nid not in broken and step.tool is not None and step.tool.generates \
+                    and not step.adopted:
+                print(f"{step.label}: not started (it reads from a step with errors)", file=sys.stderr)
+        ids = [n for n in chosen if n not in broken and n not in after]
     jobs = plan_jobs(plan, ids, include_separate)
     if not jobs:
+        if broken:
+            return 1
         if kept:
             return 0
         print("no scripts to run", file=sys.stderr)
@@ -1014,8 +1091,8 @@ def _run_plan_scripts(plan, ids, project_path: Optional[str], parallel: int = 1,
         skipped = sum(1 for r in results if r.status == "skipped")
         if skipped:
             print(f"{skipped} script(s) of later steps not started")
-        return WAITING_STATUS
-    return 0
+        return 1 if broken else WAITING_STATUS
+    return 1 if broken else 0
 
 
 def cmd_workflow_generate(args) -> int:
@@ -1347,6 +1424,18 @@ def build_parser() -> argparse.ArgumentParser:
         c.set_defaults(func=cmd_map)
     p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
 
+    p = sub.add_parser("cluster", help="cluster profiles for the steps' cluster job scripts (kept on this "
+                                       "computer, edited in RNAdo: menu > Cluster profiles…)")
+    csub = p.add_subparsers(dest="ccommand", metavar="action")
+    c = csub.add_parser("list", help="the profiles: GPU, queues, cushion, run speeds")
+    c.add_argument("-v", "--verbose", action="store_true", help="also every run speed")
+    c.set_defaults(func=cmd_cluster_list)
+    c = csub.add_parser("learn", help="add the speeds of finished pmemd.cuda runs (their .out files) to a profile")
+    c.add_argument("profile", help="the profile's name")
+    c.add_argument("paths", nargs="+", help=".out files, or folders searched for them (superseded/ left out)")
+    c.set_defaults(func=cmd_cluster_learn)
+    p.set_defaults(func=lambda a, _p=p: (_p.print_help(), 2)[1])
+
     p = sub.add_parser("workflow", help="the plan of RNAdo, MDATK's workflow planner, and its script "
                                         "generators (FARFAR2, SimRNA, RNAMake, Amber, GROMACS, NAMD, VMD, "
                                         "Phenix, Coot, custom scripts ...)")
@@ -1412,6 +1501,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "cluster), each after its step's main script, which then runs again for the rest of the "
                         "step, and before the steps that read from it")
     w.set_defaults(func=cmd_workflow_run)
+    w = wsub.add_parser("jobs", help="write the cluster job files and the submit script again (nothing else: no "
+                                     "run moves), with the atoms of the systems built so far, after learning "
+                                     "the speeds of the steps' runs that came back from the cluster")
+    naming(w)
+    w.add_argument("--step", metavar="STEP", help=STEP_HELP)
+    w.add_argument("--no-learn", action="store_true", help="do not add the speeds of finished cluster runs to "
+                                                          "the cluster profiles first")
+    w.set_defaults(func=cmd_workflow_jobs)
     w = wsub.add_parser("status", help="look in each step's folder for the output files of earlier runs "
                                        "(under the plan's time stamp or an earlier one): done, partial or "
                                        "missing")
@@ -1476,7 +1573,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 RNADO_TOOLS = ("wizard", "pdb", "builder")  # mdatk.gui.launch.TOOLS (that module stays free of the CLI)
-WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "status", "manifest", "generate", "template",
+WORKFLOW_ACTIONS = ("tools", "check", "write", "run", "jobs", "status", "manifest", "generate", "template",
                     "restraints")
 
 

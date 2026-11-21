@@ -28,7 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.9 / 3.10
 TOMLDecodeError = _toml.TOMLDecodeError
 DocFn = Callable[[Tuple[str, ...], Sequence[Dict[str, Any]]], Optional[str]]
 
-_BARE = re.compile(r"^[A-Za-z0-9_-]+$")
+_BARE = re.compile(r"[A-Za-z0-9_-]+\Z")  # \Z: "$" also matches before a final line break
 _WIDTH = 100  # comment wrap width
 _INLINE_MAX = 96  # longer arrays are written one element per line
 
