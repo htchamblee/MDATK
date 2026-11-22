@@ -31,7 +31,14 @@ jobs:
     # built on the oldest supported distribution, because the AppImage needs at least its glibc:
     # RHEL / Rocky 9 has glibc 2.34 (Ubuntu 22.04: 2.35). Python 3.12 and GTK 3 are Rocky's own.
     runs-on: ubuntu-latest
-    container: rockylinux:9
+    container:
+      image: rockylinux:9
+      # PATH is set here, with the build's virtual environment (made in the first step) in front, and nothing
+      # is added through $GITHUB_PATH: the runner prepends such entries to the PATH it reads from the image's
+      # configuration, and when the image defines none (rockylinux:9 since November 2026) every later step
+      # runs with the added entry alone ('exec: "sh": executable file not found in $PATH', exit status 127)
+      env:
+        PATH: /opt/mdatk-build/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -46,8 +53,7 @@ jobs:
             librsvg2 adwaita-icon-theme hicolor-icon-theme dejavu-sans-fonts \
             xorg-x11-server-Xvfb xorg-x11-xauth binutils file desktop-file-utils \
             findutils which tar xz
-          python3.12 -m venv /opt/mdatk-build
-          echo /opt/mdatk-build/bin >> "$GITHUB_PATH"
+          python3.12 -m venv /opt/mdatk-build   # first in PATH (the container's env above)
 
       - name: Python packages
         run: |
