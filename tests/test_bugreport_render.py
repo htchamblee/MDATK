@@ -446,3 +446,127 @@ def test_082_chart_title_and_colour_bar_follow_the_theme(theme, chart_figures, t
     bar = chart_figures[0].axes[1]
     assert to_hex(bar.yaxis.label.get_color()) == t.ink2
     assert {to_hex(x.get_color()) for x in bar.yaxis.get_ticklabels()} == {t.ink2}
+
+
+# ---------------------------------------------------------------------------
+# The built-in 3D renderer: MDATK-BUG-033, 038, 080, 081
+# ---------------------------------------------------------------------------
+
+WHITE = np.ones(3)
+
+
+def view(width=100, height=100, xlim=(-10.0, 10.0), ylim=(-10.0, 10.0), zrange=(-10.0, 10.0)):
+    from mdatk.render.molecule.stage import Viewport
+
+    return Viewport(np.eye(3), xlim, ylim, width, height, zrange)
+
+
+def balls(xyz, radius, owner=None):
+    from mdatk.render.molecule.geometry import Spheres
+    from mdatk.render.molecule.scene import Colored
+
+    xyz = np.atleast_2d(np.asarray(xyz, float))
+    n = len(xyz)
+    own = np.arange(n) if owner is None else np.asarray(owner)
+    return Colored(Spheres(xyz, np.full(n, float(radius)), own, np.full(n, -1)), np.tile([0.3, 0.3, 0.8], (n, 1)))
+
+
+def test_033_the_surface_grid_of_a_blown_up_frame_is_refused_up_front():
+    from mdatk.render.molecule import surface
+    from mdatk.render.molecule.surface import density_grid, gaussian_surface
+
+    far = np.array([[0, 0, 0], [5000, 5000, 5000.0]])
+    with pytest.raises(ValueError, match="surface grid of 5013 x 5013 x 5013 points is too large"):
+        density_grid(far)  # was: MemoryError "Unable to allocate 939. GiB" (or the allocation itself)
+    with pytest.raises(ValueError, match="too large"):
+        gaussian_surface(np.array([[0, 0, 0], [0, 0, 1e30]]))  # was: an int overflow in the grid size
+    assert surface.MAX_GRID_POINTS == 2 ** 26
+    vol, lo = density_grid(np.array([[0, 0, 0], [30, 20, 10.0]]))  # an ordinary molecule: as before
+    assert vol.shape == (23, 33, 43) and lo == pytest.approx([-5.98, -5.98, -5.98])
+
+
+def test_033_a_blown_up_frame_leaves_the_surface_out_with_a_warning(caplog):
+    p = project_with([PanelSpec("structure", [], "")])
+    p.visual.representations = [RepSpec("surf"), RepSpec("licorice")]
+    ds = example_dataset(p, n_frames=3)
+    atoms = np.array(ds.results["atoms"].arrays["coords"], dtype=np.float32)
+    atoms[1, 0] = (6000.0, 6000.0, 6000.0)  # one atom of frame 1 has flown off
+    ds.results["atoms"].arrays["coords"] = atoms
+    fig, canvas, panels = build_figure(ds, p, 400, 300, 100)
+    stage = panels[0].stage
+    from mdatk.render.molecule.geometry import Mesh
+
+    with caplog.at_level(logging.WARNING):
+        counts = []
+        for pos in range(3):
+            panels[0].update(pos)
+            counts.append(sum(isinstance(it.prim, Mesh) for it in stage._items))
+    assert counts == [1, 0, 1] and not stage.failed  # the other representation is still drawn in frame 1
+    assert any("(surf) not drawn on some frames: surface grid" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("xlim, ylim", [((1.0, 1.0), (-10.0, 10.0)), ((-10.0, 10.0), (3.0, 3.0)),
+                                        ((5.0, -5.0), (-10.0, 10.0)), ((float("nan"), 1.0), (-10.0, 10.0))])
+def test_038_an_unusable_3d_view_is_a_value_error(xlim, ylim):
+    with pytest.raises(ValueError, match="3D view: unusable view"):  # was: ZeroDivisionError for equal limits
+        view(xlim=xlim, ylim=ylim)
+
+
+def test_038_an_unusable_view_does_not_break_the_panel(monkeypatch, caplog):
+    """The stage builds its viewport from the axes limits: one that cannot be used is logged and the 2D
+    trace is drawn, like any other failure of the 3D layer."""
+    p = project_with([PanelSpec("structure", [], "")])
+    p.visual.representations = [RepSpec("licorice")]
+    fig, canvas, panels = build_figure(example_dataset(p, n_frames=2), p, 400, 300, 100)
+    panel = panels[0]
+    monkeypatch.setattr(panel.ax, "get_xlim", lambda: (1.0, 1.0))
+    with caplog.at_level(logging.WARNING):
+        panel.update(1)  # was: ZeroDivisionError out of the video loop
+    assert panel.stage.failed and panel.stage.image.rgba is None
+    assert any("3D view: unusable view" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("width, height", [(101, 77), (103, 75), (99, 99), (100, 76)])
+def test_080_fast_quality_fills_and_registers_odd_sizes(width, height):
+    from mdatk.render.molecule.scene import Shading
+    from mdatk.render.molecule.software import SoftwareRenderer
+
+    plain = Shading(WHITE, 0.0)
+    r = SoftwareRenderer()
+    # a sphere larger than the view covers every pixel (was: the last column / row stayed transparent at 101 x 77)
+    img = r.render([balls([0, 0, 0], 30.0)], view(width, height, zrange=(-40.0, 40.0)), plain, quality="fast")
+    assert img.shape == (height, width, 4) and (img[..., 3] == 255).all()
+    # and a small one lies where full quality draws it, within the half-resolution pixel (was: up to 1.5 px off)
+    centres = []
+    for quality in ("high", "fast"):
+        alpha = r.render([balls([6.0, -6.0, 0], 2.0)], view(width, height), plain, quality=quality)[..., 3] > 127
+        yy, xx = np.nonzero(alpha)
+        centres.append((xx.mean(), yy.mean()))
+    assert np.abs(np.subtract(*centres)).max() < 0.75
+
+
+def test_081_the_glow_halo_has_no_seam_at_the_molecule_box():
+    from mdatk.render.molecule.scene import Shading
+    from mdatk.render.molecule.software import SoftwareRenderer
+
+    glow = Shading(WHITE, 0.0, np.ones(1, np.float32), np.array([1.0, 0.7, 0.0]))
+    img = SoftwareRenderer().render([balls([0, 0, 0], 2.0, owner=[0])], view(200, 200), glow)
+    alpha = img[..., 3].astype(int)
+    assert alpha[100, 100] == 255 and 20 < alpha[100, 60] < 200  # the sphere, and its halo beside it
+    # toward the sphere the halo only gets stronger: along the middle row and column, from each side
+    # (was: a darker one-pixel frame at the box around the sphere, e.g. ..., 91, 95, 83, 127, 229)
+    for line in (alpha[100, :101], alpha[100, :99:-1], alpha[:101, 100], alpha[:99:-1, 100]):
+        assert (np.diff(line) >= 0).all(), line.tolist()
+
+
+def test_081_the_halo_strength_does_not_depend_on_earlier_renders():
+    from mdatk.render.molecule import software
+
+    software._NORM_CACHE.clear()
+    alone = software._disc_norm(1.2349, 1.5437)
+    software._NORM_CACHE.clear()
+    software._disc_norm(1.2251, 1.5361)  # a render at a slightly different size first
+    assert software._disc_norm(1.2349, 1.5437) == alone  # was: the value of the first size (0.9 % off)
+    for k in range(600):  # resizing a window renders many sizes: the cache stays small
+        software._disc_norm(1.0 + k * 1e-4, 1.5)
+    assert len(software._NORM_CACHE) <= 256

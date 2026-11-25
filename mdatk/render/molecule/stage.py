@@ -64,6 +64,10 @@ class Viewport:
         self.xlim, self.ylim = tuple(map(float, xlim)), tuple(map(float, ylim))
         self.width, self.height = int(width), int(height)
         self.zrange = tuple(map(float, zrange))
+        spans = (self.xlim[1] - self.xlim[0], self.ylim[1] - self.ylim[0])
+        if not (np.isfinite(spans).all() and min(spans) > 0 and np.isfinite(self.R).all()):
+            raise ValueError(f"3D view: unusable view (x {self.xlim[0]:g} to {self.xlim[1]:g}, "
+                             f"y {self.ylim[0]:g} to {self.ylim[1]:g}); the limits must be finite and increasing")
         self.sx = self.width / (self.xlim[1] - self.xlim[0])  # pixels per Å
         self.sy = self.height / (self.ylim[1] - self.ylim[0])
 
@@ -109,9 +113,9 @@ class MoleculeStage:
         if self._pos is None:
             return None
         ax = self.panel.ax
-        vp = Viewport(self.panel.view_matrix, ax.get_xlim(), ax.get_ylim(), width, height,
-                      (self.panel.zmin, self.panel.zmax))
         try:
+            vp = Viewport(self.panel.view_matrix, ax.get_xlim(), ax.get_ylim(), width, height,
+                          (self.panel.zmin, self.panel.zmax))
             img = self.renderer.render(self._items, vp, self.panel.shading(self._pos), quality=self.quality)
             self.failed = False
             return img
