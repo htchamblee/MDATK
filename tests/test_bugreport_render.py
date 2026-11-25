@@ -218,3 +218,231 @@ def test_076_an_unknown_source_of_the_secondary_panel_is_not_taken_as_dynamic():
         p.layout.panels[0].options = {"source": source}
         assert build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0].ok
         assert not [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+
+
+# ---------------------------------------------------------------------------
+# Charts and heatmaps: MDATK-BUG-034, 057, 058, 059, 063, 064, 082
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def chart_figures(monkeypatch):
+    """The figures the chart functions create (they only return file names)."""
+    from mdatk.render import charts
+
+    made = []
+
+    class Capture(charts.Figure):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(charts, "Figure", Capture)
+    return made
+
+
+def chart_project(theme="light", dpi=60):
+    p = Project()
+    p.inputs.time_unit = "ps"
+    p.visual.theme = theme
+    c = p.output.charts
+    c.dpi, c.width, c.height = dpi, 5.0, 3.0
+    return p
+
+
+def heat_column(ax, x: float) -> int:
+    """The column of the heatmap drawn in ``ax`` that covers the time ``x``."""
+    if ax.images:  # one image over the whole time range: equal columns
+        x0, x1 = ax.images[0].get_extent()[:2]
+        return int((x - x0) / (x1 - x0) * ax.images[0].get_array().shape[1])
+    edges = np.asarray(ax.collections[0].get_coordinates())[0, :, 0]
+    return int(np.searchsorted(edges, x)) - 1
+
+
+UNEVEN_TIMES = np.concatenate([np.arange(12) * 10.0, 110.0 + (np.arange(12) + 1) * 2.0])  # 10 ps, then 2 ps apart
+
+
+def test_057_heatmap_columns_sit_at_their_frame_times(chart_figures, tmp_path):
+    from mdatk.render.charts import render_matrix_chart
+    from mdatk.render.panels import time_edges
+
+    edges = time_edges(UNEVEN_TIMES)
+    assert edges[:3].tolist() == [-5.0, 5.0, 15.0] and edges[11:14].tolist() == [105.0, 111.0, 113.0]
+    assert edges[-1] == 135.0 and len(edges) == 25
+    assert time_edges(np.arange(4) * 2.0).tolist() == [-1.0, 1.0, 3.0, 5.0, 7.0]  # evenly spaced: as before
+    assert time_edges(np.array([7.0])).tolist() == [6.5, 7.5]
+    ds = matrix_dataset(np.arange(6 * 24).reshape(6, 24) % 5, UNEVEN_TIMES)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    panel = build_figure(ds, p, 600, 300, 100)[2][0]
+    render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    for ax in (panel.ax, chart_figures[0].axes[0]):
+        # every frame's time (where the moving cursor stands) lies in that frame's column; was: column 18 at frame 12
+        assert [heat_column(ax, t) for t in UNEVEN_TIMES] == list(range(24))
+        assert ax.get_xlim() == (-5.0, 135.0) and ax.get_ylim() == (5.5, -0.5)
+
+
+def test_057_evenly_spaced_frames_keep_the_image(chart_figures, tmp_path):
+    from mdatk.render.charts import render_matrix_chart
+
+    ds = matrix_dataset(np.arange(6 * 8).reshape(6, 8) % 5, np.arange(8) * 10.0)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    panel = build_figure(ds, p, 600, 300, 100)[2][0]
+    render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    for ax in (panel.ax, chart_figures[0].axes[0]):
+        assert len(ax.images) == 1 and list(ax.images[0].get_extent()) == [-5.0, 75.0, 5.5, -0.5]
+
+
+def test_058_running_mean_skips_frames_without_a_value():
+    from mdatk.render.panels import _running_mean
+
+    y = np.array([1, 2, 3, np.nan, 5, 6, 7, 8, 9, 10.0])
+    out = _running_mean(y, 5)  # was: [1.6 nan nan nan nan nan 7. 8. 8.8 9.4]
+    assert out.tolist() == pytest.approx([1.6, 1.75, 2.75, 4.0, 5.25, 6.5, 7.0, 8.0, 8.8, 9.4])
+    gap = _running_mean(np.array([1.0, np.nan, np.nan, np.nan, np.nan, np.nan, 7.0]), 3)
+    assert np.isnan(gap[2:5]).all() and np.isfinite(gap[[0, 1, 5, 6]]).all()  # NaN only where a whole window is
+    full = np.arange(10.0) ** 2
+    padded = np.pad(full, (2, 2), mode="edge")
+    assert np.array_equal(_running_mean(full, 5), np.convolve(padded, np.ones(5) / 5, mode="valid"))  # unchanged
+
+
+def test_059_every_class_of_an_ordinal_scale_has_its_own_colour():
+    from mdatk.render.theme import DARK, LIGHT
+
+    for theme in (LIGHT, DARK):
+        for n in range(2, 13):
+            colours = theme.ordinal(n).colors
+            assert len(colours) == n and len(set(colours)) == n, (theme.name, n)  # was: 5 colours for n > 5
+    # up to five classes keep their colours
+    assert LIGHT.ordinal(3).colors == ["#e1e0d9", "#86b6ef", "#0d366b"]
+    assert LIGHT.ordinal(5).colors == ["#e1e0d9", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
+    assert DARK.ordinal(5).colors == ["#2c2c2a", "#184f95", "#3987e5", "#86b6ef", "#cde2fb"]
+    eight = LIGHT.ordinal(8).colors  # the same ramp, in seven even steps
+    assert eight[0] == "#e1e0d9" and eight[1] == "#86b6ef" and eight[-1] == "#0d366b"
+    # a class matrix of eight classes: the colour bar's eight labels show eight colours
+    classes = [f"class {k}" for k in range(8)]
+    ds = matrix_dataset(np.repeat(np.arange(8)[None, :], 3, axis=0), np.arange(8) * 10.0, classes)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    im = build_figure(ds, p, 600, 300, 100)[2][0].ax.images[0]
+    assert len({im.cmap(im.norm(k)) for k in range(8)}) == 8  # was 5: e.g. classes 0 and 1 looked alike
+
+
+def test_034_a_matrix_chart_of_thousands_of_rows_is_limited_in_height(chart_figures, tmp_path, caplog):
+    from mdatk.render import charts
+
+    rows = 8000  # 0.18 in per row: 72 075 px at 50 dpi, more than Agg draws before Matplotlib 3.10 (2^16)
+    ds = matrix_dataset(np.arange(rows * 4).reshape(rows, 4) % 5, np.arange(4) * 10.0)
+    p = chart_project(dpi=50)
+    p.output.charts.width = 3.0
+    with caplog.at_level(logging.WARNING):
+        (path,) = charts.render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    fig = chart_figures[0]
+    assert fig.get_figheight() * fig.dpi <= 65000 < 2 ** 16  # was 72 075 px
+    assert charts.MAX_CHART_PIXELS == 65000 and os.path.getsize(path) > 0
+    assert any("8000 rows" in r.getMessage() and "limited to 65000 px" in r.getMessage() for r in caplog.records)
+    # a chart below the limit keeps its height of 0.18 in per row
+    caplog.clear()
+    small = matrix_dataset(np.arange(40 * 4).reshape(40, 4) % 5, np.arange(4) * 10.0)
+    charts.render_matrix_chart(small, p, "contacts/per", str(tmp_path))
+    assert chart_figures[1].get_figheight() == pytest.approx(0.18 * 40 + 1.5) and not caplog.records
+
+
+def chart_dataset():
+    """A series, a per-residue matrix and a residue map."""
+    ds = matrix_dataset(np.arange(6 * 8).reshape(6, 8) % 5, np.arange(8) * 10.0)
+    res = ds.results["contacts"]
+    res.arrays["s"] = np.linspace(1.0, 3.0, 8)
+    res.add_series("total", "s", "Total contacts", "count")
+    b = CSRBuilder()
+    for _ in range(8):
+        b.add(np.array([0, 1]), np.array([1, 0]), np.ones(2))
+    res.arrays.update(b.arrays("map"))
+    res.meta.update(r=["1", "2"], c=["1", "2"])
+    res.add_pairmap("map", "map", "r", "c", "Map")
+    return ds
+
+
+def test_063_a_matrix_asked_for_by_name_is_charted_and_a_residue_map_is_named(tmp_path, caplog):
+    from mdatk.render.charts import render_charts
+
+    p = chart_project()
+    p.output.charts.series = ["contacts/total", "contacts/per", "contacts/map", "contacts/nope"]
+    with caplog.at_level(logging.WARNING):
+        paths = render_charts(chart_dataset(), p, str(tmp_path))
+    names = sorted(os.path.basename(f) for f in paths)
+    assert names == ["MDATK_chart_contacts_per.png", "MDATK_chart_contacts_total.png"]  # was: the series only
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("contacts/map is a residue map" in m for m in messages)  # was: dropped without a word
+    assert any("contacts/nope is not available" in m for m in messages)
+    assert not any("contacts/per" in m for m in messages)
+    p.output.charts.include_heatmaps = True  # every matrix: the one asked for is not drawn twice
+    assert len(render_charts(chart_dataset(), p, str(tmp_path / "all"))) == 2
+
+
+def test_064_chart_formats_are_checked_before_the_run():
+    p = Project()
+    assert not [x for x in p.problems(charts=True) if x.field == "output.charts.formats"]
+    p.output.charts.formats = ["png", ".PDF", "svg", "pnng"]
+    found = [x for x in p.problems(charts=True) if x.field == "output.charts.formats"]
+    assert len(found) == 1 and found[0].level == "error" and found[0] in p.validate(charts=True)
+    assert "Unknown chart file format 'pnng'" in found[0].message and "png" in found[0].message
+    assert [x.level for x in p.problems(charts=False) if x.field == "output.charts.formats"] == ["warning"]
+
+
+@pytest.mark.parametrize("field, uses", [("visual.glow_color", "video"), ("visual.base_color", "video"),
+                                         ("visual.ion_color", "video"), ("groups.0.color", "video"),
+                                         ("output.charts.color", "charts")])
+def test_064_colours_are_checked_before_the_run(field, uses):
+    p = Project()
+    assert not [x for x in p.problems(video=True, charts=True) if "not a colour" in x]  # the defaults are colours
+    obj = p
+    *path, leaf = field.split(".")
+    for part in path:
+        obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+    setattr(obj, leaf, "notacolour")
+    found = [x for x in p.problems(video=True, charts=True) if x.field == field]
+    assert len(found) == 1 and found[0].level == "error" and "'notacolour' is not a colour" in found[0].message
+    off = {"video": uses != "video", "charts": uses != "charts"}  # the output that reads the colour is not made
+    assert [x.level for x in p.problems(**off) if x.field == field] == ["warning"]
+    setattr(obj, leaf, "tab:orange")
+    assert not [x for x in p.problems(video=True, charts=True) if x.field == field]
+
+
+def test_064_a_bad_colour_or_format_stops_the_run_before_the_analyses(demo_dry, tmp_path):
+    from mdatk.pipeline import Pipeline, PipelineError
+
+    for field, value, text in (("visual.glow_color", "notacolour", "'notacolour' is not a colour"),
+                               ("output.charts.formats", ["png", "pnng"], "Unknown chart file format 'pnng'")):
+        p = Project.load(demo_dry["preset"])
+        p.output.out_dir = str(tmp_path / field)
+        section, leaf = field.rsplit(".", 1)
+        obj = p
+        for part in section.split("."):
+            obj = getattr(obj, part)
+        setattr(obj, leaf, value)
+        pipe = Pipeline(p)
+        with pytest.raises(PipelineError) as err:  # was: the analyses ran, then Matplotlib's own error
+            pipe.run(video=True, charts=True, pdb=False)
+        assert text in str(err.value) and [x.field for x in err.value.problems] == [field]
+        assert not os.path.exists(p.cache_dir)  # nothing was analysed
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_082_chart_title_and_colour_bar_follow_the_theme(theme, chart_figures, tmp_path):
+    from matplotlib.colors import to_hex
+
+    from mdatk.render.charts import render_matrix_chart, render_series_chart
+    from mdatk.render.theme import get_theme
+
+    t = get_theme(theme)
+    p = chart_project(theme)
+    render_matrix_chart(chart_dataset(), p, "contacts/per", str(tmp_path))
+    render_series_chart(chart_dataset(), p, "contacts/total", str(tmp_path))
+    for fig, label in zip(chart_figures, ("Per residue", "Total contacts")):
+        (title,) = [x for x in fig.axes[0].get_children() if getattr(x, "get_text", lambda: "")() == label]
+        assert to_hex(title.get_color()) == t.ink  # was black: unreadable on the dark surface
+    bar = chart_figures[0].axes[1]
+    assert to_hex(bar.yaxis.label.get_color()) == t.ink2
+    assert {to_hex(x.get_color()) for x in bar.yaxis.get_ticklabels()} == {t.ink2}

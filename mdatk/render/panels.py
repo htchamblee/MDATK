@@ -615,7 +615,13 @@ def _running_mean(y: np.ndarray, window: int) -> np.ndarray:
     pad_l = window // 2
     pad_r = window - 1 - pad_l
     padded = np.pad(y, (pad_l, pad_r), mode="edge")
-    return np.convolve(padded, kernel, mode="valid")
+    ok = np.isfinite(padded)
+    if ok.all():
+        return np.convolve(padded, kernel, mode="valid")
+    # frames without a value (NaN) do not blank their whole window: the mean of the values it has
+    total = np.convolve(np.where(ok, padded, 0.0), np.ones(window), mode="valid")
+    count = np.convolve(ok.astype(np.float64), np.ones(window), mode="valid")
+    return np.where(count > 0.5, total / np.maximum(count, 1.0), np.nan)
 
 
 @register_panel
@@ -736,6 +742,31 @@ class DualAxisPanel(Panel):
 # ---------------------------------------------------------------------------
 
 
+def time_edges(t: np.ndarray) -> np.ndarray:
+    """Column edges of a heatmap over the frame times ``t``: midway between neighbouring frames and half
+    a step beyond the first and the last one (one unit wide for a single frame)."""
+    t = np.asarray(t, dtype=np.float64)
+    if len(t) < 2:
+        return np.array([t[0] - 0.5, t[0] + 0.5])
+    mid = 0.5 * (t[:-1] + t[1:])
+    return np.concatenate([[2 * t[0] - mid[0]], mid, [2 * t[-1] - mid[-1]]])
+
+
+def time_heatmap(ax, t: np.ndarray, values, **kwargs):
+    """Draw ``values`` (rows x frames) with every column centred on its frame time; row k spans k ± 0.5,
+    downward.  Evenly spaced frames give one image as before; otherwise the cells follow the times."""
+    edges = time_edges(t)
+    widths = np.diff(edges)
+    n_rows = values.shape[0]
+    if np.allclose(widths, widths[0], rtol=1e-6, atol=0.0):
+        return ax.imshow(values, aspect="auto", interpolation="nearest",
+                         extent=[edges[0], edges[-1], n_rows - 0.5, -0.5], **kwargs)
+    mesh = ax.pcolormesh(edges, np.arange(n_rows + 1) - 0.5, values, shading="flat", **kwargs)
+    ax.set_xlim(edges[0], edges[-1])
+    ax.set_ylim(n_rows - 0.5, -0.5)
+    return mesh
+
+
 def _set_residue_ticks(axis_set_ticks, labels: Sequence[str], max_ticks: int = 20):
     idx = thin_ticks(len(labels), max_ticks)
     axis_set_ticks(idx, [labels[i] for i in idx])
@@ -758,22 +789,18 @@ class HeatmapPanel(Panel):
             raise KeyError(f"{m.key} is empty")
         self.auto_title = m.label
         t = self.ctx.time
-        dt = (t[1] - t[0]) if len(t) > 1 else 1.0
         values = np.ma.masked_invalid(np.asarray(m.values, dtype=np.float64))
-        extent = [t[0] - dt / 2, t[-1] + dt / 2, len(m.row_labels) - 0.5, -0.5]
         if m.kind == "class" and m.classes:
             n = len(m.classes)
             cmap = self.theme.ordinal(n)
-            im = self.ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent,
-                                cmap=cmap, vmin=-0.5, vmax=n - 0.5)
+            im = time_heatmap(self.ax, t, values, cmap=cmap, vmin=-0.5, vmax=n - 0.5)
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02, ticks=range(n))
             cb.ax.set_yticklabels(m.classes)
         else:
             cmap = self.theme.sequential().with_extremes(bad=self.theme.grid)
             vmax = float(self.options.get("vmax", 0) or (values.max() if values.count() else 1.0))
-            im = self.ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent,
-                                cmap=cmap, vmin=float(self.options.get("vmin", 0.0)),
-                                vmax=max(vmax, 1e-9))
+            im = time_heatmap(self.ax, t, values, cmap=cmap, vmin=float(self.options.get("vmin", 0.0)),
+                              vmax=max(vmax, 1e-9))
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02)
             cb.set_label(m.unit or "count", color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
             if m.kind == "count":

@@ -746,14 +746,27 @@ class Project:
 
     def render_problems(self, video: Optional[bool] = None, charts: Optional[bool] = None) -> List[Problem]:
         """Problems of the settings only the renderers read: panel options a panel cannot use
-        (:func:`panel_option_problems`).  Errors when the output that reads the setting is about to be
-        made (``video``, ``charts``: as for :meth:`problems`), warnings otherwise."""
+        (:func:`panel_option_problems`), colours Matplotlib cannot read and chart file formats it cannot
+        write.  Errors when the output that reads the setting is about to be made (``video``, ``charts``:
+        as for :meth:`problems`), warnings otherwise."""
+        from matplotlib.backend_bases import FigureCanvasBase
+        from matplotlib.colors import is_color_like
+
         out: List[Problem] = []
+        v, c = self.visual, self.output.charts
         video = self.output.video.enabled if video is None else video
+        charts = c.enabled if charts is None else charts
         drawn = "error" if video else "warning"  # the panels are drawn for the video
+        types = {sp.type for sp in self.layout.panels}
+        view = drawn if types & {"structure", "sequence", "secondary"} else "warning"  # residue colours
 
         def add(field: str, message: str, level: str) -> None:
             out.append(problem(field, message, self, level))
+
+        def colour(field: str, value: str, level: str) -> None:
+            if not is_color_like(value):
+                add(field, f"{value!r} is not a colour (use a name such as 'orange' or a hex code such as "
+                    "'#ffb000').", level)
 
         for k, sp in enumerate(self.layout.panels):
             for text in panel_option_problems(sp.type, sp.options):
@@ -762,6 +775,21 @@ class Project:
             if isinstance(ticks, (int, float)) and ticks < 1:  # drawn all the same: allowed, hardly intended
                 add(f"layout.panels.{k}.options", f"option 'max_ticks' is {ticks!r}; values below 1 count as 1 "
                     "(only the first residue is labelled)", "warning")
+        for k, g in enumerate(self.groups):  # read when residues are coloured by group
+            colour(f"groups.{k}.color", g.color, view if v.color_mode in ("groups", "proximity") else "warning")
+        colour("visual.base_color", v.base_color, view)
+        colour("visual.proximity_color", v.proximity_color, view if v.color_mode == "proximity" else "warning")
+        colour("visual.glow_color", v.glow_color, view)
+        colour("visual.ion_color", v.ion_color, drawn if "structure" in types else "warning")
+        if self.density.map_path:
+            colour("density.color", self.density.color, drawn if self.density_active() else "warning")
+        if c.color:
+            colour("output.charts.color", c.color, "error" if charts else "warning")
+        known = sorted(FigureCanvasBase.get_supported_filetypes())
+        for fmt in c.formats:
+            if str(fmt).lower().lstrip(".") not in known:
+                add("output.charts.formats", f"Unknown chart file format {fmt!r} (one of: {', '.join(known)}).",
+                    "error" if charts else "warning")
         return out
 
     def validate(self, video: Optional[bool] = None, charts: Optional[bool] = None,
