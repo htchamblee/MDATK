@@ -18,6 +18,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import typing
@@ -726,6 +727,10 @@ class Project:
                 add("inputs.trajectories", f"Trajectory file not found: {t}")
         if self.inputs.step < 1:
             add("inputs.step", "Frame step must be >= 1.")
+        dt = self.inputs.dt_ps
+        if dt is not None and not (_is_finite(dt) and dt >= 0):  # NaN and negative steps gave such time axes
+            add("inputs.dt_ps", "The time step override must be a positive number of ps (not set or 0: the "
+                "times stored in the trajectory).")
         names = [g.name for g in self.groups]
         for k, g in enumerate(self.groups):
             if not g.name.strip():
@@ -738,8 +743,36 @@ class Project:
                     f"group {names.index(g.name) + 1}.", token=g.name)
         out += self.selection_problems(video, charts, pdb, density)
         a = self.analyses
-        if a.contacts.cutoff <= 0:
-            add("analyses.contacts.cutoff", "Contact cutoff must be positive.")
+        # distances and the dielectric constant: finite and positive (NaN compares false with everything: a
+        # NaN cutoff found nothing, a negative one was used as its absolute value without periodic distances)
+        for field_, value, what in (
+                ("analyses.contacts.cutoff", a.contacts.cutoff, "Contact cutoff"),
+                ("analyses.hbonds.distance_cutoff", a.hbonds.distance_cutoff, "H-bond distance cutoff"),
+                ("analyses.mg.inner_cutoff", a.mg.inner_cutoff, "Mg inner-sphere cutoff"),
+                ("analyses.mg.outer_cutoff", a.mg.outer_cutoff, "Mg outer-sphere cutoff"),
+                ("analyses.stacking.distance_cutoff", a.stacking.distance_cutoff, "Stacking distance cutoff"),
+                ("analyses.stacking.offset_cutoff", a.stacking.offset_cutoff, "Stacking offset cutoff"),
+                ("analyses.stacking.planarity_cutoff", a.stacking.planarity_cutoff, "Stacking planarity cutoff"),
+                ("analyses.energy.cutoff", a.energy.cutoff, "Energy cutoff"),
+                ("analyses.energy.dielectric", a.energy.dielectric, "Dielectric constant"),
+                ("analyses.proximity_search_radius", a.proximity_search_radius, "Proximity search radius")):
+            if not _is_finite(value):
+                add(field_, f"{what} must be a finite number.")
+            elif value <= 0:
+                add(field_, f"{what} must be positive.")
+        for field_, value, what in (
+                ("analyses.hbonds.angle_cutoff", a.hbonds.angle_cutoff, "H-bond angle cutoff"),
+                ("analyses.stacking.angle_cutoff", a.stacking.angle_cutoff, "Stacking angle cutoff"),
+                ("analyses.mg.angle_tolerance", a.mg.angle_tolerance, "Mg angle tolerance")):
+            if not (_is_finite(value) and 0 <= value <= 180):
+                add(field_, f"{what} must be between 0 and 180 degrees.")
+        keys: Dict[str, int] = {}  # data key of an RMSD series -> its target: a second one replaced the first
+        for k, t in enumerate(a.rmsd.targets):
+            key = rmsd_series_key(t.label, k)
+            if key in keys:
+                add(f"analyses.rmsd.targets.{k}.label", f"RMSD targets {keys[key] + 1} and {k + 1} give the same "
+                    f"data key {key!r}; rename one.", token=t.label)
+            keys.setdefault(key, k)
         if a.mg.inner_cutoff > a.mg.outer_cutoff:
             add("analyses.mg.inner_cutoff", "Mg inner-sphere cutoff must not exceed the outer-sphere cutoff.")
         v = self.visual
@@ -963,6 +996,19 @@ class Project:
                 x = out[i]
                 out[i] = problem(x.field, x.message, self, "warning", x.token)
         return out
+
+
+def rmsd_series_key(label: str, k: int) -> str:
+    """Data key of the series of RMSD target ``k`` (``rmsd/<key>``): its label with every run of other
+    characters than letters, digits, '_', '.', '+' and '-' as one '_'; ``target<k>`` for a label without any."""
+    key = re.sub(r"[^A-Za-z0-9_.+\-]+", "_", label).strip("_")
+    return key or f"target{k}"
+
+
+def _is_finite(value: Any) -> bool:
+    """A number that is neither NaN nor infinite."""
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
 
 def _key_groups(key: str) -> List[str]:
     """Residue groups of a data key: ``"contacts@A+B/atom_pairs"`` -> ``["A", "B"]``."""

@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import re
-
 import numpy as np
 from MDAnalysis.analysis import rms
 
+from ..config import rmsd_series_key
 from ..spatial import kabsch
 from .base import Analysis, register
 
 
-def _out_key(label: str, k: int) -> str:
-    key = re.sub(r"[^A-Za-z0-9_.+\-]+", "_", label).strip("_")
-    return key or f"target{k}"
+_out_key = rmsd_series_key  # one definition: Project.problems() refuses two targets with the same key
 
 
 @register
