@@ -240,3 +240,123 @@ def test_bug067_an_rmsd_reference_frame_outside_the_run_is_reported(caplog):
     with caplog.at_level("WARNING"):
         run_one("rmsd", u, rmsd_project("name P", reference_frame=2))
     assert warnings_of(caplog) == []
+
+
+# ---------------------------------------------------------------------------------------- MDATK-BUG-017, 029
+def with_box(universe, box):
+    for ts in universe.trajectory:
+        ts.dimensions = box
+    return universe
+
+
+OCTAHEDRON = [30.0, 30.0, 30.0, 109.4712190, 109.4712190, 109.4712190]
+
+
+def test_bug017_a_pair_at_the_cutoff_is_kept_whatever_the_size_of_the_box():
+    """Two points exactly 3.5 Å apart, cutoff 3.5 Å: kept without a box, but with one MDAnalysis' single-precision
+    search kept the pair for L = 25 and 31.7 Å and dropped it for 30, 40 and 60 Å."""
+    from mdatk.spatial import pairs_within
+
+    a, b = np.array([[1.0, 1.0, 1.0]]), np.array([[4.5, 1.0, 1.0]])
+    assert pairs_within(a, b, 3.5)[2].tolist() == [3.5]
+    for length in (25, 30, 31.7, 40, 60, 137.3):
+        i, j, d = pairs_within(a, b, 3.5, box=[length, length, length, 90, 90, 90])
+        assert (i.tolist(), j.tolist(), d.tolist()) == ([0], [0], [3.5]), length
+        assert len(pairs_within(a, b + [1e-9, 0, 0], 3.5, box=[length, length, length, 90, 90, 90])[0]) == 0
+    assert pairs_within(a, b, 3.5, box=OCTAHEDRON)[2].tolist() == [3.5]
+    # the same pair across a face of the box: 1.0 and 27.5 are 3.5 Å apart in a 30 Å box
+    i, j, d = pairs_within(a, np.array([[27.5, 1.0, 1.0]]), 3.5, box=[30, 30, 30, 90, 90, 90])
+    assert d.tolist() == [3.5]
+
+
+def test_bug017_contacts_do_not_depend_on_the_box_size():
+    atoms = [atom("P", 1, "G", "P"), atom("P", 2, "C", "P")]
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.contacts.cutoff = 3.5
+    p.analyses.use_pbc = True
+    for length in (25.0, 30.0, 40.0):
+        u = with_box(make_universe(atoms, [[[1, 1, 1], [4.5, 1, 1]]]), [length, length, length, 90, 90, 90])
+        assert run_one("contacts", u, p).arrays["atom_pairs"].tolist() == [1], length
+
+
+@pytest.mark.parametrize("box", [[20.0, 25.0, 30.0, 90, 90, 90], OCTAHEDRON, [25.0, 30.0, 28.0, 80, 95, 110]])
+def test_bug017_points_far_outside_the_cell_get_their_exact_distance(box):
+    """A point 500 box lengths away from its partner's image is at distance 0, not 1.5e-4 Å; random points up to 40
+    cells out have the pairs and distances of a double-precision minimum-image reference."""
+    from MDAnalysis.lib.mdamath import triclinic_vectors
+
+    from mdatk.spatial import minimum_image_vectors, pairs_within
+
+    box = np.array(box, dtype=np.float64)
+    cell = triclinic_vectors(box.astype(np.float32)).astype(np.float64)  # the cell MDAnalysis uses
+    origin = np.zeros((1, 3))
+    np.testing.assert_array_equal(pairs_within(origin + 500 * cell[0], origin, 5.0, box)[2], [0.0])
+    rng = np.random.default_rng(1)
+    a = ((rng.random((120, 3)) - 0.3) * 1200).astype(np.float32).astype(np.float64)
+    b = ((rng.random((120, 3)) - 0.3) * 1200).astype(np.float32).astype(np.float64)
+    v = a[:, None, :] - b[None, :, :]
+    v = v - np.round(v @ np.linalg.inv(cell)) @ cell
+    shifts = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)]) @ cell
+    reference = np.linalg.norm(v[:, :, None, :] + shifts, axis=3).min(axis=2)
+    for cutoff in (3.5, 9.0):
+        i, j, d = pairs_within(a, b, cutoff, box)
+        assert sorted(zip(i.tolist(), j.tolist())) == sorted(zip(*np.nonzero(reference <= cutoff)))
+        np.testing.assert_allclose(d, reference[i, j], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(np.linalg.norm(minimum_image_vectors(a[i] - b[j], box), axis=1), d, atol=1e-9)
+
+
+def test_bug029_points_without_coordinates_are_in_no_pair_with_or_without_a_box():
+    """Without a box scipy's tree raised 'data must be finite' (the analysis stopped); with one the point was
+    dropped.  Now both: a NaN or infinite point is in no pair and the others keep their indices."""
+    from mdatk.spatial import pairs_within
+
+    a = np.array([[0, 0, 0], [np.nan, 0, 0], [0.5, 0, 0]], dtype=float)
+    b = np.array([[np.inf, 0, 0], [1.0, 0, 0]])
+    for box in (None, [20, 20, 20, 90, 90, 90]):
+        i, j, d = pairs_within(a, b, 3.0, box)
+        assert sorted(zip(i.tolist(), j.tolist(), d.tolist())) == [(0, 1, 1.0), (2, 1, 0.5)]
+    assert len(pairs_within(a[[1]], b, 3.0)[0]) == 0 and len(pairs_within(a, b[[0]], 3.0)[0]) == 0
+
+
+def test_bug029_a_blown_up_frame_does_not_stop_the_analyses(caplog):
+    """Frame 1 has one atom without coordinates: the contact of that atom is not counted in that frame, the RMSD
+    of the frame is NaN, the run goes on and says which frame."""
+    atoms = [atom("N1", 1, "G", "N"), atom("P", 1, "G", "P"), atom("N3", 2, "C", "N"), atom("P", 2, "C", "P")]
+    frame = np.array([[0, 0, 0], [0, 5, 0], [3, 0, 0], [3, 5, 0.0]])
+    blown = frame.copy()
+    blown[0, 0] = np.nan
+    u = make_universe(atoms, [frame, blown, frame])
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.contacts.cutoff = 3.5
+    with caplog.at_level("WARNING"):
+        contacts = run_one("contacts", u, p)
+    assert contacts.arrays["atom_pairs"].tolist() == [2, 1, 2]  # N1-N3 and P-P; frame 1: P-P only
+    assert warnings_of(caplog) == ["frame 1: 1 atom has non-finite coordinates; such atoms are in no contact, bond "
+                                   "or energy term, and values that need them (RMSD) are NaN"]
+    rmsd = run_one("rmsd", u, rmsd_project("resid 1 2")).arrays["rmsd_0"]
+    assert rmsd[0] < 1e-6 and np.isnan(rmsd[1]) and rmsd[2] < 1e-6
+    fitted = run_one("rmsd", u, rmsd_project("name P", "resid 1 2")).arrays["rmsd_0"]
+    assert fitted[0] < 1e-6 and np.isnan(fitted[1]) and fitted[2] < 1e-6
+    for name in ("hbonds", "energy", "mg", "stacking", "trace", "proximity", "atoms"):
+        p.visual.proximity_set = "group:Target"
+        run_one(name, u, p)  # none stops
+    caplog.clear()
+    u2 = make_universe(atoms, [blown, blown * np.nan, frame])
+    with caplog.at_level("WARNING"):
+        run_one("contacts", u2, p)
+    assert warnings_of(caplog)[1] == "2 of the 3 analysed frames have atoms with non-finite coordinates (frames 0 to 1)"
+
+
+def test_bug029_a_ring_with_a_missing_atom_does_not_stop_the_stacking_analysis():
+    """Two stacked six-rings 3.4 Å apart; in frame 1 one ring atom has no coordinates: no pair in that frame
+    (numpy's SVD raised 'SVD did not converge')."""
+    from mdatk.analysis.stacking import PYRIMIDINE
+
+    ring = np.array([[np.cos(t), np.sin(t), 0.0] for t in np.arange(6) * np.pi / 3]) * 1.4
+    atoms = [atom(n, r, "C", n[0]) for r in (1, 2) for n in PYRIMIDINE]
+    frame = np.vstack([ring, ring + [0, 0, 3.4]])
+    blown = frame.copy()
+    blown[7] = np.nan
+    u = make_universe(atoms, [frame, blown, frame])
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    assert run_one("stacking", u, p).arrays["count"].tolist() == [1, 0, 1]

@@ -210,8 +210,8 @@ class TraceAnalysis(Analysis):
         if self.ref is None:
             self.ref = xyz.copy()
             self._links(xyz)
-        elif self.align and n_res >= 3:
-            r, mc, rc = kabsch(xyz, self.ref)
+        elif self.align and n_res >= 3 and np.isfinite(xyz).all() and np.isfinite(self.ref).all():
+            r, mc, rc = kabsch(xyz, self.ref)  # (a blown-up frame cannot be superposed: it is stored as it is)
             xyz = (xyz - mc) @ r.T + rc
             if len(ions):
                 ions = (ions - mc) @ r.T + rc
@@ -354,8 +354,8 @@ class AtomsAnalysis(Analysis):
         pts = self.tracer.positions()
         if self.ref is None:
             self.ref = pts
-        elif self.align and len(pts) >= 3:
-            r, mc, rc = kabsch(pts, self.ref)
+        elif self.align and len(pts) >= 3 and np.isfinite(pts).all() and np.isfinite(self.ref).all():
+            r, mc, rc = kabsch(pts, self.ref)  # (as the trace: a blown-up frame is stored as it is)
             xyz = (xyz - mc) @ r.T + rc
         self.coords[k] = xyz
 

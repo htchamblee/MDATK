@@ -17,7 +17,9 @@ def superposed_rmsd(x: np.ndarray, ref: np.ndarray, weights=None) -> float:
     The rotation comes from a singular value decomposition and the deviation is measured after rotating.  One
     atom gives 0; for two atoms or atoms on one line the rotation about their line is not defined but the RMSD
     is, and this finds it.  (MDAnalysis' QCP iteration returned NaN or values of several Å for such sets, and
-    up to 1e-5 Å instead of 0 for identical sets of any size.)"""
+    up to 1e-5 Å instead of 0 for identical sets of any size.)  NaN for non-finite coordinates, as QCP gave."""
+    if not (np.isfinite(x).all() and np.isfinite(ref).all()):
+        return float("nan")
     if weights is None:
         w = np.full(len(x), 1.0 / max(1, len(x)))
     else:
@@ -131,6 +133,8 @@ class RMSDAnalysis(Analysis):
                 continue
             else:
                 xf = t["fit"].positions.astype(np.float64)
+                if not (np.isfinite(xf).all() and np.isfinite(t["ref_fit"]).all()):
+                    continue  # a blown-up frame cannot be superposed: no value (NaN)
                 r, mc, rc = kabsch(xf, t["ref_fit"], t["wf"])
                 if t["shift_only"]:
                     r = np.eye(3)

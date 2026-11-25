@@ -67,6 +67,9 @@ def ring_geometry(positions: np.ndarray):
 class StackingAnalysis(Analysis):
     name = "stacking"
     label = "π–π stacking"
+    # 2: periodic centroid distances are the exact nearest-image distances (a pair at the cutoff no longer depends
+    # on the size of the box)
+    version = 2
     group_slots = 2
     OUTPUT_LABELS = {
         "count": "π–π stacked pairs",
@@ -154,7 +157,14 @@ class StackingAnalysis(Analysis):
         norm = np.zeros((self.n_rings, 3))
         planar = np.zeros(self.n_rings)
         for ring_ids, idx in self.by_size.values():
-            c, nvec, pl = ring_geometry(pos[idx])
+            ring_pos = pos[idx]
+            whole = np.isfinite(ring_pos).all(axis=(1, 2))
+            if not whole.all():  # a ring with an atom without coordinates (a blown-up frame) stacks with nothing
+                cent[ring_ids[~whole]], planar[ring_ids[~whole]] = np.nan, np.inf
+                ring_ids, ring_pos = ring_ids[whole], ring_pos[whole]
+                if not len(ring_ids):
+                    continue
+            c, nvec, pl = ring_geometry(ring_pos)
             cent[ring_ids], norm[ring_ids], planar[ring_ids] = c, nvec, pl
         if p.scope == "inter":
             i, j, _ = pairs_within(cent[self.rows], cent[self.cols], p.distance_cutoff, box)

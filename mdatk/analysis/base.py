@@ -281,11 +281,22 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     every = max(1, n // 200)
     reporter.log(f"Analysing {n} frame(s): {', '.join(a.label for a in analyses)}")
     dt_ps = ctx.project.inputs.dt_ps  # the time step override: frame number x dt, whatever the file's time stamps
+    blown = []  # frames with non-finite coordinates (a blown-up simulation)
     for k, ts in enumerate(traj[frame_indices]):
         reporter.check_cancel()
         times[k] = frame_indices[k] * float(dt_ps) if dt_ps else ts.time
+        if not np.isfinite(ts.positions).all():
+            blown.append(int(frame_indices[k]))
+            if len(blown) == 1:
+                n_bad = int((~np.isfinite(ts.positions).all(axis=1)).sum())
+                ctx.warn(f"frame {blown[0]}: {n_bad} atom{'s have' if n_bad != 1 else ' has'} non-finite "
+                         "coordinates; such atoms are in no contact, bond or energy term, and values that "
+                         "need them (RMSD) are NaN")
         for a in analyses:
             a.process(k, ts)
         if k % every == 0 or k == n - 1:
             reporter.progress((k + 1) / n, f"Analysing frame {k + 1}/{n}")
+    if len(blown) > 1:
+        ctx.warn(f"{len(blown)} of the {n} analysed frames have atoms with non-finite coordinates "
+                 f"(frames {blown[0]} to {blown[-1]})")
     return [a.finalize() for a in analyses], times
