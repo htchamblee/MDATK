@@ -6,9 +6,10 @@ E = sum over atom pairs (a in A, b in B, r <= cutoff) of
   + A_ab / r^12 - B_ab / r^6
 
 Lennard-Jones coefficients come from the Amber topology when the input is a
-parm7 file; otherwise approximate element-based Amber-like parameters are used
-(flagged in the result metadata).  The magnitude of the net force exerted by B
-on A is reported alongside the energies.
+parm7 file; otherwise every atom takes the parameters of one Amber atom type of
+its element (:mod:`mdatk.analysis.generic_lj`, documented with its sources in
+docs/GENERIC_LJ.md; flagged in the result metadata).  The magnitude of the net
+force exerted by B on A is reported alongside the energies.
 """
 
 from __future__ import annotations
@@ -20,21 +21,12 @@ import numpy as np
 
 from ..io.loader import is_parm7
 from ..io.parm7 import LJTable
-from ..selections import atom_elements
 from ..spatial import minimum_image_vectors, pairs_within
+from . import generic_lj
 from .base import Analysis, register
 from .common import without
 
 COULOMB = 332.0522  # kcal mol^-1 A e^-2
-
-# Approximate (r*, epsilon) Amber-like parameters per element: (A, kcal/mol)
-GENERIC_LJ: Dict[str, tuple] = {
-    "H": (1.1, 0.0157), "C": (1.908, 0.086), "N": (1.824, 0.17), "O": (1.6612, 0.21),
-    "P": (2.1, 0.2), "S": (2.0, 0.25), "F": (1.75, 0.061), "MG": (0.7926, 0.8947),
-    "NA": (1.369, 0.0874), "K": (1.705, 0.1937), "CL": (2.513, 0.0355), "ZN": (1.10, 0.0125),
-    "CA": (1.71, 0.12), "MN": (1.2, 0.05), "BR": (2.22, 0.32),
-}
-_DEFAULT_LJ = (1.9, 0.1)
 
 
 def _bonded_exclusions(u, a, b, depth: int) -> np.ndarray:
@@ -97,6 +89,9 @@ def _bonded_exclusions(u, a, b, depth: int) -> np.ndarray:
 class EnergyAnalysis(Analysis):
     name = "energy"
     label = "Intermolecular energy"
+    # 2: the generic Lennard-Jones parameters (topologies that are no parm7) are those of Amber atom types, with
+    # the hydrogens typed by the atom they are bonded to (mdatk.analysis.generic_lj)
+    version = 2
     group_slots = 2
     OUTPUT_LABELS = {
         "total": "{a}–{b} interaction energy",
@@ -155,11 +150,10 @@ class EnergyAnalysis(Analysis):
                 self.ctx.warn(f"energy: could not read LJ parameters from parm7 ({exc}); "
                               "using generic element parameters")
                 self.lj = None
+        self.lj_missing = []
         if self.lj is None:
             self.lj_source = "generic"
-            ra, ea = self._generic(a)
-            rb, eb = self._generic(b)
-            self.ra, self.ea, self.rb, self.eb = ra, ea, rb, eb
+            self._generic_pending = True  # assigned at the first frame (a hydrogen's bonded atom may need positions)
         self.excl = _bonded_exclusions(u, a, b, p.exclude_bonded)
         n = self.n_frames
         self.e_el = np.zeros(n)
@@ -167,16 +161,23 @@ class EnergyAnalysis(Analysis):
         self.force = np.zeros(n)
         self.n_pairs = np.zeros(n, dtype=np.int64)
 
-    @staticmethod
-    def _generic(atoms):
-        el = atom_elements(atoms)
-        rstar = np.array([GENERIC_LJ.get(e, _DEFAULT_LJ)[0] for e in el])
-        eps = np.array([GENERIC_LJ.get(e, _DEFAULT_LJ)[1] for e in el])
-        return rstar, eps
+    def _assign_generic(self, ts):
+        """R* and epsilon of both groups from the generic table (docs/GENERIC_LJ.md)."""
+        u = self.ctx.u
+        self.ra, self.ea, miss_a = generic_lj.parameters(u, self.a, ts.dimensions)
+        self.rb, self.eb, miss_b = generic_lj.parameters(u, self.b, ts.dimensions)
+        self.lj_missing = sorted(set(miss_a) | set(miss_b))
+        if self.lj_missing:
+            self.ctx.warn("energy: no generic Lennard-Jones parameters for element(s) "
+                          f"{', '.join(e or '?' for e in self.lj_missing)}: carbon's are used (R* "
+                          f"{generic_lj.DEFAULT.rstar:g} Å, epsilon {generic_lj.DEFAULT.epsilon:g} kcal/mol)")
+        self._generic_pending = False
 
     def process(self, k, ts):
         p = self.p
         box = self.ctx.box(ts)
+        if self.lj is None and self._generic_pending:
+            self._assign_generic(ts)
         pa = self.a.positions.astype(np.float64)
         pb = self.b.positions.astype(np.float64)
         i, j, d = pairs_within(pa, pb, p.cutoff, box)
@@ -216,6 +217,9 @@ class EnergyAnalysis(Analysis):
         res = self.new_result(lj_source=self.lj_source, charge_source=self.charge_source,
                               group_a=p.group_a, group_b=p.group_b,
                               n_excluded_pairs=int(len(self.excl)))
+        if self.lj_source == "generic":
+            res.meta["lj_table"] = generic_lj.TABLE_NAME
+            res.meta["lj_default_elements"] = list(self.lj_missing)
         total = self.e_el + self.e_vdw
         res.arrays.update(total=total, elec=self.e_el, vdw=self.e_vdw, force=self.force,
                           n_pairs=self.n_pairs)

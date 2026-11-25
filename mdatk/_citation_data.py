@@ -1387,6 +1387,12 @@ RESOURCE_DATA = [
         "note": '',
     },
     {
+        "id": 'generic_lj',
+        "name": 'Generic Lennard-Jones table of the energy analysis (Amber atom types and ions)',
+        "keys": ['cornell1995', 'wang2000', 'joung2008', 'li2013'],
+        "note": 'topologies without atom types; docs/GENERIC_LJ.md',
+    },
+    {
         "id": 'ions_lm1264',
         "name": 'Li-Merz 12-6-4 ions',
         "keys": ['li2014'],
