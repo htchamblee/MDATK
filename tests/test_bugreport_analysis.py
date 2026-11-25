@@ -136,3 +136,107 @@ def test_bug014_a_negative_or_non_finite_time_step_override_is_refused(value):
     p.inputs.dt_ps = value
     (message,) = errors_of(p, "inputs.dt_ps")
     assert message.startswith("The time step override must be a positive number of ps")
+
+
+# ----------------------------------------------------------------------------------- MDATK-BUG-015, 016, 067
+def rmsd_project(selection, fit="", **settings):
+    from mdatk.config import RMSDTarget
+
+    p = micro_project({"All": "1-9"})
+    p.analyses.rmsd.targets = [RMSDTarget("T", selection, fit)]
+    for key, value in settings.items():
+        setattr(p.analyses.rmsd, key, value)
+    return p
+
+
+def test_bug015_rmsd_of_one_atom_is_zero_and_of_two_atoms_exact():
+    """MDAnalysis' QCP superposition gave NaN for one atom and NaN or several Å for two (even for the reference
+    frame itself).  Two atoms 2 Å apart, then the same pair turned by 90 degrees and moved (RMSD 0), then
+    stretched to 3 Å (each atom 0.5 Å from its place: RMSD 0.5)."""
+    atoms = [atom("C4'", 1, "G", "C"), atom("C4'", 2, "C", "C")]
+    frames = [[[0, 0, 0], [2, 0, 0]], [[5, 5, 5], [5, 7, 5]], [[0, 0, 0], [3, 0, 0]]]
+    u = make_universe(atoms, frames)
+    res = run_one("rmsd", u, rmsd_project("name C4'"))
+    np.testing.assert_allclose(res.arrays["rmsd_0"], [0.0, 0.0, 0.5], atol=1e-6)
+    one = run_one("rmsd", u, rmsd_project("resid 1"))
+    np.testing.assert_array_equal(one.arrays["rmsd_0"], [0.0, 0.0, 0.0])
+    heavy = run_one("rmsd", u, rmsd_project("name C4'", mass_weighted=True))  # (equal masses: the same numbers)
+    np.testing.assert_allclose(heavy.arrays["rmsd_0"], [0.0, 0.0, 0.5], atol=1e-6)
+
+
+@pytest.mark.parametrize("n_atoms, on_a_line", [(2, False), (3, True), (5, True), (4, False)])
+def test_bug015_rigid_copies_have_rmsd_zero(n_atoms, on_a_line):
+    """100 rotated and shifted copies of float32 coordinates (the report's families: the exact answer is 0).  With
+    QCP 24 of 100 two-atom copies were NaN and 11 off by up to 6 Å; atoms on one line failed the same way."""
+    from scipy.spatial.transform import Rotation
+
+    rng = np.random.default_rng(3)
+    if on_a_line:
+        first = np.outer(np.arange(n_atoms) * 1.5, [0.6, 0.0, 0.8]) + 3.0
+    else:
+        first = rng.normal(size=(n_atoms, 3)) * 5
+    frames = [first, first] + [Rotation.random(random_state=t).apply(first) + 2 for t in range(100)]
+    u = make_universe([atom("P", k + 1, "G", "P") for k in range(n_atoms)], frames)
+    values = run_one("rmsd", u, rmsd_project("name P")).arrays["rmsd_0"]
+    assert np.isfinite(values).all()
+    assert values[:2].max() < 1e-6 and values.max() < 2e-5  # (float32 coordinates: rounded after rotating)
+
+
+def test_bug016_a_fit_selection_that_defines_no_rotation_only_translates_and_says_so(caplog):
+    """Two fit atoms (or three on one line) turned by 90 degrees about z: no rotation is defined (about their line
+    it is arbitrary), so the fit only moves the centre.  The measured atom (1, 1, 0) is then at (0, 0, 0): the RMSD
+    is sqrt(2), with a warning.  0.1.1 gave no warning, and for the three atoms a rotation chosen by LAPACK."""
+    atoms = [atom("P", 1, "G", "P"), atom("P", 2, "G", "P"), atom("P", 3, "G", "P"), atom("C1'", 4, "G", "C")]
+    turned = [[0, 0, 0], [0, 1, 0], [0, 2, 0], [-1, 1, 0]]  # (x, y) -> (-y, x)
+    u = make_universe(atoms, [[[0, 0, 0], [1, 0, 0], [2, 0, 0], [1, 1, 0]], turned])
+    with caplog.at_level("WARNING"):
+        three = run_one("rmsd", u, rmsd_project("name C1'", "name P"))
+    assert warnings_of(caplog) == [
+        "RMSD target 'T': fit selection has 3 atoms on one line; superposition is translation only"]
+    np.testing.assert_allclose(three.arrays["rmsd_0"], [0.0, math.sqrt(2)], atol=1e-6)
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        two = run_one("rmsd", u, rmsd_project("name C1'", "name P and resid 1 3"))
+    assert warnings_of(caplog) == ["RMSD target 'T': fit selection has 2 atoms; superposition is translation only"]
+    np.testing.assert_allclose(two.arrays["rmsd_0"], [0.0, math.sqrt(2)], atol=1e-6)
+    caplog.clear()
+    # three fit atoms that are not on one line define the rotation: the measured atom comes back, no warning
+    bent = [atom("P", 1, "G", "P"), atom("P", 2, "G", "P"), atom("C4'", 3, "G", "C"), atom("C1'", 4, "G", "C")]
+    v = make_universe(bent, [[[0, 0, 0], [1, 0, 0], [0, 2, 0], [1, 1, 0]],
+                             [[0, 0, 0], [0, 1, 0], [-2, 0, 0], [-1, 1, 0]]])
+    with caplog.at_level("WARNING"):
+        full = run_one("rmsd", v, rmsd_project("name C1'", "name P C4'"))
+    assert warnings_of(caplog) == []
+    np.testing.assert_allclose(full.arrays["rmsd_0"], [0.0, 0.0], atol=1e-6)
+
+
+def test_bug016_points_on_one_line_are_recognised():
+    from mdatk.spatial import collinear, kabsch
+
+    line = np.outer([0.0, 1.0, 2.5, 4.0], [1.0, 2.0, -1.0])
+    assert collinear(line) and collinear(line[:2]) and collinear(np.zeros((4, 3)))
+    assert collinear(line.astype(np.float32) + 100.0)  # (rounding does not make a line a plane)
+    assert not collinear(line + [[0, 0, 0], [0, 0, 0.1], [0, 0, 0], [0, 0, 0]])
+    assert not collinear(np.eye(3)) and collinear(np.eye(3), weights=[1.0, 1.0, 0.0])
+    r = kabsch(np.array([[0, 0, 0], [1, 0, 0.0]]), np.array([[0, 0, 0], [0, 1, 0.0]]))[0]
+    np.testing.assert_array_equal(r, np.eye(3))  # as before: fewer than three points only translate
+
+
+def test_bug067_an_rmsd_reference_frame_outside_the_run_is_reported(caplog):
+    """reference_frame = 999 silently used the last analysed frame, a negative one the first."""
+    atoms = [atom("P", k + 1, "G", "P") for k in range(3)]
+    first = np.array([[0, 0, 0], [3, 0, 0], [0, 4, 0.0]])
+    u = make_universe(atoms, [first, first * 1.1, first * 1.2])
+    with caplog.at_level("WARNING"):
+        res = run_one("rmsd", u, rmsd_project("name P", reference_frame=999))
+    assert warnings_of(caplog) == ["RMSD: reference frame 999 is beyond the 3 analysed frame(s); using the last"]
+    assert res.meta["reference_frame_index"] == 2 and res.arrays["rmsd_0"][2] < 1e-6 < res.arrays["rmsd_0"][0]
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        res = run_one("rmsd", u, rmsd_project("name P", reference_frame=-3))
+    assert warnings_of(caplog) == ["RMSD: reference frame -3 is negative; using the first"]
+    assert res.meta["reference_frame_index"] == 0
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        run_one("rmsd", u, rmsd_project("name P", reference_frame=2))
+    assert warnings_of(caplog) == []

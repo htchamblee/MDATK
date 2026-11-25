@@ -69,13 +69,26 @@ def minimum_image_vectors(vectors: np.ndarray, box=None) -> np.ndarray:
     return vectors - lengths * np.round(vectors / lengths)
 
 
+def collinear(points: np.ndarray, weights: Optional[np.ndarray] = None, tolerance: float = 1e-3) -> bool:
+    """True for points that define no rotation when superposed: fewer than three, or all on one line (their
+    extent across the line is below ``tolerance`` times their extent along it; coincident points count too)."""
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 3:
+        return True
+    w = np.ones(len(points)) if weights is None else np.asarray(weights, dtype=np.float64)
+    centred = points - (w / w.sum()) @ points
+    extents = np.linalg.eigvalsh((centred * w[:, None]).T @ centred)  # squared, ascending
+    return bool(extents[2] <= 0.0 or extents[1] <= tolerance * tolerance * extents[2])
+
+
 def kabsch(mobile: np.ndarray, reference: np.ndarray,
            weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Optimal (optionally weighted) rotation superposing ``mobile`` onto ``reference``.
 
     Returns ``(R, mobile_center, reference_center)`` such that
     ``(x - mobile_center) @ R.T + reference_center`` maps mobile coordinates
-    onto the reference.
+    onto the reference.  Fewer than three points give the identity (translation only); points on one line
+    (:func:`collinear`) are laid onto each other's line, and the rotation about that line is not defined.
     """
     mobile = np.asarray(mobile, dtype=np.float64)
     reference = np.asarray(reference, dtype=np.float64)
