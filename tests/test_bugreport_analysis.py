@@ -360,3 +360,92 @@ def test_bug029_a_ring_with_a_missing_atom_does_not_stop_the_stacking_analysis()
     u = make_universe(atoms, [frame, blown, frame])
     p = micro_project({"Aptamer": "1", "Target": "2"})
     assert run_one("stacking", u, p).arrays["count"].tolist() == [1, 0, 1]
+
+
+# ---------------------------------------------------------------------------------------- MDATK-BUG-018, 027
+def run_many(names, universe, project, frames):
+    from mdatk.analysis import ANALYSES, AnalysisContext, run_analyses
+
+    ctxs = [AnalysisContext(universe, project) for _ in names]  # as the pipeline: one context per analysis
+    results, _ = run_analyses(ctxs[0], [ANALYSES[n](c) for n, c in zip(names, ctxs)], np.asarray(frames))
+    return dict(zip(names, results))
+
+
+def mg_universe():
+    """Mg next to G1 in frame 0 (2 Å), next to C2 in frame 1 (2 Å; U4 is 2 Å away across a face of the 20 Å
+    box, 18 Å without it), far from everything in frame 2."""
+    atoms = [atom("P", 1, "G", "P"), atom("P", 2, "C", "P"), atom("MG", 3, "MG", "MG"), atom("P", 4, "U", "P")]
+    frames = [[[0, 0, 0], [10, 0, 0], [2, 0, 0], [12, 0, 0]],
+              [[0, 0, 0], [10, 0, 0], [8, 0, 0], [8, 18, 0]],
+              [[0, 0, 0], [10, 0, 0], [15, 10, 10], [8, 18, 0]]]
+    u = with_box(make_universe(atoms, frames), [20.0, 20.0, 20.0, 90.0, 90.0, 90.0])
+    u.trajectory[0]
+    return u
+
+
+@pytest.mark.parametrize("before", [[], ["rmsd"]])
+@pytest.mark.parametrize("use_pbc, expected", [(False, ["C2"]), (True, ["C2", "U4"])])
+def test_bug018_distance_selections_use_the_first_analysed_frame_and_follow_use_pbc(before, use_pbc, expected):
+    """A group 'around 5 resname MG', frames 1 and 2 analysed.  0.1.1 selected at the frame the trajectory
+    happened to be at: frame 0 (G1), or after the RMSD's setup its reference frame 2 (nothing: an error), and
+    always with the periodic cell (U4) whatever analyses.use_pbc."""
+    from mdatk.config import ResidueGroup, RMSDTarget
+
+    p = micro_project({"Aptamer": "1-2", "Target": "4"})
+    p.groups.append(ResidueGroup("Near", "", "name P and around 5 resname MG", "#000000"))
+    p.analyses.rmsd.targets = [RMSDTarget("T", "name P")]
+    p.analyses.rmsd.reference_frame = 1  # the second analysed frame: frame 2
+    p.analyses.use_pbc = use_pbc
+    p.visual.structure_groups = ["Near"]
+    p.visual.show_ions = False
+    trace = run_many(before + ["trace"], mg_universe(), p, [1, 2])["trace"]
+    assert trace.meta["residue_labels"] == expected
+
+
+def test_bug018_guessed_bonds_of_the_atoms_analysis_come_from_the_first_analysed_frame():
+    """C-O 1.4 Å apart in frame 1 (bonded), 5 Å in frame 0, where the trajectory stood at setup: no bond."""
+    atoms = [atom("C1'", 1, "G", "C"), atom("O4'", 1, "G", "O")]
+    u = make_universe(atoms, [[[0, 0, 0], [5, 0, 0]], [[0, 0, 0], [1.4, 0, 0]]])
+    u.trajectory[0]
+    res = run_many(["atoms"], u, micro_project({"Aptamer": "1"}), [1])["atoms"]
+    assert res.arrays["bonds"].tolist() == [[0, 1]]
+
+
+def test_bug027_use_pbc_without_a_periodic_cell_is_reported_once(caplog):
+    """use_pbc with a trajectory without a box (cleaning removes it after fitting) silently gave the distances
+    without periodic images."""
+    atoms = [atom("N1", 1, "G", "N"), atom("N3", 2, "C", "N")]
+    frames = [[[1, 1, 1], [19, 1, 1]]] * 3  # 2 Å apart across a 20 Å box, 18 Å without one
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.use_pbc = True
+    names = ["contacts", "hbonds", "energy"]
+    with caplog.at_level("WARNING"):
+        res = run_many(names, make_universe(atoms, frames), p, [0, 1, 2])
+    assert res["contacts"].arrays["atom_pairs"].tolist() == [0, 0, 0]
+    assert [w for w in warnings_of(caplog) if "use_pbc" in w] == [
+        "use_pbc is on but frame 0 has no usable periodic cell (box: none); distances of such frames are computed "
+        "without periodic images"]
+    caplog.clear()
+    u = with_box(make_universe(atoms, frames), [20.0, 20.0, 20.0, 90.0, 90.0, 90.0])
+    u.trajectory[1].dimensions = [20.0, 20.0, 0.0, 90.0, 90.0, 90.0]  # (a frame without a whole cell)
+    with caplog.at_level("WARNING"):
+        res = run_many(names, u, p, [0, 1, 2])
+    assert res["contacts"].arrays["atom_pairs"].tolist() == [1, 0, 1]
+    assert [w for w in warnings_of(caplog) if "use_pbc" in w] == [
+        "use_pbc is on but frame 1 has no usable periodic cell (box: 20 20 0 90 90 90); distances of such frames "
+        "are computed without periodic images"]
+    caplog.clear()
+    p.analyses.use_pbc = False  # not asked for: nothing to report
+    with caplog.at_level("WARNING"):
+        run_many(names, make_universe(atoms, frames), p, [0, 1, 2])
+    assert [w for w in warnings_of(caplog) if "use_pbc" in w] == []
+
+
+def test_bug027_periodic_cell():
+    from mdatk.spatial import periodic_cell
+
+    assert periodic_cell(None) is None and periodic_cell([0, 0, 0, 90, 90, 90]) is None
+    assert periodic_cell([20, 20, 20, 0, 0, 0]) is None and periodic_cell([20, 20, 20, 60, 60, 150]) is None
+    assert periodic_cell([20, 20, float("nan"), 90, 90, 90]) is None
+    assert periodic_cell([20, 25, 30, 90, 90, 90]).tolist() == [20, 25, 30, 90, 90, 90]
+    assert periodic_cell(OCTAHEDRON) is not None

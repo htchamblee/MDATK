@@ -323,11 +323,13 @@ def explain_empty(universe, text: str, groups: Sequence) -> Tuple[str, str]:
     return "", "each part matches atoms, but not in this combination (check 'and' / 'or')"
 
 
-def select(universe, text: str, groups: Sequence = (), allow_empty: bool = False):
-    """Select atoms, expanding group tokens and giving readable errors."""
+def select(universe, text: str, groups: Sequence = (), allow_empty: bool = False, periodic: bool = True):
+    """Select atoms, expanding group tokens and giving readable errors.  Distance keywords (``around``,
+    ``sphzone`` ...) are evaluated at the universe's current frame, with its periodic cell unless ``periodic``
+    is false."""
     resolved = resolve_selection(text, groups, universe)
     try:
-        ag = universe.select_atoms(resolved)
+        ag = universe.select_atoms(resolved, periodic=periodic)
     except Exception as exc:  # MDAnalysis raises several exception types
         raise syntax_error(text, resolved, str(exc) or type(exc).__name__, groups) from exc
     if not allow_empty and ag.n_atoms == 0:
