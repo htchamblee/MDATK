@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from conftest import make_universe, micro_project, run_one
-from mdatk.analysis.energy import COULOMB, GENERIC_LJ
+from mdatk.analysis.energy import COULOMB
+from mdatk.analysis.generic_lj import IONS
 from mdatk.io.parm7 import LJTable
 from mdatk.spatial import kabsch, minimum_image_vectors, pairs_within
 
@@ -309,7 +310,7 @@ def test_energy_matches_analytic_coulomb_and_lj():
     u = make_universe(atoms, [[[0, 0, 0], [r, 0, 0]]])
     p = micro_project({"Aptamer": "1", "Target": "2"})
     res = run_one("energy", u, p)
-    (rs_na, e_na), (rs_cl, e_cl) = GENERIC_LJ["NA"], GENERIC_LJ["CL"]
+    (rs_na, e_na), (rs_cl, e_cl) = IONS["NA"][:2], IONS["CL"][:2]  # ions: each alone in its residue
     rmin, eps = rs_na + rs_cl, np.sqrt(e_na * e_cl)
 
     def lj(x):

@@ -90,6 +90,10 @@ def pipeline_resources(project) -> List[str]:
         out.append("ffmpeg")
     if getattr(project.visual, "renderer", "") == "vtk":
         out.append("vtk")
+    energy = project.analyses.energy
+    from .io.loader import is_parm7  # (here: the loader brings MDAnalysis in)
+    if energy.enabled and not (energy.use_parm7 and is_parm7(project.inputs.topology or "")):
+        out.append("generic_lj")  # the energy analysis' Lennard-Jones table for topologies without atom types
     if project.analyses.basepairs.engine == "barnaba" and any(
             s.type == "secondary" and (s.options or {}).get("source", "dynamic") != "dotbracket"
             for s in project.layout.panels):

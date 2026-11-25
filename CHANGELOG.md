@@ -5,12 +5,44 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.1.0](#010-2026-11-20) · [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.1.1](#011-2026-11-25) · [0.1.0](#010-2026-11-20) · [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+
+## 0.1.1 (2026-11-25)
+
+### Energy analysis: a documented Lennard-Jones table for topologies without atom types
+
+- The table the *Intermolecular energy* analysis uses when the topology is no parm7 (PDB, GRO, PSF …) is
+  replaced. It had been written in 0.0.1 without a record of its sources: one value per element, every hydrogen
+  with Amber's `HP` radius (1.1 Å), Na⁺ / K⁺ / Cl⁻ cut to four decimals, and values for Ca²⁺, Mn²⁺ and unknown
+  elements that match no published set.
+- New rules (`mdatk/analysis/generic_lj.py`):
+  - an atom of a molecule takes one Amber atom type of its element, read from `parm10.dat` (C, N, O, P, S, F, Cl,
+    Br, I);
+  - **a hydrogen takes the type of the atom it is bonded to**: `H` on nitrogen (R\* 0.6 Å), `HO` on oxygen (no
+    Lennard-Jones term), `HS` on sulfur, `H1` on carbon and anything else. The bonded atom comes from the
+    topology's bonds, or is the nearest heavy atom of the residue within 1.45 Å where there are none;
+  - **an atom alone in its residue is an ion** and takes what `leaprc.water.tip3p` loads, at full precision:
+    Joung & Cheatham 2008 (Li⁺ Na⁺ K⁺ Rb⁺ Cs⁺ F⁻ Cl⁻ Br⁻ I⁻) and the 12-6 CM set of Li et al. 2013 (Mg²⁺ Ca²⁺ Sr²⁺
+    Ba²⁺ Mn²⁺ Fe²⁺ Co²⁺ Ni²⁺ Cu²⁺ Zn²⁺ Cd²⁺). A halogen in a molecule takes its covalent type (chlorine took the
+    chloride ion's values);
+  - an element in neither table takes carbon's values, and the analysis says so (log, and `lj_default_elements`
+    in the result's metadata; before: 1.9 Å / 0.1 kcal/mol, silently).
+- **`docs/GENERIC_LJ.md`** is the permanent record: every row with the file it was read from and that file's
+  comment, the rules, what one type per element leaves out, where and when the files were read (with checksums
+  and cross-checks), the table up to 0.1.0, and the references. `tests/test_generic_lj.py` quotes the source
+  files' lines and keeps code, document and those lines identical. A run that uses the table lists its four
+  references under *Citations* (resource `generic_lj`).
+- Effect: energies from parm7 topologies are unchanged. Without a parm7, van der Waals energies change wherever
+  hydrogens, ions or halogens are involved; hydrogen-bonded interfaces are no longer strongly repulsive (demo
+  duplex with hydrogens, strand against strand, 12 Å: +145.4 kcal/mol before, -34.1 now; -34.7 with the
+  topology's own parm7 parameters). Cached energy results are recomputed once (analysis version 2).
+- Changed for Mg²⁺ and Zn²⁺ too: from the parm99 types `MG` (Åqvist) and `Zn` to the Li-Merz set, as Amber's
+  current TIP3P defaults.
 
 ## 0.1.0 (2026-11-20)
 
