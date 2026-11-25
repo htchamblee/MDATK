@@ -161,6 +161,8 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
 def render_charts(dataset: Dataset, project: Project, out_dir: str,
                   reporter: Optional[Reporter] = None, stamp: str = "") -> List[str]:
     reporter = reporter or Reporter()
+    if not dataset.n_frames:
+        raise ValueError("no analysed frames to render")
     os.makedirs(out_dir, exist_ok=True)
     keys = chart_keys(dataset, project)
     mats = ([k for k in dataset.matrix_keys() if not k.startswith(_INTERNAL)]

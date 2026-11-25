@@ -167,6 +167,8 @@ def render_frame(dataset: Dataset, project: Project, pos: int, path: str,
                  width: Optional[int] = None, height: Optional[int] = None,
                  dpi: Optional[int] = None) -> str:
     """Render a single composite frame to an image file (PNG/SVG/PDF)."""
+    if not dataset.n_frames:
+        raise VideoError("no analysed frames to render")
     fig, canvas, panels = build_figure(dataset, project, width, height, dpi)
     for p in panels:
         p.update(pos)
@@ -181,6 +183,8 @@ def video_positions(n_frames: int, stride: int) -> np.ndarray:
 def render_video(dataset: Dataset, project: Project, path: str,
                  reporter: Optional[Reporter] = None) -> str:
     reporter = reporter or Reporter()
+    if not dataset.n_frames:
+        raise VideoError("no analysed frames to render")
     vp = project.output.video
     w, h = figure_size(vp.width, vp.height)
     fig, canvas, panels = build_figure(dataset, project)

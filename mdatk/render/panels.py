@@ -90,6 +90,8 @@ class Panel:
         self.ok = True
         self.auto_title = ""
         try:
+            if not ctx.dataset.n_frames:  # nothing to draw (an empty cached dataset)
+                raise KeyError("no frames")
             self.setup()
         except KeyError as exc:
             self.show_message(f"No data: {exc.args[0] if exc.args else exc}")
@@ -162,6 +164,7 @@ class StructurePanel(Panel):
             raise KeyError("trace")
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
+        self._warn_non_finite(coords)
         self.view_note = ""
         center, shift = self._view_centre(coords, tr)
         self.center = center
@@ -173,9 +176,9 @@ class StructurePanel(Panel):
         self.links = np.asarray(tr.arrays["links"], dtype=np.int64).reshape(-1, 2)
         n_res = coords.shape[1]
         # Frame the model by its bounding sphere so any orientation fits without zooming.
-        radius = float(np.linalg.norm(self.centred, axis=-1).max())
+        radius = _finite_max(np.linalg.norm(self.centred, axis=-1))  # non-finite residues are not drawn
         if self.ions_centred.size:
-            radius = max(radius, float(np.linalg.norm(self.ions_centred, axis=-1).max()))
+            radius = max(radius, _finite_max(np.linalg.norm(self.ions_centred, axis=-1)))
         radius = max(radius, 1.0)
         self.radius = radius
         view = radius / max(float(v.zoom), 0.05)  # zoom > 1 shows a smaller window
@@ -242,13 +245,22 @@ class StructurePanel(Panel):
         self.stage = MoleculeStage(self, scene, xyz, renderer)
         self.covered[:] = True  # the scene draws every residue (or hides it): no 2D trace
 
+    def _warn_non_finite(self, coords: np.ndarray) -> None:
+        """Name the frames with NaN / infinite coordinates (a blown-up simulation), once."""
+        bad = np.flatnonzero(~np.isfinite(coords).all(axis=(1, 2)))
+        if len(bad):
+            frames = [str(int(f)) for f in self.ctx.dataset.frames[bad[:8]]] + (["..."] if len(bad) > 8 else [])
+            warn_once(f"structure view: frame(s) {', '.join(frames)} have non-finite coordinates; "
+                      "the residues without a position are left out of these frames")
+
     def _view_centre(self, coords: np.ndarray, tr):
         """Centre of the view (reference frame) and its per-frame shift (visual.center_on / center_follow)."""
         v = self.ctx.project.visual
         shift = np.zeros((len(coords), 3))
         spec = (v.center_on or "").strip()
+        model = _finite_mean(coords[0])  # centre of the model
         if not spec:
-            return coords[0].mean(axis=0), shift
+            return model, shift
         if spec.lower() == "origin":
             return np.zeros(3), shift
         from ..selections import SelectionError
@@ -259,9 +271,12 @@ class StructurePanel(Panel):
             from ..problems import describe
             self.view_note = f"centre: {exc}"
             warn_once(f"{describe('visual.center_on')}: {exc}; using the model centre")
-            return coords[0].mean(axis=0), shift
+            return model, shift
+        if not np.isfinite(coords[0, row]).all():  # the centre residue has no position in the reference frame
+            return model, shift
         if v.center_follow:
             shift = coords[:, row] - coords[0, row]
+            shift[~np.isfinite(shift).all(axis=1)] = 0.0  # frames without the residue stay where they are
         return coords[0, row].copy(), shift
 
     def residue_rgb(self, pos: int) -> np.ndarray:
@@ -423,6 +438,8 @@ class StructurePanel(Panel):
 
     def after_layout(self):
         """Equal x/y scale: grow the data window to the panel's pixel aspect ratio."""
+        if not self.ok:  # "No data": setup() did not get to the view
+            return
         self._fit_aspect()
         self.update_density()  # the shadow covers the final window
 
@@ -507,12 +524,17 @@ class StructurePanel(Panel):
         ps = v.point_size
         sizes = ps * (0.55 + 0.9 * depth)
         order = np.argsort(xyz[:, 2], kind="stable")
+        finite = np.isfinite(xyz).all(axis=1)
+        if not finite.all():  # a blown-up frame: draw the residues that have a position
+            order = order[finite[order]]
         if three_d:  # residues drawn in 3D leave the 2D trace
             order = order[~self.covered[order]]
         self.points.set_offsets(xyz[order, :2])
         self.points.set_sizes(sizes[order])
         self.points.set_facecolors(colors[order])
         links = self.links
+        if not finite.all() and len(links):
+            links = links[finite[links[:, 0]] & finite[links[:, 1]]]
         if three_d and len(links):
             links = links[~(self.covered[links[:, 0]] | self.covered[links[:, 1]])]
         self.lines.set_segments([])
@@ -529,6 +551,7 @@ class StructurePanel(Panel):
         if three_d and getattr(self.stage.renderer, "draws_glow", False):
             intensity = np.zeros(0)  # the renderer draws the glow around the 3D residues
         sel = np.flatnonzero(intensity > 0.01)
+        sel = sel[finite[sel]]
         if len(sel):
             rgba_o = np.zeros((len(sel), 4))
             rgba_o[:, :3] = self.glow_rgb
@@ -547,16 +570,18 @@ class StructurePanel(Panel):
         if three_d:  # ions are spheres in the 3D scene
             self.ion_points.set_offsets(np.zeros((0, 2)))
         elif self.ion_view.shape[1]:
-            self.ion_points.set_offsets(self.ion_view[pos][:, :2])
+            ions = self.ion_view[pos]
+            self.ion_points.set_offsets(ions[np.isfinite(ions).all(axis=1), :2])
         if self.tags:  # push each label outward, away from the projected centre
             xy = xyz[self.tag_rows, :2]
-            centre = xyz[:, :2].mean(axis=0)
+            centre = _finite_mean(xyz)[:2]
             out = xy - centre
             norm = np.linalg.norm(out, axis=1, keepdims=True)
             out = np.where(norm > 1e-6, out / np.maximum(norm, 1e-6), np.array([[0.0, 1.0]]))
             pos_xy = xy + out * (0.07 * self.radius / max(float(v.zoom), 0.05) + 1.5)
-            for text, (x, y) in zip(self.tags, pos_xy):
+            for text, (x, y), shown in zip(self.tags, pos_xy, finite[self.tag_rows]):
                 text.set_position((x, y))
+                text.set_visible(bool(shown))
         if self.time_text is not None:
             self.time_text.set_text(self.ctx.format_time(pos))
 
@@ -564,6 +589,20 @@ class StructurePanel(Panel):
 # ---------------------------------------------------------------------------
 # Time series
 # ---------------------------------------------------------------------------
+
+
+def _finite_max(values: np.ndarray) -> float:
+    """Largest finite value (0 without one)."""
+    values = values[np.isfinite(values)]
+    return float(values.max()) if values.size else 0.0
+
+
+def _finite_mean(points: np.ndarray) -> np.ndarray:
+    """Mean of the rows without NaN / infinite values (the origin without one)."""
+    ok = np.isfinite(points).all(axis=1)
+    if ok.all():
+        return points.mean(axis=0)
+    return points[ok].mean(axis=0) if ok.any() else np.zeros(points.shape[1])
 
 
 def _running_mean(y: np.ndarray, window: int) -> np.ndarray:
