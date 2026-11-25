@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import sys
 import threading
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -259,6 +260,11 @@ def syntax_error(text: str, expanded: str, detail: str, groups: Sequence = ()) -
     own message (and a hint when the offending token looks like a group name or a misspelt keyword)."""
     shown = (text or "").strip()
     token, hint = _syntax_hint(detail, groups)
+    if not hint:  # 'resid 1 AND name P': AND is read as a value, and the error names what follows it
+        upper = next((t for t in expanded.replace("(", " ").replace(")", " ").split()
+                      if t != t.lower() and t.lower() in ("and", "or", "not")), "")
+        if upper:
+            token, hint = upper, f"keywords are lower case: did you mean {upper.lower()!r}?"
     msg = f"invalid selection {shown!r}"
     if expanded.strip() not in (shown, shown[4:].strip()):
         msg += f" (expanded: {expanded!r})"
@@ -267,6 +273,140 @@ def syntax_error(text: str, expanded: str, detail: str, groups: Sequence = ()) -
         msg += f" ({hint})"
     return SelectionError(msg, kind="syntax", token=token, text=shown, expanded=expanded, detail=detail,
                           suggestion=hint)
+
+
+# ---------------------------------------------------------------------------
+# Checks before MDAnalysis parses a selection
+# ---------------------------------------------------------------------------
+# MDAnalysis accepts a few malformed clauses and then selects other atoms than written (a reversed 'prop'
+# comparison gets the negated operator, text glued to a 'prop' operator or behind a float range is
+# dropped, 'atom' takes keywords as names), and reports others with Python's own messages.  _checked()
+# reads the expanded selection token by token as MDAnalysis' parser does, rejects those clauses and
+# rewrites the ones MDAnalysis would misread.
+
+_PROP_OPS = ("<", ">", "<=", ">=", "==", "!=")
+_PROP_MIRROR = {"<": ">", ">": "<", "<=": ">=", ">=": "<=", "==": "==", "!=": "!="}
+_PROP_CLAUSE = re.compile(r"([^<>=!]+)([<>=!]+)([^<>=!]+)")
+_MDA_FLOAT = re.compile(r"-?\d*\.?\d*(?:e[-+]?\d+)?")  # a bound of a float range as MDAnalysis reads it
+_FLOAT_RANGE = re.compile(r"(\S*?)\s*(?::| to )\s*(\S*)")
+
+
+class _Rejected(Exception):
+    """A clause :func:`_checked` does not hand to MDAnalysis."""
+
+    def __init__(self, message: str, token: str = ""):
+        super().__init__(message)
+        self.token = token
+
+
+def _rejected_error(text: str, expanded: str, exc: _Rejected) -> SelectionError:
+    shown = (text or "").strip()
+    msg = f"invalid selection {shown!r}"
+    if expanded.strip() not in (shown, shown[4:].strip()):
+        msg += f" (expanded: {expanded!r})"
+    return SelectionError(f"{msg}: {exc}", kind="syntax", token=exc.token, text=shown, expanded=expanded,
+                          detail=str(exc))
+
+
+def _number(token: Optional[str]) -> Optional[float]:
+    try:
+        return float(token)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_values(keyword: str, values: List[str], join) -> List[str]:
+    """The value tokens of a float keyword (``mass 12:+13 20 to inf``) with every range written so that
+    MDAnalysis reads both bounds: its pattern for a bound knows no ``+``, ``E`` or ``inf`` and ignores
+    what it cannot read (``1.2e1:1.3E1`` is taken as 12 to 1.3)."""
+    if not any(":" in v or v == "to" for v in values):
+        return values
+    try:
+        joined = join(list(values))
+    except Exception:  # noqa: BLE001 - MDAnalysis reports it
+        return values
+    out: List[str] = []
+    for value in joined:
+        m = _FLOAT_RANGE.fullmatch(value)
+        if not m:
+            out += value.split()
+            continue
+        bounds = [_number(b) for b in m.groups()]
+        if any(b is None or b != b for b in bounds):
+            raise _Rejected(f"{keyword}: cannot read the range {value!r} (write two numbers, "
+                            f"e.g. '{keyword} 1.5:2')", value)
+        if all(_MDA_FLOAT.fullmatch(b) for b in m.groups()):
+            out += value.split()  # as written
+        else:  # ±inf: the largest number
+            out.append(":".join(repr(max(-sys.float_info.max, min(sys.float_info.max, b))) for b in bounds))
+    return out
+
+
+def _checked(expanded: str) -> str:
+    """``expanded`` as it is handed to MDAnalysis; raises :class:`_Rejected` for a malformed ``prop``,
+    ``atom``, ``around`` or ``point`` clause or float range."""
+    try:
+        from MDAnalysis.core import selection as mda
+        is_keyword, properties, join = mda.is_keyword, mda.PropertySelection.props, mda.join_separated_values
+        float_keywords = {t for t, c in mda._SELECTIONDICT.items() if issubclass(c, mda.FloatRangeSelection)}
+    except (ImportError, AttributeError):  # pragma: no cover - without these MDAnalysis parses as before
+        return expanded
+    tokens = expanded.replace("(", " ( ").replace(")", " ) ").split()  # as MDAnalysis' parser splits
+    out: List[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        out.append(tok)
+        i += 1
+        if tok == "prop":
+            if tokens[i:i + 1] == ["abs"]:
+                out.append("abs")
+                i += 1
+            joined, m = "", None  # 'mass > 14', 'mass> 14', 'mass >14' or 'mass>14'
+            for k in range(i, min(i + 3, len(tokens))):
+                if tokens[k] in ("(", ")", "and", "or"):
+                    break
+                joined += tokens[k]
+                m = _PROP_CLAUSE.fullmatch(joined)
+                if m:
+                    i = k + 1
+                    break
+            if not m:
+                raise _Rejected("prop: expected a property, an operator and a value, e.g. 'prop mass > 14'",
+                                "prop")
+            name, op, value = m.groups()
+            if op not in _PROP_OPS:
+                raise _Rejected(f"invalid operator {op!r} in prop (use {', '.join(_PROP_OPS)})", op)
+            if value in properties and name not in properties:
+                # 'prop 6 < x': MDAnalysis swaps the two as well, but negates the operator (x >= 6)
+                name, op, value = value, _PROP_MIRROR[op], name
+            out += [name, op, value]
+        elif tok == "atom":
+            args = tokens[i:i + 3]
+            keyword = next((a for a in args if is_keyword(a)), "")
+            if len(args) < 3 or keyword or not re.fullmatch(r"[-+]?\d+", args[1]):
+                hint = (f" (found the keyword {keyword!r}; write \\{keyword} for a segid or name that is "
+                        "a keyword)" if keyword not in ("", "(", ")") else "")
+                raise _Rejected(f"atom: expected segid resid name, e.g. 'atom A 12 CA'{hint}", keyword or "atom")
+            out += [args[0].removeprefix("\\"), args[1], args[2].removeprefix("\\")]
+            i += 3
+        elif tok in ("around", "point"):
+            n = 1 if tok == "around" else 4
+            numbers = [_number(t) for t in tokens[i:i + n]]
+            follows = tokens[i + n] if i + n < len(tokens) else None
+            if len(numbers) < n or None in numbers or (tok == "around" and follows in (None, ")", "and", "or")):
+                raise _Rejected("around: expected a distance and a selection, e.g. 'around 3.5 resname MG'"
+                                if tok == "around" else
+                                "point: expected x y z distance, e.g. 'point 0 0 0 5'", tok)
+            if numbers[-1] < 0:
+                raise _Rejected(f"{tok}: distance must not be negative", tokens[i + n - 1])
+        elif tok in float_keywords:
+            j = i
+            while j < len(tokens) and not is_keyword(tokens[j]):
+                j += 1
+            out += _float_values(tok, tokens[i:j], join)
+            i = j
+    return " ".join(out)
 
 
 _parser = None
@@ -281,6 +421,10 @@ def check_selection(text: str, groups: Sequence = ()) -> str:
     global _parser
     expanded = resolve_selection(text, groups)
     try:
+        checked = _checked(expanded)
+    except _Rejected as exc:
+        raise _rejected_error(text, expanded, exc) from None
+    try:
         from MDAnalysis.core.selection import SelectionParser
         from MDAnalysis.exceptions import SelectionError as MDASelectionError
     except ImportError:  # pragma: no cover - a dependency; without it only the syntax check is skipped
@@ -289,7 +433,7 @@ def check_selection(text: str, groups: Sequence = ()) -> str:
         if _parser is None:
             _parser = SelectionParser()
         try:
-            _parser.parse(expanded, {})
+            _parser.parse(checked, {})
         except MDASelectionError as exc:
             raise syntax_error(text, expanded, str(exc), groups) from None
         except Exception:  # noqa: BLE001 - anything else is decided when the selection is applied
@@ -328,7 +472,7 @@ def explain_empty(universe, text: str, groups: Sequence) -> Tuple[str, str]:
     empty = []
     for name in names:
         try:
-            if universe.select_atoms(expand_groups(f"group:{name}", groups, universe)).n_atoms == 0:
+            if universe.select_atoms(_checked(expand_groups(f"group:{name}", groups, universe))).n_atoms == 0:
                 empty.append(name)
         except Exception:  # noqa: BLE001 - diagnostics only
             continue
@@ -344,7 +488,7 @@ def explain_empty(universe, text: str, groups: Sequence) -> Tuple[str, str]:
     none = []
     for clause in clauses:
         try:
-            if universe.select_atoms(resolve_selection(clause, groups, universe)).n_atoms == 0:
+            if universe.select_atoms(_checked(resolve_selection(clause, groups, universe))).n_atoms == 0:
                 none.append(clause)
         except Exception:  # noqa: BLE001 - a part may not stand alone ('around 5 ...')
             continue
@@ -359,7 +503,9 @@ def select(universe, text: str, groups: Sequence = (), allow_empty: bool = False
     is false."""
     resolved = resolve_selection(text, groups, universe)
     try:
-        ag = universe.select_atoms(resolved, periodic=periodic)
+        ag = universe.select_atoms(_checked(resolved), periodic=periodic)
+    except _Rejected as exc:
+        raise _rejected_error(text, resolved, exc) from None
     except Exception as exc:  # MDAnalysis raises several exception types
         raise syntax_error(text, resolved, str(exc) or type(exc).__name__, groups) from exc
     if not allow_empty and ag.n_atoms == 0:
