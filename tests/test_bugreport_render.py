@@ -132,3 +132,89 @@ def test_032_a_non_finite_coordinate_does_not_break_the_structure_view(frame, va
         assert np.isfinite(drawn).all()
         assert len(drawn) == (n_res - 1 if pos == frame else n_res)  # the residue is left out of that frame only
         assert all(np.isfinite(seg).all() for seg in panel.lines.get_segments())
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-035, 036, 076: panel options of a bad value or type
+# ---------------------------------------------------------------------------
+
+
+def test_035_fewer_than_one_tick_counts_as_one():
+    from mdatk.render.panels import thin_ticks
+
+    assert thin_ticks(10, 0).tolist() == [0]  # was: ZeroDivisionError
+    assert thin_ticks(10, -3).tolist() == [0]  # was: every row labelled
+    assert thin_ticks(10, 20).tolist() == list(range(10)) and thin_ticks(10, 5).tolist() == [0, 2, 4, 6, 8]
+
+
+@pytest.mark.parametrize("ptype, series", [("heatmap", ["contacts/per_residue_a"]), ("contact_map", ["contacts/map"])])
+def test_035_max_ticks_below_one_is_drawn_and_warned_about(ptype, series):
+    p = project_with([PanelSpec(ptype, series, "", {"max_ticks": 0})])
+    panel = build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0]  # was: ZeroDivisionError
+    assert panel.ok and [t.get_text() for t in panel.ax.get_yticklabels()] == ["1"]
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert len(found) == 1 and found[0].level == "warning" and "'max_ticks' is 0" in found[0].message
+
+
+BAD_OPTIONS = [
+    ("timeseries", ["rmsd/Complex"], {"ylim": 5}, "option 'ylim' must be two numbers [low, high], not 5"),
+    ("timeseries", ["rmsd/Complex"], {"ylim": [0.0, float("nan")]}, "option 'ylim' must be two numbers"),
+    ("timeseries", ["rmsd/Complex"], {"ylim": "ab"}, "option 'ylim' must be two numbers"),
+    ("timeseries", ["rmsd/Complex"], {"smooth": "x"}, "option 'smooth' must be a whole number of frames, not 'x'"),
+    ("timeseries", ["rmsd/Complex"], {"target": "high"}, "option 'target' must be a number, not 'high'"),
+    ("heatmap", ["contacts/per_residue_a"], {"vmax": "x"}, "option 'vmax' must be a number, not 'x'"),
+    ("heatmap", ["contacts/per_residue_a"], {"vmin": [1]}, "option 'vmin' must be a number, not [1]"),
+    ("heatmap", ["contacts/per_residue_a"], {"max_ticks": "x"}, "option 'max_ticks' must be a whole number"),
+    ("contact_map", ["contacts/map"], {"mode": "frame", "frame": "x"}, "option 'frame' must be a frame number"),
+    ("contact_map", ["contacts/map"], {"max_ticks": None}, "option 'max_ticks' must be a whole number, not None"),
+    ("sequence", [], {"per_row": "x"}, "option 'per_row' must be a whole number (0: as many as fit), not 'x'"),
+    ("sequence", [], {"per_row": -3}, "option 'per_row' must be a whole number (0: as many as fit), not -3"),
+]
+
+
+@pytest.mark.parametrize("ptype, series, options, message", BAD_OPTIONS)
+def test_036_an_unusable_panel_option_is_reported_and_shown_not_raised(ptype, series, options, message):
+    p = project_with([PanelSpec("timeseries", ["rmsd/Complex"], ""), PanelSpec(ptype, series, "", options)],
+                     "equal_2")
+    # validation names the panel's options before anything runs: an error when the panels are drawn
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.1.options"]
+    assert len(found) == 1 and found[0].level == "error" and message in found[0].message
+    assert found[0] in p.validate(video=True) and found[0].location.endswith("Options")
+    assert [x.level for x in p.problems(video=False) if x.field == "layout.panels.1.options"] == ["warning"]
+    # and the renderer shows the reason in the panel instead of raising (TypeError / ValueError before)
+    panels = build_figure(example_dataset(p, n_frames=6), p, 800, 400, 100)[2]
+    assert panels[0].ok and not panels[1].ok
+    assert f"No data: {message}" in panel_text(panels[1])
+
+
+@pytest.mark.parametrize("ptype, series, options", [
+    ("timeseries", ["rmsd/Complex"], {"ylim": [0, 5], "smooth": 5, "progressive": True, "target": 2.5}),
+    ("timeseries", ["rmsd/Complex"], {"ylim": [None, 5.0], "smooth": 0, "target": None}),
+    ("heatmap", ["contacts/per_residue_a"], {"vmin": 0, "vmax": 3.5, "max_ticks": 8}),
+    ("contact_map", ["contacts/map"], {"mode": "frame", "frame": 3, "transpose": True, "max_ticks": 10}),
+    ("contact_map", ["contacts/map"], {"mode": "frequency", "frame": "ignored in this mode"}),
+    ("sequence", [], {"per_row": 12, "residues": "A:1-5"}),
+    ("sequence", [], {"per_row": 0}),
+    ("secondary", [], {"source": "first"}),
+    ("secondary", [], {}),
+])
+def test_036_usable_panel_options_stay_accepted(ptype, series, options):
+    from mdatk.config import panel_option_problems
+
+    p = project_with([PanelSpec(ptype, series, "", options)])
+    assert panel_option_problems(ptype, options) == []
+    assert not [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0].ok
+
+
+def test_076_an_unknown_source_of_the_secondary_panel_is_not_taken_as_dynamic():
+    message = "unknown source 'dotbraket' (option 'source': dynamic, first or dotbracket)"
+    p = project_with([PanelSpec("secondary", [], "", {"source": "dotbraket", "dotbracket": "((..))"})])
+    panel = build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0]
+    assert not panel.ok and f"No data: {message}" in panel_text(panel)  # was: drawn with the dynamic pairs
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert [x.level for x in found] == ["error"] and message in found[0].message
+    for source in ("dynamic", "first"):
+        p.layout.panels[0].options = {"source": source}
+        assert build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0].ok
+        assert not [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]

@@ -357,6 +357,58 @@ def layout_warnings(project: "Project") -> List[str]:
     return out
 
 
+SECONDARY_SOURCES = ("dynamic", "first", "dotbracket")  # option 'source' of the secondary-structure panel
+
+
+def panel_option_problems(panel_type: str, options: Any) -> List[str]:
+    """Why a panel of ``panel_type`` cannot use its ``options``, one text per option ("option 'ylim' must be
+    two numbers [low, high], not 5"); empty when it can.  The checks are the conversions the panels make
+    (:mod:`mdatk.render.panels`), so an option that passes is one the panel draws with; a panel with a
+    problem shows "No data: <text>" and :meth:`Project.problems` reports it at ``layout.panels.<k>.options``."""
+    opts = options if isinstance(options, dict) else {}
+    out: List[str] = []
+
+    def number(value: Any, finite: bool = False) -> bool:
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return False
+        return not finite or x - x == 0.0
+
+    def whole(value: Any, least: Optional[int] = None) -> bool:
+        try:
+            n = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return least is None or n >= least
+
+    def check(name: str, ok, what: str) -> None:
+        if name in opts and not ok(opts[name]):
+            out.append(f"option {name!r} must be {what}, not {opts[name]!r}")
+
+    if panel_type == "timeseries":
+        check("smooth", lambda v: whole(v or 0), "a whole number of frames")
+        check("target", lambda v: v is None or number(v), "a number")
+        check("ylim", lambda v: isinstance(v, (list, tuple)) and 1 <= len(v) <= 2 and all(
+            x is None or isinstance(x, (int, float)) and number(x, finite=True) for x in v),
+            "two numbers [low, high]")
+    elif panel_type == "heatmap":
+        check("vmin", number, "a number")
+        check("vmax", lambda v: number(v or 0), "a number")
+        check("max_ticks", whole, "a whole number")
+    elif panel_type == "contact_map":
+        if opts.get("mode", "instant") == "frame":
+            check("frame", whole, "a frame number")
+        check("max_ticks", whole, "a whole number")
+    elif panel_type == "sequence":
+        check("per_row", lambda v: whole(v or 0, 0), "a whole number (0: as many as fit)")
+    elif panel_type == "secondary":
+        source = opts.get("source", "dynamic")
+        if str(source) not in SECONDARY_SOURCES:
+            out.append(f"unknown source {source!r} (option 'source': dynamic, first or dotbracket)")
+    return out
+
+
 def _default_panels() -> List[PanelSpec]:
     return [
         PanelSpec("structure", [], "Structure"),
@@ -692,6 +744,26 @@ class Project:
             add("fit_frame", f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
         return out
 
+    def render_problems(self, video: Optional[bool] = None, charts: Optional[bool] = None) -> List[Problem]:
+        """Problems of the settings only the renderers read: panel options a panel cannot use
+        (:func:`panel_option_problems`).  Errors when the output that reads the setting is about to be
+        made (``video``, ``charts``: as for :meth:`problems`), warnings otherwise."""
+        out: List[Problem] = []
+        video = self.output.video.enabled if video is None else video
+        drawn = "error" if video else "warning"  # the panels are drawn for the video
+
+        def add(field: str, message: str, level: str) -> None:
+            out.append(problem(field, message, self, level))
+
+        for k, sp in enumerate(self.layout.panels):
+            for text in panel_option_problems(sp.type, sp.options):
+                add(f"layout.panels.{k}.options", text, drawn)
+            ticks = (sp.options or {}).get("max_ticks") if sp.type in ("heatmap", "contact_map") else None
+            if isinstance(ticks, (int, float)) and ticks < 1:  # drawn all the same: allowed, hardly intended
+                add(f"layout.panels.{k}.options", f"option 'max_ticks' is {ticks!r}; values below 1 count as 1 "
+                    "(only the first residue is labelled)", "warning")
+        return out
+
     def validate(self, video: Optional[bool] = None, charts: Optional[bool] = None,
                  pdb: Optional[bool] = None, density: bool = False) -> List[Problem]:
         """Return a list of human readable problems (empty when valid).
@@ -808,6 +880,7 @@ class Project:
             add("visual.proximity_cutoff", "Proximity cutoff exceeds the proximity search radius "
                 "(raise analyses.proximity_search_radius).")
         out += self.density_problems()
+        out += self.render_problems(video, charts)
         if self.output.video.fps <= 0:
             add("output.video.fps", "Video FPS must be positive.")
         for text in layout_warnings(self):

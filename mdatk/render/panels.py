@@ -17,7 +17,7 @@ from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
-from ..config import PanelSpec, Project
+from ..config import PanelSpec, Project, panel_option_problems
 from ..data import Dataset
 from .coloring import frame_colors
 from .residues import residue_shading, tag_rows, warn_once
@@ -58,7 +58,7 @@ def integer_axis(axis) -> None:
 
 
 def thin_ticks(n: int, max_ticks: int = 20) -> np.ndarray:
-    step = max(1, int(np.ceil(n / max_ticks)))
+    step = max(1, int(np.ceil(n / max(1, max_ticks))))  # fewer than one tick counts as one
     return np.arange(0, n, step)
 
 
@@ -92,6 +92,8 @@ class Panel:
         try:
             if not ctx.dataset.n_frames:  # nothing to draw (an empty cached dataset)
                 raise KeyError("no frames")
+            for text in panel_option_problems(self.type_name, self.options):
+                raise KeyError(text)  # an option of the wrong type or value: say which
             self.setup()
         except KeyError as exc:
             self.show_message(f"No data: {exc.args[0] if exc.args else exc}")
