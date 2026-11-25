@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.1.0](#whats-new-in-010)
+- [What's new in 0.1.1](#whats-new-in-011)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,7 +82,19 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.1.0
+## What's new in 0.1.1
+
+- **The energy analysis' Lennard-Jones table for topologies without atom types is replaced and documented.**
+  With a PDB, GRO or PSF topology every atom now takes the parameters of one Amber atom type of its element,
+  hydrogens the type of the atom they are bonded to, and monatomic ions the Joung-Cheatham and Li-Merz values
+  Amber loads for TIP3P. Every number, the file it was read from and the publications are in
+  [docs/GENERIC_LJ.md](docs/GENERIC_LJ.md), and a test keeps the document and the code identical. The table up
+  to 0.1.0 gave every hydrogen one large radius, which made hydrogen-bonded interfaces strongly repulsive (demo
+  duplex, strand against strand: +145.4 kcal/mol; now -34.1; with the topology's own parm7 parameters -34.7), and
+  held values for Ca²⁺, Mn²⁺ and unknown elements that matched no published set. Energies from parm7 topologies
+  are unchanged; cached energy results are recomputed once.
+
+### Also new in 0.1.0
 
 - **Cluster jobs.** The Amber MD and GROMACS steps write a job script for your cluster beside their production
   script, and the plan a script that submits them all. Clusters are described once, in **cluster profiles** kept
@@ -99,14 +111,6 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
   steps that reused files of an earlier run; in the windows, text typed into a table cell and left with a click
   was dropped. Cached results of the corrected analyses are recomputed once. The
   list is in [CHANGELOG.md](CHANGELOG.md#010-2026-11-20).
-
-### Also new in 0.0.19
-
-- **Fix: L-DNA dihedrals across a D/L junction.** The generated L-DNA library gave the backbone dihedrals that
-  cross a D/L junction's phosphate the L phase on both sides (the zeta of a D residue before an L one, the alpha
-  of a D residue after an L one), so a D/L chimera was not the mirror image of its twin. Each such dihedral now
-  takes the hand of the sugar it hangs off, and a chimera and its mirror image have the same energy. Rebuild
-  topologies with a D/L DNA junction; all-D, all-L and L-RNA builds are unchanged.
 
 Earlier releases: see [CHANGELOG.md](CHANGELOG.md).
 
@@ -457,7 +461,7 @@ when periodic distances are enabled), so the cost grows roughly linearly with sy
 | **H-bonds** | inter-group H-bonds: donor–acceptor distance ≤ cutoff and D–H···A angle ≥ cutoff. Donor hydrogens come from topology bonds (or are assigned by distance); N atoms bearing H or three heavy neighbours are not acceptors; without hydrogens a distance-only criterion is used | groups, distance (3.5 Å), angle (135°) |
 | **O–Mg–O / Mg occupancy** | Mg–O inner-sphere (≤ 2.6 Å) and outer-sphere (≤ 4.5 Å) contacts with oxygens of the selected ranges; O–Mg–O bridges (pairs of oxygens on one ion), bridges between group A and B and the ions forming them; optional octahedral geometry check (O–Mg–O ≈ 90°/180° ± tolerance); per-residue occupancy class per frame (none / outer / inner sphere) | Mg selection, ligand selection/elements, cutoffs, bridge shell, geometry |
 | **π–π stacking** | ring centroids, least-squares normals and planarity per base (purine: 9 ring atoms, pyrimidine: 6; aromatic amino acids too); a pair is stacked when both rings are planar, centroids are within the distance cutoff, normals within the angle cutoff and the lateral offset is small | distance (4.5 Å), angle (30°), offset (2.5 Å), planarity (0.25 Å RMS), scope (all pairs or A vs B) |
-| **Intermolecular energy** | Coulomb + Lennard-Jones energy between group A and B within a cutoff (exact Amber LJ tables when the topology is parm7; approximate element parameters otherwise), plus the magnitude of the net force of B on A; a target value can be drawn on charts/panels | cutoff (12 Å), dielectric (optionally distance dependent, ε·r), bonded-pair exclusions, target |
+| **Intermolecular energy** | Coulomb + Lennard-Jones energy between group A and B within a cutoff (exact Amber LJ tables when the topology is parm7; otherwise one Amber atom type per element, hydrogens by the atom they are bonded to, and ion parameters for monatomic ions: [docs/GENERIC_LJ.md](docs/GENERIC_LJ.md)), plus the magnitude of the net force of B on A; a target value can be drawn on charts/panels | cutoff (12 Å), dielectric (optionally distance dependent, ε·r), bonded-pair exclusions, target |
 
 Three internal analyses feed the structure panel: **trace** (one point per residue — the first
 available atom of the *trace atoms* list such as `C4'` or `P`, or the heavy-atom centroid for
@@ -3106,8 +3110,9 @@ against the ChimeraX and ChimeraX-QScore sources.
 MDATK cites only what a project uses. Each planner step reports the programs, force fields,
 modifications, water models and ion parameters its settings turn on (an Amber build with OL3 + CP,
 NBfix19, TIP4P/2005 and nanoMg cites those papers, not the ones for options left off); the analysis
-and video pipeline adds MDAnalysis, NumPy, SciPy, Matplotlib, and cpptraj / FFmpeg / VTK when they
-are used. The citations appear
+and video pipeline adds MDAnalysis, NumPy, SciPy, Matplotlib, cpptraj / FFmpeg / VTK when they
+are used, and the sources of the energy analysis' generic Lennard-Jones table when the topology has no atom
+types ([docs/GENERIC_LJ.md](docs/GENERIC_LJ.md)). The citations appear
 
 - in the header of every generated script (that step only),
 - in the step log entries and in `MDATK_params_log.toml` (the whole project),
@@ -3393,8 +3398,11 @@ installed, updated and removed in a temporary data folder next to files MDATK di
   window's preview shows example data, or one real frame, for arranging the layout).
 - Interaction energies are non-bonded pair sums within a cutoff (no PME / long-range
   electrostatics, no solvent); use them for trends and comparisons against a target value.
-- Without a parm7 topology, Lennard-Jones parameters are approximate element defaults and the
-  result metadata records this (`lj_source`).
+- Without a parm7 topology, every atom takes the Lennard-Jones parameters of one Amber atom type of its
+  element (hydrogens: by the atom they are bonded to; monatomic ions: Joung-Cheatham and Li-Merz for TIP3P), an
+  approximation whose table and sources are in [docs/GENERIC_LJ.md](docs/GENERIC_LJ.md); the result metadata
+  records it (`lj_source`, `lj_table`, and `lj_default_elements` for elements the table does not have, which
+  take carbon's values).
 - When fitting, cpptraj rotates the unit cell, which NetCDF cannot store, so the box is removed
   after fitting by default (`cleaning.remove_box_after_fit`).
 - Very large systems: restrict groups and the structure selection to the region of interest;
