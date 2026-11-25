@@ -163,8 +163,9 @@ class TraceAnalysis(Analysis):
     label = "Backbone trace"
     internal = True
     # v2: residue numbers for tags; v3: group membership; v4: chain and residue names; v5: chains from bonds
-    # only when the bonds hold the residues together
-    version = 5
+    # only when the bonds hold the residues together; v6: an atom's element is the topology's wherever it has one
+    # (the heavy-atom centroid of a residue without a trace atom)
+    version = 6
 
     @classmethod
     def params_for(cls, project):
@@ -254,6 +255,8 @@ class ProximityAnalysis(Analysis):
     name = "proximity"
     label = "Proximity to residue set"
     internal = True
+    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 2
 
     @classmethod
     def expected_outputs(cls, project):
@@ -314,7 +317,9 @@ class AtomsAnalysis(Analysis):
     name = "atoms"
     label = "Atomic coordinates (structure view)"
     internal = True
-    version = 2  # 2: elements guessed per residue (protein CA is carbon, not calcium)
+    # 2: elements guessed per residue (protein CA is carbon, not calcium)
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 3
 
     @classmethod
     def params_for(cls, project):

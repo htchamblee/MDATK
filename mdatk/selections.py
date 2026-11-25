@@ -358,23 +358,26 @@ def guess_element(name: str, resname: str = "", single_atom_residue: bool = Fals
 
 
 def atom_elements(atoms) -> np.ndarray:
-    """Upper-case element symbols for an AtomGroup (topology value or guessed)."""
+    """Upper-case element symbols for an AtomGroup: the topology's value, and for each atom the topology
+    has none for (an Amber extra point among atoms with elements) the guess from its name.  An atom's
+    element does not depend on the other atoms of the group."""
     n = atoms.n_atoms
-    elements = None
+    elements = np.full(n, "", dtype=object)
     if hasattr(atoms, "elements"):
         try:
-            el = np.asarray(atoms.elements, dtype=object)
-            if n and all(isinstance(e, str) and e.strip() for e in el):
-                elements = np.array([e.strip().upper() for e in el], dtype=object)
+            elements = np.array([e.strip().upper() if isinstance(e, str) else ""
+                                 for e in np.asarray(atoms.elements, dtype=object)], dtype=object)
         except Exception:
-            elements = None
-    if elements is None:
+            elements = np.full(n, "", dtype=object)
+    unknown = np.flatnonzero(elements == "") if n else []
+    if len(unknown):
+        guessed = atoms[unknown]
         res_sizes = {}
-        for res in atoms.residues:
+        for res in guessed.residues:
             res_sizes[res.ix] = res.atoms.n_atoms
-        elements = np.array([
-            guess_element(a.name, a.resname, res_sizes.get(a.resindex, 2) == 1) for a in atoms
-        ], dtype=object)
+        elements[unknown] = [
+            guess_element(a.name, a.resname, res_sizes.get(a.resindex, 2) == 1) for a in guessed
+        ]
     return elements
 
 

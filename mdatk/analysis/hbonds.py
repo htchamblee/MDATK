@@ -26,7 +26,8 @@ class HBondAnalysis(Analysis):
     name = "hbonds"
     label = "Hydrogen bonds"
     # 2: without the angle an atom pair counts once; N carrying H is no acceptor without topology bonds either
-    version = 2
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 3
     group_slots = 2
     OUTPUT_LABELS = {
         "count": "{a}\u2013{b} H-bonds",

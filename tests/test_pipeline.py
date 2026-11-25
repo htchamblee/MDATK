@@ -165,7 +165,7 @@ def test_results_cached_before_the_fixes_are_not_reused(demo_dry, tmp_path):
     wrong) get other keys; everything else keeps its key."""
     from mdatk.analysis import ANALYSES
 
-    assert (ANALYSES["hbonds"].version, ANALYSES["contacts"].version, ANALYSES["trace"].version) == (2, 2, 5)
+    assert (ANALYSES["hbonds"].version, ANALYSES["contacts"].version, ANALYSES["trace"].version) == (3, 3, 6)
     p = small_project(demo_dry, tmp_path / "out7")
     pipe = Pipeline(p)
     fp = pipe.input_fingerprint(pipe.resolve_inputs())

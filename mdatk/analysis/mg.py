@@ -28,6 +28,8 @@ OCCUPANCY_CLASSES = ["none", "outer sphere", "inner sphere"]
 class MgAnalysis(Analysis):
     name = "mg"
     label = "Mg coordination"
+    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 2
     group_slots = 2
     OUTPUT_LABELS = {
         "contacts": "Mg\u2013O inner-sphere contacts",

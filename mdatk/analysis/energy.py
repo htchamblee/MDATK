@@ -91,7 +91,8 @@ class EnergyAnalysis(Analysis):
     label = "Intermolecular energy"
     # 2: the generic Lennard-Jones parameters (topologies that are no parm7) are those of Amber atom types, with
     # the hydrogens typed by the atom they are bonded to (mdatk.analysis.generic_lj)
-    version = 2
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 3
     group_slots = 2
     OUTPUT_LABELS = {
         "total": "{a}–{b} interaction energy",
