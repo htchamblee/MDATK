@@ -895,6 +895,8 @@ def build_helix(sequence: str, partner: str = "auto", chirality: str = "D", chai
         kind_text = f"with {PAIRING_LW[pairing]} pairs" if not motif else f"with a {motif} third strand"
         out_notes.append(f"Built an RNA {what} {kind_text} ({hand}): {atoms_note}; a starting model: "
                          "minimise before production")
+    if max(r.resseq for r in s.residues()) > 9999:  # as pdbtools.renumber_residues says
+        out_notes.append("WARNING: residue numbers above 9999 wrap in the PDB columns")
     if notes is not None:
         notes.extend(out_notes)
     return pdbtools.write_pdb(s)

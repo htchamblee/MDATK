@@ -5,6 +5,8 @@ import pytest
 
 from mdatk import builder, pdbtools as pt
 
+WRAP = "WARNING: residue numbers above 9999 wrap in the PDB columns"
+
 
 def _numbers(text):
     return [(r.chain, r.resseq) for r in pt.read_pdb(text).residues()]
@@ -51,3 +53,15 @@ def test_bug090_conect_note_says_when_the_records_are_dropped():
     assert "Kept CONECT records (remapped to the new atom serials)" in out.notes
     assert [line for line in out.text.splitlines() if line.startswith("CONECT")] == ["CONECT    1    2"]
     assert any(n.startswith("Stripped 1 CONECT") for n in pt.clean(dup).notes)
+
+
+# --- MDATK-BUG-093: build helix wraps numbers above 9999 -----------------------------------------------
+
+def test_bug093_build_helix_warns_when_numbers_wrap():
+    notes = []
+    text = builder.build_helix("GCAU", start=(1, 9998), notes=notes)
+    assert WRAP in notes
+    assert [n for c, n in _numbers(text) if c == "B"] == [9998, 9999, 0, 1]  # the wrap itself is kept
+    notes = []
+    builder.build_helix("GCAU", start=(1, 9996), notes=notes)  # 9996 ... 9999: no wrap, no warning
+    assert WRAP not in notes
