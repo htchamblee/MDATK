@@ -2624,7 +2624,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     f"files): {json.dumps(info)}")
             for g in project.groups:
                 try:
-                    ag = select(u, f"group:{g.name}", project.groups)
+                    ag = select(u, f"group:{g.name}", project.groups,
+                                periodic=project.analyses.use_pbc)
                     rep.log(f"  group {g.name}: {ag.n_atoms} atoms, {ag.residues.n_residues} residues "
                             f"({ag.residues[0].resname}{ag.residues[0].resid}–"
                             f"{ag.residues[-1].resname}{ag.residues[-1].resid})")

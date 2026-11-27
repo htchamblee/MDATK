@@ -252,7 +252,7 @@ def cmd_info(args) -> int:
     groups = {}
     for g in project.groups:
         try:
-            ag = select(u, f"group:{g.name}", project.groups)
+            ag = select(u, f"group:{g.name}", project.groups, periodic=project.analyses.use_pbc)
             groups[g.name] = {"atoms": int(ag.n_atoms), "residues": int(ag.residues.n_residues),
                               "first": f"{ag.residues[0].resname}{ag.residues[0].resid}",
                               "last": f"{ag.residues[-1].resname}{ag.residues[-1].resid}"}

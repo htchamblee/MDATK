@@ -27,7 +27,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## Contents
 
-- [What's new in 0.1.1](#whats-new-in-011)
+- [What's new in 0.1.2](#whats-new-in-012)
 - [Installation](#installation)
   - [Stand-alone downloads (no Python needed)](#stand-alone-downloads-no-python-needed)
   - [Installing from source](#installing-from-source)
@@ -82,7 +82,25 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ---
 
-## What's new in 0.1.1
+## What's new in 0.1.2
+
+- **Fixes of an external bug report on 0.1.1** (106 items, MDATK-BUG-001 to 106; 102 fixed, 4 by design). Every
+  fix was reproduced first and has a regression test; the full list is in [CHANGELOG.md](CHANGELOG.md).
+- **Opening and saving a project in the analysis window keeps it as it was**: numbers outside a spin button's
+  range or with more digits, colours such as `tab:orange`, chart formats without a check box, unknown choices,
+  relative paths, keys this version does not know, and the panels of a smaller grid preset. Empty slots are
+  placeholders (*Add a panel*), each panel has *Remove this panel*, and New, Open, Close and closing the window ask
+  about unsaved settings (the title bar shows "(modified)").
+- **Results that change** (cached results are recomputed once): periodic pair distances are exact; selections are
+  made at the first analysed frame and follow *use_pbc*; energy exclusions follow the whole bond graph and virtual
+  sites carry no Lennard-Jones term; hydrogen-bond donors are guessed with periodic distances; stacking rings are
+  made whole across the box; guessed bonds find S–S and P–S; RMSD is computed by SVD (fitted values change by
+  rounding only); `prop 6 < x` means `x > 6`; heatmap columns sit at their frame times; videos are tagged BT.709.
+- **Readers name the file and the problem** instead of showing a Python traceback, and their warnings (missing
+  elements, missing times …) are shown; several files that failed now load (hybrid-36 CONECT, NetCDF with zero
+  cell lengths, trajectory chains of mixed extensions).
+
+### Also new in 0.1.1
 
 - **The energy analysis' Lennard-Jones table for topologies without atom types is replaced and documented.**
   With a PDB, GRO or PSF topology every atom now takes the parameters of one Amber atom type of its element,
@@ -3254,8 +3272,8 @@ workflow   project_name, stamp, use_stamp, out_dir, step_folders, supersede_runs
 RNAdo writes only the `workflow` section; the analysis window writes the rest and keeps the plan RNAdo
 saved (see [One project in both programs](#one-project-in-both-programs)).
 
-Unknown keys are ignored with a warning and missing keys take their defaults, so project files stay
-compatible across versions. The recent-projects list is kept in `~/.config/mdatk/settings.toml`.
+Keys this version does not know are kept, with one warning, and saved back unchanged; missing keys take their
+defaults, so project files stay compatible across versions (a newer file's `mdatk_version` is not lowered). The recent-projects list is kept in `~/.config/mdatk/settings.toml`.
 
 ## Architecture and extending MDATK
 

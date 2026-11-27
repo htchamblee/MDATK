@@ -5,12 +5,124 @@ All releases of MDATK, newest first. The dates are those of the version commits.
 the step types of 0.0.7 write with the 0.0.7 output; the intended changes are listed in the test and in
 the notes below.
 
-- [0.1.1](#011-2026-11-25) · [0.1.0](#010-2026-11-20) · [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
+- [0.1.2](#012-2026-11-27) · [0.1.1](#011-2026-11-25) · [0.1.0](#010-2026-11-20) · [0.0.19](#0019-2026-11-13) · [0.0.18](#0018-2026-11-11) · [0.0.17](#0017-2026-11-11) · [0.0.16](#0016-2026-11-11) · [0.0.15](#0015-2026-11-11) · [0.0.14](#0014-2026-11-09) · [0.0.13](#0013-2026-11-07) · [0.0.12](#0012-2026-11-02) · [0.0.11](#0011-2026-10-31) · [0.0.10](#0010-2026-10-30) ·
   [0.0.8](#008-2026-10-29) · [0.0.7](#007-2026-10-25) · [0.0.6](#006-2026-10-25) ·
   [0.0.5.1](#0051-2026-10-25) · [0.0.5](#005-2026-10-25) · [0.0.4.1](#0041-2026-10-22) ·
   [0.0.4](#004-2026-10-21) · [0.0.3d](#003d-2026-10-20) · [0.0.3c](#003c-2026-10-18) ·
   [0.0.3b](#003b-2026-10-18) · [0.0.3a](#003a-2026-10-18) · [0.0.2c](#002c-2026-10-16) ·
   [0.0.2b](#002b-2026-10-15) · [0.0.2a](#002a-2026-10-15) · [0.0.1](#001-2026-10-12)
+
+## 0.1.2 (2026-11-27)
+
+Fixes of an external bug report on 0.1.1 (MDATK-BUG-001 to 106). Every fix was reproduced first and has a
+regression test in one of `tests/test_bugreport_{analysis,gui,readers,render,pdb}.py`. Four items are
+behaviour by design (023, 026, 061, 099; see the end), and one half of 071 was not a bug.
+
+### Results that change (cached results are recomputed once)
+
+- **Elements** of an atom no longer depend on the group they are evaluated in (011); of two groups with one
+  name, the first is used everywhere (073); `group:` tokens with invalid characters are named (074).
+- **RMSD** is computed by SVD and is exact for one or two atoms and for atoms on one line; a degenerate fit and a
+  reference frame outside the analysed range are reported (015, 016, 067). Fitted RMSD values change by
+  rounding only (at most 3.4e-7 Å on the demo).
+- **Pair search** uses exact float64 periodic distances; non-finite coordinates are masked instead of stopping
+  the run (017, 029).
+- **Selections** are made at the first analysed frame and follow `use_pbc`; `use_pbc` without a periodic cell is
+  reported once (018, 027). `mdatk info` and the window's *System info* follow `use_pbc` too.
+- **Energy**: exclusions are searched over the whole bond graph, also through atoms of neither group (019);
+  virtual sites (EP, LP, M, MW) carry no Lennard-Jones term (020, also in `docs/GENERIC_LJ.md`); the net force at
+  a clamped distance keeps its direction (021); a topology without bonds is reported (070).
+- **H-bonds** guess donors with periodic distances (022); **stacking** makes rings whole across the box (024);
+  **proximity** sets members of the full set to 0 (025).
+- **Guessed bonds** use covalent radii + 0.4 Å, so S–S, P–S, C–I and other bonds longer than 1.95 Å are found
+  (071).
+- **Validation** (`Project.problems()`): ten distance / dielectric settings must be finite and positive, three
+  angles between 0 and 180°, the time step override finite and positive, RMSD data keys unique (012–014).
+- **Selections**: `prop 6 < x` now means `x > 6` (052); malformed `prop` operators (053), `atom` given keywords
+  as arguments (054, `\name` escapes a keyword), negative `around` / `point` distances (055) and incomplete
+  `around` / `point` / `prop` (056) are errors; float ranges accept `+`, `E` and `inf`.
+- **Heatmap columns** are centred on their frame times, so unevenly spaced frames (chained runs) and the time
+  cursor line up (057); the running mean skips frames without a value (058); class matrices with more than five
+  classes get one colour per class (059).
+- **Videos** are converted with the BT.709 matrix and tagged BT.709 (078); `crf` also sets the quality of the
+  mpeg4 and libopenh264 fallback encoders (077).
+- **Density fit**: NaN / infinite map voxels are read as no density and counted in the result (091); the
+  density shadow and centroid ignore them (060).
+
+### Analysis window: open and save keep a project as it was
+
+- Spin buttons and sliders no longer clamp or round a loaded value (001); optional number fields keep every digit,
+  also in the script wizard (002); colours are kept as written (`tab:orange`, `#ff000080`) (003); chart formats
+  without a check box are kept and shown as "+ jpg" (004); a choice not in its list is kept as "(unknown)" and
+  flagged (005); saving keeps relative paths and *Save as* into another folder rebases them (006).
+- Layouts: empty slots are placeholders (*Add a panel*), not saved panels (007); each panel has *Remove this
+  panel*; a smaller grid preset deletes no panel, panels without a slot are kept and listed with *Remove* (008);
+  a slot's data label follows its analysis' groups (097).
+- New, Open, Close and closing the window ask about unsaved settings, and the title bar shows "(modified)"
+  (009); closing during a job asks and waits for the job to stop (068).
+- Form errors name the field in words (010).
+- Keys a project file holds that this version does not know are kept and saved back, with one warning, and a
+  newer file's `mdatk_version` is not lowered (086). `--set` still refuses unknown keys.
+- `settings.toml` is written in one step; an unreadable one is kept as `settings.toml.unreadable` (069). On
+  Windows a save waits briefly while another program holds the file; a failed save leaves no `.tmp` (105).
+- *Open video* plays the newest video of the current project's output folder (098); log lines arrive in batches,
+  so a chatty job no longer stalls the window (102); dialogs show their whole detail text and the still fits the
+  screen (103); after *Run cleaning now* the reference frame is reloaded from the cleaned files (104).
+- Also fixed: flagging a problem on a spin-button field raised RuntimeError; the external data `delimiter` was
+  dropped by every save.
+
+### Readers and command line: errors that name the file and the problem
+
+- Reader errors are one line naming the file, the format in words and the problem (`ReaderError`); reader
+  warnings are logged with the file name (028, 049, 051). Any unexpected error on the command line is one
+  `error:` line; `MDATK_DEBUG=1` gives the traceback (028).
+- Fixed readers: PDB CONECT records with hybrid-36 serials (039), NetCDF with cell lengths 0 0 0 read as
+  non-periodic (041), trajectory chains with different extensions (044), PDB atoms with a blank element get a
+  mass from their name (048).
+- Clear errors instead of tracebacks or misreads: a one-frame mdcrd without a box line (040), an unknown parm7
+  section after POINTERS (042), DCD frame interval 0 (043), GRO coordinates wider than their columns (045) or a
+  malformed box line (072), a GROMACS `.top` given as parm7 (050), damaged or truncated density maps (030).
+  Warnings: multi-frame GRO (046), one-atom mdcrd (047).
+- Unknown analyses and groups are named without quotes (065); `--frames` and `--set` list indices name the bad
+  value (066); the empty frame-selection message says `stop=end` (083); external data files are read before the
+  analyses (084); PDB export checks every frame before writing (085); `density fit --save` keeps the project's
+  paths as written (087); `mdatk demo` refuses impossible arguments (092); NaN / infinite resolutions and
+  negative grid spacings are refused (094); `pdb` and `build` name a missing input file (095).
+- Cleaning: cancel ends cpptraj and what `conda run` started at once (100); cpptraj output with non-ASCII
+  characters is decoded correctly (101).
+
+### Rendering, charts and the layout preview
+
+- A dataset without frames gives "No data: no frames" panels and "no analysed frames to render" (031); the
+  structure view is framed by its finite coordinates and names frames with non-finite ones (032); a surface grid
+  above 2^26 points is refused and left out of that frame (033); a matrix chart is at most 65 000 px high (034).
+- Panel options of the wrong type or value (`ylim`, `smooth`, `max_ticks`, `per_row`, `source` …) are reported by
+  the settings check and shown in the panel instead of aborting the render (035, 036, 076); chart formats and
+  colours are checked before the run (064); a per-residue matrix named in `output.charts.series` is charted, and
+  a residue map named there is reported (063).
+- Built-in 3D renderer: unusable views are a ValueError and the 2D trace is drawn (038); fast quality at odd sizes
+  fills the last row / column and no longer shifts (080); the glow halo no longer shows the molecule's bounding
+  box (081).
+- Layout preview: example data of a single strand (037) and of long residue ranges (079).
+- The chain legend names the chains ("Chain A") (062); `wrap_degrees` folds only -180 (075); chart titles and
+  colour bars follow the theme (082).
+
+### PDB tools, builder and AppImage
+
+- Residue numbers below -999 are refused when writing a PDB (088); `--combine-into` needs a one-character chain
+  id (089); `--keep-conect` warns when it drops the CONECT records (090); `build helix` warns when residue
+  numbers above 9999 wrap (093); a residue range that ends before it starts (`A:4-1`) is an error (096).
+- The Linux AppImage adds only the Wayland libraries the host lacks to the library path (106).
+
+### By design
+
+- 023: base pairs ignore periodic images (documented in `mdatk/analysis/basepairs.py`).
+- 026: `use_parm7` means "when a parm7 is available".
+- 061: the ion selection is documented as Mg²⁺ throughout, so the legend says Mg²⁺.
+- 099: `build mutate` drops the old base's hydrogens (the new base has heavy atoms only; documented).
+- 071, second half (chains linked end to end): not a bug. Consecutive residues of two chains are candidates, but
+  a bond still needs the atoms within bonding distance, which two separate chain ends are not; chains that are
+  covalently joined (O3'–P across a chain break) are drawn joined.
 
 ## 0.1.1 (2026-11-25)
 
