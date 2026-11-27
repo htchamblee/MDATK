@@ -43,7 +43,7 @@ from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, ask_unsaved, c
                         choose_project, choose_save_path, fill_open_menu, group_renames,
                         keep_open_menu_filled, rename_groups_in, renamed_data, workflow_data)
 from .worker import call_soon  # noqa: E402
-from .dialogtext import selectable_text  # noqa: E402
+from .dialogtext import detail_text, selectable_text  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -333,7 +333,7 @@ class RNAdoWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=kind, buttons=Gtk.ButtonsType.OK,
                                 text=text)
         if detail:
-            dlg.format_secondary_text(detail[:3000])
+            dlg.format_secondary_text(detail_text(detail))
         selectable_text(dlg)
         dlg.run()
         dlg.destroy()

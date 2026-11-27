@@ -1047,3 +1047,99 @@ def test_bug102_messages_of_the_logging_handler_are_batched_and_in_order(make):
     text = log_text(win)
     assert text.count("WARNING: from a thread") == 50
     assert text.index("WARNING: from a thread 49") < text.index("typed after them")
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-103: the whole detail text in dialogs; the still fits the screen
+# ---------------------------------------------------------------------------
+
+
+def test_bug103_dialogs_show_the_whole_detail_text(make, monkeypatch):
+    """The detail of error and message dialogs was cut after 3 000 characters without a mark (the box
+    scrolls long text since 0.1.0)."""
+    from mdatk.gui.rnado import RNAdoWindow
+
+    win = make()
+    shown = []
+    monkeypatch.setattr(Gtk.MessageDialog, "run",
+                        lambda dlg: shown.append(dlg.props.secondary_text) or Gtk.ResponseType.OK, raising=False)
+    type(win).error(win, "Failed", "y" * 5000)  # (the fixture replaced the window's own error and info)
+    type(win).info(win, "Done", "z" * 5000)
+    rnado = RNAdoWindow(win.get_application(), None, None)
+    try:
+        rnado._message("Failed", "r" * 5000, Gtk.MessageType.ERROR)
+    finally:
+        rnado.destroy()
+    assert shown == ["y" * 5000, "z" * 5000, "r" * 5000]
+    # a text beyond any dialog: its start, and a line that says so and where the rest is
+    huge = "a" * 50000
+    type(win).error(win, "Failed", huge)
+    assert shown[-1].startswith("a" * 20000 + "\n…") and len(shown[-1]) < 20200
+    assert "30000 more characters: the full text is in the log" in shown[-1]
+    assert huge in log_text(win)
+
+
+def test_bug103_a_still_fits_the_screen_in_both_directions(make, tmp_path):
+    """The still preview was scaled to 1 200 pixels of width only: a portrait still was shown at its full
+    height, beyond the screen."""
+    from gi.repository import GdkPixbuf
+
+    win = make()
+    area_h = Gdk.Display.get_default().get_monitor(0).get_workarea().height
+    path = str(tmp_path / "still.png")
+    GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 400, 4 * area_h).savev(path, "png", [], [])
+    before = set(Gtk.Window.list_toplevels())
+    win.show_image(path)
+    (dialog,) = [w for w in Gtk.Window.list_toplevels() if w not in before and isinstance(w, Gtk.Dialog)]
+    try:
+        images = []
+
+        def find(widget):
+            if isinstance(widget, Gtk.Image):
+                images.append(widget)
+            elif isinstance(widget, Gtk.Container):
+                widget.foreach(find)
+
+        find(dialog.get_content_area())
+        pix = images[0].get_pixbuf()
+        assert pix.get_height() <= 0.9 * area_h + 1 and pix.get_width() == round(400 * pix.get_height() / (4 * area_h))
+    finally:
+        dialog.destroy()
+    from mdatk.gui.dialogtext import fit_size
+
+    assert fit_size(1080, 1920, 1366, 768) == (389, 691)  # a portrait still on a laptop screen
+    assert fit_size(3840, 2160, 1366, 768) == (1229, 691)
+    assert fit_size(320, 180, 1366, 768) == (320, 180)  # never enlarged
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-104: the preview after 'Run cleaning now'
+# ---------------------------------------------------------------------------
+
+
+def test_bug104_the_real_frame_is_loaded_again_after_cleaning(make, monkeypatch):
+    """The reference frame loaded before cleaning (raw: with water and ions) stayed in the preview."""
+    from types import SimpleNamespace
+
+    win = make()
+    inputs = SimpleNamespace(cleaned=SimpleNamespace(reused=False, script="clean.in"), topology="c.parm7",
+                             trajectories=["c.nc"])
+    loads = []
+    fake = SimpleNamespace(resolve_inputs=lambda: inputs,
+                           structure_preview=lambda: (loads.append(1), {"coords": [], "cleaned": True})[1])
+    monkeypatch.setattr(win, "_pipeline", lambda *_a: fake)
+
+    def wait(done):
+        end = time.time() + 20
+        while not done() and time.time() < end:
+            pump(0.05)
+        return done()
+
+    win.run_cleaning()  # no real frame in the preview: none is loaded
+    assert wait(lambda: win.messages) and win.messages[0][:2] == ("info", "Cleaning finished")
+    pump(0.3)
+    assert not loads and win.preview_data is None
+    win.preview_data = {"coords": [], "cleaned": False}  # as 'Load real frame' left it, from the raw files
+    win.run_cleaning()
+    assert wait(lambda: win.preview_data.get("cleaned")) and loads == [1]
+    assert not [m for m in win.messages if m[0] == "error"]

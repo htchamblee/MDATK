@@ -44,7 +44,7 @@ from ..render.panels import PANEL_TYPES  # noqa: E402
 from ..selections import SelectionError  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
-from .dialogtext import selectable_text  # noqa: E402
+from .dialogtext import detail_text, fit_size, selectable_text, work_area  # noqa: E402
 from .about import citation_text, export_bibtex  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
 from .jobs import JobControl  # noqa: E402
@@ -2601,6 +2601,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.info("Cleaning finished" if not c.reused else "Cleaned files reused",
                       f"Topology: {inputs.topology}\nTrajectory: {inputs.trajectories[0]}\n"
                       f"cpptraj script: {c.script}")
+            if self.preview_data is not None:  # the real frame in the preview: now from the cleaned files
+                self.load_preview()
 
         self.start_job("Cleaning", job, done)
 
@@ -2767,7 +2769,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
-            dlg.format_secondary_text(detail[:3000])
+            dlg.format_secondary_text(detail_text(detail))
         selectable_text(dlg)
         dlg.run()
         dlg.destroy()
@@ -2777,7 +2779,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
-            dlg.format_secondary_text(detail[:3000])
+            dlg.format_secondary_text(detail_text(detail))
         selectable_text(dlg)
         dlg.run()
         dlg.destroy()
@@ -2788,10 +2790,10 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg.add_button("Close", Gtk.ResponseType.CLOSE)
         from gi.repository import GdkPixbuf
         pix = GdkPixbuf.Pixbuf.new_from_file(path)
-        screen_w = 1200
-        if pix.get_width() > screen_w:
-            h = int(pix.get_height() * screen_w / pix.get_width())
-            pix = pix.scale_simple(screen_w, h, GdkPixbuf.InterpType.BILINEAR)
+        # fits the screen in both directions (a portrait still was shown at its full height)
+        w, h = fit_size(pix.get_width(), pix.get_height(), *work_area(self))
+        if (w, h) != (pix.get_width(), pix.get_height()):
+            pix = pix.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
         dlg.get_content_area().pack_start(Gtk.Image.new_from_pixbuf(pix), True, True, 0)
         dlg.connect("response", lambda d, _r: d.destroy())
         selectable_text(dlg)
