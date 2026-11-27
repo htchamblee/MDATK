@@ -32,8 +32,8 @@ from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E4
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
 from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeries,  # noqa: E402
-                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, group_name_problem,
-                      layout_warnings, stable_hash)
+                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, carry_unknown,
+                      group_name_problem, layout_warnings, stable_hash)
 from ..problems import Problem, field_parents  # noqa: E402
 from ..problems import problem as make_problem  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
@@ -2046,6 +2046,7 @@ class MainWindow(Gtk.ApplicationWindow):
         errors = self.binder.store_fields(project, skip=() if include_layout else ("layout",))
         if errors:  # each with its place in words ("Input & cleaning › Frames › Stop: 'x' is not a whole number")
             raise ValueError("\n".join(make_problem(path, message, project) for path, message in errors))
+        carry_unknown(self.project, project)  # keys of the file this version does not know: saved back
         if validate:
             problems = project.validate(**uses)
             if problems:

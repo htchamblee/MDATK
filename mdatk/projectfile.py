@@ -30,6 +30,7 @@ import inspect
 import io
 import logging
 import os
+import re
 import time
 import threading
 import tokenize
@@ -270,12 +271,27 @@ def _now() -> _dt.datetime:
     return _dt.datetime.now().replace(microsecond=0)
 
 
+def _version_key(text: Any) -> Tuple[int, ...]:
+    """(0, 1, 1) of "0.1.1" (and of "0.1.1rc2"); () when the text starts with no number."""
+    found = re.match(r"\d+(?:\.\d+)*", str(text).strip())
+    return tuple(int(n) for n in found.group(0).split(".")) if found else ()
+
+
+def saved_version(project) -> str:
+    """The ``mdatk_version`` a save writes: this version, or the one the project's file had when a newer
+    MDATK wrote it (the file may hold settings this version only keeps: its version does not go back)."""
+    from .config import FILE_VERSION
+
+    had = getattr(project, "__dict__", {}).get(FILE_VERSION, "")
+    return had if had and _version_key(had) > _version_key(__version__) else __version__
+
+
 def project_text(project, log_file: str = "") -> str:
     """The settings part of a project file (no log)."""
     from .config import _to_plain
 
     data: Dict[str, Any] = {"format": PROJECT_FORMAT, "format_version": PROJECT_FORMAT_VERSION,
-                            "mdatk_version": __version__, "saved": _now(), "log_file": log_file}
+                            "mdatk_version": saved_version(project), "saved": _now(), "log_file": log_file}
     data.update(_to_plain(project))
     header = [f"{PROJECT_TITLE} project file.",
               "Plain TOML: every entry is explained by the comment above it. Edit with care; "
@@ -430,8 +446,8 @@ def read(path: str) -> Dict[str, Any]:
         fmt = PROJECT_FORMAT
     if fmt not in (None, PROJECT_FORMAT):
         raise ValueError(f"{path}: not an {PROJECT_ABBREV} project (format={fmt!r})")
-    for meta in ("format", "format_version", "mdatk_version", "saved", "log", "log_file"):
-        data.pop(meta, None)
+    for meta in ("format", "format_version", "saved", "log", "log_file"):
+        data.pop(meta, None)  # (mdatk_version stays: Project.from_dict remembers the version of the file)
     return data
 
 

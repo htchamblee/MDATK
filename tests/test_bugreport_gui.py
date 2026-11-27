@@ -764,3 +764,129 @@ def test_bug068_closing_during_a_job_asks_and_waits_for_the_job(make, monkeypatc
                           ["Cancel", "Stop it and close"])] * 2
     pump(0.2)  # the job's own end reaches the window
     assert "Cancelled." in log_text(win)
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-086: keys of a project file that the model does not know
+# ---------------------------------------------------------------------------
+
+UNKNOWN = {"int": 3, "float": 0.25, "text": "kept", "flag": True, "list": [1, 2, 3],
+           "table": {"a": 1, "deep": {"b": [1.5, "x"]}}}
+
+
+def file_with_unknown_keys(folder, version=None):
+    """A project file with keys this version does not know at every level; returns its path."""
+    from mdatk import tomlio
+
+    folder.mkdir(exist_ok=True)
+    path = str(folder / "p.mdatk.toml")
+    Project().save(path)
+    data = tomlio.load(path)
+    if version:
+        data["mdatk_version"] = version
+    data["plugin_x"] = dict(UNKNOWN)  # a table of another tool
+    data["future_top"] = "kept"
+    data["inputs"]["future_option"] = 3
+    data["analyses"]["contacts"]["future_option"] = dict(UNKNOWN)
+    data["groups"][1]["future_option"] = 0.5
+    data["layout"]["future_option"] = [1, 2]
+    data["layout"]["panels"][2]["future_option"] = "kept"
+    data["analyses"]["rmsd"]["targets"][0]["future_option"] = True
+    data["workflow"]["future_budget"] = 7
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(tomlio.dumps(data))
+    return path
+
+
+def unknown_values(path):
+    from mdatk import tomlio
+
+    data = tomlio.load(path)
+    return {"plugin_x": data.get("plugin_x"), "future_top": data.get("future_top"),
+            "inputs": data["inputs"].get("future_option"),
+            "contacts": data["analyses"]["contacts"].get("future_option"),
+            "group": [g.get("future_option") for g in data["groups"]],
+            "layout": data["layout"].get("future_option"),
+            "panel": [p.get("future_option") for p in data["layout"]["panels"]],
+            "target": data["analyses"]["rmsd"]["targets"][0].get("future_option"),
+            "workflow": data["workflow"].get("future_budget"), "version": data["mdatk_version"]}
+
+
+def test_bug086_a_save_keeps_the_keys_it_does_not_know(tmp_path, caplog):
+    """Keys the model does not know (a newer MDATK's settings, another tool's table, a typo) were dropped
+    when the file was read, so the next save deleted them."""
+    import mdatk
+
+    path = file_with_unknown_keys(tmp_path / "proj")
+    before = unknown_values(path)
+    assert before["contacts"] == UNKNOWN and before["group"] == [None, 0.5] and before["panel"][2] == "kept"
+    with caplog.at_level("WARNING", logger="mdatk"):
+        project = Project.load(path)
+        Project.load(path)  # a window reads its file again and again: told once
+    told = [r.getMessage() for r in caplog.records if "unknown key" in r.getMessage()]
+    assert len(told) == 1 and "9 unknown keys kept and saved back unchanged" in told[0]
+    assert "project.inputs.future_option" in told[0] and "project.groups[1].future_option" in told[0]
+    assert project.to_dict() == project.copy().to_dict()
+    assert not hasattr(project.inputs, "future_option")  # kept, not a setting
+    project.inputs.step = 2
+    project.save(path)
+    assert unknown_values(path) == before and Project.load(path).inputs.step == 2
+    Project.load(path).save(path)  # and again
+    assert unknown_values(path) == before
+    # RNAdo's plan save re-reads and rewrites the file through the same model
+    projectfile.edit_workflow(path, lambda wf: setattr(wf, "project_name", "apt"))
+    assert unknown_values(path) == before and Project.load(path).workflow.project_name == "apt"
+    assert before["version"] == mdatk.__version__
+
+
+def test_bug086_the_version_of_a_newer_file_does_not_go_back(tmp_path):
+    """Saving wrote this version over the mdatk_version of a file a newer MDATK had written."""
+    import mdatk
+
+    newer = file_with_unknown_keys(tmp_path / "newer", version="99.2.0")
+    Project.load(newer).save(newer)
+    assert unknown_values(newer)["version"] == "99.2.0"
+    projectfile.edit_workflow(newer, lambda wf: None)
+    assert unknown_values(newer)["version"] == "99.2.0"
+    older = file_with_unknown_keys(tmp_path / "older", version="0.0.4")
+    Project.load(older).save(older)
+    assert unknown_values(older)["version"] == mdatk.__version__  # an older file gets this version, as before
+
+
+def test_bug086_set_still_refuses_keys_the_model_does_not_know(tmp_path):
+    from mdatk.cli import apply_override
+
+    path = file_with_unknown_keys(tmp_path / "proj")
+    project = Project.load(path)
+    for assignment in ("inputs.future_option=4", "inputs.nope=1", "plugin_x.text=no", "future_top=x",
+                       "inputs.unknown.keys=1"):
+        with pytest.raises(ValueError):
+            apply_override(project, assignment)
+    apply_override(project, "inputs.step=5")  # a setting: the unknown keys go along
+    project.save(path)
+    assert unknown_values(path) == unknown_values(file_with_unknown_keys(tmp_path / "again"))
+    assert Project.load(path).inputs.step == 5
+
+
+def test_bug086_the_analysis_window_saves_unknown_keys_back(make, tmp_path):
+    """The window builds the layout and the rows of its tables anew from the widgets: their unknown keys
+    go with them (rows that were edited or moved included)."""
+    path = file_with_unknown_keys(tmp_path / "proj", version="99.2.0")
+    before = unknown_values(path)
+    win = make()
+    win.open_path(path)
+    assert win.save_project() and unknown_values(path) == before
+    win.group_editor.store[1][1] = "13-20"  # an edited row
+    field(win, "analyses.contacts.cutoff").set_value(7.5)
+    win.slot_rows[2]["title"].set_text("Mine")
+    win.preset_combo.set_active_id("equal_6")
+    assert win.save_project()
+    saved = Project.load(path)
+    assert (saved.groups[1].residues, saved.analyses.contacts.cutoff, saved.layout.preset) == ("13-20", 7.5,
+                                                                                               "equal_6")
+    assert unknown_values(path) == before
+    win.group_editor.view.get_selection().select_path(Gtk.TreePath(1))
+    win.group_editor.move(-1)  # a moved row keeps its keys
+    assert win.save_project()
+    assert unknown_values(path)["group"] == [0.5, None]
+    assert [g.name for g in Project.load(path).groups] == ["Target", "Aptamer"]

@@ -6,8 +6,10 @@ The tree is stored in a human-readable TOML project file (see
 leaves a parameter log of the same form next to its outputs.  The comment on
 each field below becomes the explanation written above that entry in the file.
 
-Unknown keys are ignored with a warning (forward compatibility); missing keys
-fall back to the defaults below (backward compatibility).
+Unknown keys are not used but kept, at every level, and written back by a save
+(forward compatibility: the settings of a newer MDATK or of another tool; a
+warning names them); missing keys fall back to the defaults below (backward
+compatibility).
 """
 
 from __future__ import annotations
@@ -583,9 +585,18 @@ class Project:
     @classmethod
     def from_dict(cls, data: Dict[str, Any], base_dir: Optional[str] = None) -> "Project":
         data = dict(data)
+        version = data.get("mdatk_version")
         for meta_key in ("format", "format_version", "mdatk_version", "saved", "log", "log_file"):
             data.pop(meta_key, None)
-        project = _from_plain(cls, data, "project")
+        unknown: List[str] = []
+        project = _from_plain(cls, data, "project", unknown)
+        if unknown and unknown != _WARNED[0]:  # once: a window reads its file again and again
+            _WARNED[0] = unknown
+            log.warning("project: %d unknown key%s kept and saved back unchanged (from a newer %s, or "
+                        "misspelt?): %s", len(unknown), "" if len(unknown) == 1 else "s", PROJECT_ABBREV,
+                        ", ".join(unknown))
+        if isinstance(version, str) and version:  # a save does not put an older version on the file
+            project.__dict__[FILE_VERSION] = version
         if base_dir:
             project.resolve_paths(base_dir)
         return project
@@ -1128,10 +1139,51 @@ def _saved(f: dataclasses.Field, value: Any) -> bool:
     return bool(value) or f.metadata.get("saved") != "when set"
 
 
+# Where an object of the parameter tree keeps the keys of its table that the model does not know (a dict,
+# as read) and where a project keeps the mdatk_version of its file.  Not attributes one can name: no
+# dotted path (--set, the GUI bindings) reaches them.
+UNKNOWN_KEYS = "unknown.keys"
+FILE_VERSION = "file.mdatk_version"
+_WARNED: List[List[str]] = [[]]  # the unknown keys the last warning named
+
+
+def unknown_keys(obj: Any) -> Dict[str, Any]:
+    """The keys of the table of ``obj`` (a parameter object) that the model does not know, as read."""
+    return getattr(obj, "__dict__", {}).get(UNKNOWN_KEYS) or {}
+
+
+def carry_unknown(old: Any, new: Any) -> None:
+    """Give the parameter tree ``new`` the unknown keys of ``old``, the tree it was made from, wherever
+    an object was built anew (the GUI rebuilds table rows and the layout from its widgets).  List items
+    are matched by their settings (rows that moved), then by position (a row that was edited)."""
+    if dataclasses.is_dataclass(new) and type(old) is type(new):
+        if unknown_keys(old) and UNKNOWN_KEYS not in new.__dict__:
+            new.__dict__[UNKNOWN_KEYS] = copy.deepcopy(unknown_keys(old))
+        for f in dataclasses.fields(new):
+            carry_unknown(getattr(old, f.name), getattr(new, f.name))
+    elif isinstance(new, list) and isinstance(old, list):
+        free = list(range(len(old)))
+        pairs: Dict[int, int] = {}
+        for k, item in enumerate(new):
+            match = next((i for i in free if old[i] is item or old[i] == item), None)
+            if match is not None:
+                pairs[k] = match
+                free.remove(match)
+        for k, item in enumerate(new):
+            if k not in pairs and len(new) == len(old) and k in free:
+                pairs[k] = k
+                free.remove(k)
+        for k, i in pairs.items():
+            carry_unknown(old[i], new[k])
+
+
 def _to_plain(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)
+        data = {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)
                 if _saved(f, getattr(obj, f.name))}
+        for key, value in unknown_keys(obj).items():  # after the table's own entries, as they were read
+            data.setdefault(key, copy.deepcopy(value))
+        return data
     if isinstance(obj, (list, tuple)):
         return [_to_plain(v) for v in obj]
     if isinstance(obj, dict):  # free-form settings: an unset (None) option is simply absent
@@ -1146,7 +1198,10 @@ _ALIASES = {
 }
 
 
-def _from_plain(tp: Any, value: Any, where: str) -> Any:
+def _from_plain(tp: Any, value: Any, where: str, unknown: Optional[List[str]] = None) -> Any:
+    """``value`` (plain data) as the type ``tp``.  Keys of a table that its class does not know are kept
+    on the object (:func:`unknown_keys`) and written back by :func:`_to_plain`; ``unknown`` collects
+    their paths."""
     origin = typing.get_origin(tp)
     args = typing.get_args(tp)
 
@@ -1154,7 +1209,7 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         if value is None:
             return None
         non_none = [a for a in args if a is not type(None)]
-        return _from_plain(non_none[0], value, where)
+        return _from_plain(non_none[0], value, where, unknown)
 
     if dataclasses.is_dataclass(tp):
         if not isinstance(value, dict):
@@ -1162,17 +1217,23 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         hints = typing.get_type_hints(tp)
         names = {f.name for f in dataclasses.fields(tp)}
         kwargs = {}
+        extra: Dict[str, Any] = {}
         for key, val in value.items():
             key = _ALIASES.get((tp.__name__, key), key)
             if key not in names:
-                log.warning("%s: ignoring unknown key %r", where, key)
+                extra[key] = copy.deepcopy(val)  # not used, but not lost: a save writes it back
+                if unknown is not None:
+                    unknown.append(f"{where}.{key}")
                 continue
             if tp is InputParams and key == "trajectories" and isinstance(val, str):
                 val = [val]
-            kwargs[key] = _from_plain(hints[key], val, f"{where}.{key}")
+            kwargs[key] = _from_plain(hints[key], val, f"{where}.{key}", unknown)
         if tp is WorkflowParams:  # saved before 0.0.12 without 'parallel': one script at a time, as then
             kwargs.setdefault("parallel", 1)
-        return tp(**kwargs)
+        obj = tp(**kwargs)
+        if extra:
+            obj.__dict__[UNKNOWN_KEYS] = extra
+        return obj
 
     if origin in (list, List):
         if value is None:
@@ -1180,7 +1241,7 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{where}: expected a list")
         (item_tp,) = args or (Any,)
-        return [_from_plain(item_tp, v, f"{where}[{i}]") for i, v in enumerate(value)]
+        return [_from_plain(item_tp, v, f"{where}[{i}]", unknown) for i, v in enumerate(value)]
 
     if origin in (dict, Dict):
         if not isinstance(value, dict):

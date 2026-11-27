@@ -23,7 +23,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
-from ..config import Project, ResidueGroup, WorkflowParams, _from_plain, _to_plain  # noqa: E402
+from ..config import (FILE_VERSION, Project, ResidueGroup, WorkflowParams, _from_plain,  # noqa: E402
+                      _to_plain)
 from . import widgets as W  # noqa: E402
 from .dialogtext import selectable_text  # noqa: E402
 
@@ -133,7 +134,10 @@ def as_written(project: Project, source: Optional[str], target: str) -> Project:
                 return [walk(v, w, f) for v, w, f in zip(now, was, full)]
         return now
 
-    return Project.from_dict(walk(project.to_dict(), raw.to_dict(), resolved.to_dict()))
+    written = Project.from_dict(walk(project.to_dict(), raw.to_dict(), resolved.to_dict()))
+    if FILE_VERSION in project.__dict__:  # the version of the file it was read from goes with it
+        written.__dict__[FILE_VERSION] = project.__dict__[FILE_VERSION]
+    return written
 
 
 Renames = Sequence[Tuple[str, str, Sequence[str]]]
