@@ -14,6 +14,8 @@ type of its element.  The whole table, the rules and where every number was read
 * **Monatomic ions** (an atom that is alone in its residue) take what Amber's ``leaprc.water.tip3p`` loads:
   Joung & Cheatham 2008 (monovalent, TIP3P set) and the 12-6 "CM" set of Li, Roberts, Chakravorty & Merz 2013
   (divalent, TIP3P).
+* **Virtual sites** (the extra point of TIP4P water, lone pairs: an atom without an element named ``EP...``,
+  ``LP...``, ``M`` or ``MW``) have no Lennard-Jones term, as Amber's type ``EP``, and are no hydrogen's bonded atom.
 * An element in neither table takes carbon's parameters, and the analysis says so.
 
 Every value is ``(R*, epsilon)``: R* = Rmin/2 in Å and the well depth in kcal/mol, as Amber writes them.  A pair
@@ -22,6 +24,7 @@ has Rmin = R*_i + R*_j and epsilon = sqrt(eps_i eps_j) (Lorentz-Berthelot, as in
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -90,6 +93,12 @@ IONS: Dict[str, LJ] = {
     "CD": LJ(1.412, 0.01773416, "Cd2+", LM_TIP3P),
 }
 
+# a virtual site (extra point, lone pair) is a massless charge site without a Lennard-Jones sphere: Amber's type EP
+# ("  EP          0.00    0.0000             lone pair" in parm10.dat, section MOD4 RE)
+EXTRA_POINT = LJ(0.0, 0.0, "EP", PARM10)
+# atom names of virtual sites: EPW, EP1, EP2 (Amber TIP4P / TIP5P), LP1, LP2 (lone pairs), M, MW (TIP4P elsewhere)
+VIRTUAL_SITE_NAME = re.compile(r"(EP|LP)[A-Z0-9]*|MW?")
+
 DEFAULT = COVALENT["C"]  # an element in neither table (reported by the analysis)
 BOND_SEARCH = 1.45  # Å: a hydrogen's bonded atom is the nearest heavy atom of its residue within this (S-H: 1.34)
 
@@ -106,6 +115,21 @@ def lookup(element: str, alone: bool = False, bonded_to: str = "") -> Optional[L
     if element in COVALENT:
         return COVALENT[element]
     return IONS.get(element)  # a metal bound in a larger residue: its ion's values
+
+
+def virtual_sites(atoms) -> np.ndarray:
+    """True for the atoms of ``atoms`` that are virtual sites: the topology gives them no element (an Amber extra
+    point has atomic number 0) and their name is one of :data:`VIRTUAL_SITE_NAME`.  An atom with an element is
+    never one, whatever its name."""
+    named = np.array([VIRTUAL_SITE_NAME.fullmatch(str(n).strip().upper()) is not None for n in atoms.names],
+                     dtype=bool)
+    if not named.any():
+        return named
+    try:
+        has_element = np.array([isinstance(e, str) and bool(e.strip()) for e in atoms.elements], dtype=bool)
+    except Exception:  # noqa: BLE001 - a topology without elements
+        has_element = np.zeros(atoms.n_atoms, dtype=bool)
+    return named & ~has_element
 
 
 def hydrogen_parents(u, atoms, elements: np.ndarray, box=None) -> np.ndarray:
@@ -142,9 +166,11 @@ def hydrogen_parents(u, atoms, elements: np.ndarray, box=None) -> np.ndarray:
         seekers = atoms[open_]
         candidates = seekers.residues.atoms
         cand_el = atom_elements(candidates)
-        heavy = candidates[cand_el != "H"]
+        # (not a virtual site: TIP4P's extra point is nearer to the hydrogens than their oxygen)
+        is_heavy = (cand_el != "H") & ~virtual_sites(candidates)
+        heavy = candidates[is_heavy]
         if heavy.n_atoms:
-            heavy_el = cand_el[cand_el != "H"]
+            heavy_el = cand_el[is_heavy]
             i, j, d = pairs_within(seekers.positions.astype(np.float64), heavy.positions.astype(np.float64),
                                    BOND_SEARCH, box)
             best: Dict[int, Tuple[float, int]] = {}
@@ -158,8 +184,9 @@ def hydrogen_parents(u, atoms, elements: np.ndarray, box=None) -> np.ndarray:
 
 def parameters(u, atoms, box=None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """(R*, epsilon, elements without parameters) for ``atoms`` of the universe ``u`` at its current frame;
-    the atoms of the listed elements got :data:`DEFAULT`."""
+    the atoms of the listed elements got :data:`DEFAULT`.  Virtual sites get :data:`EXTRA_POINT`."""
     elements = atom_elements(atoms)
+    virtual = virtual_sites(atoms)
     sizes = np.bincount(u.atoms.resindices, minlength=u.residues.n_residues)
     alone = sizes[atoms.resindices] == 1
     parents = hydrogen_parents(u, atoms, elements, box)
@@ -168,6 +195,9 @@ def parameters(u, atoms, box=None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     missing: List[str] = []
     cache: Dict[Tuple[str, bool, str], LJ] = {}
     for k, key in enumerate(zip(elements, alone, parents)):
+        if virtual[k]:
+            rstar[k], eps[k] = EXTRA_POINT.rstar, EXTRA_POINT.epsilon
+            continue
         lj = cache.get(key)
         if lj is None:
             lj = lookup(key[0], bool(key[1]), key[2])

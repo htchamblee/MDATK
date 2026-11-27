@@ -15,7 +15,7 @@ def atom(name, resid, resname, element, charge=0.0, mass=12.0):
 
 
 def warnings_of(caplog):
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and r.name.startswith("mdatk")]
 
 
 # ----------------------------------------------------------------------------------------------- MDATK-BUG-011
@@ -449,3 +449,121 @@ def test_bug027_periodic_cell():
     assert periodic_cell([20, 20, float("nan"), 90, 90, 90]) is None
     assert periodic_cell([20, 25, 30, 90, 90, 90]).tolist() == [20, 25, 30, 90, 90, 90]
     assert periodic_cell(OCTAHEDRON) is not None
+
+
+# ---------------------------------------------------------------------------- MDATK-BUG-019, 020, 021, 070
+def test_bug019_no_bonds_in_the_topology_is_said_when_bonded_pairs_were_to_be_excluded(caplog):
+    """Two bonded atoms (C-O, 1.4 Å) in two groups, a topology without bonds: the pair is not excluded (it
+    cannot be known) and its van der Waals term is +1.5e3 kcal/mol; 0.1.1 said nothing."""
+    atoms = [atom("C4'", 1, "G", "C"), atom("O3'", 2, "C", "O")]
+    frame = [[[0, 0, 0], [1.4, 0, 0]]]
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    message = "energy: the topology has no bonds; bonded pairs are not excluded (exclude_bonded = 3 has no effect)"
+    with caplog.at_level("WARNING"):
+        res = run_one("energy", make_universe(atoms, frame), p)
+    assert warnings_of(caplog) == [message]
+    assert res.meta["n_excluded_pairs"] == 0 and res.arrays["vdw"][0] > 1000
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        res = run_one("energy", make_universe(atoms, frame, bonds=[(0, 1)]), p)  # with bonds: excluded, no word
+    assert warnings_of(caplog) == [] and res.meta["n_excluded_pairs"] == 1 and res.arrays["vdw"][0] == 0
+    p.analyses.energy.exclude_bonded = 0  # nothing to exclude: nothing to say
+    with caplog.at_level("WARNING"):
+        run_one("energy", make_universe(atoms, frame), p)
+    assert warnings_of(caplog) == []
+
+
+def test_bug020_pairs_linked_through_atoms_of_neither_group_are_excluded():
+    """A chain 0-1-2-3-4: atom 0 against atoms 2, 3 and 4, linked only through atom 1 (in neither group).  Within
+    three bonds are 2 (two bonds) and 3 (three); 0.1.1 excluded nothing without a direct A-B bond."""
+    import MDAnalysis as mda
+
+    from mdatk.analysis.energy import _bonded_exclusions
+
+    u = mda.Universe.empty(5, n_residues=5, atom_resindex=[0, 1, 2, 3, 4], trajectory=True)
+    u.add_bonds([(0, 1), (1, 2), (2, 3), (3, 4)])
+    a, b = u.atoms[[0]], u.atoms[[2, 3, 4]]
+    assert _bonded_exclusions(u, a, b, 3).tolist() == [0, 1]  # keys a * n_b + b: atoms 2 and 3
+    assert _bonded_exclusions(u, a, b, 2).tolist() == [0]
+    assert _bonded_exclusions(u, a, b, 1).tolist() == [] == _bonded_exclusions(u, a, b, 0).tolist()
+    assert _bonded_exclusions(u, u.atoms[[0]], u.atoms[[2]], 3).tolist() == [0]  # the report's case
+    # a direct bond, as before; and an atom bonded to two atoms of the other group (both are found)
+    assert _bonded_exclusions(u, u.atoms[[0, 1]], u.atoms[[2, 3, 4]], 1).tolist() == [3]  # 1-2
+    assert _bonded_exclusions(u, u.atoms[[2]], u.atoms[[0, 1, 3, 4]], 1).tolist() == [1, 2]  # 2-1 and 2-3
+
+
+def test_bug020_a_linker_residue_between_the_groups():
+    """Strand halves joined by a linker atom that belongs to neither group: C3'(1) - X(2) - C5'(3), 1.5 Å each.
+    The pair C3'-C5' (two bonds, 3 Å) is excluded, so no energy is left; 0.1.1 counted it."""
+    atoms = [atom("C3'", 1, "G", "C"), atom("P", 2, "LNK", "P"), atom("C5'", 3, "C", "C")]
+    u = make_universe(atoms, [[[0, 0, 0], [1.5, 0, 0], [3.0, 0, 0]]], bonds=[(0, 1), (1, 2)])
+    res = run_one("energy", u, micro_project({"Aptamer": "1", "Target": "3"}))
+    assert res.meta["n_excluded_pairs"] == 1 and res.arrays["n_pairs"].tolist() == [0]
+    assert res.arrays["vdw"].tolist() == [0.0]
+
+
+TIP4P = [[0.0, 0.0, 0.0], [0.5859, 0.7570, 0.0], [0.5859, -0.7570, 0.0], [0.15, 0.0, 0.0]]  # O, H, H, extra point
+
+
+@pytest.mark.parametrize("names, elements", [(["O", "H1", "H2", "EPW"], ["O", "H", "H", ""]),
+                                             (["OW", "HW1", "HW2", "MW"], None),
+                                             (["O", "H1", "H2", "M"], ["O", "H", "H", ""])])
+def test_bug021_virtual_sites_have_no_lennard_jones_term(names, elements):
+    """A TIP4P water from a topology without atom types: the extra point (0.15 Å from the oxygen, no element) got
+    carbon's parameters (R* 1.908 Å, epsilon 0.086) with a warning, and as the 'heavy atom' nearest to the
+    hydrogens (0.87 Å, the oxygen 0.96 Å) it made them hydrogens on carbon (R* 1.387 Å) instead of on oxygen."""
+    import MDAnalysis as mda
+    from MDAnalysis.coordinates.memory import MemoryReader
+
+    from mdatk.analysis import generic_lj as G
+
+    u = mda.Universe.empty(4, n_residues=1, atom_resindex=[0, 0, 0, 0], trajectory=True)
+    u.add_TopologyAttr("names", names)
+    u.add_TopologyAttr("resnames", ["WAT"])
+    if elements is not None:
+        u.add_TopologyAttr("elements", elements)
+    u.load_new(np.array([TIP4P], dtype=np.float32), format=MemoryReader)
+    rstar, eps, missing = G.parameters(u, u.atoms)
+    assert rstar.tolist() == [G.COVALENT["O"].rstar, 0.0, 0.0, 0.0]  # O, HO, HO, EP
+    assert eps.tolist() == [G.COVALENT["O"].epsilon, 0.0, 0.0, 0.0] and missing == []
+    assert G.virtual_sites(u.atoms).tolist() == [False, False, False, True]
+    assert G.hydrogen_parents(u, u.atoms, np.array(["O", "H", "H", "E"], dtype=object)).tolist() == ["", "O", "O", ""]
+
+
+def test_bug021_an_atom_with_an_element_is_no_virtual_site_and_the_rule_is_documented():
+    import os
+
+    from mdatk.analysis import generic_lj as G
+
+    atoms = [atom("EPS", 1, "LIG", "C"), atom("LP1", 1, "LIG", "S"), atom("M", 1, "LIG", "N"),
+             atom("MG", 2, "MG", ""), atom("EP1", 3, "WAT", ""), atom("LP2", 3, "WAT", "")]
+    u = make_universe(atoms, [np.arange(18).reshape(6, 3) * 3.0])
+    assert G.virtual_sites(u.atoms).tolist() == [False, False, False, False, True, True]
+    rstar, _eps, missing = G.parameters(u, u.atoms)
+    assert rstar.tolist() == [1.908, 2.0, 1.824, 1.36, 0.0, 0.0] and missing == []
+    assert tuple(G.EXTRA_POINT) == (0.0, 0.0, "EP", "parm10.dat")  # "  EP   0.00   0.0000   lone pair" (MOD4 RE)
+    doc = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "GENERIC_LJ.md")
+    with open(doc, encoding="utf-8") as fh:
+        text = fh.read()
+    assert "**A virtual site**" in text and "`EP 0.00 0.0000 lone pair`" in text
+    assert all(name in text for name in ("`EPW`", "`LP…`", "`M`", "`MW`"))
+
+
+def test_bug070_the_net_force_of_a_pair_closer_than_half_an_angstrom_is_that_of_half_an_angstrom():
+    """'Distances below 0.5 Å are taken as 0.5 Å': a Na+ / Cl- pair at 0.5 Å and at 0.25 Å has the same energy and
+    the same net force, in any direction.  0.1.1 multiplied the force vector of the clamped distance by r / 0.5:
+    half the force at 0.25 Å.  At 0.5 Å: E_el = -332.0522 / 0.5 = -664.1044 kcal/mol."""
+    from mdatk.analysis import generic_lj as G
+
+    atoms = [atom("NA", 1, "NA", "NA", charge=1.0), atom("CL", 2, "CL", "CL", charge=-1.0)]
+    frames = [[[0, 0, 0], [0.5, 0, 0]], [[0, 0, 0], [0.25, 0, 0]], [[0, 0, 0], [0, 0.15, 0.2]], [[1, 1, 1], [1, 1, 1]]]
+    res = run_one("energy", make_universe(atoms, frames), micro_project({"Aptamer": "1", "Target": "2"}))
+    elec, vdw, force = res.arrays["elec"], res.arrays["vdw"], res.arrays["force"]
+    np.testing.assert_allclose(elec, [-664.1044] * 4, rtol=1e-12)
+    na, cl = G.IONS["NA"], G.IONS["CL"]
+    rmin, eps = na.rstar + cl.rstar, math.sqrt(na.epsilon * cl.epsilon)
+    de_dr = 332.0522 / 0.25 + eps * (-12 * rmin ** 12 / 0.5 ** 13 + 12 * rmin ** 6 / 0.5 ** 7)
+    np.testing.assert_allclose(vdw, [eps * ((rmin / 0.5) ** 12 - 2 * (rmin / 0.5) ** 6)] * 4, rtol=1e-12)
+    np.testing.assert_allclose(force[:3], [abs(de_dr)] * 3, rtol=1e-6)  # (float32 positions: 0.15, 0.2)
+    assert force[0] == force[1]
+    assert force[3] == 0.0  # at distance 0 the pair has no direction
