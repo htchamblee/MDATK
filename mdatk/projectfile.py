@@ -603,7 +603,7 @@ def recent_projects() -> List[str]:
     """Recently opened / saved project files that still exist, newest first."""
     try:
         data = tomlio.load(_settings_path())
-    except (OSError, tomlio.TOMLDecodeError):
+    except (OSError, ValueError):  # no file, no TOML, or no text (a file cut off inside a character)
         return []
     return [p for p in data.get("recent", []) if isinstance(p, str) and os.path.isfile(p)][:RECENT_MAX]
 
@@ -611,7 +611,26 @@ def recent_projects() -> List[str]:
 def _user_settings() -> Dict[str, Any]:
     try:
         data = tomlio.load(_settings_path())
-    except (OSError, tomlio.TOMLDecodeError):
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _settings_to_change() -> Dict[str, Any]:
+    """The user settings, read to change one and write them all back (OSError: they cannot be read now,
+    so nothing may be written).  A file that is there but is no TOML (cut off, edited by hand) is never
+    written over, which would lose every setting in it: it is kept as ``settings.toml.unreadable`` and a
+    new file starts."""
+    target = _settings_path()
+    try:
+        data = tomlio.load(target)
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        kept = target + ".unreadable"
+        os.replace(target, kept)
+        log.warning("%s cannot be read (%s): it is kept as %s and a new settings file starts", target, exc,
+                    kept)
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -621,12 +640,22 @@ _SETTING_DOCS = {"recent": "Recently used project files, newest first.",
 
 
 def _write_user_settings(data: Dict[str, Any]) -> None:
+    """Write the settings file in one step (a temporary file beside it, then a rename): a crash, or the
+    other program reading at that moment (the analysis window and RNAdo share the file), never sees half
+    a file."""
     target = _settings_path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
     text = tomlio.dumps(data, lambda p, s: _SETTING_DOCS.get(p[-1] if p else "", None),
                         [f"{PROJECT_TITLE} user settings."])
-    with open(target, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    tmp = f"{target}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 def user_setting(key: str, default: Any = None) -> Any:
@@ -635,9 +664,9 @@ def user_setting(key: str, default: Any = None) -> Any:
 
 
 def set_user_setting(key: str, value: Any) -> None:
-    data = _user_settings()
-    data[key] = value
     try:
+        data = _settings_to_change()
+        data[key] = value
         _write_user_settings(data)
     except OSError as exc:
         log.warning("could not save the setting %s: %s", key, exc)
@@ -645,10 +674,10 @@ def set_user_setting(key: str, value: Any) -> None:
 
 def add_recent(path: str) -> None:
     path = os.path.abspath(path)
-    recent = [path] + [p for p in recent_projects() if p != path]
-    data = _user_settings()  # other settings stay
-    data["recent"] = recent[:RECENT_MAX]
     try:
+        data = _settings_to_change()  # other settings stay
+        recent = [path] + [p for p in recent_projects() if p != path]
+        data["recent"] = recent[:RECENT_MAX]
         _write_user_settings(data)
     except OSError as exc:
         log.warning("could not update the recent projects list: %s", exc)
