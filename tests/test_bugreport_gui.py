@@ -890,3 +890,160 @@ def test_bug086_the_analysis_window_saves_unknown_keys_back(make, tmp_path):
     assert win.save_project()
     assert unknown_values(path)["group"] == [0.5, None]
     assert [g.name for g in Project.load(path).groups] == ["Target", "Aptamer"]
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-097: the data labels of the panel slots follow an analysis' groups
+# ---------------------------------------------------------------------------
+
+
+def test_bug097_slot_data_labels_follow_the_groups_of_their_analysis(make):
+    """Another group chosen for the contacts: the slot's Data choice went on saying "Aptamer–Target
+    heavy-atom contacts" until the editors were rebuilt for another reason."""
+    from mdatk.config import ResidueGroup
+
+    p = Project()
+    p.groups.append(ResidueGroup(name="Loop", residues="5-8"))
+    label = "Aptamer–Target heavy-atom contacts"
+    p.layout = LayoutParams(preset="equal_2", panels=[PanelSpec("timeseries", ["contacts/atom_pairs"], label),
+                                                      PanelSpec("timeseries", ["contacts/atom_pairs"], "Mine")])
+    win = make(p)
+    rows = list(win.slot_rows)
+    data = rows[0]["data"]
+
+    def shown():
+        return data.get_model()[data.get_active_iter()][0]
+
+    assert shown() == f"{label}   [contacts/atom_pairs]"
+    field(win, "analyses.contacts.group_b").get_child().set_text("Loop")
+    assert collected(win, "analyses.contacts.group_b") == "Loop"
+    assert shown() == "Aptamer–Loop heavy-atom contacts   [contacts/atom_pairs]"
+    assert win.slot_rows == rows and data.get_active_id() == "contacts/atom_pairs"  # relabelled, not rebuilt
+    # a title that was the data's label follows; a typed title stays
+    assert [row["title"].get_text() for row in rows] == ["Aptamer–Loop heavy-atom contacts", "Mine"]
+    assert [s.series for s in win.collect(validate=False).layout.panels] == [["contacts/atom_pairs"]] * 2
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-098: Open video
+# ---------------------------------------------------------------------------
+
+
+def test_bug098_open_video_is_about_the_current_project_and_folder(make, asks, tmp_path, monkeypatch):
+    """After a Render, 'Open video' kept opening that file: after the output folder was changed, after
+    another project was opened, and after 'Re-render from cache' had written a newer video."""
+    from types import SimpleNamespace
+
+    from mdatk.gui import desktop
+
+    opened = []
+    monkeypatch.setattr(desktop, "open_file", opened.append)
+    first, second = tmp_path / "a", tmp_path / "b"
+    for folder in (first, second):
+        folder.mkdir()
+    old = first / "MDATK_video_1.mp4"
+    old.write_text("")
+    new = second / "MDATK_video_2.mp4"
+    new.write_text("")
+    (second / "MDATK_video_3.mp4").mkdir()  # a folder named like a video is none
+    p = Project()
+    p.output.out_dir = str(first)
+    win = make(p)
+    win.last_video = str(old)  # as Render leaves it
+    win.open_video()
+    field(win, "output.out_dir").set_text(str(second))  # another output folder: its newest video
+    win.open_video()
+    assert opened == [str(old), str(new)]
+    # another project: the last render is not its video
+    other = Project()
+    other.output.out_dir = str(tmp_path / "c")
+    path = str(tmp_path / "c" / "q.mdatk.toml")
+    other.save(path)
+    win.last_video = str(old)
+    asks.answers.append("discard")  # (the output folder typed above)
+    win.open_path(path)
+    assert win.last_video is None
+    win.open_video()
+    assert opened == [str(old), str(new)] and win.messages[-1][:2] == ("error", "No video has been rendered yet.")
+    # 'Re-render from cache' writes a video: that is the one 'Open video' plays
+    rendered = tmp_path / "c" / "MDATK_video_9.mp4"
+    fake = SimpleNamespace(load_cached_dataset=lambda: None, render_charts=lambda *_a: [],
+                           render_video=lambda *_a: (rendered.parent.mkdir(exist_ok=True), rendered.write_text(""),
+                                                     str(rendered))[2])
+    monkeypatch.setattr(win, "_pipeline", lambda *_a: fake)
+    win.rerender_from_cache()
+    end = time.time() + 20
+    while win.last_video is None and time.time() < end:
+        pump(0.05)
+    assert win.last_video == str(rendered)
+    win.open_video()
+    assert opened[-1] == str(rendered)
+    # two videos written at the same time: the later name
+    twin = rendered.parent / "MDATK_video_9b.mp4"
+    twin.write_text("")
+    stamp = os.path.getmtime(rendered)
+    os.utime(twin, (stamp, stamp))
+    assert desktop.latest_video(str(rendered.parent), "MDATK_video.mp4") == str(twin)
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-102: log lines reach the window in batches
+# ---------------------------------------------------------------------------
+
+
+def test_bug102_a_chatty_job_costs_one_callback_per_batch_not_per_line(make):
+    """Every log line of a job was one callback on the main loop: a job that prints a lot kept the
+    window from redrawing and reacting."""
+    win = make()
+    shown = []  # the lines of each insertion into the log
+    win.log_buffer.connect("insert-text", lambda _buf, _at, text, _n: shown.append(text.count("\n")))
+    lines = 60000
+    done = []
+
+    def job(rep):
+        for k in range(lines):
+            rep.log(f"line {k}")
+        return "ok"
+
+    win.start_job("Chatty", job, lambda result: (win.append_log("the job has ended"), done.append(result)))
+    end = time.time() + 120
+    while not done and time.time() < end:
+        pump(0.05)
+    assert done == ["ok"]
+    assert len(shown) < lines / 20  # batches (it was one call per line)
+    assert max(shown) <= 2001  # a batch is small enough to insert at once (2 000 lines and the note)
+    text = log_text(win)
+    # the job's last lines are shown, before what follows the job; skipped lines are counted
+    assert text.index(f"line {lines - 1}\n") < text.index("the job has ended")
+    # faster than the log can show: the newest lines, and a note that counts the others
+    from mdatk.gui.worker import LogBatch
+
+    got = []
+    batch = LogBatch(got.append)
+    for k in range(10000):
+        batch.feed(f"line {k}")
+    batch.flush()
+    (text,) = got
+    assert text.split("\n")[0] == "… 8000 line(s) not shown: they came faster than the log can show them"
+    assert text.split("\n")[1:] == [f"line {k}" for k in range(8000, 10000)]
+
+
+def test_bug102_messages_of_the_logging_handler_are_batched_and_in_order(make):
+    import logging
+
+    from mdatk.gui.app import GuiLogHandler
+
+    win = make()
+    handler = GuiLogHandler(win)
+    logger = logging.getLogger("mdatk.test_bugreport")
+    logger.addHandler(handler)
+    try:
+        thread = threading.Thread(target=lambda: [logger.warning("from a thread %d", k) for k in range(50)])
+        thread.start()
+        thread.join()
+        win.append_log("typed after them")  # what is logged later comes later
+    finally:
+        logger.removeHandler(handler)
+    text = log_text(win)
+    assert text.count("WARNING: from a thread") == 50
+    assert text.index("WARNING: from a thread 49") < text.index("typed after them")

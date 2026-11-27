@@ -52,7 +52,7 @@ from .problemview import ProblemView  # noqa: E402
 from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, as_written, ask, ask_unsaved,  # noqa: E402
                         change_bar, choose_project, choose_save_path, fill_open_menu, keep_open_menu_filled,
                         other_data, renamed_workflow)
-from .worker import call_soon  # noqa: E402
+from .worker import LogBatch, call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -94,8 +94,7 @@ class GuiLogHandler(logging.Handler):
 
     def emit(self, record):
         msg = f"{record.levelname}: {record.getMessage()}"
-        from .worker import call_soon
-        call_soon(self.window.append_log, msg)
+        self.window.log_batch.feed(msg)  # any thread; shown in batches with the lines of the jobs
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -117,6 +116,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._chains_offered = ""  # topology whose chain groups were last offered automatically
         self._chains_reading = 0  # the manual chain request whose "Reading …" line is shown
         self._topology_timer = 0
+        self._listing_groups = False  # the group choosers are being filled with the group names
         self.slot_rows: List[dict] = []  # the editors of the panels that have a slot in the grid preset
         self.empty_slots: List[Gtk.Frame] = []  # the placeholders of the slots without a panel
         self.more_panels: List[PanelSpec] = []  # the panels the grid preset has no slot for (kept)
@@ -133,6 +133,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
         self._check_source = 0
         self._destroyed = False  # set on destroy: callbacks still pending must leave the window alone
+        self.log_batch = LogBatch(self._show_log)  # log lines from other threads, shown in batches
         self._next_problem: Dict[str, int] = {}
 
         self._build_header()
@@ -402,6 +403,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _stop_timers(self) -> None:
         """A destroyed window must not be checked or read into by timers still pending."""
         self._destroyed = True
+        self.log_batch.close()
         self._stop_topology_timer()
         if self._check_source:
             GLib.source_remove(self._check_source)
@@ -577,7 +579,8 @@ class MainWindow(Gtk.ApplicationWindow):
                      False, False, 0)
         self.busy_widgets.append(self.render_button)
         self.jobs = JobControl(self.progress, self.cancel_button, self.append_log,
-                               lambda text, detail: self.error(text, detail), self.busy_widgets)
+                               lambda text, detail: self.error(text, detail), self.busy_widgets,
+                               log_batch=self.log_batch)
         return bar
 
     @property
@@ -830,8 +833,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self._group_names = names
         if gone and not self._loading:
             self._report_removed_groups(gone)
-        for c in self.group_combos:
-            W.set_combo_entry_items(c, names)
+        self._listing_groups = True  # (the slots are rebuilt below: no relabelling for each combo)
+        try:
+            for c in self.group_combos:
+                W.set_combo_entry_items(c, names)
+        finally:
+            self._listing_groups = False
         if self.slot_rows and not self._loading:
             try:  # per-panel group choosers list the current group names
                 self._rebuild_slots()
@@ -841,7 +848,28 @@ class MainWindow(Gtk.ApplicationWindow):
     def _group_combo(self, path):
         c = W.combo_entry()
         self.group_combos.append(c)
+        c.get_child().connect("changed", lambda *_: self._relabel_slots())
         return self.binder.combo_text(path, c)
+
+    def _relabel_slots(self) -> None:
+        """An analysis' groups changed: the data choices of the panel slots are named after them
+        ("Aptamer–Loop heavy-atom contacts").  The choices themselves and typed titles stay; a title that
+        was its data's label follows."""
+        if self._loading or self._listing_groups or not self.slot_rows:
+            return
+        project = self._project_for_choices()
+        for row in self.slot_rows:
+            data = row["data"]
+            active = data.get_active_iter()
+            old = data.get_model()[active][0].split("   [")[0] if active is not None else ""
+            for item in data.get_model():
+                if item[1]:
+                    item[0] = f"{key_label(item[1], project)}   [{item[1]}]"
+            if row["auto"] and row["auto"] == old:
+                auto = self._auto_title(row, project)
+                if row["title"].get_text().strip() == old:
+                    row["title"].set_text(auto)
+                row["auto"] = auto
 
     def _group_message(self, text: str, error: bool = False, detail: str = "") -> None:
         """Status line under the group table (logged too; ``detail`` goes to the log and the tooltip)."""
@@ -2069,6 +2097,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if not self._confirm_discard():
             return
         self.preview_data = None
+        self.last_video = None  # (the video of the project that goes)
         self.load_project(Project(), None)
         self.append_log("New project with default settings (unsaved).")
 
@@ -2079,6 +2108,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         name = os.path.basename(self.project_path) if getattr(self, "project_path", None) else ""
         self.preview_data = None
+        self.last_video = None
         self.load_project(Project(), None)
         self.append_log(f"Closed {name}: default settings (unsaved)." if name else "Closed the project.")
 
@@ -2098,6 +2128,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.error(f"Could not open {path}", str(exc))
             return
         replay = is_params_log(path)
+        self.last_video = None  # 'Open video' is about this project from now on
         self.load_project(project, None if replay else path, None if replay else state)
         if replay:
             self.append_log(f"Loaded the settings of the run logged in {path} (save them as a project to "
@@ -2507,8 +2538,11 @@ class MainWindow(Gtk.ApplicationWindow):
             project = self.collect(validate=False)
         except ValueError:
             project = self.project
-        path = self.last_video if self.last_video and os.path.isfile(self.last_video) else \
-            desktop.latest_video(project.out_dir, project.output.video.filename)
+        # the video this window rendered last, while it lies in the output folder the settings name now;
+        # else the newest video there
+        path = self.last_video
+        if not (path and os.path.isfile(path) and os.path.dirname(os.path.abspath(path)) == project.out_dir):
+            path = desktop.latest_video(project.out_dir, project.output.video.filename)
         if not path:
             self.error("No video has been rendered yet.", project.out_dir)
             return
@@ -2665,11 +2699,15 @@ class MainWindow(Gtk.ApplicationWindow):
             out = []
             if project.output.video.enabled:
                 out.append(pipe.render_video(ds, rep.sub(0, 0.85)))
+            video = out[0] if out else None
             if project.output.charts.enabled:
                 out += pipe.render_charts(ds, rep.sub(0.85, 1.0))
-            return out
+            return video, out
 
-        def done(paths):
+        def done(result):
+            video, paths = result
+            if video:
+                self.last_video = video  # 'Open video' plays this one, as after Render
             self._adopt_auto_fit(project)
             self.info("Re-render finished", f"{len(paths)} file(s) written")
 
@@ -2710,6 +2748,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # -------------------------------------------------------------- feedback
     def append_log(self, text: str):
+        """Add a message to the log (main loop).  Lines of a job or of the logging handlers, which come
+        from other threads, are queued and shown in batches (``log_batch``); those queued so far go first."""
+        self.log_batch.flush()
+        self._show_log(text)
+
+    def _show_log(self, text: str):
         buf = self.log_buffer
         buf.insert(buf.get_end_iter(), text + "\n")
         lines = buf.get_line_count()

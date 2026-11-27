@@ -13,7 +13,7 @@ from gi.repository import Gtk  # noqa: E402
 
 from ..progress import Cancelled  # noqa: E402
 from .dialogtext import selectable_text  # noqa: E402
-from .worker import Worker  # noqa: E402
+from .worker import LogBatch, Worker  # noqa: E402
 
 
 class JobControl:
@@ -23,7 +23,8 @@ class JobControl:
 
     def __init__(self, progress: Gtk.ProgressBar, cancel_button: Gtk.Button, log: Callable[[str], None],
                  error: Callable[[str, str], None], busy_widgets: Optional[List[Gtk.Widget]] = None,
-                 stop_widgets: Optional[List[Gtk.Widget]] = None):
+                 stop_widgets: Optional[List[Gtk.Widget]] = None, log_batch: Optional[LogBatch] = None):
+        self.log_batch = log_batch  # the window's batch of log lines (None: each job has its own)
         self.progress = progress
         self.cancel_button = cancel_button
         self.log = log
@@ -78,7 +79,8 @@ class JobControl:
             self.progress.set_text(f"{title}: done")
             on_success(result)
 
-        self.worker = Worker(job, on_log or self.log, self.on_progress, done)
+        self.worker = Worker(job, on_log or self.log, self.on_progress, done,
+                             log_batch=None if on_log else self.log_batch)
         self.worker.start()
         return True
 
