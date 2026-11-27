@@ -66,6 +66,18 @@ def export_frames(universe, frames: Sequence[int], atoms, out_dir: str, prefix: 
     """Write one PDB per frame; returns the written paths."""
     if not frames:
         raise SelectionError("no frames selected for PDB export")
+    # the coordinate columns of the format hold -999.999 to 9999.999 Å (the limits MDAnalysis' writer
+    # tests); a frame beyond them would stop the export after the files of the earlier frames
+    beyond = []
+    for f in frames:
+        universe.trajectory[int(f)]
+        xyz = atoms.positions
+        if not (np.all(xyz > -999.9995) and np.all(xyz <= 9999.9995)):
+            beyond.append(int(f))
+    if beyond:
+        raise ValueError("PDB files hold coordinates from -999.999 to 9999.999 Å; "
+                         f"frame{'s' if len(beyond) > 1 else ''} {', '.join(map(str, beyond))} "
+                         f"{'are' if len(beyond) > 1 else 'is'} outside this range; no files were written.")
     os.makedirs(out_dir, exist_ok=True)
     width = max(5, len(str(universe.trajectory.n_frames)))
     paths = []

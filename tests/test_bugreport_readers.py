@@ -552,3 +552,26 @@ def test_bug084_external_data_files_are_read_before_the_analyses(demo_dry, tmp_p
     dataset = pipeline.Pipeline(project).analyze(["rmsd"])
     assert calls == [1]
     assert np.allclose(dataset.results["external"].arrays["s0_1"], 0.1 * np.arange(24))
+
+
+def test_bug085_pdb_export_checks_every_frame_before_writing(tmp_path):
+    from mdatk.io.pdb_export import export_frames
+    atoms = [{"name": "C1", "resid": 1, "resname": "LIG", "element": "C"},
+             {"name": "C2", "resid": 1, "resname": "LIG", "element": "C"}]
+    coords = np.zeros((4, 2, 3))
+    coords[:, 1, 0] = 1.5
+    coords[2, 1, 0] = 123456.0
+    coords[3, 0, 2] = -5000.0
+    u = make_universe(atoms, coords)
+    out = tmp_path / "pdb"
+    with pytest.raises(ValueError) as info:
+        export_frames(u, [0, 1, 2, 3], u.atoms, str(out), "x")
+    assert str(info.value) == ("PDB files hold coordinates from -999.999 to 9999.999 Å; frames 2, 3 are outside "
+                               "this range; no files were written.")
+    assert not out.exists() or list(out.iterdir()) == []
+    with pytest.raises(ValueError, match="frame 2 is outside this range; no files were written"):
+        export_frames(u, [1, 2], u.atoms, str(out), "x")
+    assert not out.exists() or list(out.iterdir()) == []
+    paths = export_frames(u, [0, 1], u.atoms, str(out), "x")
+    assert [p.rsplit("/", 1)[-1] for p in paths] == ["x_00000.pdb", "x_00001.pdb"]
+    assert "1.500" in open(paths[1]).read()
