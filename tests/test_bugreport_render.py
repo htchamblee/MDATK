@@ -633,3 +633,65 @@ def test_079_the_schematic_trace_has_letters_for_groups_beyond_120_residues():
     assert tr.arrays["coords"].shape == (3, 400, 3) and set("".join(tr.arrays["resname"])) == set("GCAU")
     assert "".join(tr.arrays["resname"][:24]) == "GCAUGGCAUCGA" * 2  # the 12-letter pattern, repeated
     assert all(panel.ok for panel in build_figure(ds, p, 600, 400, 100)[2])
+
+
+# ---------------------------------------------------------------------------
+# Density maps with NaN / infinite voxels: MDATK-BUG-060 (shadow), 091 (fit)
+# ---------------------------------------------------------------------------
+
+
+def blob_map(bad=None):
+    """A Gaussian blob in a 24^3 map; ``bad`` replaces one voxel away from the blob."""
+    from mdatk.io.mrc import DensityMap
+
+    z, y, x = np.indices((24, 24, 24))
+    data = np.exp(-((x - 12) ** 2 + (y - 12) ** 2 + (z - 12) ** 2) / (2 * 3.0 ** 2)).astype(np.float32)
+    if bad is not None:
+        data[2, 3, 4] = bad
+    return DensityMap(data, np.zeros(3), np.ones(3))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_060_a_non_finite_voxel_does_not_remove_the_density_shadow(bad):
+    from mdatk import density as D
+
+    centre = np.full(3, 12.0)
+    clean, dmap = blob_map(), blob_map(bad)
+    level = D.map_level(dmap, 2.0)  # was NaN: mean and deviation of all voxels
+    assert level == pytest.approx(D.map_level(clean, 2.0), rel=1e-3)
+    sh = D.project_density(dmap, D.RigidTransform.identity(), np.eye(3), centre, level)
+    ref = D.project_density(clean, D.RigidTransform.identity(), np.eye(3), centre, D.map_level(clean, 2.0))
+    assert sh is not None and np.isfinite(sh.image).all()  # was: an image of NaN (or none), no shadow drawn
+    assert np.abs(sh.image - ref.image).max() < 0.01 and sh.extent == ref.extent
+    alpha = D.shadow_rgba(sh, (0.1, 0.2, 0.9), 0.5)[..., 3]
+    assert np.isfinite(alpha).all() and (alpha > 0.01).sum() == (D.shadow_rgba(ref, (0.1, 0.2, 0.9), 0.5)[..., 3]
+                                                                 > 0.01).sum() > 50
+    assert D.density_centroid(dmap, level) == pytest.approx([12.0, 12.0, 12.0], abs=1e-3)  # was NaN
+    assert D.finite_data(clean.data) is clean.data  # a map of numbers is used as it is
+
+
+def test_091_a_non_finite_voxel_is_not_smeared_over_the_density_fit():
+    from mdatk import builder, density as D, pdbtools as pt
+    from mdatk.io.mrc import DensityMap
+
+    xyz, elements = builder.model_atoms(pt.read_pdb(builder.build_helix("GGCAUGCC")))
+    shift = np.array([3.0, -2.0, 1.0])
+    clean = D.simulate_map(xyz + shift, D.atom_weights(elements), 6.0)
+    data = clean.data.copy()
+    data[tuple(s // 2 for s in data.shape)] = np.nan  # one voxel in the middle of the density
+    bad = DensityMap(data, clean.origin, clean.voxel)
+    true = D.RigidTransform(np.eye(3), shift)
+    weights = D.atom_weights(elements)
+    p_clean, p_bad = D.FitProblem(clean, xyz, weights, 6.0), D.FitProblem(bad, xyz, weights, 6.0)
+    # the low-pass copies of the map have no NaN (were: 729 and more of the 10 920 voxels)
+    assert np.isfinite(p_bad.at_resolution(10.0).dmap.data).all()
+    # every envelope point counts as inside the map and the score is that of the clean map
+    assert p_bad.inside_fraction(true) == 1.0
+    assert p_bad.cc(true) == pytest.approx(p_clean.cc(true), abs=1e-4)
+    assert (p_clean.bad_voxels, p_bad.bad_voxels) == (0, 1) and p_clean.dmap is clean
+    assert np.isnan(bad.data).sum() == 1  # the map given is left as it is
+    a = D.fit_model(clean, xyz, elements, 6.0, search="manual")
+    b = D.fit_model(bad, xyz, elements, 6.0, search="manual")
+    assert b.cc == pytest.approx(a.cc, abs=1e-4)  # was 4e-4 apart
+    assert D.rotation_angle(a.transform.rotation @ b.transform.rotation.T) < 0.01  # degrees; was 0.03
+    assert "1 map voxel not finite" in b.message and "not finite" not in a.message  # the user is told
