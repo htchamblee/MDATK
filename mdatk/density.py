@@ -180,8 +180,10 @@ def simulate_map(xyz: np.ndarray, weights: np.ndarray, resolution: float,
     xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
     if not len(xyz):
         raise FitError("no atoms to simulate a map from")
-    if resolution <= 0:
-        raise FitError("the resolution must be positive")
+    if not (math.isfinite(resolution) and resolution > 0):  # not NaN or infinite either
+        raise FitError("the resolution must be a positive number of Å")
+    if spacing and not (math.isfinite(spacing) and spacing > 0):  # none or 0: resolution / 3
+        raise FitError("the grid spacing must be a positive number of Å")
     sigma = sigma_factor * resolution
     h = float(spacing) if spacing else resolution / 3.0
     pad = pad_sigmas * sigma + h
@@ -299,7 +301,7 @@ class FitProblem:
     def __init__(self, dmap: DensityMap, xyz: np.ndarray, weights: np.ndarray, resolution: float,
                  sigma_factor: float = SIGMA_FACTOR, envelope: float = ENVELOPE_FRACTION,
                  max_points: int = 60000):
-        if resolution <= 0:
+        if not (math.isfinite(resolution) and resolution > 0):
             raise FitError("enter the map resolution (Å) for the simulated map")
         xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
         if len(xyz) < 3:

@@ -723,8 +723,8 @@ class Project:
 
         if self.density_active() and not os.path.exists(d.map_path):
             add("map_path", f"Density map not found: {d.map_path} (untick 'show' to render without it)")
-        if d.resolution <= 0:
-            add("resolution", "Density map resolution must be positive.")
+        if not (d.resolution > 0 and d.resolution < float("inf")):  # not NaN or infinite either
+            add("resolution", "Density map resolution must be a positive number of Å.")
         if not 0.0 <= d.opacity <= 1.0:
             add("opacity", "Density map opacity must be between 0 and 1.")
         if not 5.0 <= d.angular_step <= 45.0:

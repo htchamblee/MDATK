@@ -633,3 +633,46 @@ def test_bug092_demo_refuses_impossible_arguments_before_writing(tmp_path, capsy
     code, err = _main(capsys, "demo", str(out), "--no-solvent", "--quiet", *options)
     assert code == 1 and err == f"error: {message}\n"
     assert not out.exists()
+
+
+def test_bug094_resolution_and_spacing_are_checked_before_any_work(tmp_path, capsys, monkeypatch):
+    import warnings
+
+    from mdatk import builder
+    from mdatk.cli import main
+    from mdatk.density import FitError, atom_weights, simulate_map
+    from mdatk.io.mrc import write_map
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert main(["build", "helix", "--seq", "GGCAUGCC", "-o", "h.pdb"]) == 0
+    xyz, elements = builder.model_atoms(builder.pdbtools.read_pdb("h.pdb"), True)
+    write_map("h.mrc", simulate_map(xyz, atom_weights(elements), 6.0))
+    assert main(["demo", "demo", "--n-frames", "2", "--no-solvent", "--quiet"]) == 0
+    project = "demo/demo.mdatk.toml"
+    located = "Density map resolution must be a positive number of Å.\n"
+    cases = [(["build", "fit", "h.pdb", "h.mrc", "--resolution", "nan", "-o", "f.pdb"],
+              "error: the map resolution must be a positive number of Å\n"),
+             (["build", "fit", "h.pdb", "h.mrc", "--resolution", "inf", "-o", "f.pdb"],
+              "error: the map resolution must be a positive number of Å\n"),
+             (["density", "fit", "-p", project, "--map", "h.mrc", "--resolution", "nan", "-q"], located),
+             (["density", "fit", "-p", project, "--map", "h.mrc", "--resolution", "inf", "-q"], located),
+             (["density", "simulate", "-p", project, "--resolution", "6", "--spacing", "-1", "--output", "s.mrc",
+               "-q"], "error: the grid spacing must be a positive number of Å\n"),
+             (["density", "simulate", "-p", project, "--resolution", "6", "--spacing", "nan", "--output", "s.mrc",
+               "-q"], "error: the grid spacing must be a positive number of Å\n"),
+             (["density", "simulate", "-p", project, "--resolution", "nan", "--output", "s.mrc", "-q"],
+              "error: the resolution must be a positive number of Å\n")]
+    for argv, expected in cases:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)  # numpy's 'invalid value encountered in cast'
+            code, err = _main(capsys, *argv)
+        assert code == 1 and err.startswith("error: ") and err.endswith(expected), (argv, err)
+        assert "negative dimensions" not in err
+    assert not (tmp_path / "f.pdb").exists() and not (tmp_path / "s.mrc").exists()
+    for bad in (float("nan"), float("inf"), -1.0, 0.0):
+        with pytest.raises(FitError, match="the resolution must be a positive number"):
+            simulate_map(xyz, atom_weights(elements), bad)
+    # --spacing 0 (and none) still means resolution / 3
+    assert main(["density", "simulate", "-p", project, "--resolution", "6", "--spacing", "0", "--output",
+                 "s0.mrc", "-q"]) == 0
+    assert simulate_map(xyz, atom_weights(elements), 6.0, 0).voxel[0] == pytest.approx(2.0)

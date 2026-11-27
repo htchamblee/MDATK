@@ -2438,6 +2438,8 @@ def fit_to_map(source, map_path: str, resolution: float, search: str = "global",
         raise BuildError(f"search must be one of {', '.join(SEARCHES)}")
     if not resolution or resolution <= 0:
         raise BuildError("enter the map resolution (Å)")
+    if not math.isfinite(resolution):
+        raise BuildError("the map resolution must be a positive number of Å")
     if isinstance(source, os.PathLike) or (isinstance(source, str) and "\n" not in source
                                            and os.path.isfile(source)):
         with open(source, encoding="utf-8", errors="replace") as fh:
