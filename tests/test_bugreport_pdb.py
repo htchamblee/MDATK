@@ -32,3 +32,22 @@ def test_bug089_combine_into_needs_a_single_character():
     out = pt.clean(text, combine=["A", "B"], combine_into="X")
     assert {c for c, _n in _numbers(out.text)} == {"X"}
     assert any(n.startswith("Combined chains A, B into chain X (8 residues)") for n in out.notes)
+
+
+# --- MDATK-BUG-090: --keep-conect with repeated input serials ------------------------------------------
+
+def test_bug090_conect_note_says_when_the_records_are_dropped():
+    atoms = [line for line in builder.build_helix("GCAU").splitlines() if line.startswith("ATOM")]
+    copy = [line[:21] + "C" + line[22:] for line in atoms]  # the same serials again, as chain C
+    dup = "\n".join(atoms + ["TER"] + copy + ["CONECT    1    2", "END"]) + "\n"
+    out = pt.clean(dup, strip_conect=False)
+    assert "CONECT" not in out.text
+    assert ("WARNING: dropped 1 CONECT records: the input's atom serials repeat, so they cannot be remapped"
+            in out.notes)
+    assert not any(n.startswith("Kept CONECT") for n in out.notes)
+    # serials that do not repeat: kept and remapped as before
+    single = "\n".join(["REMARK   1 X"] + atoms + ["CONECT    1    2", "END"]) + "\n"
+    out = pt.clean(single, strip_conect=False)
+    assert "Kept CONECT records (remapped to the new atom serials)" in out.notes
+    assert [line for line in out.text.splitlines() if line.startswith("CONECT")] == ["CONECT    1    2"]
+    assert any(n.startswith("Stripped 1 CONECT") for n in pt.clean(dup).notes)

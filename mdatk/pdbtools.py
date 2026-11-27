@@ -703,6 +703,13 @@ def write_pdb(structure: Structure, strip_conect: bool = True, seqres: bool = Fa
     return "\n".join(line.rstrip() for line in out) + "\n"
 
 
+def _serials_repeat(structure: Structure) -> bool:
+    """Whether an input atom serial is that of more than one atom (concatenated files, wrapped numbering):
+    :func:`write_pdb` then cannot remap the CONECT records and writes none."""
+    counts = Counter(a.serial for r in structure.residues() for a in r.atoms if a.serial is not None)
+    return any(n > 1 for n in counts.values())
+
+
 def _remap_conect(lines: Sequence[str], serial_map: Dict[int, List[int]]) -> List[str]:
     if any(len(v) > 1 for v in serial_map.values()):
         return []  # ambiguous input serials (wrapped numbering): CONECT cannot be remapped
@@ -2017,8 +2024,13 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
     policy = records or {"rosetta": "rosetta", "pdb": "pdb", "standard": "atom"}.get(scheme or "", "keep")
     notes += set_records(s, policy)
     if s.conect:
-        notes.append(f"Stripped {len(s.conect)} CONECT records" if strip_conect else
-                     "Kept CONECT records (remapped to the new atom serials)")
+        if strip_conect:
+            notes.append(f"Stripped {len(s.conect)} CONECT records")
+        elif _serials_repeat(s):
+            notes.append(f"WARNING: dropped {len(s.conect)} CONECT records: the input's atom serials repeat, so "
+                         "they cannot be remapped")
+        else:
+            notes.append("Kept CONECT records (remapped to the new atom serials)")
     n_atoms = sum(len(r.atoms) for r in s.residues())
     if n_atoms + len(s.segments) > 99999:
         notes.append("WARNING: more than 99999 atoms; serial numbers wrap in the PDB columns")
