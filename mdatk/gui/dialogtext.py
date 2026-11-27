@@ -18,6 +18,38 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 LONG_LINES = 14  # detail text with more lines (or characters) than this scrolls
 LONG_CHARS = 1400
 SCREEN_SHARE = 0.5  # of the monitor's work area: the most the scrolled detail text takes
+DETAIL_MAX = 20000  # characters of detail text a dialog shows (it scrolls); a longer text says it is cut
+
+
+def detail_text(detail: str, limit: int = DETAIL_MAX) -> str:
+    """The detail text of a message dialog: all of it (long text scrolls, see :func:`scroll_long_text`);
+    beyond ``limit`` characters its start and a line that says how much is missing and where it is."""
+    if len(detail) <= limit:
+        return detail
+    return f"{detail[:limit]}\n… ({len(detail) - limit} more characters: the full text is in the log)"
+
+
+def fit_size(width: int, height: int, area_width: int, area_height: int, share: float = 0.9):
+    """(width, height) of a picture shown in at most ``share`` of a screen area: scaled down to fit in
+    both directions with its proportions kept, never enlarged."""
+    scale = min(1.0, share * area_width / max(1, width), share * area_height / max(1, height))
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def work_area(window) -> tuple:
+    """(width, height) of the work area of the monitor ``window`` is on (else of the first monitor;
+    (1200, 900) when there is none)."""
+    display = Gdk.Display.get_default()
+    if display is None:
+        return 1200, 900
+    gdk_window = window.get_window() if window is not None else None
+    monitor = display.get_monitor_at_window(gdk_window) if gdk_window is not None else None
+    monitor = monitor or display.get_primary_monitor() or (display.get_monitor(0)
+                                                          if display.get_n_monitors() else None)
+    if monitor is None:
+        return 1200, 900
+    area = monitor.get_workarea()
+    return area.width, area.height
 
 
 def _labels(widget: Gtk.Widget, out: List[Gtk.Label]) -> None:

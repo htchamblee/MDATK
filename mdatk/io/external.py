@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -79,18 +79,38 @@ def _sanitize(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.+\-]+", "_", text).strip("_") or "value"
 
 
-def load_external(specs, dataset: Dataset) -> AnalysisResult:
-    """Interpolate external columns onto the dataset's frames.
-
-    ``x_unit`` may be ``ps``/``ns``/``us`` (time), ``frame`` (0-based index into
-    the trajectory) or ``frame1`` (1-based, as written by cpptraj).
-    """
-    result = AnalysisResult(name="external", key="", params={}, arrays={}, meta={})
-    for n, spec in enumerate(specs):
+def read_external(specs) -> list:
+    """Read the files of ``specs`` and find their columns, without a dataset: what :func:`load_external`
+    needs of each file, so that a missing or malformed file is found before the frames are analysed.
+    Raises ``OSError`` / ``ValueError`` as :func:`load_external` does."""
+    tables = []
+    for spec in specs:
         if not spec.path:
+            tables.append(None)
             continue
         header, data = read_table(spec.path, spec.delimiter)
         xi = _column_index(header, spec.x_column, 0)
+        unit = spec.x_unit or "ps"
+        factor = 1.0 if unit in ("frame", "frame1") else time_unit_factor(unit)
+        cols = spec.columns or [h for k, h in enumerate(header) if k != xi]
+        tables.append((header, data, xi, factor, [_column_index(header, col, -1) for col in cols]))
+    return tables
+
+
+def load_external(specs, dataset: Dataset, tables: Optional[list] = None) -> AnalysisResult:
+    """Interpolate external columns onto the dataset's frames.
+
+    ``x_unit`` may be ``ps``/``ns``/``us`` (time), ``frame`` (0-based index into
+    the trajectory) or ``frame1`` (1-based, as written by cpptraj).  ``tables``: the files as
+    :func:`read_external` read them (None: read now).
+    """
+    result = AnalysisResult(name="external", key="", params={}, arrays={}, meta={})
+    if tables is None:
+        tables = read_external(specs)
+    for n, spec in enumerate(specs):
+        if not spec.path:
+            continue
+        header, data, xi, factor, columns = tables[n]
         x = data[:, xi]
         unit = spec.x_unit or "ps"
         if unit == "frame":
@@ -98,14 +118,12 @@ def load_external(specs, dataset: Dataset) -> AnalysisResult:
         elif unit == "frame1":
             target = dataset.frames.astype(float) + 1.0
         else:
-            x = x * time_unit_factor(unit)
+            x = x * factor
             target = dataset.time_ps
         order = np.argsort(x, kind="stable")
         x = x[order]
-        cols = spec.columns or [h for k, h in enumerate(header) if k != xi]
         label = spec.label or os.path.splitext(os.path.basename(spec.path))[0]
-        for col in cols:
-            ci = _column_index(header, col, -1)
+        for ci in columns:
             y = data[order, ci]
             values = np.interp(target, x, y, left=np.nan, right=np.nan)
             out = base = _sanitize(f"{label}.{header[ci]}")

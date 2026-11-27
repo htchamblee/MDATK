@@ -32,8 +32,8 @@ from ..analysis.base import (analysis_class, instance_id, key_label,  # noqa: E4
                              parse_instance, split_key)
 from ..cleaning import conda  # noqa: E402
 from ..config import (DEFAULT_PANEL_TITLES, REP_COLORS, REP_STYLES, ExternalSeries,  # noqa: E402
-                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, group_name_problem,
-                      layout_warnings, stable_hash)
+                      PanelSpec, Project, RepSpec, ResidueGroup, RMSDTarget, carry_unknown,
+                      group_name_problem, layout_warnings, stable_hash)
 from ..problems import Problem, field_parents  # noqa: E402
 from ..problems import problem as make_problem  # noqa: E402
 from ..render.coloring import COLOR_MODES  # noqa: E402
@@ -44,15 +44,15 @@ from ..render.panels import PANEL_TYPES  # noqa: E402
 from ..selections import SelectionError  # noqa: E402
 from . import desktop  # noqa: E402
 from . import widgets as W  # noqa: E402
-from .dialogtext import selectable_text  # noqa: E402
+from .dialogtext import detail_text, fit_size, selectable_text, work_area  # noqa: E402
 from .about import citation_text, export_bibtex  # noqa: E402
 from .canvas import FigureCanvas  # noqa: E402
 from .jobs import JobControl  # noqa: E402
 from .problemview import ProblemView  # noqa: E402
-from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, ask, change_bar, choose_project,  # noqa: E402
-                        choose_save_path, fill_open_menu, keep_open_menu_filled, other_data,
-                        renamed_workflow)
-from .worker import call_soon  # noqa: E402
+from .projectui import (SAVE_ATTEMPTS, DiskState, FileWatch, as_written, ask, ask_unsaved,  # noqa: E402
+                        change_bar, choose_project, choose_save_path, fill_open_menu, keep_open_menu_filled,
+                        other_data, renamed_workflow)
+from .worker import LogBatch, call_soon  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ PAGES = [  # (id, icon, side panel title)
 ]
 SIDE_WIDTH = 520  # fixed width of the settings side bar (pixels)
 CHECK_DELAY_MS = 400  # the settings are revalidated this long after the last edit
+CLOSE_WAIT_S = 15.0  # closing during a job waits this long for the job to stop (as RNAdo does for its scripts)
 # file chooser filters: (name, patterns); the dialogs list the extensions in the name
 TOPOLOGY_FILES = ("Topology files", ["*.parm7", "*.prmtop", "*.top", "*.pdb", "*.psf", "*.gro"])
 TRAJECTORY_FILES = ("Trajectory files", ["*.nc", "*.mdcrd", "*.crd", "*.trj", "*.dcd", "*.trr", "*.gro",
@@ -93,8 +94,7 @@ class GuiLogHandler(logging.Handler):
 
     def emit(self, record):
         msg = f"{record.levelname}: {record.getMessage()}"
-        from .worker import call_soon
-        call_soon(self.window.append_log, msg)
+        self.window.log_batch.feed(msg)  # any thread; shown in batches with the lines of the jobs
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -116,7 +116,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._chains_offered = ""  # topology whose chain groups were last offered automatically
         self._chains_reading = 0  # the manual chain request whose "Reading …" line is shown
         self._topology_timer = 0
-        self.slot_rows: List[dict] = []
+        self._listing_groups = False  # the group choosers are being filled with the group names
+        self.slot_rows: List[dict] = []  # the editors of the panels that have a slot in the grid preset
+        self.empty_slots: List[Gtk.Frame] = []  # the placeholders of the slots without a panel
+        self.more_panels: List[PanelSpec] = []  # the panels the grid preset has no slot for (kept)
         self.busy_widgets: List[Gtk.Widget] = []
         self.pages: Dict[str, Gtk.Widget] = {}
         self.sections: Dict[str, List[Gtk.Frame]] = {}
@@ -130,6 +133,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.runtime_problems: List[Tuple[Problem, str]] = []  # a failed job's problem + what it depends on
         self._check_source = 0
         self._destroyed = False  # set on destroy: callbacks still pending must leave the window alone
+        self.log_batch = LogBatch(self._show_log)  # log lines from other threads, shown in batches
         self._next_problem: Dict[str, int] = {}
 
         self._build_header()
@@ -399,6 +403,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _stop_timers(self) -> None:
         """A destroyed window must not be checked or read into by timers still pending."""
         self._destroyed = True
+        self.log_batch.close()
         self._stop_topology_timer()
         if self._check_source:
             GLib.source_remove(self._check_source)
@@ -425,6 +430,11 @@ class MainWindow(Gtk.ApplicationWindow):
         try:
             project, found = self._side_bar_project()
             found += project.problems()
+            flagged = {p.field for p in found}  # a value kept as loaded that its widget cannot show
+            unshown = self.binder.unshown() + [(f"layout.panels.{k}.type", W.combo_problem(row["type"]))
+                                               for k, row in enumerate(self.slot_rows)]
+            found += [make_problem(path, message, project, "warning")
+                      for path, message in unshown if message and path not in flagged]
         except Exception as exc:  # noqa: BLE001 - checking must never break the window
             log.warning("could not check the settings: %s", exc)
             return self.problem_view.problems
@@ -433,6 +443,7 @@ class MainWindow(Gtk.ApplicationWindow):
         known = {(p.field, p.message) for p in found}
         found += [p for p, _snap in self.runtime_problems if (p.field, p.message) not in known]
         self.problem_view.show(found)
+        self._show_modified()
         return found
 
     @staticmethod
@@ -486,6 +497,8 @@ class MainWindow(Gtk.ApplicationWindow):
         except ValueError as exc:
             self.append_log(f"Preview not updated: {exc}")
             return
+        if self.more_panels:  # the preview draws the panels that have a slot (the others are kept)
+            project.layout.panels = project.layout.panels[:len(self.slot_rows)]
         try:
             ds = example_dataset(project, self.preview_data)
         except Exception as exc:  # noqa: BLE001 - a bad layout must not break the window
@@ -526,8 +539,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_canvas()
 
     def _on_canvas_activate(self, slot: int) -> None:
-        frame = self.slot_rows[slot]["frame"] if slot < len(self.slot_rows) else None
-        self.open_section("layout", frame)
+        frames = [row["frame"] for row in self.slot_rows] + self.empty_slots
+        self.open_section("layout", frames[slot] if slot < len(frames) else None)
 
     def _build_log(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -566,7 +579,8 @@ class MainWindow(Gtk.ApplicationWindow):
                      False, False, 0)
         self.busy_widgets.append(self.render_button)
         self.jobs = JobControl(self.progress, self.cancel_button, self.append_log,
-                               lambda text, detail: self.error(text, detail), self.busy_widgets)
+                               lambda text, detail: self.error(text, detail), self.busy_widgets,
+                               log_batch=self.log_batch)
         return bar
 
     @property
@@ -640,6 +654,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.ext_editor = W.ListEditor([("Path", 150), ("Label", 60), ("x col", 50),
                                         ("x unit", 50), ("Columns", 70)], height=60,
                                        defaults=["", "", "", "ps", ""], combos={3: X_UNITS})
+        self._ext_delimiters: Dict[str, str] = {}  # the column separator of each loaded external file
         self.ext_editor.buttons.pack_start(W.button("Browse…", self._browse_external),
                                            False, False, 0)
         fr.add("External data (CSV/text)", self.ext_editor,
@@ -706,10 +721,12 @@ class MainWindow(Gtk.ApplicationWindow):
             if path.strip():
                 out.append(ExternalSeries(path=path.strip(), label=lab.strip(), x_column=xcol.strip(),
                                           x_unit=xunit.strip() or "ps",
-                                          columns=[c.strip() for c in cols.split(",") if c.strip()]))
+                                          columns=[c.strip() for c in cols.split(",") if c.strip()],
+                                          delimiter=self._ext_delimiters.get(path.strip(), "")))
         return out
 
     def _set_external(self, specs):
+        self._ext_delimiters = {s.path: s.delimiter for s in specs}  # no column of the table: kept by file
         self.ext_editor.set_rows([[s.path, s.label, s.x_column, s.x_unit, ", ".join(s.columns)]
                                   for s in specs])
 
@@ -816,8 +833,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self._group_names = names
         if gone and not self._loading:
             self._report_removed_groups(gone)
-        for c in self.group_combos:
-            W.set_combo_entry_items(c, names)
+        self._listing_groups = True  # (the slots are rebuilt below: no relabelling for each combo)
+        try:
+            for c in self.group_combos:
+                W.set_combo_entry_items(c, names)
+        finally:
+            self._listing_groups = False
         if self.slot_rows and not self._loading:
             try:  # per-panel group choosers list the current group names
                 self._rebuild_slots()
@@ -827,7 +848,28 @@ class MainWindow(Gtk.ApplicationWindow):
     def _group_combo(self, path):
         c = W.combo_entry()
         self.group_combos.append(c)
+        c.get_child().connect("changed", lambda *_: self._relabel_slots())
         return self.binder.combo_text(path, c)
+
+    def _relabel_slots(self) -> None:
+        """An analysis' groups changed: the data choices of the panel slots are named after them
+        ("Aptamer–Loop heavy-atom contacts").  The choices themselves and typed titles stay; a title that
+        was its data's label follows."""
+        if self._loading or self._listing_groups or not self.slot_rows:
+            return
+        project = self._project_for_choices()
+        for row in self.slot_rows:
+            data = row["data"]
+            active = data.get_active_iter()
+            old = data.get_model()[active][0].split("   [")[0] if active is not None else ""
+            for item in data.get_model():
+                if item[1]:
+                    item[0] = f"{key_label(item[1], project)}   [{item[1]}]"
+            if row["auto"] and row["auto"] == old:
+                auto = self._auto_title(row, project)
+                if row["title"].get_text().strip() == old:
+                    row["title"].set_text(auto)
+                row["auto"] = auto
 
     def _group_message(self, text: str, error: bool = False, detail: str = "") -> None:
         """Status line under the group table (logged too; ``detail`` goes to the log and the tooltip)."""
@@ -1191,7 +1233,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.rot_scales.append(sc)
             rot.add(f"Rotation {axis} (\u00b0)", sc)
         b._add("visual.rotation", self.rot_scales[0],
-               lambda: [round(s.get_value(), 3) for s in self.rot_scales], self._set_rotation)
+               lambda: [W.scale_value(s, lambda v: round(v, 3)) for s in self.rot_scales], self._set_rotation)
         self.angle_label = W.label("")
         self.angle_label.set_selectable(True)
         rot.add_wide(self.angle_label)
@@ -1298,16 +1340,16 @@ class MainWindow(Gtk.ApplicationWindow):
     def _add_rep_row(self, spec: RepSpec) -> None:
         grid = Gtk.Box(spacing=4)
         style = W.combo([(k, self.REP_STYLE_LABELS.get(k, k)) for k in REP_STYLES])
-        style.set_active_id(spec.style)
+        W.set_combo(style, spec.style)  # a style or colouring that is none stays (shown, and flagged)
         groups = W.entry("all groups", width=12)
         groups.set_text(", ".join(spec.groups))
         groups.set_tooltip_text("Residue groups (comma separated); empty: every shown group")
         color = W.combo([(k, self.REP_COLOR_LABELS.get(k, k)) for k in REP_COLORS])
-        color.set_active_id(spec.color)
+        W.set_combo(color, spec.color)
         size = W.spin(0.2, 5, 0.1, 1, "Size (scales widths and radii)")
-        size.set_value(spec.size)
+        W.set_spin(size, spec.size)
         opacity = W.spin(0.05, 1, 0.05, 2, "Opacity")
-        opacity.set_value(spec.opacity)
+        W.set_spin(opacity, spec.opacity)
         sugars = W.check("sugars", "Cartoon: draw the ribose rings")
         sugars.set_active(spec.sugars)
         remove = Gtk.Button.new_from_icon_name("list-remove-symbolic", Gtk.IconSize.BUTTON)
@@ -1335,8 +1377,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def _read_reps(self) -> List[RepSpec]:
         return [RepSpec(style=r["style"].get_active_id() or "cartoon",
                         groups=[g.strip() for g in r["groups"].get_text().split(",") if g.strip()],
-                        color=r["color"].get_active_id() or "auto", size=round(r["size"].get_value(), 3),
-                        opacity=round(r["opacity"].get_value(), 3), sugars=r["sugars"].get_active())
+                        color=r["color"].get_active_id() or "auto",
+                        size=W.spin_value(r["size"], lambda v: round(v, 3)),
+                        opacity=W.spin_value(r["opacity"], lambda v: round(v, 3)),
+                        sugars=r["sugars"].get_active())
                 for r in self.rep_rows]
 
     def _set_reps(self, specs) -> None:
@@ -1357,8 +1401,8 @@ class MainWindow(Gtk.ApplicationWindow):
         opacity.set_digits(2)
         opacity.set_value_pos(Gtk.PositionType.RIGHT)
         opacity.set_size_request(140, -1)
-        b._add("density.opacity", opacity, lambda: round(opacity.get_value(), 3),
-               lambda v: opacity.set_value(float(v)))
+        b._add("density.opacity", opacity, lambda: W.scale_value(opacity, lambda v: round(v, 3)),
+               lambda v: W.set_scale(opacity, v))
         opacity.connect("value-changed", lambda *_: self._density_style_changed())
         d.add_row("Show / colour / opacity", [b.check("density.show", W.check("show")),
                                               b.color("density.color", W.color_button()), opacity,
@@ -1514,7 +1558,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._syncing = True
         try:
             for sc, a in zip(self.rot_scales, angles):
-                sc.set_value(float(a))
+                W.set_scale(sc, a)  # an angle beyond ±180° stays as given until its slider moves
         finally:
             self._syncing = False
         self._on_scale()
@@ -1525,7 +1569,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_canvas()
 
     def _on_scale(self, *_):
-        angles = [s.get_value() for s in self.rot_scales]
+        angles = [W.scale_value(s) for s in self.rot_scales]
         self.angle_label.set_text(format_angles(angles))
         if not self._syncing:  # (the canvas already shows rotations it reported itself)
             self.canvas.set_rotation(angles, fast=True)
@@ -1556,7 +1600,8 @@ class MainWindow(Gtk.ApplicationWindow):
         prev.pack_start(pb, False, False, 0)
         form.add_wide(prev)
         box.pack_start(W.frame("Figure layout", form), False, False, 0)
-        self.binder._add("layout", self.preset_combo, self._get_layout, self._set_layout)
+        self.binder._add("layout", self.preset_combo, self._get_layout, self._set_layout,
+                         lambda: W.combo_problem(self.preset_combo))
         return W.scrolled(box)
 
     def _on_preset_changed(self):
@@ -1604,6 +1649,10 @@ class MainWindow(Gtk.ApplicationWindow):
         form.add("Title", title_entry, "Follows the selected data until you type your own title")
         opts = W.entry("{}")
         form.add("Options (JSON)", opts)
+        remove = W.button("Remove this panel", lambda: self._remove_panel(row),
+                          "Empty this slot: the panels after it move up one slot", "list-remove-symbolic")
+        remove.set_halign(Gtk.Align.START)
+        form.add_wide(remove)
         row.update(type=tcombo, data=data, ga=ga, gb=gb, more=more, title=title_entry, opts=opts)
 
         primary = spec.series[0] if spec.series else ""
@@ -1612,8 +1661,8 @@ class MainWindow(Gtk.ApplicationWindow):
             inst, out = split_key(primary)
             base, groups = parse_instance(inst)
             base_key = f"{base}/{out}"
-        tcombo.set_active_id(spec.type)
-        self._fill_data(row, spec.type, project, base_key)
+        W.set_combo(tcombo, spec.type)  # a type that is none stays (shown, and flagged)
+        self._fill_data(row, spec.type, project, base_key, none=not spec.series)
         for c, name in zip((ga, gb), groups):
             if name not in project.group_names():  # a deleted group stays visible until it is replaced
                 c.append(name, f"{name} (missing)")
@@ -1638,16 +1687,20 @@ class MainWindow(Gtk.ApplicationWindow):
             w.connect("activate", lambda *_: self.refresh_canvas())
         return row
 
-    def _fill_data(self, row, panel_type, project, select=""):
+    def _fill_data(self, row, panel_type, project, select="", none=False):
+        """The data choices of a slot; ``none``: the panel was loaded without data, which stays so (a
+        "(none)" choice) instead of becoming the first choice."""
         data = row["data"]
         data.remove_all()
         keys = self._data_choices(panel_type, project)
         if select and select not in keys:
             keys = [select] + keys
+        if none and keys:
+            data.append("", "(none)")
         for key in keys:
             data.append(key, f"{key_label(key, project)}   [{key}]")
         if keys:
-            data.set_active_id(select if select else keys[0])
+            data.set_active_id(select if select or none else keys[0])
         data.set_sensitive(bool(keys))
 
     def _update_group_widgets(self, row):
@@ -1707,46 +1760,116 @@ class MainWindow(Gtk.ApplicationWindow):
         if not self._loading:
             self.refresh_canvas()
 
-    def _rebuild_slots(self, specs: Optional[List[PanelSpec]] = None):
-        kept: Dict[int, str] = {}  # slot -> options that are no JSON object: they stay in their field, flagged
+    def _rebuild_slots(self, specs: Optional[List[PanelSpec]] = None, kept: Optional[Dict[int, str]] = None):
+        """Show the panels ``specs`` (default: as the editors hold them) in the slots of the grid preset,
+        in order.  A slot without a panel is a placeholder: nothing is drawn there and nothing is saved for
+        it.  Panels the preset has no slot for are kept (and saved) until they are removed: a grid with
+        more slots shows them again.  ``kept``: options by slot that are no JSON object (see _read_slots)."""
         if specs is None:
+            kept = {}  # slot -> options that are no JSON object: they stay in their field, flagged
             specs = self._read_slots(kept)
+        kept = kept or {}
         for child in self.slot_box.get_children():
             self.slot_box.remove(child)
         self.slot_rows = []
+        self.empty_slots = []
         preset = self.preset_combo.get_active_id() or "single"
+        shown = n_slots(preset) if preset in PRESETS else len(specs)  # a preset that is none: every panel
+        self.more_panels = list(specs[shown:])
         project = self._project_for_choices()
         loading, self._loading = self._loading, True
         try:
-            for k in range(n_slots(preset)):
-                spec = specs[k] if k < len(specs) else PanelSpec("timeseries", [], "")
-                row = self._slot_editor(k, spec, preset, project)
+            for k in range(shown):
+                if k >= len(specs):
+                    frame = self._empty_slot(k, first=k == len(specs))
+                    self.empty_slots.append(frame)
+                    self.slot_box.pack_start(frame, False, False, 0)
+                    continue
+                row = self._slot_editor(k, specs[k], preset, project)
                 self.slot_rows.append(row)
                 self.slot_box.pack_start(row["frame"], False, False, 0)
                 if k in kept:
                     row["opts"].set_text(kept[k])
+            if self.more_panels:
+                self.slot_box.pack_start(self._more_panels_note(), False, False, 0)
         finally:
             self._loading = loading
         self.slot_box.show_all()
         W.watch_tree(self.slot_box, self.schedule_check)
         self.schedule_check()  # the new slot widgets get their flags back
 
+    def _empty_slot(self, k: int, first: bool) -> Gtk.Frame:
+        """The placeholder of slot ``k``, which no panel fills; the first one offers to add a panel
+        (panels fill the slots in order)."""
+        form = W.Form()
+        if first:
+            add = W.button("Add a panel", self._add_panel, "Put a panel into this slot", "list-add-symbolic")
+            add.set_halign(Gtk.Align.START)
+            form.add_wide(add)
+        else:
+            form.add_wide(W.hint("Empty: panels fill the slots in order."))
+        return W.frame(f"Slot {k + 1} (empty)", form)
+
+    def _more_panels_note(self) -> Gtk.Widget:
+        n = len(self.more_panels)
+        box = Gtk.Box(spacing=6)
+        note = W.hint(f"{n} more panel{'s' if n != 1 else ''} of this project {'have' if n != 1 else 'has'} "
+                      "no slot in this grid: kept (and saved), not drawn. A grid with more slots shows "
+                      f"{'them' if n != 1 else 'it'} again.")
+        note.set_max_width_chars(40)
+        box.pack_start(note, True, True, 0)
+        drop = W.button("Remove", self._drop_more_panels, "Remove the panels that have no slot from the project")
+        drop.set_valign(Gtk.Align.CENTER)
+        box.pack_start(drop, False, False, 0)
+        return box
+
+    def _add_panel(self) -> None:
+        """'Add a panel': a time series in the first empty slot."""
+        kept: Dict[int, str] = {}
+        specs = self._read_slots(kept)
+        first = self._data_choices("timeseries", self._project_for_choices())[:1]
+        specs.insert(len(self.slot_rows), PanelSpec("timeseries", first, ""))
+        self._rebuild_slots(specs, kept)
+        self.refresh_canvas()
+
+    def _remove_panel(self, row: dict) -> None:
+        """'Remove this panel': its slot is emptied and the panels after it move up."""
+        if row not in self.slot_rows:
+            return
+        k = self.slot_rows.index(row)
+        kept: Dict[int, str] = {}
+        specs = self._read_slots(kept)
+        del specs[k]
+        self._rebuild_slots(specs, {i - (i > k): text for i, text in kept.items() if i != k})
+        self.refresh_canvas()
+
+    def _drop_more_panels(self) -> None:
+        """'Remove' beside the note on panels without a slot."""
+        self.more_panels = []
+        self._rebuild_slots()
+
     def _read_slots(self, invalid: Optional[Dict[int, str]] = None) -> List[PanelSpec]:
-        """The panels as the slot editors show them.  Options that are no JSON object raise ValueError, or,
-        with ``invalid`` (rebuilding the editors), are returned in it by slot and read as none."""
+        """The project's panels: those the slot editors show, then the ones the grid preset has no slot
+        for.  Options that are no JSON object raise ValueError, or, with ``invalid`` (rebuilding the
+        editors), are returned in it by slot and read as none."""
         specs = []
         project = None
         for k, row in enumerate(self.slot_rows):
             text = row["opts"].get_text().strip()
             try:
-                options = json.loads(text) if text else {}
+                try:
+                    options = json.loads(text) if text else {}
+                except ValueError as exc:  # in words, with the place: not the JSON reader's own message
+                    at = f" (character {exc.pos + 1})" if isinstance(exc, json.JSONDecodeError) else ""
+                    raise ValueError(f"not valid JSON{at}") from None
                 if not isinstance(options, dict):
-                    raise ValueError("options must be a JSON object")
+                    raise ValueError("not a JSON object")
             except ValueError as exc:
                 if invalid is not None:
                     invalid[k], options = text, {}
                 else:
-                    err = ValueError(f"panel options {text!r}: {exc}")
+                    err = ValueError(f"panel options {text!r} are {exc}; write them like "
+                                     '{"mode": "frequency"}')
                     err.field = f"layout.panels.{k}.options"  # type: ignore[attr-defined]  # flagged there
                     raise err from exc
             ptype = row["type"].get_active_id() or "timeseries"
@@ -1757,7 +1880,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 keys = ([primary] if primary else []) + [
                     k.strip() for k in row["more"].get_text().split(",") if k.strip()]
             specs.append(PanelSpec(ptype, keys, row["title"].get_text().strip(), options))
-        return specs
+        return specs + list(self.more_panels)
 
     def _get_layout(self):
         from ..config import LayoutParams
@@ -1767,7 +1890,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _set_layout(self, layout):
         loading, self._loading = self._loading, True
         try:
-            self.preset_combo.set_active_id(layout.preset)
+            W.set_combo(self.preset_combo, layout.preset)  # a preset that is none stays (shown, and flagged)
         finally:
             self._loading = loading
         self._rebuild_slots(list(layout.panels))
@@ -1811,10 +1934,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.fmt_checks = {f: W.check(f.upper()) for f in ("png", "svg", "pdf")}
         for w in self.fmt_checks.values():
             fmt_box.pack_start(w, False, False, 0)
+        self._fmt_loaded: List[str] = []  # the formats as loaded: those without a check box are kept
+        self.fmt_more = W.hint("")
+        self.fmt_more.set_no_show_all(True)
+        fmt_box.pack_start(self.fmt_more, False, False, 0)
         c.add("Formats", fmt_box)
-        b._add("output.charts.formats", fmt_box,
-               lambda: [f for f, w in self.fmt_checks.items() if w.get_active()] or ["png"],
-               lambda v: [w.set_active(f in v) for f, w in self.fmt_checks.items()])
+        b._add("output.charts.formats", fmt_box, self._get_formats, self._set_formats)
         c.add_row("Size (in)", [b.spin_float("output.charts.width", W.spin(2, 30, 0.5, 1)),
                                 W.label("×"),
                                 b.spin_float("output.charts.height", W.spin(2, 30, 0.5, 1))])
@@ -1857,6 +1982,24 @@ class MainWindow(Gtk.ApplicationWindow):
         box.pack_start(W.frame("Frame PDBs", p), False, False, 0)
         return W.scrolled(box)
 
+    def _get_formats(self) -> List[str]:
+        """The chart formats: the loaded ones in their order (those without a check box always, e.g. jpg),
+        then the ones ticked since; png when none is left, unless the project had none."""
+        ticked = [f for f, w in self.fmt_checks.items() if w.get_active()]
+        out = [f for f in self._fmt_loaded if f not in self.fmt_checks or f in ticked]
+        out += [f for f in ticked if f not in out]
+        return out or ([] if not self._fmt_loaded else ["png"])
+
+    def _set_formats(self, formats) -> None:
+        self._fmt_loaded = list(formats or [])
+        for f, w in self.fmt_checks.items():
+            w.set_active(f in self._fmt_loaded)
+        more = list(dict.fromkeys(f for f in self._fmt_loaded if f not in self.fmt_checks))
+        self.fmt_more.set_text("+ " + ", ".join(str(f) for f in more) if more else "")
+        self.fmt_more.set_tooltip_text("Formats of the project file without a box here: they are kept"
+                                       if more else None)
+        self.fmt_more.set_visible(bool(more))
+
     # ============================================================ model sync
     def load_project(self, project: Project, path: Optional[str] = None,
                      state: Optional[DiskState] = None) -> None:
@@ -1894,6 +2037,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self._mem_other = other_data(self.project)
         self.change_bar.hide()
         self.watch.watch(path if self._disk is not None else None)
+        self._show_modified()
+
+    def _show_modified(self) -> None:
+        """The header's subtitle: the project file, marked while the settings have unsaved changes."""
+        name = self.project_path or "unsaved project"
+        self.header.set_subtitle(f"{name} (modified)" if self.analysis_changed() else name)
 
     def _prefill_conda(self) -> None:
         """Suggest an AmberTools environment when cpptraj is not on PATH."""
@@ -1922,9 +2071,10 @@ class MainWindow(Gtk.ApplicationWindow):
         which ``uses`` names as :meth:`Project.problems` does (default: the output switches)."""
         project = self.project.copy()
         project.workflow = self.project.workflow  # the plan (RNAdo's) as read; the same object
-        errors = self.binder.store(project, skip=() if include_layout else ("layout",))
-        if errors:
-            raise ValueError("\n".join(errors))
+        errors = self.binder.store_fields(project, skip=() if include_layout else ("layout",))
+        if errors:  # each with its place in words ("Input & cleaning › Frames › Stop: 'x' is not a whole number")
+            raise ValueError("\n".join(make_problem(path, message, project) for path, message in errors))
+        carry_unknown(self.project, project)  # keys of the file this version does not know: saved back
         if validate:
             problems = project.validate(**uses)
             if problems:
@@ -1933,15 +2083,32 @@ class MainWindow(Gtk.ApplicationWindow):
         return project
 
     # ================================================================ actions
+    def _confirm_discard(self) -> bool:
+        """Before another project replaces this one (New, Open, Close): save or drop the unsaved changes
+        of the settings, as RNAdo does for its plan (False: cancelled, or the save failed)."""
+        if not self.analysis_changed():
+            return True
+        choice = ask_unsaved(self, "the project")
+        if choice == "save":
+            return self.save_project()
+        return choice == "discard"
+
     def new_project(self):
+        if not self._confirm_discard():
+            return
         self.preview_data = None
+        self.last_video = None  # (the video of the project that goes)
         self.load_project(Project(), None)
         self.append_log("New project with default settings (unsaved).")
 
     def close_project(self):
-        """Back to a blank state: default settings, tied to no project file."""
+        """Back to a blank state: default settings, tied to no project file (asks first about unsaved
+        changes, as opening another project does)."""
+        if not self._confirm_discard():
+            return
         name = os.path.basename(self.project_path) if getattr(self, "project_path", None) else ""
         self.preview_data = None
+        self.last_video = None
         self.load_project(Project(), None)
         self.append_log(f"Closed {name}: default settings (unsaved)." if name else "Closed the project.")
 
@@ -1953,12 +2120,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def open_path(self, path: str):
         from ..projectfile import add_recent, is_params_log
 
+        if not self._confirm_discard():
+            return
         try:
             state, project = DiskState.read(path)
         except (OSError, ValueError) as exc:
             self.error(f"Could not open {path}", str(exc))
             return
         replay = is_params_log(path)
+        self.last_video = None  # 'Open video' is about this project from now on
         self.load_project(project, None if replay else path, None if replay else state)
         if replay:
             self.append_log(f"Loaded the settings of the run logged in {path} (save them as a project to "
@@ -2016,7 +2186,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 with locked(path):
                     if not self._take_newer_plan(project, agreed):
                         continue  # their analysis settings changed again: ask about the new ones
-                    project.save(path)
+                    # paths the file had relative (or with ~) and that were not changed stay so
+                    as_written(project, self._disk.path if self._disk is not None else None, path).save(path)
                     state = DiskState.read(path)[0]
             except (OSError, ValueError) as exc:
                 self.error("Could not save the project", str(exc))
@@ -2292,6 +2463,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.load_project(project, self.project_path, self._disk)
         self._disk, self._mem_other, self._group_renames, self._offered, bar = kept
         self.change_bar.set_visible(bar)
+        self._show_modified()
         self._chains_offered = offered  # the same project with a new topology: offer its chains
         self._on_topology_changed()  # chain groups for empty or untouched default groups
         missing = [p for p in [topology] + list(trajectories) if not os.path.exists(p)]
@@ -2366,8 +2538,11 @@ class MainWindow(Gtk.ApplicationWindow):
             project = self.collect(validate=False)
         except ValueError:
             project = self.project
-        path = self.last_video if self.last_video and os.path.isfile(self.last_video) else \
-            desktop.latest_video(project.out_dir, project.output.video.filename)
+        # the video this window rendered last, while it lies in the output folder the settings name now;
+        # else the newest video there
+        path = self.last_video
+        if not (path and os.path.isfile(path) and os.path.dirname(os.path.abspath(path)) == project.out_dir):
+            path = desktop.latest_video(project.out_dir, project.output.video.filename)
         if not path:
             self.error("No video has been rendered yet.", project.out_dir)
             return
@@ -2426,6 +2601,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.info("Cleaning finished" if not c.reused else "Cleaned files reused",
                       f"Topology: {inputs.topology}\nTrajectory: {inputs.trajectories[0]}\n"
                       f"cpptraj script: {c.script}")
+            if self.preview_data is not None:  # the real frame in the preview: now from the cleaned files
+                self.load_preview()
 
         self.start_job("Cleaning", job, done)
 
@@ -2447,7 +2624,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     f"files): {json.dumps(info)}")
             for g in project.groups:
                 try:
-                    ag = select(u, f"group:{g.name}", project.groups)
+                    ag = select(u, f"group:{g.name}", project.groups,
+                                periodic=project.analyses.use_pbc)
                     rep.log(f"  group {g.name}: {ag.n_atoms} atoms, {ag.residues.n_residues} residues "
                             f"({ag.residues[0].resname}{ag.residues[0].resid}–"
                             f"{ag.residues[-1].resname}{ag.residues[-1].resid})")
@@ -2524,11 +2702,15 @@ class MainWindow(Gtk.ApplicationWindow):
             out = []
             if project.output.video.enabled:
                 out.append(pipe.render_video(ds, rep.sub(0, 0.85)))
+            video = out[0] if out else None
             if project.output.charts.enabled:
                 out += pipe.render_charts(ds, rep.sub(0.85, 1.0))
-            return out
+            return video, out
 
-        def done(paths):
+        def done(result):
+            video, paths = result
+            if video:
+                self.last_video = video  # 'Open video' plays this one, as after Render
             self._adopt_auto_fit(project)
             self.info("Re-render finished", f"{len(paths)} file(s) written")
 
@@ -2549,11 +2731,32 @@ class MainWindow(Gtk.ApplicationWindow):
         self.jobs.cancel()
 
     def _on_close(self, *_):
+        """The window is asked to close (True: it stays open).  A running job is stopped only after a
+        question, and waited for: its thread ends with the program, and would otherwise be cut off in the
+        middle of a file it writes.  Unsaved changes of the settings are saved or dropped after a question."""
+        if self.jobs.running:
+            response = ask(self, "A job is still running", f"Closing {PROJECT_ABBREV} stops it.",
+                           [("Cancel", Gtk.ResponseType.CANCEL),
+                            ("Stop it and close", Gtk.ResponseType.ACCEPT)],
+                           Gtk.ResponseType.CANCEL, Gtk.MessageType.WARNING)
+            if response != Gtk.ResponseType.ACCEPT:
+                return True
+            self.jobs.stop(wait=CLOSE_WAIT_S)
+        if self.analysis_changed():
+            choice = ask_unsaved(self, "the project")
+            if choice == "cancel" or (choice == "save" and not self.save_project()):
+                return True
         self.jobs.stop()
         return False
 
     # -------------------------------------------------------------- feedback
     def append_log(self, text: str):
+        """Add a message to the log (main loop).  Lines of a job or of the logging handlers, which come
+        from other threads, are queued and shown in batches (``log_batch``); those queued so far go first."""
+        self.log_batch.flush()
+        self._show_log(text)
+
+    def _show_log(self, text: str):
         buf = self.log_buffer
         buf.insert(buf.get_end_iter(), text + "\n")
         lines = buf.get_line_count()
@@ -2567,7 +2770,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
-            dlg.format_secondary_text(detail[:3000])
+            dlg.format_secondary_text(detail_text(detail))
         selectable_text(dlg)
         dlg.run()
         dlg.destroy()
@@ -2577,7 +2780,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
                                 buttons=Gtk.ButtonsType.OK, text=text)
         if detail:
-            dlg.format_secondary_text(detail[:3000])
+            dlg.format_secondary_text(detail_text(detail))
         selectable_text(dlg)
         dlg.run()
         dlg.destroy()
@@ -2588,10 +2791,10 @@ class MainWindow(Gtk.ApplicationWindow):
         dlg.add_button("Close", Gtk.ResponseType.CLOSE)
         from gi.repository import GdkPixbuf
         pix = GdkPixbuf.Pixbuf.new_from_file(path)
-        screen_w = 1200
-        if pix.get_width() > screen_w:
-            h = int(pix.get_height() * screen_w / pix.get_width())
-            pix = pix.scale_simple(screen_w, h, GdkPixbuf.InterpType.BILINEAR)
+        # fits the screen in both directions (a portrait still was shown at its full height)
+        w, h = fit_size(pix.get_width(), pix.get_height(), *work_area(self))
+        if (w, h) != (pix.get_width(), pix.get_height()):
+            pix = pix.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
         dlg.get_content_area().pack_start(Gtk.Image.new_from_pixbuf(pix), True, True, 0)
         dlg.connect("response", lambda d, _r: d.destroy())
         selectable_text(dlg)

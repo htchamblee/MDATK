@@ -18,6 +18,7 @@ from scipy import ndimage
 # cube corners as (dz, dy, dx) bits and the 12 cube edges between them
 _CORNERS = np.array([(dz, dy, dx) for dz in (0, 1) for dy in (0, 1) for dx in (0, 1)])
 _EDGES = [(a, b) for a in range(8) for b in range(a + 1, 8) if np.abs(_CORNERS[a] - _CORNERS[b]).sum() == 1]
+MAX_GRID_POINTS = 2 ** 26  # largest density grid (a cube of about 400 Å at 1 Å spacing, 0.8 GiB while it is built)
 
 
 def density_grid(xyz: np.ndarray, spacing: float = 1.0, sigma: float = 1.4,
@@ -27,7 +28,13 @@ def density_grid(xyz: np.ndarray, spacing: float = 1.0, sigma: float = 1.4,
     h = float(spacing)
     pad = 3.2 * sigma + 1.5 if pad is None else pad
     lo = xyz.min(0) - pad
-    nx, ny, nz = (np.ceil((xyz.max(0) + pad - lo) / h).astype(int) + 1)
+    size = np.ceil((xyz.max(0) + pad - lo) / h) + 1
+    if not np.isfinite(size).all() or float(np.prod(size)) > MAX_GRID_POINTS:
+        # a blown-up frame (an atom far away): refused before gigabytes are allocated
+        raise ValueError(f"surface grid of {' x '.join(f'{v:.0f}' for v in size)} points is too large (the atoms "
+                         f"span {' x '.join(f'{v:.0f}' for v in xyz.max(0) - xyz.min(0))} Å; at most "
+                         f"{MAX_GRID_POINTS} grid points)")
+    nx, ny, nz = size.astype(int)
     g = (xyz - lo) / h
     i0 = np.floor(g).astype(np.int64)
     f = g - i0

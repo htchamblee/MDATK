@@ -466,6 +466,7 @@ def test_open_in_rnado_from_the_analysis_window(app, windows, tmp_path, monkeypa
     assert not win.open_in_rnado() and len(calls) == 5
     # a project without a file: RNAdo can start without it
     monkeypatch.setattr(analysis, "ask", lambda *_a, **_k: Gtk.ResponseType.REJECT)
+    monkeypatch.setattr(analysis, "ask_unsaved", lambda *_a, **_k: "discard")  # New asks about the edit above
     win.new_project()
     assert win.open_in_rnado() and calls[-1] == [sys.executable, "-m", "mdatk.gui.rnado"]
     # logged once RNAdo still runs a moment later

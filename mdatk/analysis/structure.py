@@ -19,6 +19,7 @@ from typing import List
 
 import numpy as np
 
+from ..modelcheck import COVALENT, COVALENT_OTHER
 from ..pdbtools import has_backbone_atoms
 from ..selections import SelectionError, atom_elements, heavy, split_csv
 from ..spatial import kabsch, pairs_within
@@ -163,8 +164,9 @@ class TraceAnalysis(Analysis):
     label = "Backbone trace"
     internal = True
     # v2: residue numbers for tags; v3: group membership; v4: chain and residue names; v5: chains from bonds
-    # only when the bonds hold the residues together
-    version = 5
+    # only when the bonds hold the residues together; v6: an atom's element is the topology's wherever it has one
+    # (the heavy-atom centroid of a residue without a trace atom)
+    version = 6
 
     @classmethod
     def params_for(cls, project):
@@ -209,8 +211,8 @@ class TraceAnalysis(Analysis):
         if self.ref is None:
             self.ref = xyz.copy()
             self._links(xyz)
-        elif self.align and n_res >= 3:
-            r, mc, rc = kabsch(xyz, self.ref)
+        elif self.align and n_res >= 3 and np.isfinite(xyz).all() and np.isfinite(self.ref).all():
+            r, mc, rc = kabsch(xyz, self.ref)  # (a blown-up frame cannot be superposed: it is stored as it is)
             xyz = (xyz - mc) @ r.T + rc
             if len(ions):
                 ions = (ions - mc) @ r.T + rc
@@ -254,6 +256,9 @@ class ProximityAnalysis(Analysis):
     name = "proximity"
     label = "Proximity to residue set"
     internal = True
+    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group);
+    # the residues of the set are at distance 0 also when no other residue is shown
+    version = 2
 
     @classmethod
     def expected_outputs(cls, project):
@@ -286,6 +291,7 @@ class ProximityAnalysis(Analysis):
         self.dist = np.full((len(residues), self.n_frames), np.inf, dtype=np.float32)
 
     def process(self, k, ts):
+        self.dist[self.member, k] = 0.0  # (also when every residue shown is in the set: they stayed at inf)
         if self.struct.n_atoms == 0:
             return
         i, _, d = pairs_within(self.struct.positions, self.set_atoms.positions, self.radius,
@@ -314,7 +320,10 @@ class AtomsAnalysis(Analysis):
     name = "atoms"
     label = "Atomic coordinates (structure view)"
     internal = True
-    version = 2  # 2: elements guessed per residue (protein CA is carbon, not calcium)
+    # 2: elements guessed per residue (protein CA is carbon, not calcium)
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group);
+    # guessed bonds come from the first analysed frame and include S-S, P-S and other bonds longer than 1.95 Å
+    version = 3
 
     @classmethod
     def params_for(cls, project):
@@ -349,8 +358,8 @@ class AtomsAnalysis(Analysis):
         pts = self.tracer.positions()
         if self.ref is None:
             self.ref = pts
-        elif self.align and len(pts) >= 3:
-            r, mc, rc = kabsch(pts, self.ref)
+        elif self.align and len(pts) >= 3 and np.isfinite(pts).all() and np.isfinite(self.ref).all():
+            r, mc, rc = kabsch(pts, self.ref)  # (as the trace: a blown-up frame is stored as it is)
             xyz = (xyz - mc) @ r.T + rc
         self.coords[k] = xyz
 
@@ -373,10 +382,15 @@ def guess_element(name: str) -> str:
     return name[:1].upper() if name else "X"
 
 
+BOND_SLACK = 0.4  # Å beyond the covalent radii of two atoms that still is a guessed bond
+
+
 def atom_bonds(atoms, max_len: float = 1.95) -> np.ndarray:
     """Bonds among ``atoms`` as local index pairs: from the topology when it has
     bonds, otherwise guessed from first-frame distances within each residue and
-    between consecutive residues (O3'-P)."""
+    between consecutive residues (O3'-P).  Two heavy atoms are bonded within ``max_len``, or within their
+    covalent radii + 0.4 Å where that is more (sulfur, phosphorus, the heavier halogens: S-S 2.05 Å, P-S, C-I);
+    two sulfurs are bonded across any two residues (a disulfide bridge)."""
     index = {int(ix): k for k, ix in enumerate(atoms.ix)}
     pairs = []
     try:
@@ -392,12 +406,15 @@ def atom_bonds(atoms, max_len: float = 1.95) -> np.ndarray:
     xyz = atoms.positions.astype(np.float64)
     if len(xyz) < 2:
         return np.zeros((0, 2), dtype=np.int64)
-    i, j, d = pairs_within(xyz, xyz, max_len, None)
+    elements = atom_elements(atoms)
+    radius = np.array([COVALENT.get(e, COVALENT_OTHER) for e in elements])
+    i, j, d = pairs_within(xyz, xyz, max(max_len, 2.0 * radius.max() + BOND_SLACK), None)
     keep = i < j
-    i, j = i[keep], j[keep]
+    i, j, d = i[keep], j[keep], d[keep]
     resi = atoms.resindices
-    near = np.abs(resi[i] - resi[j]) <= 1
+    near = (np.abs(resi[i] - resi[j]) <= 1) | ((elements[i] == "S") & (elements[j] == "S"))
+    close = d <= np.maximum(max_len, radius[i] + radius[j] + BOND_SLACK)  # (1.95 Å for C, N, O pairs, as before)
     h = np.array([guess_element(str(n)) == "H" for n in atoms.names])
     hh = h[i] & h[j]
-    ok = near & ~hh & ((d[keep] <= 1.25) | ~(h[i] | h[j]))
+    ok = near & close & ~hh & ((d <= 1.25) | ~(h[i] | h[j]))
     return np.stack([i[ok], j[ok]], axis=1).astype(np.int64)

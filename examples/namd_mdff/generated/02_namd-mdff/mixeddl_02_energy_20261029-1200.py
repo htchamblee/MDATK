@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sander / NAMD single-point energy comparison - written by MDATK 0.1.1.
+"""sander / NAMD single-point energy comparison - written by MDATK 0.1.2.
 
 Usage: python3 THIS_SCRIPT SANDER.mdout NAMD.log
 """

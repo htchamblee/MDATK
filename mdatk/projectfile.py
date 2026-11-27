@@ -30,6 +30,7 @@ import inspect
 import io
 import logging
 import os
+import re
 import time
 import threading
 import tokenize
@@ -50,6 +51,34 @@ LOG_MARKER = "# ---- step log (entries are appended; newest last) ----"
 LOG_SPLIT_BYTES = 50 * 1024 * 1024  # beyond this the log moves to a separate file
 LOG_OUTPUT_CHARS = 20000  # program output kept per log entry (its tail)
 RECENT_MAX = 10
+# Windows refuses to replace a file while another program has it open, even for a moment (a virus
+# scanner, the search indexer or a sync client reading the file just written): the rename that ends a
+# save is tried again for this long.  Elsewhere a rename is not refused for that, and is tried once.
+REPLACE_WAIT_S = 2.0
+RETRY_BUSY = os.name == "nt"
+
+
+def replace_file(tmp: str, path: str) -> None:
+    """Move the finished temporary file ``tmp`` over ``path`` (in one step: ``os.replace``).  While the
+    system reports the file busy (see RETRY_BUSY) the move is tried again, after 10 ms, then twice as
+    long each time up to 100 ms, for REPLACE_WAIT_S in all; then, as for any other error, the temporary
+    file is removed and the system's error is raised."""
+    delay, waited = 0.01, 0.0
+    try:
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if not RETRY_BUSY or waited >= REPLACE_WAIT_S:
+                    raise
+                time.sleep(delay)
+                waited += delay
+                delay = min(2 * delay, 0.1)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 _META_DOCS = {
     "format": f"File type marker of an {PROJECT_ABBREV} project; do not change.",
@@ -270,12 +299,27 @@ def _now() -> _dt.datetime:
     return _dt.datetime.now().replace(microsecond=0)
 
 
+def _version_key(text: Any) -> Tuple[int, ...]:
+    """(0, 1, 1) of "0.1.1" (and of "0.1.1rc2"); () when the text starts with no number."""
+    found = re.match(r"\d+(?:\.\d+)*", str(text).strip())
+    return tuple(int(n) for n in found.group(0).split(".")) if found else ()
+
+
+def saved_version(project) -> str:
+    """The ``mdatk_version`` a save writes: this version, or the one the project's file had when a newer
+    MDATK wrote it (the file may hold settings this version only keeps: its version does not go back)."""
+    from .config import FILE_VERSION
+
+    had = getattr(project, "__dict__", {}).get(FILE_VERSION, "")
+    return had if had and _version_key(had) > _version_key(__version__) else __version__
+
+
 def project_text(project, log_file: str = "") -> str:
     """The settings part of a project file (no log)."""
     from .config import _to_plain
 
     data: Dict[str, Any] = {"format": PROJECT_FORMAT, "format_version": PROJECT_FORMAT_VERSION,
-                            "mdatk_version": __version__, "saved": _now(), "log_file": log_file}
+                            "mdatk_version": saved_version(project), "saved": _now(), "log_file": log_file}
     data.update(_to_plain(project))
     header = [f"{PROJECT_TITLE} project file.",
               "Plain TOML: every entry is explained by the comment above it. Edit with care; "
@@ -359,7 +403,7 @@ def _write(path: str, project) -> None:
         fh.write(text)
         if log_part:
             fh.write("\n" + log_part)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def edit_workflow(path: str, edit) -> None:
@@ -430,8 +474,8 @@ def read(path: str) -> Dict[str, Any]:
         fmt = PROJECT_FORMAT
     if fmt not in (None, PROJECT_FORMAT):
         raise ValueError(f"{path}: not an {PROJECT_ABBREV} project (format={fmt!r})")
-    for meta in ("format", "format_version", "mdatk_version", "saved", "log", "log_file"):
-        data.pop(meta, None)
+    for meta in ("format", "format_version", "saved", "log", "log_file"):
+        data.pop(meta, None)  # (mdatk_version stays: Project.from_dict remembers the version of the file)
     return data
 
 
@@ -516,7 +560,7 @@ def _split_log(path: str) -> str:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(head)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
     log.info("project log moved to %s", sidecar)
     return sidecar
 
@@ -586,7 +630,7 @@ def write_params_log(path: str, project, run: Dict[str, Any]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +647,7 @@ def recent_projects() -> List[str]:
     """Recently opened / saved project files that still exist, newest first."""
     try:
         data = tomlio.load(_settings_path())
-    except (OSError, tomlio.TOMLDecodeError):
+    except (OSError, ValueError):  # no file, no TOML, or no text (a file cut off inside a character)
         return []
     return [p for p in data.get("recent", []) if isinstance(p, str) and os.path.isfile(p)][:RECENT_MAX]
 
@@ -611,7 +655,26 @@ def recent_projects() -> List[str]:
 def _user_settings() -> Dict[str, Any]:
     try:
         data = tomlio.load(_settings_path())
-    except (OSError, tomlio.TOMLDecodeError):
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _settings_to_change() -> Dict[str, Any]:
+    """The user settings, read to change one and write them all back (OSError: they cannot be read now,
+    so nothing may be written).  A file that is there but is no TOML (cut off, edited by hand) is never
+    written over, which would lose every setting in it: it is kept as ``settings.toml.unreadable`` and a
+    new file starts."""
+    target = _settings_path()
+    try:
+        data = tomlio.load(target)
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        kept = target + ".unreadable"
+        os.replace(target, kept)
+        log.warning("%s cannot be read (%s): it is kept as %s and a new settings file starts", target, exc,
+                    kept)
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -621,12 +684,22 @@ _SETTING_DOCS = {"recent": "Recently used project files, newest first.",
 
 
 def _write_user_settings(data: Dict[str, Any]) -> None:
+    """Write the settings file in one step (a temporary file beside it, then a rename): a crash, or the
+    other program reading at that moment (the analysis window and RNAdo share the file), never sees half
+    a file."""
     target = _settings_path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
     text = tomlio.dumps(data, lambda p, s: _SETTING_DOCS.get(p[-1] if p else "", None),
                         [f"{PROJECT_TITLE} user settings."])
-    with open(target, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    tmp = f"{target}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    replace_file(tmp, target)
 
 
 def user_setting(key: str, default: Any = None) -> Any:
@@ -635,9 +708,9 @@ def user_setting(key: str, default: Any = None) -> Any:
 
 
 def set_user_setting(key: str, value: Any) -> None:
-    data = _user_settings()
-    data[key] = value
     try:
+        data = _settings_to_change()
+        data[key] = value
         _write_user_settings(data)
     except OSError as exc:
         log.warning("could not save the setting %s: %s", key, exc)
@@ -645,10 +718,10 @@ def set_user_setting(key: str, value: Any) -> None:
 
 def add_recent(path: str) -> None:
     path = os.path.abspath(path)
-    recent = [path] + [p for p in recent_projects() if p != path]
-    data = _user_settings()  # other settings stay
-    data["recent"] = recent[:RECENT_MAX]
     try:
+        data = _settings_to_change()  # other settings stay
+        recent = [path] + [p for p in recent_projects() if p != path]
+        data["recent"] = recent[:RECENT_MAX]
         _write_user_settings(data)
     except OSError as exc:
         log.warning("could not update the recent projects list: %s", exc)

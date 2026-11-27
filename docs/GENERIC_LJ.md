@@ -23,15 +23,21 @@ topology's charges.
 
 ## How an atom gets its row
 
-1. **A hydrogen** takes the row of the element it is bonded to (table 2). The bonded atom comes from the
+1. **A virtual site** (the extra point of a four- or five-site water model such as TIP4P, a lone pair) has **no
+   Lennard-Jones term**: R\* 0 and ε 0, Amber's atom type `EP` (the line `EP 0.00 0.0000 lone pair` of
+   `parm10.dat`, section `MOD4 RE`). It is a massless charge site, so its charge still counts in the electrostatic
+   term. An atom is taken for one when the topology gives it no element (an Amber extra point has atomic number 0)
+   and it is named `EP…` (`EPW`, `EP1`, `EP2`), `LP…`, `M` or `MW`; an atom with an element is never one.
+2. **A hydrogen** takes the row of the element it is bonded to (table 2). The bonded atom comes from the
    topology's bonds; where the topology has none for that hydrogen (a PDB without CONECT records, or with them for
    a ligand only), it is the nearest non-hydrogen atom of the hydrogen's residue within 1.45 Å at the
-   first analysed frame (in a real structure that atom is 0.96-1.34 Å away and the next one about 2 Å). A hydrogen
+   first analysed frame (in a real structure that atom is 0.96-1.34 Å away and the next one about 2 Å; a virtual
+   site is not counted: TIP4P's extra point is nearer to the hydrogens than their oxygen). A hydrogen
    with no such atom takes the row *H on N*: the small radius, which cannot turn a contact repulsive.
-2. **An atom that is alone in its residue** and whose element is in table 3 is an ion and takes that row.
-3. Otherwise the atom takes the row of its element in table 1.
-4. An element that is only in table 3 (a metal bound in a larger residue) takes its ion's row.
-5. An element in no table takes **carbon's row**, and the analysis says so in its log
+3. **An atom that is alone in its residue** and whose element is in table 3 is an ion and takes that row.
+4. Otherwise the atom takes the row of its element in table 1.
+5. An element that is only in table 3 (a metal bound in a larger residue) takes its ion's row.
+6. An element in no table takes **carbon's row**, and the analysis says so in its log
    (`lj_default_elements` in the result's metadata).
 
 The element is the topology's, or is guessed from the atom name where the topology has none.

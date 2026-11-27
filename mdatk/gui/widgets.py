@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -35,9 +36,23 @@ def set_path(obj: Any, path: str, value: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def is_color(text: Any) -> bool:
+    """``text`` is a colour the renderer (Matplotlib) knows: a name, tab:orange, C0, a grey level such
+    as 0.5, #rrggbb or #rrggbbaa."""
+    from matplotlib.colors import is_color_like
+
+    return isinstance(text, str) and bool(text) and is_color_like(text)
+
+
 def hex_to_rgba(text: str) -> Gdk.RGBA:
+    """The colour ``text`` for a GTK widget: read as the renderer (Matplotlib) reads it, else as GDK
+    does; black when neither knows it."""
     rgba = Gdk.RGBA()
-    if not rgba.parse(text or "#000000"):
+    if is_color(text):
+        from matplotlib.colors import to_rgba
+
+        rgba.red, rgba.green, rgba.blue, rgba.alpha = (float(c) for c in to_rgba(text))
+    elif not rgba.parse(text or "#000000"):
         rgba.parse("#000000")
     return rgba
 
@@ -45,6 +60,150 @@ def hex_to_rgba(text: str) -> Gdk.RGBA:
 def rgba_to_hex(rgba: Gdk.RGBA) -> str:
     return "#{:02x}{:02x}{:02x}".format(int(round(rgba.red * 255)), int(round(rgba.green * 255)),
                                         int(round(rgba.blue * 255)))
+
+
+# ---------------------------------------------------------------------------
+# values as loaded: a widget never replaces a value it cannot show
+# ---------------------------------------------------------------------------
+
+
+def number_text(value: Any) -> str:
+    """The text of a number that reads back as the same number: "5", "0.25", and every digit of
+    0.0123456789 ("%g" alone keeps six)."""
+    if isinstance(value, bool) or not isinstance(value, float):
+        return str(value)
+    short = f"{value:g}"
+    return short if float(short) == value else repr(value)
+
+
+def set_spin(w: Gtk.SpinButton, value: Any) -> None:
+    """Show ``value`` in a spin button.  The button's range is a suggestion: it is widened to hold a
+    value outside it (and is the button's own again for the next value inside it), so loading never
+    clamps.  :func:`spin_value` reads the value back as given while the button still shows its text."""
+    adj = w.get_adjustment()
+    if not hasattr(w, "_mdatk_range"):
+        w._mdatk_range = (adj.get_lower(), adj.get_upper())
+    lo, hi = w._mdatk_range
+    number = float(value)
+    if math.isfinite(number):
+        lo, hi = min(lo, number), max(hi, number)
+    adj.set_lower(lo)
+    adj.set_upper(hi)
+    w.set_value(number)
+    w._mdatk_held = (value, w.get_text())
+
+
+def spin_held(w: Gtk.SpinButton) -> bool:
+    """The spin button still shows the text of the value :func:`set_spin` gave it."""
+    held = getattr(w, "_mdatk_held", None)
+    return held is not None and w.get_text() == held[1]
+
+
+def spin_value(w: Gtk.SpinButton, cast: Callable[[float], Any] = float) -> Any:
+    """The value of a spin button: the one :func:`set_spin` gave it while the button still shows that
+    value's text (a value with more digits than the button shows, or one it cannot show, is read back as
+    it was loaded; GTK itself rounds to the shown digits when the button loses the focus), else
+    ``cast`` of what the button holds."""
+    if spin_held(w):
+        return _as_loaded(w._mdatk_held[0], cast)
+    return cast(w.get_value())
+
+
+def _as_loaded(value: Any, cast: Callable[[float], Any]) -> Any:
+    """A loaded number as its widget reads numbers (``cast``) when that is the same number, else as it is."""
+    try:
+        same = cast(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return value
+    return same if same == value else value
+
+
+def _scale_moved(w: Gtk.Range) -> None:
+    if not getattr(w, "_mdatk_setting", False):
+        w._mdatk_held = None
+
+
+def set_scale(w: Gtk.Range, value: Any) -> None:
+    """Show ``value`` on a slider, which clamps it to its range; :func:`scale_value` reads the value back
+    as given until the slider moves."""
+    if not hasattr(w, "_mdatk_held"):
+        w.connect("value-changed", _scale_moved)
+    w._mdatk_setting = True
+    try:
+        w.set_value(float(value))
+    finally:
+        w._mdatk_setting = False
+    w._mdatk_held = (value,)
+
+
+def scale_value(w: Gtk.Range, cast: Callable[[float], Any] = float) -> Any:
+    """The value of a slider: the one :func:`set_scale` gave it until the slider moves (a value outside
+    its range, or with more digits than it has, is read back as it was loaded), else ``cast`` of its
+    position."""
+    held = getattr(w, "_mdatk_held", None)
+    return _as_loaded(held[0], cast) if held is not None else cast(w.get_value())
+
+
+def spin_problem(w: Gtk.SpinButton) -> str:
+    """What to say about a loaded value the spin button cannot show ("" when it shows its value)."""
+    if spin_held(w) and not math.isfinite(float(w._mdatk_held[0])):
+        return (f"The value {w._mdatk_held[0]!r} is not a number this field can show; it is kept until you "
+                "change it.")
+    return ""
+
+
+def set_combo(w: Gtk.ComboBox, ident: Any) -> None:
+    """Select the item with id ``ident``.  A value that is not among the choices (a newer option, a typo
+    in the project file) is added as "<value> (unknown)" and selected: it is shown and read back, instead
+    of the item that happened to be selected before.  The added item goes when another value is set."""
+    ident = "" if ident is None else str(ident)
+    old = getattr(w, "_mdatk_unknown", None)
+    found = w.set_active_id(ident)
+    if old is not None and old != ident:
+        for k, row in enumerate(w.get_model()):
+            if row[w.get_id_column()] == old:
+                w.remove(k)
+                break
+        w._mdatk_unknown = None
+    if not found:
+        w.append(ident, f"{ident} (unknown)" if ident else "(not set)")
+        w.set_active_id(ident)
+        w._mdatk_unknown = ident
+
+
+def combo_unknown(w: Gtk.ComboBox) -> Optional[str]:
+    """The value :func:`set_combo` added because it is not among the choices, while it is selected."""
+    unknown = getattr(w, "_mdatk_unknown", None)
+    return unknown if unknown is not None and (w.get_active_id() or "") == unknown else None
+
+
+def combo_problem(w: Gtk.ComboBox) -> str:
+    """What to say about a selected value that is not among the choices ("" for a choice)."""
+    unknown = combo_unknown(w)
+    return "" if unknown is None else f"Unknown value {unknown!r}: it is not one of this field's choices."
+
+
+def set_color(w: Gtk.ColorButton, text: Any) -> None:
+    """Show the colour ``text`` in a colour button; :func:`color_value` reads the text back as given
+    until another colour is picked."""
+    w.set_rgba(hex_to_rgba(text if isinstance(text, str) else ""))
+    w._mdatk_held = (text, rgba_to_hex(w.get_rgba()))
+
+
+def color_value(w: Gtk.ColorButton) -> Any:
+    """The colour of a colour button: the text :func:`set_color` gave it (tab:orange, #rrggbbaa, gold)
+    while the button still shows that colour, else the picked colour as #rrggbb."""
+    shown = rgba_to_hex(w.get_rgba())
+    held = getattr(w, "_mdatk_held", None)
+    return held[0] if held is not None and held[1] == shown else shown
+
+
+def color_problem(w: Gtk.ColorButton) -> str:
+    """What to say about a loaded colour the renderer does not know ("" for a colour)."""
+    value = color_value(w)
+    if is_color(value):
+        return ""
+    return f"{value!r} is not a colour (a name such as gold or tab:orange, or #rrggbb): pick one here."
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +505,12 @@ def file_chooser_button(title: str, action=Gtk.FileChooserAction.OPEN,
 
 class Binding:
     def __init__(self, path: str, widget: Gtk.Widget, getter: Callable[[], Any],
-                 setter: Callable[[Any], None]):
+                 setter: Callable[[Any], None], problem: Optional[Callable[[], str]] = None):
         self.path = path
         self.widget = widget
         self.get = getter
         self.set = setter
+        self.problem = problem  # what to say about a value the widget holds but cannot show ("": nothing)
 
 
 class Binder:
@@ -359,8 +519,8 @@ class Binder:
     def __init__(self):
         self.bindings: List[Binding] = []
 
-    def _add(self, path, widget, getter, setter):
-        self.bindings.append(Binding(path, widget, getter, setter))
+    def _add(self, path, widget, getter, setter, problem=None):
+        self.bindings.append(Binding(path, widget, getter, setter, problem))
         return widget
 
     def entry(self, path: str, w: Gtk.Entry):
@@ -372,10 +532,12 @@ class Binder:
         return box
 
     def spin_float(self, path: str, w: Gtk.SpinButton):
-        return self._add(path, w, lambda: float(w.get_value()), lambda v: w.set_value(float(v)))
+        return self._add(path, w, lambda: spin_value(w, float), lambda v: set_spin(w, v),
+                         lambda: spin_problem(w))
 
     def spin_int(self, path: str, w: Gtk.SpinButton):
-        return self._add(path, w, lambda: int(w.get_value_as_int()), lambda v: w.set_value(int(v)))
+        return self._add(path, w, lambda: spin_value(w, lambda v: int(round(v))), lambda v: set_spin(w, v),
+                         lambda: spin_problem(w))
 
     def check(self, path: str, w: Gtk.CheckButton):
         return self._add(path, w, lambda: bool(w.get_active()), lambda v: w.set_active(bool(v)))
@@ -384,7 +546,8 @@ class Binder:
         return self._add(path, w, lambda: bool(w.get_active()), lambda v: w.set_active(bool(v)))
 
     def combo(self, path: str, w: Gtk.ComboBoxText):
-        return self._add(path, w, lambda: w.get_active_id() or "", lambda v: w.set_active_id(str(v)))
+        return self._add(path, w, lambda: w.get_active_id() or "", lambda v: set_combo(w, v),
+                         lambda: combo_problem(w))
 
     def combo_text(self, path: str, w: Gtk.ComboBoxText):
         """Combo with entry bound to a free-text value."""
@@ -392,20 +555,34 @@ class Binder:
         return self._add(path, w, lambda: child.get_text().strip(), lambda v: child.set_text(v or ""))
 
     def color(self, path: str, w: Gtk.ColorButton):
-        return self._add(path, w, lambda: rgba_to_hex(w.get_rgba()),
-                         lambda v: w.set_rgba(hex_to_rgba(v)))
+        return self._add(path, w, lambda: color_value(w), lambda v: set_color(w, v),
+                         lambda: color_problem(w))
 
     def optional_int(self, path: str, w: Gtk.Entry):
         def get():
             t = w.get_text().strip()
-            return int(t) if t else None
+            try:
+                return int(t) if t else None
+            except ValueError:
+                raise ValueError(f"{t!r} is not a whole number") from None
         return self._add(path, w, get, lambda v: w.set_text("" if v is None else str(v)))
 
     def optional_float(self, path: str, w: Gtk.Entry):
+        held: List[Any] = []  # the value last shown and its text
+
         def get():
             t = w.get_text().strip()
-            return float(t) if t else None
-        return self._add(path, w, get, lambda v: w.set_text("" if v is None else f"{v:g}"))
+            if held and t == held[1]:
+                return held[0]  # as loaded
+            try:
+                return float(t) if t else None
+            except ValueError:
+                raise ValueError(f"{t!r} is not a number") from None
+
+        def put(v):
+            w.set_text("" if v is None else number_text(v))
+            held[:] = [v, w.get_text().strip()]
+        return self._add(path, w, get, put)
 
     def csv(self, path: str, w: Gtk.Entry):
         return self._add(path, w, lambda: [t.strip() for t in w.get_text().split(",") if t.strip()],
@@ -420,6 +597,16 @@ class Binder:
     def load(self, project) -> None:
         for b in self.bindings:
             b.set(get_path(project, b.path))
+
+    def unshown(self) -> List[Tuple[str, str]]:
+        """(field path, message) of the values the widgets hold as loaded but cannot show: a choice
+        that is not in its list, a colour the renderer does not know, a number that is none."""
+        found = []
+        for b in self.bindings:
+            message = b.problem() if b.problem is not None else ""
+            if message:
+                found.append((b.path, message))
+        return found
 
     def store(self, project, skip: Sequence[str] = ()) -> List[str]:
         """Write widget values into ``project``; returns a list of error messages."""
@@ -666,7 +853,8 @@ def flag_target(widget: Gtk.Widget) -> Gtk.Widget:
     entry, the table of a list editor, else the widget itself."""
     if isinstance(widget, ListEditor):
         return widget.scroller
-    entry_box = getattr(widget, "entry", None)
+    # (not asked of an entry: a spin button's "entry" is a field of its C structure, and reading it raises)
+    entry_box = None if isinstance(widget, Gtk.Entry) else getattr(widget, "entry", None)
     if isinstance(entry_box, Gtk.Entry):
         return entry_box
     if isinstance(widget, Gtk.ComboBox) and widget.get_has_entry():

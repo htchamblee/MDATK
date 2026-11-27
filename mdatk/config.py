@@ -6,8 +6,10 @@ The tree is stored in a human-readable TOML project file (see
 leaves a parameter log of the same form next to its outputs.  The comment on
 each field below becomes the explanation written above that entry in the file.
 
-Unknown keys are ignored with a warning (forward compatibility); missing keys
-fall back to the defaults below (backward compatibility).
+Unknown keys are not used but kept, at every level, and written back by a save
+(forward compatibility: the settings of a newer MDATK or of another tool; a
+warning names them); missing keys fall back to the defaults below (backward
+compatibility).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import typing
@@ -356,6 +359,58 @@ def layout_warnings(project: "Project") -> List[str]:
     return out
 
 
+SECONDARY_SOURCES = ("dynamic", "first", "dotbracket")  # option 'source' of the secondary-structure panel
+
+
+def panel_option_problems(panel_type: str, options: Any) -> List[str]:
+    """Why a panel of ``panel_type`` cannot use its ``options``, one text per option ("option 'ylim' must be
+    two numbers [low, high], not 5"); empty when it can.  The checks are the conversions the panels make
+    (:mod:`mdatk.render.panels`), so an option that passes is one the panel draws with; a panel with a
+    problem shows "No data: <text>" and :meth:`Project.problems` reports it at ``layout.panels.<k>.options``."""
+    opts = options if isinstance(options, dict) else {}
+    out: List[str] = []
+
+    def number(value: Any, finite: bool = False) -> bool:
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return False
+        return not finite or x - x == 0.0
+
+    def whole(value: Any, least: Optional[int] = None) -> bool:
+        try:
+            n = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return least is None or n >= least
+
+    def check(name: str, ok, what: str) -> None:
+        if name in opts and not ok(opts[name]):
+            out.append(f"option {name!r} must be {what}, not {opts[name]!r}")
+
+    if panel_type == "timeseries":
+        check("smooth", lambda v: whole(v or 0), "a whole number of frames")
+        check("target", lambda v: v is None or number(v), "a number")
+        check("ylim", lambda v: isinstance(v, (list, tuple)) and 1 <= len(v) <= 2 and all(
+            x is None or isinstance(x, (int, float)) and number(x, finite=True) for x in v),
+            "two numbers [low, high]")
+    elif panel_type == "heatmap":
+        check("vmin", number, "a number")
+        check("vmax", lambda v: number(v or 0), "a number")
+        check("max_ticks", whole, "a whole number")
+    elif panel_type == "contact_map":
+        if opts.get("mode", "instant") == "frame":
+            check("frame", whole, "a frame number")
+        check("max_ticks", whole, "a whole number")
+    elif panel_type == "sequence":
+        check("per_row", lambda v: whole(v or 0, 0), "a whole number (0: as many as fit)")
+    elif panel_type == "secondary":
+        source = opts.get("source", "dynamic")
+        if str(source) not in SECONDARY_SOURCES:
+            out.append(f"unknown source {source!r} (option 'source': dynamic, first or dotbracket)")
+    return out
+
+
 def _default_panels() -> List[PanelSpec]:
     return [
         PanelSpec("structure", [], "Structure"),
@@ -530,9 +585,18 @@ class Project:
     @classmethod
     def from_dict(cls, data: Dict[str, Any], base_dir: Optional[str] = None) -> "Project":
         data = dict(data)
+        version = data.get("mdatk_version")
         for meta_key in ("format", "format_version", "mdatk_version", "saved", "log", "log_file"):
             data.pop(meta_key, None)
-        project = _from_plain(cls, data, "project")
+        unknown: List[str] = []
+        project = _from_plain(cls, data, "project", unknown)
+        if unknown and unknown != _WARNED[0]:  # once: a window reads its file again and again
+            _WARNED[0] = unknown
+            log.warning("project: %d unknown key%s kept and saved back unchanged (from a newer %s, or "
+                        "misspelt?): %s", len(unknown), "" if len(unknown) == 1 else "s", PROJECT_ABBREV,
+                        ", ".join(unknown))
+        if isinstance(version, str) and version:  # a save does not put an older version on the file
+            project.__dict__[FILE_VERSION] = version
         if base_dir:
             project.resolve_paths(base_dir)
         return project
@@ -670,8 +734,8 @@ class Project:
 
         if self.density_active() and not os.path.exists(d.map_path):
             add("map_path", f"Density map not found: {d.map_path} (untick 'show' to render without it)")
-        if d.resolution <= 0:
-            add("resolution", "Density map resolution must be positive.")
+        if not (d.resolution > 0 and d.resolution < float("inf")):  # not NaN or infinite either
+            add("resolution", "Density map resolution must be a positive number of Å.")
         if not 0.0 <= d.opacity <= 1.0:
             add("opacity", "Density map opacity must be between 0 and 1.")
         if not 5.0 <= d.angular_step <= 45.0:
@@ -689,6 +753,54 @@ class Project:
         frame = d.fit_frame.strip().lower()
         if frame not in ("", "ref") and not frame.isdigit():
             add("fit_frame", f"Density fit frame must be 'ref' or a frame number, not {d.fit_frame!r}.")
+        return out
+
+    def render_problems(self, video: Optional[bool] = None, charts: Optional[bool] = None) -> List[Problem]:
+        """Problems of the settings only the renderers read: panel options a panel cannot use
+        (:func:`panel_option_problems`), colours Matplotlib cannot read and chart file formats it cannot
+        write.  Errors when the output that reads the setting is about to be made (``video``, ``charts``:
+        as for :meth:`problems`), warnings otherwise."""
+        from matplotlib.backend_bases import FigureCanvasBase
+        from matplotlib.colors import is_color_like
+
+        out: List[Problem] = []
+        v, c = self.visual, self.output.charts
+        video = self.output.video.enabled if video is None else video
+        charts = c.enabled if charts is None else charts
+        drawn = "error" if video else "warning"  # the panels are drawn for the video
+        types = {sp.type for sp in self.layout.panels}
+        view = drawn if types & {"structure", "sequence", "secondary"} else "warning"  # residue colours
+
+        def add(field: str, message: str, level: str) -> None:
+            out.append(problem(field, message, self, level))
+
+        def colour(field: str, value: str, level: str) -> None:
+            if not is_color_like(value):
+                add(field, f"{value!r} is not a colour (use a name such as 'orange' or a hex code such as "
+                    "'#ffb000').", level)
+
+        for k, sp in enumerate(self.layout.panels):
+            for text in panel_option_problems(sp.type, sp.options):
+                add(f"layout.panels.{k}.options", text, drawn)
+            ticks = (sp.options or {}).get("max_ticks") if sp.type in ("heatmap", "contact_map") else None
+            if isinstance(ticks, (int, float)) and ticks < 1:  # drawn all the same: allowed, hardly intended
+                add(f"layout.panels.{k}.options", f"option 'max_ticks' is {ticks!r}; values below 1 count as 1 "
+                    "(only the first residue is labelled)", "warning")
+        for k, g in enumerate(self.groups):  # read when residues are coloured by group
+            colour(f"groups.{k}.color", g.color, view if v.color_mode in ("groups", "proximity") else "warning")
+        colour("visual.base_color", v.base_color, view)
+        colour("visual.proximity_color", v.proximity_color, view if v.color_mode == "proximity" else "warning")
+        colour("visual.glow_color", v.glow_color, view)
+        colour("visual.ion_color", v.ion_color, drawn if "structure" in types else "warning")
+        if self.density.map_path:
+            colour("density.color", self.density.color, drawn if self.density_active() else "warning")
+        if c.color:
+            colour("output.charts.color", c.color, "error" if charts else "warning")
+        known = sorted(FigureCanvasBase.get_supported_filetypes())
+        for fmt in c.formats:
+            if str(fmt).lower().lstrip(".") not in known:
+                add("output.charts.formats", f"Unknown chart file format {fmt!r} (one of: {', '.join(known)}).",
+                    "error" if charts else "warning")
         return out
 
     def validate(self, video: Optional[bool] = None, charts: Optional[bool] = None,
@@ -726,6 +838,10 @@ class Project:
                 add("inputs.trajectories", f"Trajectory file not found: {t}")
         if self.inputs.step < 1:
             add("inputs.step", "Frame step must be >= 1.")
+        dt = self.inputs.dt_ps
+        if dt is not None and not (_is_finite(dt) and dt >= 0):  # NaN and negative steps gave such time axes
+            add("inputs.dt_ps", "The time step override must be a positive number of ps (not set or 0: the "
+                "times stored in the trajectory).")
         names = [g.name for g in self.groups]
         for k, g in enumerate(self.groups):
             if not g.name.strip():
@@ -738,8 +854,36 @@ class Project:
                     f"group {names.index(g.name) + 1}.", token=g.name)
         out += self.selection_problems(video, charts, pdb, density)
         a = self.analyses
-        if a.contacts.cutoff <= 0:
-            add("analyses.contacts.cutoff", "Contact cutoff must be positive.")
+        # distances and the dielectric constant: finite and positive (NaN compares false with everything: a
+        # NaN cutoff found nothing, a negative one was used as its absolute value without periodic distances)
+        for field_, value, what in (
+                ("analyses.contacts.cutoff", a.contacts.cutoff, "Contact cutoff"),
+                ("analyses.hbonds.distance_cutoff", a.hbonds.distance_cutoff, "H-bond distance cutoff"),
+                ("analyses.mg.inner_cutoff", a.mg.inner_cutoff, "Mg inner-sphere cutoff"),
+                ("analyses.mg.outer_cutoff", a.mg.outer_cutoff, "Mg outer-sphere cutoff"),
+                ("analyses.stacking.distance_cutoff", a.stacking.distance_cutoff, "Stacking distance cutoff"),
+                ("analyses.stacking.offset_cutoff", a.stacking.offset_cutoff, "Stacking offset cutoff"),
+                ("analyses.stacking.planarity_cutoff", a.stacking.planarity_cutoff, "Stacking planarity cutoff"),
+                ("analyses.energy.cutoff", a.energy.cutoff, "Energy cutoff"),
+                ("analyses.energy.dielectric", a.energy.dielectric, "Dielectric constant"),
+                ("analyses.proximity_search_radius", a.proximity_search_radius, "Proximity search radius")):
+            if not _is_finite(value):
+                add(field_, f"{what} must be a finite number.")
+            elif value <= 0:
+                add(field_, f"{what} must be positive.")
+        for field_, value, what in (
+                ("analyses.hbonds.angle_cutoff", a.hbonds.angle_cutoff, "H-bond angle cutoff"),
+                ("analyses.stacking.angle_cutoff", a.stacking.angle_cutoff, "Stacking angle cutoff"),
+                ("analyses.mg.angle_tolerance", a.mg.angle_tolerance, "Mg angle tolerance")):
+            if not (_is_finite(value) and 0 <= value <= 180):
+                add(field_, f"{what} must be between 0 and 180 degrees.")
+        keys: Dict[str, int] = {}  # data key of an RMSD series -> its target: a second one replaced the first
+        for k, t in enumerate(a.rmsd.targets):
+            key = rmsd_series_key(t.label, k)
+            if key in keys:
+                add(f"analyses.rmsd.targets.{k}.label", f"RMSD targets {keys[key] + 1} and {k + 1} give the same "
+                    f"data key {key!r}; rename one.", token=t.label)
+            keys.setdefault(key, k)
         if a.mg.inner_cutoff > a.mg.outer_cutoff:
             add("analyses.mg.inner_cutoff", "Mg inner-sphere cutoff must not exceed the outer-sphere cutoff.")
         v = self.visual
@@ -775,6 +919,7 @@ class Project:
             add("visual.proximity_cutoff", "Proximity cutoff exceeds the proximity search radius "
                 "(raise analyses.proximity_search_radius).")
         out += self.density_problems()
+        out += self.render_problems(video, charts)
         if self.output.video.fps <= 0:
             add("output.video.fps", "Video FPS must be positive.")
         for text in layout_warnings(self):
@@ -964,6 +1109,19 @@ class Project:
                 out[i] = problem(x.field, x.message, self, "warning", x.token)
         return out
 
+
+def rmsd_series_key(label: str, k: int) -> str:
+    """Data key of the series of RMSD target ``k`` (``rmsd/<key>``): its label with every run of other
+    characters than letters, digits, '_', '.', '+' and '-' as one '_'; ``target<k>`` for a label without any."""
+    key = re.sub(r"[^A-Za-z0-9_.+\-]+", "_", label).strip("_")
+    return key or f"target{k}"
+
+
+def _is_finite(value: Any) -> bool:
+    """A number that is neither NaN nor infinite."""
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def _key_groups(key: str) -> List[str]:
     """Residue groups of a data key: ``"contacts@A+B/atom_pairs"`` -> ``["A", "B"]``."""
     instance = key.split("/", 1)[0]
@@ -981,10 +1139,53 @@ def _saved(f: dataclasses.Field, value: Any) -> bool:
     return bool(value) or f.metadata.get("saved") != "when set"
 
 
+# Where an object of the parameter tree keeps the keys of its table that the model does not know (a dict,
+# as read) and where a project keeps the mdatk_version of its file.  Not attributes one can name: no
+# dotted path (--set, the GUI bindings) reaches them.
+UNKNOWN_KEYS = "unknown.keys"
+FILE_VERSION = "file.mdatk_version"
+_WARNED: List[List[str]] = [[]]  # the unknown keys the last warning named
+
+
+def unknown_keys(obj: Any) -> Dict[str, Any]:
+    """The keys of the table of ``obj`` (a parameter object) that the model does not know, as read."""
+    return getattr(obj, "__dict__", {}).get(UNKNOWN_KEYS) or {}
+
+
+def carry_unknown(old: Any, new: Any) -> None:
+    """Give the parameter tree ``new`` the unknown keys of ``old``, the tree it was made from, wherever
+    an object was built anew (the GUI rebuilds table rows and the layout from its widgets).  List items
+    are matched by their settings (rows that moved), then by position (a row that was edited)."""
+    if old is new:  # (kept as it was, e.g. the plan)
+        return
+    if dataclasses.is_dataclass(new) and type(old) is type(new):
+        if unknown_keys(old) and UNKNOWN_KEYS not in new.__dict__:
+            new.__dict__[UNKNOWN_KEYS] = copy.deepcopy(unknown_keys(old))
+        for f in dataclasses.fields(new):
+            carry_unknown(getattr(old, f.name), getattr(new, f.name))
+    elif isinstance(new, list) and isinstance(old, list):
+        free = list(range(len(old)))
+        pairs: Dict[int, int] = {}
+        for k, item in enumerate(new):
+            match = next((i for i in free if old[i] is item or old[i] == item), None)
+            if match is not None:
+                pairs[k] = match
+                free.remove(match)
+        for k, item in enumerate(new):
+            if k not in pairs and len(new) == len(old) and k in free:
+                pairs[k] = k
+                free.remove(k)
+        for k, i in pairs.items():
+            carry_unknown(old[i], new[k])
+
+
 def _to_plain(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)
+        data = {f.name: _to_plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)
                 if _saved(f, getattr(obj, f.name))}
+        for key, value in unknown_keys(obj).items():  # after the table's own entries, as they were read
+            data.setdefault(key, copy.deepcopy(value))
+        return data
     if isinstance(obj, (list, tuple)):
         return [_to_plain(v) for v in obj]
     if isinstance(obj, dict):  # free-form settings: an unset (None) option is simply absent
@@ -999,7 +1200,10 @@ _ALIASES = {
 }
 
 
-def _from_plain(tp: Any, value: Any, where: str) -> Any:
+def _from_plain(tp: Any, value: Any, where: str, unknown: Optional[List[str]] = None) -> Any:
+    """``value`` (plain data) as the type ``tp``.  Keys of a table that its class does not know are kept
+    on the object (:func:`unknown_keys`) and written back by :func:`_to_plain`; ``unknown`` collects
+    their paths."""
     origin = typing.get_origin(tp)
     args = typing.get_args(tp)
 
@@ -1007,7 +1211,7 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         if value is None:
             return None
         non_none = [a for a in args if a is not type(None)]
-        return _from_plain(non_none[0], value, where)
+        return _from_plain(non_none[0], value, where, unknown)
 
     if dataclasses.is_dataclass(tp):
         if not isinstance(value, dict):
@@ -1015,17 +1219,23 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         hints = typing.get_type_hints(tp)
         names = {f.name for f in dataclasses.fields(tp)}
         kwargs = {}
+        extra: Dict[str, Any] = {}
         for key, val in value.items():
             key = _ALIASES.get((tp.__name__, key), key)
             if key not in names:
-                log.warning("%s: ignoring unknown key %r", where, key)
+                extra[key] = copy.deepcopy(val)  # not used, but not lost: a save writes it back
+                if unknown is not None:
+                    unknown.append(f"{where}.{key}")
                 continue
             if tp is InputParams and key == "trajectories" and isinstance(val, str):
                 val = [val]
-            kwargs[key] = _from_plain(hints[key], val, f"{where}.{key}")
+            kwargs[key] = _from_plain(hints[key], val, f"{where}.{key}", unknown)
         if tp is WorkflowParams:  # saved before 0.0.12 without 'parallel': one script at a time, as then
             kwargs.setdefault("parallel", 1)
-        return tp(**kwargs)
+        obj = tp(**kwargs)
+        if extra:
+            obj.__dict__[UNKNOWN_KEYS] = extra
+        return obj
 
     if origin in (list, List):
         if value is None:
@@ -1033,7 +1243,7 @@ def _from_plain(tp: Any, value: Any, where: str) -> Any:
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{where}: expected a list")
         (item_tp,) = args or (Any,)
-        return [_from_plain(item_tp, v, f"{where}[{i}]") for i, v in enumerate(value)]
+        return [_from_plain(item_tp, v, f"{where}[{i}]", unknown) for i, v in enumerate(value)]
 
     if origin in (dict, Dict):
         if not isinstance(value, dict):

@@ -42,7 +42,8 @@ class BasePairAnalysis(Analysis):
     name = "basepairs"
     label = "Base pairs"
     internal = True
-    version = 1
+    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 2
     OUTPUT_LABELS = {"map": "Base pairs", "count": "Base pairs"}
 
     @classmethod

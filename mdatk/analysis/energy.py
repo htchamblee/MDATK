@@ -43,28 +43,21 @@ def _bonded_exclusions(u, a, b, depth: int) -> np.ndarray:
     in_b = np.zeros(u.atoms.n_atoms, bool)
     in_a[a.ix] = True
     in_b[b.ix] = True
-    cross = (in_a[bonds[:, 0]] & in_b[bonds[:, 1]]) | (in_b[bonds[:, 0]] & in_a[bonds[:, 1]])
-    if not cross.any():
+    # the A atoms within depth bonds of any B atom, along any path: also through atoms of neither group (a
+    # linker residue between the groups), which a search started at the direct A-B bonds did not see
+    near_b = in_b.copy()
+    for _ in range(depth):
+        grown = near_b.copy()
+        grown[bonds[near_b[bonds[:, 1]], 0]] = True
+        grown[bonds[near_b[bonds[:, 0]], 1]] = True
+        near_b = grown
+    starts = np.flatnonzero(near_b & in_a).tolist()
+    if not starts:
         return np.empty(0, dtype=np.int64)
     adj: Dict[int, Set[int]] = {}
     for x, y in bonds:
         adj.setdefault(int(x), set()).add(int(y))
         adj.setdefault(int(y), set()).add(int(x))
-    seeds = {int(x) for x, y in bonds[cross] for x in (x, y) if in_a[x]}
-    # A atoms within depth-1 bonds of a crossing bond may reach B within depth bonds
-    starts: Set[int] = set()
-    for s in seeds:
-        seen = {s: 0}
-        q = deque([s])
-        while q:
-            cur = q.popleft()
-            if seen[cur] >= depth - 1:
-                continue
-            for nb in adj.get(cur, ()):
-                if nb not in seen and in_a[nb]:
-                    seen[nb] = seen[cur] + 1
-                    q.append(nb)
-        starts.update(seen)
     a_local = {int(ix): n for n, ix in enumerate(a.ix)}
     b_local = {int(ix): n for n, ix in enumerate(b.ix)}
     keys = set()
@@ -85,13 +78,23 @@ def _bonded_exclusions(u, a, b, depth: int) -> np.ndarray:
     return np.array(sorted(keys), dtype=np.int64)
 
 
+def _has_bonds(u) -> bool:
+    try:
+        return len(u.bonds) > 0
+    except Exception:  # noqa: BLE001 - no bonds in this topology
+        return False
+
+
 @register
 class EnergyAnalysis(Analysis):
     name = "energy"
     label = "Intermolecular energy"
     # 2: the generic Lennard-Jones parameters (topologies that are no parm7) are those of Amber atom types, with
     # the hydrogens typed by the atom they are bonded to (mdatk.analysis.generic_lj)
-    version = 2
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group);
+    # pairs linked through atoms of neither group are excluded too; the net force of a pair closer than 0.5 Å is
+    # that of 0.5 Å; virtual sites (TIP4P's extra point) have no Lennard-Jones term and are no hydrogen's parent
+    version = 3
     group_slots = 2
     OUTPUT_LABELS = {
         "total": "{a}–{b} interaction energy",
@@ -155,6 +158,10 @@ class EnergyAnalysis(Analysis):
             self.lj_source = "generic"
             self._generic_pending = True  # assigned at the first frame (a hydrogen's bonded atom may need positions)
         self.excl = _bonded_exclusions(u, a, b, p.exclude_bonded)
+        if p.exclude_bonded > 0 and not _has_bonds(u):
+            # (a PDB without CONECT records, a GRO file: two bonded halves of one strand give huge terms)
+            self.ctx.warn("energy: the topology has no bonds; bonded pairs are not excluded "
+                          f"(exclude_bonded = {p.exclude_bonded} has no effect)")
         n = self.n_frames
         self.e_el = np.zeros(n)
         self.e_vdw = np.zeros(n)
@@ -187,7 +194,8 @@ class EnergyAnalysis(Analysis):
         self.n_pairs[k] = len(i)
         if len(i) == 0:
             return
-        d = np.maximum(d, 0.5)
+        r = d
+        d = np.maximum(r, 0.5)
         qq = COULOMB * self.qa[i] * self.qb[j] / p.dielectric
         if p.distance_dependent:
             e_el = qq / (d * d)
@@ -209,7 +217,9 @@ class EnergyAnalysis(Analysis):
         self.e_el[k] = e_el.sum()
         self.e_vdw[k] = e_vdw.sum()
         rvec = minimum_image_vectors(pa[i] - pb[j], box)
-        fmag = -(de_el + de_vdw) / d
+        # the force of the (clamped) distance along the unit vector of the pair: dividing by the clamped distance
+        # scaled the force of a pair closer than 0.5 Å by r / 0.5 (a pair at distance 0 has no direction)
+        fmag = -(de_el + de_vdw) / np.where(r > 0.0, r, 1.0)
         self.force[k] = np.linalg.norm((rvec * fmag[:, None]).sum(axis=0))
 
     def finalize(self):

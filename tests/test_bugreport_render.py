@@ -1,0 +1,831 @@
+"""Regression tests for the rendering, chart, preview and video items of the external bug report on 0.1.1
+(MDATK-BUG-031 to 038, 057 to 064 and 075 to 082; the item is named in each test)."""
+
+import logging
+import os
+import shutil
+import subprocess
+import warnings
+
+import numpy as np
+import pytest
+
+from mdatk.config import PanelSpec, Project, RepSpec, ResidueGroup
+from mdatk.data import AnalysisResult, CSRBuilder, Dataset
+from mdatk.render import video
+from mdatk.render.example import example_dataset
+from mdatk.render.video import build_figure
+
+warnings.filterwarnings("ignore")
+
+
+def project_with(panels, preset="single"):
+    p = Project()
+    p.layout.preset = preset
+    p.layout.panels = list(panels)
+    return p
+
+
+def panel_text(panel) -> str:
+    """Everything a panel's axes say (the "No data: ..." message of a panel that could not be drawn)."""
+    return " | ".join(t.get_text() for t in panel.ax.texts)
+
+
+def matrix_dataset(values, times, classes=None, name="contacts", out="per"):
+    """Dataset with one per-residue matrix (rows x frames) at the given frame times (ps)."""
+    values = np.asarray(values)
+    ds = Dataset(np.arange(len(times)), np.asarray(times, dtype=float), time_unit="ps")
+    res = AnalysisResult(name, "k", {}, {}, {})
+    res.arrays["m"] = values
+    res.meta["rows"] = [str(k + 1) for k in range(values.shape[0])]
+    if classes:
+        res.add_matrix(out, "m", "rows", "Per residue", "class", classes=list(classes))
+    else:
+        res.add_matrix(out, "m", "rows", "Per residue", "count")
+    ds.add(res)
+    return ds
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-031: no analysed frames
+# ---------------------------------------------------------------------------
+
+
+def empty_dataset():
+    """A dataset of zero frames with every kind of output and a trace (an empty cached dataset)."""
+    ds = Dataset(np.zeros(0, int), np.zeros(0))
+    res = AnalysisResult("rmsd", "k", {}, {}, {})
+    res.arrays.update(a=np.zeros(0), b=np.zeros(0), m=np.zeros((3, 0)))
+    res.add_series("Complex", "a", "RMSD", "Å")
+    res.add_series("Other", "b", "RMSD 2", "Å")
+    res.meta.update(rows=["1", "2", "3"], r=["1", "2"], c=["1", "2"])
+    res.add_matrix("per", "m", "rows", "Per residue", "count")
+    res.arrays.update(CSRBuilder().arrays("map"))
+    res.add_pairmap("map", "map", "r", "c", "Map")
+    ds.add(res)
+    tr = AnalysisResult("trace", "k", {}, {}, {})
+    tr.arrays.update(coords=np.zeros((0, 4, 3)), ion_coords=np.zeros((0, 0, 3)), chain=np.zeros(4, int),
+                     group_index=np.zeros(4, int), group_member=np.ones((1, 4), bool), is_point=np.ones(4, bool),
+                     links=np.array([[0, 1], [1, 2], [2, 3]]), resindex=np.arange(4), resid=np.arange(1, 5),
+                     resname=np.array(["G", "C", "A", "U"]), chain_name=np.array(["A"] * 4))
+    ds.add(tr)
+    return ds
+
+
+@pytest.mark.parametrize("ptype, series", [
+    ("timeseries", ["rmsd/Complex"]), ("dual_axis", ["rmsd/Complex", "rmsd/Other"]), ("heatmap", ["rmsd/per"]),
+    ("contact_map", ["rmsd/map"]), ("structure", []), ("sequence", []), ("secondary", [])])
+def test_031_panels_of_a_dataset_without_frames_show_no_data(ptype, series):
+    p = project_with([PanelSpec(ptype, series, "")])
+    p.visual.glow_mode = "none"
+    _fig, _canvas, panels = build_figure(empty_dataset(), p, 400, 300, 100)  # was: IndexError
+    assert not panels[0].ok and "No data: no frames" in panel_text(panels[0])
+
+
+def test_031_rendering_without_frames_stops_with_a_message(tmp_path, monkeypatch):
+    from mdatk.render.charts import render_charts
+
+    def no_ffmpeg(*_a, **_k):
+        raise AssertionError("FFmpeg must not be started for zero frames")
+
+    monkeypatch.setattr(video, "FFmpegWriter", no_ffmpeg)
+    p = project_with([PanelSpec("sequence", [], "")])  # a panel that never read the time axis
+    p.visual.glow_mode = "none"
+    with pytest.raises(video.VideoError, match="no analysed frames to render"):
+        video.render_video(empty_dataset(), p, str(tmp_path / "v.mp4"))
+    with pytest.raises(video.VideoError, match="no analysed frames to render"):
+        video.render_frame(empty_dataset(), p, -1, str(tmp_path / "f.png"))  # the CLI's frame -1 of no frames
+    with pytest.raises(ValueError, match="no analysed frames to render"):
+        render_charts(empty_dataset(), p, str(tmp_path / "charts"))
+    assert not (tmp_path / "v.mp4").exists() and not (tmp_path / "f.png").exists()
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-032: NaN coordinates in the structure view
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("frame, value", [(2, np.nan), (0, np.nan), (2, np.inf)])
+def test_032_a_non_finite_coordinate_does_not_break_the_structure_view(frame, value, caplog):
+    from mdatk.render import residues
+
+    residues._WARNED.clear()  # warnings are logged once per process
+    p = project_with([PanelSpec("structure", [], "")])
+    p.visual.label_every = 5
+    ds = example_dataset(p, n_frames=6)
+    coords = np.array(ds.results["trace"].arrays["coords"], dtype=float)
+    clean = build_figure(ds, p, 500, 400, 100)[2][0]
+    coords[frame, 5] = value  # one residue of one frame
+    ds.results["trace"].arrays["coords"] = coords
+    with caplog.at_level(logging.WARNING):
+        fig, canvas, panels = build_figure(ds, p, 500, 400, 100)  # was: Axis limits cannot be NaN or Inf
+    panel = panels[0]
+    assert panel.ok and np.isfinite(panel.ax.get_xlim()).all() and np.isfinite(panel.ax.get_ylim()).all()
+    # the view is framed by the finite points: as without the bad residue
+    assert panel.ax.get_xlim() == pytest.approx(clean.ax.get_xlim(), rel=0.02)
+    assert any(f"frame(s) {frame} " in r.getMessage() and "non-finite" in r.getMessage() for r in caplog.records)
+    n_res = coords.shape[1]
+    for pos in range(ds.n_frames):
+        panel.update(pos)
+        canvas.draw()
+        drawn = np.asarray(panel.points.get_offsets())
+        assert np.isfinite(drawn).all()
+        assert len(drawn) == (n_res - 1 if pos == frame else n_res)  # the residue is left out of that frame only
+        assert all(np.isfinite(seg).all() for seg in panel.lines.get_segments())
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-035, 036, 076: panel options of a bad value or type
+# ---------------------------------------------------------------------------
+
+
+def test_035_fewer_than_one_tick_counts_as_one():
+    from mdatk.render.panels import thin_ticks
+
+    assert thin_ticks(10, 0).tolist() == [0]  # was: ZeroDivisionError
+    assert thin_ticks(10, -3).tolist() == [0]  # was: every row labelled
+    assert thin_ticks(10, 20).tolist() == list(range(10)) and thin_ticks(10, 5).tolist() == [0, 2, 4, 6, 8]
+
+
+@pytest.mark.parametrize("ptype, series", [("heatmap", ["contacts/per_residue_a"]), ("contact_map", ["contacts/map"])])
+def test_035_max_ticks_below_one_is_drawn_and_warned_about(ptype, series):
+    p = project_with([PanelSpec(ptype, series, "", {"max_ticks": 0})])
+    panel = build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0]  # was: ZeroDivisionError
+    assert panel.ok and [t.get_text() for t in panel.ax.get_yticklabels()] == ["1"]
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert len(found) == 1 and found[0].level == "warning" and "'max_ticks' is 0" in found[0].message
+
+
+BAD_OPTIONS = [
+    ("timeseries", ["rmsd/Complex"], {"ylim": 5}, "option 'ylim' must be two numbers [low, high], not 5"),
+    ("timeseries", ["rmsd/Complex"], {"ylim": [0.0, float("nan")]}, "option 'ylim' must be two numbers"),
+    ("timeseries", ["rmsd/Complex"], {"ylim": "ab"}, "option 'ylim' must be two numbers"),
+    ("timeseries", ["rmsd/Complex"], {"smooth": "x"}, "option 'smooth' must be a whole number of frames, not 'x'"),
+    ("timeseries", ["rmsd/Complex"], {"target": "high"}, "option 'target' must be a number, not 'high'"),
+    ("heatmap", ["contacts/per_residue_a"], {"vmax": "x"}, "option 'vmax' must be a number, not 'x'"),
+    ("heatmap", ["contacts/per_residue_a"], {"vmin": [1]}, "option 'vmin' must be a number, not [1]"),
+    ("heatmap", ["contacts/per_residue_a"], {"max_ticks": "x"}, "option 'max_ticks' must be a whole number"),
+    ("contact_map", ["contacts/map"], {"mode": "frame", "frame": "x"}, "option 'frame' must be a frame number"),
+    ("contact_map", ["contacts/map"], {"max_ticks": None}, "option 'max_ticks' must be a whole number, not None"),
+    ("sequence", [], {"per_row": "x"}, "option 'per_row' must be a whole number (0: as many as fit), not 'x'"),
+    ("sequence", [], {"per_row": -3}, "option 'per_row' must be a whole number (0: as many as fit), not -3"),
+]
+
+
+@pytest.mark.parametrize("ptype, series, options, message", BAD_OPTIONS)
+def test_036_an_unusable_panel_option_is_reported_and_shown_not_raised(ptype, series, options, message):
+    p = project_with([PanelSpec("timeseries", ["rmsd/Complex"], ""), PanelSpec(ptype, series, "", options)],
+                     "equal_2")
+    # validation names the panel's options before anything runs: an error when the panels are drawn
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.1.options"]
+    assert len(found) == 1 and found[0].level == "error" and message in found[0].message
+    assert found[0] in p.validate(video=True) and found[0].location.endswith("Options")
+    assert [x.level for x in p.problems(video=False) if x.field == "layout.panels.1.options"] == ["warning"]
+    # and the renderer shows the reason in the panel instead of raising (TypeError / ValueError before)
+    panels = build_figure(example_dataset(p, n_frames=6), p, 800, 400, 100)[2]
+    assert panels[0].ok and not panels[1].ok
+    assert f"No data: {message}" in panel_text(panels[1])
+
+
+@pytest.mark.parametrize("ptype, series, options", [
+    ("timeseries", ["rmsd/Complex"], {"ylim": [0, 5], "smooth": 5, "progressive": True, "target": 2.5}),
+    ("timeseries", ["rmsd/Complex"], {"ylim": [None, 5.0], "smooth": 0, "target": None}),
+    ("heatmap", ["contacts/per_residue_a"], {"vmin": 0, "vmax": 3.5, "max_ticks": 8}),
+    ("contact_map", ["contacts/map"], {"mode": "frame", "frame": 3, "transpose": True, "max_ticks": 10}),
+    ("contact_map", ["contacts/map"], {"mode": "frequency", "frame": "ignored in this mode"}),
+    ("sequence", [], {"per_row": 12, "residues": "A:1-5"}),
+    ("sequence", [], {"per_row": 0}),
+    ("secondary", [], {"source": "first"}),
+    ("secondary", [], {}),
+])
+def test_036_usable_panel_options_stay_accepted(ptype, series, options):
+    from mdatk.config import panel_option_problems
+
+    p = project_with([PanelSpec(ptype, series, "", options)])
+    assert panel_option_problems(ptype, options) == []
+    assert not [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0].ok
+
+
+def test_076_an_unknown_source_of_the_secondary_panel_is_not_taken_as_dynamic():
+    message = "unknown source 'dotbraket' (option 'source': dynamic, first or dotbracket)"
+    p = project_with([PanelSpec("secondary", [], "", {"source": "dotbraket", "dotbracket": "((..))"})])
+    panel = build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0]
+    assert not panel.ok and f"No data: {message}" in panel_text(panel)  # was: drawn with the dynamic pairs
+    found = [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+    assert [x.level for x in found] == ["error"] and message in found[0].message
+    for source in ("dynamic", "first"):
+        p.layout.panels[0].options = {"source": source}
+        assert build_figure(example_dataset(p, n_frames=6), p, 500, 400, 100)[2][0].ok
+        assert not [x for x in p.problems(video=True) if x.field == "layout.panels.0.options"]
+
+
+# ---------------------------------------------------------------------------
+# Charts and heatmaps: MDATK-BUG-034, 057, 058, 059, 063, 064, 082
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def chart_figures(monkeypatch):
+    """The figures the chart functions create (they only return file names)."""
+    from mdatk.render import charts
+
+    made = []
+
+    class Capture(charts.Figure):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(charts, "Figure", Capture)
+    return made
+
+
+def chart_project(theme="light", dpi=60):
+    p = Project()
+    p.inputs.time_unit = "ps"
+    p.visual.theme = theme
+    c = p.output.charts
+    c.dpi, c.width, c.height = dpi, 5.0, 3.0
+    return p
+
+
+def heat_column(ax, x: float) -> int:
+    """The column of the heatmap drawn in ``ax`` that covers the time ``x``."""
+    if ax.images:  # one image over the whole time range: equal columns
+        x0, x1 = ax.images[0].get_extent()[:2]
+        return int((x - x0) / (x1 - x0) * ax.images[0].get_array().shape[1])
+    edges = np.asarray(ax.collections[0].get_coordinates())[0, :, 0]
+    return int(np.searchsorted(edges, x)) - 1
+
+
+UNEVEN_TIMES = np.concatenate([np.arange(12) * 10.0, 110.0 + (np.arange(12) + 1) * 2.0])  # 10 ps, then 2 ps apart
+
+
+def test_057_heatmap_columns_sit_at_their_frame_times(chart_figures, tmp_path):
+    from mdatk.render.charts import render_matrix_chart
+    from mdatk.render.panels import time_edges
+
+    edges = time_edges(UNEVEN_TIMES)
+    assert edges[:3].tolist() == [-5.0, 5.0, 15.0] and edges[11:14].tolist() == [105.0, 111.0, 113.0]
+    assert edges[-1] == 135.0 and len(edges) == 25
+    assert time_edges(np.arange(4) * 2.0).tolist() == [-1.0, 1.0, 3.0, 5.0, 7.0]  # evenly spaced: as before
+    assert time_edges(np.array([7.0])).tolist() == [6.5, 7.5]
+    ds = matrix_dataset(np.arange(6 * 24).reshape(6, 24) % 5, UNEVEN_TIMES)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    panel = build_figure(ds, p, 600, 300, 100)[2][0]
+    render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    for ax in (panel.ax, chart_figures[0].axes[0]):
+        # every frame's time (where the moving cursor stands) lies in that frame's column; was: column 18 at frame 12
+        assert [heat_column(ax, t) for t in UNEVEN_TIMES] == list(range(24))
+        assert ax.get_xlim() == (-5.0, 135.0) and ax.get_ylim() == (5.5, -0.5)
+
+
+def test_057_evenly_spaced_frames_keep_the_image(chart_figures, tmp_path):
+    from mdatk.render.charts import render_matrix_chart
+
+    ds = matrix_dataset(np.arange(6 * 8).reshape(6, 8) % 5, np.arange(8) * 10.0)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    panel = build_figure(ds, p, 600, 300, 100)[2][0]
+    render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    for ax in (panel.ax, chart_figures[0].axes[0]):
+        assert len(ax.images) == 1 and list(ax.images[0].get_extent()) == [-5.0, 75.0, 5.5, -0.5]
+
+
+def test_058_running_mean_skips_frames_without_a_value():
+    from mdatk.render.panels import _running_mean
+
+    y = np.array([1, 2, 3, np.nan, 5, 6, 7, 8, 9, 10.0])
+    out = _running_mean(y, 5)  # was: [1.6 nan nan nan nan nan 7. 8. 8.8 9.4]
+    assert out.tolist() == pytest.approx([1.6, 1.75, 2.75, 4.0, 5.25, 6.5, 7.0, 8.0, 8.8, 9.4])
+    gap = _running_mean(np.array([1.0, np.nan, np.nan, np.nan, np.nan, np.nan, 7.0]), 3)
+    assert np.isnan(gap[2:5]).all() and np.isfinite(gap[[0, 1, 5, 6]]).all()  # NaN only where a whole window is
+    full = np.arange(10.0) ** 2
+    padded = np.pad(full, (2, 2), mode="edge")
+    assert np.array_equal(_running_mean(full, 5), np.convolve(padded, np.ones(5) / 5, mode="valid"))  # unchanged
+
+
+def test_059_every_class_of_an_ordinal_scale_has_its_own_colour():
+    from mdatk.render.theme import DARK, LIGHT
+
+    for theme in (LIGHT, DARK):
+        for n in range(2, 13):
+            colours = theme.ordinal(n).colors
+            assert len(colours) == n and len(set(colours)) == n, (theme.name, n)  # was: 5 colours for n > 5
+    # up to five classes keep their colours
+    assert LIGHT.ordinal(3).colors == ["#e1e0d9", "#86b6ef", "#0d366b"]
+    assert LIGHT.ordinal(5).colors == ["#e1e0d9", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
+    assert DARK.ordinal(5).colors == ["#2c2c2a", "#184f95", "#3987e5", "#86b6ef", "#cde2fb"]
+    eight = LIGHT.ordinal(8).colors  # the same ramp, in seven even steps
+    assert eight[0] == "#e1e0d9" and eight[1] == "#86b6ef" and eight[-1] == "#0d366b"
+    # a class matrix of eight classes: the colour bar's eight labels show eight colours
+    classes = [f"class {k}" for k in range(8)]
+    ds = matrix_dataset(np.repeat(np.arange(8)[None, :], 3, axis=0), np.arange(8) * 10.0, classes)
+    p = chart_project()
+    p.layout.preset, p.layout.panels = "single", [PanelSpec("heatmap", ["contacts/per"], "")]
+    im = build_figure(ds, p, 600, 300, 100)[2][0].ax.images[0]
+    assert len({im.cmap(im.norm(k)) for k in range(8)}) == 8  # was 5: e.g. classes 0 and 1 looked alike
+
+
+def test_034_a_matrix_chart_of_thousands_of_rows_is_limited_in_height(chart_figures, tmp_path, caplog):
+    from mdatk.render import charts
+
+    rows = 8000  # 0.18 in per row: 72 075 px at 50 dpi, more than Agg draws before Matplotlib 3.10 (2^16)
+    ds = matrix_dataset(np.arange(rows * 4).reshape(rows, 4) % 5, np.arange(4) * 10.0)
+    p = chart_project(dpi=50)
+    p.output.charts.width = 3.0
+    with caplog.at_level(logging.WARNING):
+        (path,) = charts.render_matrix_chart(ds, p, "contacts/per", str(tmp_path))
+    fig = chart_figures[0]
+    assert fig.get_figheight() * fig.dpi <= 65000 < 2 ** 16  # was 72 075 px
+    assert charts.MAX_CHART_PIXELS == 65000 and os.path.getsize(path) > 0
+    assert any("8000 rows" in r.getMessage() and "limited to 65000 px" in r.getMessage() for r in caplog.records)
+    # a chart below the limit keeps its height of 0.18 in per row
+    caplog.clear()
+    small = matrix_dataset(np.arange(40 * 4).reshape(40, 4) % 5, np.arange(4) * 10.0)
+    charts.render_matrix_chart(small, p, "contacts/per", str(tmp_path))
+    assert chart_figures[1].get_figheight() == pytest.approx(0.18 * 40 + 1.5) and not caplog.records
+
+
+def chart_dataset():
+    """A series, a per-residue matrix and a residue map."""
+    ds = matrix_dataset(np.arange(6 * 8).reshape(6, 8) % 5, np.arange(8) * 10.0)
+    res = ds.results["contacts"]
+    res.arrays["s"] = np.linspace(1.0, 3.0, 8)
+    res.add_series("total", "s", "Total contacts", "count")
+    b = CSRBuilder()
+    for _ in range(8):
+        b.add(np.array([0, 1]), np.array([1, 0]), np.ones(2))
+    res.arrays.update(b.arrays("map"))
+    res.meta.update(r=["1", "2"], c=["1", "2"])
+    res.add_pairmap("map", "map", "r", "c", "Map")
+    return ds
+
+
+def test_063_a_matrix_asked_for_by_name_is_charted_and_a_residue_map_is_named(tmp_path, caplog):
+    from mdatk.render.charts import render_charts
+
+    p = chart_project()
+    p.output.charts.series = ["contacts/total", "contacts/per", "contacts/map", "contacts/nope"]
+    with caplog.at_level(logging.WARNING):
+        paths = render_charts(chart_dataset(), p, str(tmp_path))
+    names = sorted(os.path.basename(f) for f in paths)
+    assert names == ["MDATK_chart_contacts_per.png", "MDATK_chart_contacts_total.png"]  # was: the series only
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("contacts/map is a residue map" in m for m in messages)  # was: dropped without a word
+    assert any("contacts/nope is not available" in m for m in messages)
+    assert not any("contacts/per" in m for m in messages)
+    p.output.charts.include_heatmaps = True  # every matrix: the one asked for is not drawn twice
+    assert len(render_charts(chart_dataset(), p, str(tmp_path / "all"))) == 2
+
+
+def test_064_chart_formats_are_checked_before_the_run():
+    p = Project()
+    assert not [x for x in p.problems(charts=True) if x.field == "output.charts.formats"]
+    p.output.charts.formats = ["png", ".PDF", "svg", "pnng"]
+    found = [x for x in p.problems(charts=True) if x.field == "output.charts.formats"]
+    assert len(found) == 1 and found[0].level == "error" and found[0] in p.validate(charts=True)
+    assert "Unknown chart file format 'pnng'" in found[0].message and "png" in found[0].message
+    assert [x.level for x in p.problems(charts=False) if x.field == "output.charts.formats"] == ["warning"]
+
+
+@pytest.mark.parametrize("field, uses", [("visual.glow_color", "video"), ("visual.base_color", "video"),
+                                         ("visual.ion_color", "video"), ("groups.0.color", "video"),
+                                         ("output.charts.color", "charts")])
+def test_064_colours_are_checked_before_the_run(field, uses):
+    p = Project()
+    assert not [x for x in p.problems(video=True, charts=True) if "not a colour" in x]  # the defaults are colours
+    obj = p
+    *path, leaf = field.split(".")
+    for part in path:
+        obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+    setattr(obj, leaf, "notacolour")
+    found = [x for x in p.problems(video=True, charts=True) if x.field == field]
+    assert len(found) == 1 and found[0].level == "error" and "'notacolour' is not a colour" in found[0].message
+    off = {"video": uses != "video", "charts": uses != "charts"}  # the output that reads the colour is not made
+    assert [x.level for x in p.problems(**off) if x.field == field] == ["warning"]
+    setattr(obj, leaf, "tab:orange")
+    assert not [x for x in p.problems(video=True, charts=True) if x.field == field]
+
+
+def test_064_a_bad_colour_or_format_stops_the_run_before_the_analyses(demo_dry, tmp_path):
+    from mdatk.pipeline import Pipeline, PipelineError
+
+    for field, value, text in (("visual.glow_color", "notacolour", "'notacolour' is not a colour"),
+                               ("output.charts.formats", ["png", "pnng"], "Unknown chart file format 'pnng'")):
+        p = Project.load(demo_dry["preset"])
+        p.output.out_dir = str(tmp_path / field)
+        section, leaf = field.rsplit(".", 1)
+        obj = p
+        for part in section.split("."):
+            obj = getattr(obj, part)
+        setattr(obj, leaf, value)
+        pipe = Pipeline(p)
+        with pytest.raises(PipelineError) as err:  # was: the analyses ran, then Matplotlib's own error
+            pipe.run(video=True, charts=True, pdb=False)
+        assert text in str(err.value) and [x.field for x in err.value.problems] == [field]
+        assert not os.path.exists(p.cache_dir)  # nothing was analysed
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_082_chart_title_and_colour_bar_follow_the_theme(theme, chart_figures, tmp_path):
+    from matplotlib.colors import to_hex
+
+    from mdatk.render.charts import render_matrix_chart, render_series_chart
+    from mdatk.render.theme import get_theme
+
+    t = get_theme(theme)
+    p = chart_project(theme)
+    render_matrix_chart(chart_dataset(), p, "contacts/per", str(tmp_path))
+    render_series_chart(chart_dataset(), p, "contacts/total", str(tmp_path))
+    for fig, label in zip(chart_figures, ("Per residue", "Total contacts")):
+        (title,) = [x for x in fig.axes[0].get_children() if getattr(x, "get_text", lambda: "")() == label]
+        assert to_hex(title.get_color()) == t.ink  # was black: unreadable on the dark surface
+    bar = chart_figures[0].axes[1]
+    assert to_hex(bar.yaxis.label.get_color()) == t.ink2
+    assert {to_hex(x.get_color()) for x in bar.yaxis.get_ticklabels()} == {t.ink2}
+
+
+# ---------------------------------------------------------------------------
+# The built-in 3D renderer: MDATK-BUG-033, 038, 080, 081
+# ---------------------------------------------------------------------------
+
+WHITE = np.ones(3)
+
+
+def view(width=100, height=100, xlim=(-10.0, 10.0), ylim=(-10.0, 10.0), zrange=(-10.0, 10.0)):
+    from mdatk.render.molecule.stage import Viewport
+
+    return Viewport(np.eye(3), xlim, ylim, width, height, zrange)
+
+
+def balls(xyz, radius, owner=None):
+    from mdatk.render.molecule.geometry import Spheres
+    from mdatk.render.molecule.scene import Colored
+
+    xyz = np.atleast_2d(np.asarray(xyz, float))
+    n = len(xyz)
+    own = np.arange(n) if owner is None else np.asarray(owner)
+    return Colored(Spheres(xyz, np.full(n, float(radius)), own, np.full(n, -1)), np.tile([0.3, 0.3, 0.8], (n, 1)))
+
+
+def test_033_the_surface_grid_of_a_blown_up_frame_is_refused_up_front():
+    from mdatk.render.molecule import surface
+    from mdatk.render.molecule.surface import density_grid, gaussian_surface
+
+    far = np.array([[0, 0, 0], [5000, 5000, 5000.0]])
+    with pytest.raises(ValueError, match="surface grid of 5013 x 5013 x 5013 points is too large"):
+        density_grid(far)  # was: MemoryError "Unable to allocate 939. GiB" (or the allocation itself)
+    with pytest.raises(ValueError, match="too large"):
+        gaussian_surface(np.array([[0, 0, 0], [0, 0, 1e30]]))  # was: an int overflow in the grid size
+    assert surface.MAX_GRID_POINTS == 2 ** 26
+    vol, lo = density_grid(np.array([[0, 0, 0], [30, 20, 10.0]]))  # an ordinary molecule: as before
+    assert vol.shape == (23, 33, 43) and lo == pytest.approx([-5.98, -5.98, -5.98])
+
+
+def test_033_a_blown_up_frame_leaves_the_surface_out_with_a_warning(caplog):
+    p = project_with([PanelSpec("structure", [], "")])
+    p.visual.representations = [RepSpec("surf"), RepSpec("licorice")]
+    ds = example_dataset(p, n_frames=3)
+    atoms = np.array(ds.results["atoms"].arrays["coords"], dtype=np.float32)
+    atoms[1, 0] = (6000.0, 6000.0, 6000.0)  # one atom of frame 1 has flown off
+    ds.results["atoms"].arrays["coords"] = atoms
+    fig, canvas, panels = build_figure(ds, p, 400, 300, 100)
+    stage = panels[0].stage
+    from mdatk.render.molecule.geometry import Mesh
+
+    with caplog.at_level(logging.WARNING):
+        counts = []
+        for pos in range(3):
+            panels[0].update(pos)
+            counts.append(sum(isinstance(it.prim, Mesh) for it in stage._items))
+    assert counts == [1, 0, 1] and not stage.failed  # the other representation is still drawn in frame 1
+    assert any("(surf) not drawn on some frames: surface grid" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("xlim, ylim", [((1.0, 1.0), (-10.0, 10.0)), ((-10.0, 10.0), (3.0, 3.0)),
+                                        ((5.0, -5.0), (-10.0, 10.0)), ((float("nan"), 1.0), (-10.0, 10.0))])
+def test_038_an_unusable_3d_view_is_a_value_error(xlim, ylim):
+    with pytest.raises(ValueError, match="3D view: unusable view"):  # was: ZeroDivisionError for equal limits
+        view(xlim=xlim, ylim=ylim)
+
+
+def test_038_an_unusable_view_does_not_break_the_panel(monkeypatch, caplog):
+    """The stage builds its viewport from the axes limits: one that cannot be used is logged and the 2D
+    trace is drawn, like any other failure of the 3D layer."""
+    p = project_with([PanelSpec("structure", [], "")])
+    p.visual.representations = [RepSpec("licorice")]
+    fig, canvas, panels = build_figure(example_dataset(p, n_frames=2), p, 400, 300, 100)
+    panel = panels[0]
+    monkeypatch.setattr(panel.ax, "get_xlim", lambda: (1.0, 1.0))
+    with caplog.at_level(logging.WARNING):
+        panel.update(1)  # was: ZeroDivisionError out of the video loop
+    assert panel.stage.failed and panel.stage.image.rgba is None
+    assert any("3D view: unusable view" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("width, height", [(101, 77), (103, 75), (99, 99), (100, 76)])
+def test_080_fast_quality_fills_and_registers_odd_sizes(width, height):
+    from mdatk.render.molecule.scene import Shading
+    from mdatk.render.molecule.software import SoftwareRenderer
+
+    plain = Shading(WHITE, 0.0)
+    r = SoftwareRenderer()
+    # a sphere larger than the view covers every pixel (was: the last column / row stayed transparent at 101 x 77)
+    img = r.render([balls([0, 0, 0], 30.0)], view(width, height, zrange=(-40.0, 40.0)), plain, quality="fast")
+    assert img.shape == (height, width, 4) and (img[..., 3] == 255).all()
+    # and a small one lies where full quality draws it, within the half-resolution pixel (was: up to 1.5 px off)
+    centres = []
+    for quality in ("high", "fast"):
+        alpha = r.render([balls([6.0, -6.0, 0], 2.0)], view(width, height), plain, quality=quality)[..., 3] > 127
+        yy, xx = np.nonzero(alpha)
+        centres.append((xx.mean(), yy.mean()))
+    assert np.abs(np.subtract(*centres)).max() < 0.75
+
+
+def test_081_the_glow_halo_has_no_seam_at_the_molecule_box():
+    from mdatk.render.molecule.scene import Shading
+    from mdatk.render.molecule.software import SoftwareRenderer
+
+    glow = Shading(WHITE, 0.0, np.ones(1, np.float32), np.array([1.0, 0.7, 0.0]))
+    img = SoftwareRenderer().render([balls([0, 0, 0], 2.0, owner=[0])], view(200, 200), glow)
+    alpha = img[..., 3].astype(int)
+    assert alpha[100, 100] == 255 and 20 < alpha[100, 60] < 200  # the sphere, and its halo beside it
+    # toward the sphere the halo only gets stronger: along the middle row and column, from each side
+    # (was: a darker one-pixel frame at the box around the sphere, e.g. ..., 91, 95, 83, 127, 229)
+    for line in (alpha[100, :101], alpha[100, :99:-1], alpha[:101, 100], alpha[:99:-1, 100]):
+        assert (np.diff(line) >= 0).all(), line.tolist()
+
+
+def test_081_the_halo_strength_does_not_depend_on_earlier_renders():
+    from mdatk.render.molecule import software
+
+    software._NORM_CACHE.clear()
+    alone = software._disc_norm(1.2349, 1.5437)
+    software._NORM_CACHE.clear()
+    software._disc_norm(1.2251, 1.5361)  # a render at a slightly different size first
+    assert software._disc_norm(1.2349, 1.5437) == alone  # was: the value of the first size (0.9 % off)
+    for k in range(600):  # resizing a window renders many sizes: the cache stays small
+        software._disc_norm(1.0 + k * 1e-4, 1.5)
+    assert len(software._NORM_CACHE) <= 256
+
+
+# ---------------------------------------------------------------------------
+# Example data of the layout preview: MDATK-BUG-037, 079
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chain", [np.zeros(10, dtype=int), np.zeros(1, dtype=int), np.array([0, 0, 0, 0, 0, 1]),
+                                   np.array([0] * 6 + [1] * 6), np.zeros(0, dtype=int)])
+def test_037_example_base_pairs_are_a_consistent_map(chain):
+    from mdatk.render import example
+
+    res = example._example_basepairs(chain, 12)
+    a = res.arrays
+    assert len(a["map_i"]) == len(a["map_j"]) == len(a["map_v"]) == a["map_offsets"][-1]  # was 48, 0, 48 for one strand
+    if len(set(chain.tolist())) < 2:
+        assert len(a["map_i"]) == 0  # one strand has no partner: no pairs
+    if len(chain) == 12:  # a duplex: all six pairs, the frayed end opening every six frames
+        assert np.diff(a["map_offsets"]).tolist() == [6] * 6 + [4] * 6
+
+
+@pytest.mark.parametrize("mode", ["instant", "frequency"])
+def test_037_the_preview_of_a_single_strand_draws_its_base_pair_map(mode):
+    p = project_with([PanelSpec("secondary", [], ""),
+                      PanelSpec("contact_map", ["basepairs/map"], "", {"mode": mode})], "equal_2")
+    p.groups = [ResidueGroup("Only", "1-10", "", "#2a78d6")]
+    ds = example_dataset(p, n_frames=12)
+    fig, canvas, panels = build_figure(ds, p, 600, 300, 100)  # was: IndexError (shape mismatch) in the map panel
+    for pos in range(12):
+        for panel in panels:
+            panel.update(pos)
+    assert [panel.ok for panel in panels] == [True, True]
+
+
+def test_079_example_residues_stop_at_400_without_expanding_the_range(monkeypatch):
+    from mdatk.render import example
+
+    def small_range(*args):  # the module's range(): a whole range of residues must not be listed
+        out = range(*args)
+        assert len(out) <= 400, f"{len(out)} residue numbers expanded for an example of 400"
+        return out
+
+    monkeypatch.setattr(example, "range", small_range, raising=False)
+    p = Project()
+    p.groups = [ResidueGroup("Big", "1-300000000", "", "#2a78d6"),  # was: 8 s and gigabytes, then 400 kept
+                ResidueGroup("Mixed", "A:5-9, 700-900, 3", "", "#eb6834"), ResidueGroup("Long", "1-250, 300-600"),
+                ResidueGroup("Sel", "", "resname G"), ResidueGroup("Bad", "1-x")]
+    assert example.group_resids(p, "Big") == list(range(1, 401))
+    # the ids themselves are those of the ranges, in order, cut at 400 (as before)
+    assert example.group_resids(p, "Mixed") == [5, 6, 7, 8, 9] + list(range(700, 901)) + [3]
+    assert example.group_resids(p, "Long") == list(range(1, 251)) + list(range(300, 450))
+    for name in ("Sel", "Bad", "Missing"):  # no residue ranges to read: the placeholder residues
+        assert example.group_resids(p, name) == list(range(1, 13))
+
+
+def test_079_the_schematic_trace_has_letters_for_groups_beyond_120_residues():
+    p = project_with([PanelSpec("structure", [], ""), PanelSpec("sequence", [], "")], "single_strip")
+    p.groups = [ResidueGroup("Big", "1-200", "", "#2a78d6"), ResidueGroup("Other", "201-400", "", "#eb6834")]
+    ds = example_dataset(p, n_frames=3)  # was: IndexError "string index out of range"
+    tr = ds.results["trace"]
+    assert tr.arrays["coords"].shape == (3, 400, 3) and set("".join(tr.arrays["resname"])) == set("GCAU")
+    assert "".join(tr.arrays["resname"][:24]) == "GCAUGGCAUCGA" * 2  # the 12-letter pattern, repeated
+    assert all(panel.ok for panel in build_figure(ds, p, 600, 400, 100)[2])
+
+
+# ---------------------------------------------------------------------------
+# Density maps with NaN / infinite voxels: MDATK-BUG-060 (shadow), 091 (fit)
+# ---------------------------------------------------------------------------
+
+
+def blob_map(bad=None):
+    """A Gaussian blob in a 24^3 map; ``bad`` replaces one voxel away from the blob."""
+    from mdatk.io.mrc import DensityMap
+
+    z, y, x = np.indices((24, 24, 24))
+    data = np.exp(-((x - 12) ** 2 + (y - 12) ** 2 + (z - 12) ** 2) / (2 * 3.0 ** 2)).astype(np.float32)
+    if bad is not None:
+        data[2, 3, 4] = bad
+    return DensityMap(data, np.zeros(3), np.ones(3))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_060_a_non_finite_voxel_does_not_remove_the_density_shadow(bad):
+    from mdatk import density as D
+
+    centre = np.full(3, 12.0)
+    clean, dmap = blob_map(), blob_map(bad)
+    level = D.map_level(dmap, 2.0)  # was NaN: mean and deviation of all voxels
+    assert level == pytest.approx(D.map_level(clean, 2.0), rel=1e-3)
+    sh = D.project_density(dmap, D.RigidTransform.identity(), np.eye(3), centre, level)
+    ref = D.project_density(clean, D.RigidTransform.identity(), np.eye(3), centre, D.map_level(clean, 2.0))
+    assert sh is not None and np.isfinite(sh.image).all()  # was: an image of NaN (or none), no shadow drawn
+    assert np.abs(sh.image - ref.image).max() < 0.01 and sh.extent == ref.extent
+    alpha = D.shadow_rgba(sh, (0.1, 0.2, 0.9), 0.5)[..., 3]
+    assert np.isfinite(alpha).all() and (alpha > 0.01).sum() == (D.shadow_rgba(ref, (0.1, 0.2, 0.9), 0.5)[..., 3]
+                                                                 > 0.01).sum() > 50
+    assert D.density_centroid(dmap, level) == pytest.approx([12.0, 12.0, 12.0], abs=1e-3)  # was NaN
+    assert D.finite_data(clean.data) is clean.data  # a map of numbers is used as it is
+
+
+def test_091_a_non_finite_voxel_is_not_smeared_over_the_density_fit():
+    from mdatk import builder, density as D, pdbtools as pt
+    from mdatk.io.mrc import DensityMap
+
+    xyz, elements = builder.model_atoms(pt.read_pdb(builder.build_helix("GGCAUGCC")))
+    shift = np.array([3.0, -2.0, 1.0])
+    clean = D.simulate_map(xyz + shift, D.atom_weights(elements), 6.0)
+    data = clean.data.copy()
+    data[tuple(s // 2 for s in data.shape)] = np.nan  # one voxel in the middle of the density
+    bad = DensityMap(data, clean.origin, clean.voxel)
+    true = D.RigidTransform(np.eye(3), shift)
+    weights = D.atom_weights(elements)
+    p_clean, p_bad = D.FitProblem(clean, xyz, weights, 6.0), D.FitProblem(bad, xyz, weights, 6.0)
+    # the low-pass copies of the map have no NaN (were: 729 and more of the 10 920 voxels)
+    assert np.isfinite(p_bad.at_resolution(10.0).dmap.data).all()
+    # every envelope point counts as inside the map and the score is that of the clean map
+    assert p_bad.inside_fraction(true) == 1.0
+    assert p_bad.cc(true) == pytest.approx(p_clean.cc(true), abs=1e-4)
+    assert (p_clean.bad_voxels, p_bad.bad_voxels) == (0, 1) and p_clean.dmap is clean
+    assert np.isnan(bad.data).sum() == 1  # the map given is left as it is
+    a = D.fit_model(clean, xyz, elements, 6.0, search="manual")
+    b = D.fit_model(bad, xyz, elements, 6.0, search="manual")
+    assert b.cc == pytest.approx(a.cc, abs=1e-4)  # was 4e-4 apart
+    assert D.rotation_angle(a.transform.rotation @ b.transform.rotation.T) < 0.01  # degrees; was 0.03
+    assert "1 map voxel not finite" in b.message and "not finite" not in a.message  # the user is told
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-062 (chain legend), 075 (wrap_degrees)
+# ---------------------------------------------------------------------------
+
+
+def test_062_the_chain_legend_shows_the_chain_names():
+    p = project_with([PanelSpec("structure", [], ""), PanelSpec("sequence", [], "")], "single_strip")
+    p.visual.color_mode = "chain"
+    p.visual.glow_mode = "none"
+
+    def legend(names=None):
+        ds = example_dataset(p, n_frames=2)
+        tr = ds.results["trace"]
+        if names is None:
+            del tr.arrays["chain_name"]  # a trace cached before chain names were stored
+        else:
+            tr.arrays["chain_name"] = np.array([names[int(c)] for c in tr.arrays["chain"]])
+        panels = build_figure(ds, p, 700, 500, 100)[2]
+        return [t.get_text() for t in panels[0].legend.get_texts()], [t.get_text() for t in panels[1].chain_texts]
+
+    assert legend(["A", "B"]) == (["Chain A", "Chain B"], ["A", "B"])  # was: Chain 1, Chain 2 beside A and B
+    assert legend(["R", "S"]) == (["Chain R", "Chain S"], ["R", "S"])
+    assert legend(["R", ""])[0] == ["Chain R", "Chain 2"]  # no name: the chain's number
+    assert legend(None) == (["Chain A", "Chain B"], ["A", "B"])  # the letters the sequence panel shows too
+
+
+def test_075_wrap_degrees_folds_only_minus_180():
+    from mdatk.render.orientation import euler_to_matrix, matrix_to_euler, wrap_degrees
+
+    assert wrap_degrees(-179.999) == pytest.approx(-179.999, abs=1e-12)  # was +180.0
+    assert wrap_degrees(-179.9999) == pytest.approx(-179.9999, abs=1e-12)
+    assert wrap_degrees(-180.0) == 180.0 and wrap_degrees(180.0) == 180.0 and wrap_degrees(540.0) == 180.0
+    assert wrap_degrees(190.0) == pytest.approx(-170.0) and wrap_degrees(0.0) == 0.0
+    angles = matrix_to_euler(euler_to_matrix([-179.999, 10.0, 20.0]))
+    assert angles == pytest.approx((-179.999, 10.0, 20.0), abs=1e-6)  # was (180.0, 10, 20)
+
+
+# ---------------------------------------------------------------------------
+# The FFmpeg command line: MDATK-BUG-077 (codec fallback and crf), 078 (colour matrix)
+# ---------------------------------------------------------------------------
+
+
+def writer_command(monkeypatch, encoders, codec="libx264", crf=20, size=(1920, 1080)):
+    """The command FFmpegWriter would run when FFmpeg offers ``encoders`` (FFmpeg itself is not started)."""
+
+    class NoProcess:
+        stdin = None
+
+        def __init__(self, cmd, **_kwargs):
+            self.cmd = cmd
+
+    monkeypatch.setattr(video, "find_ffmpeg", lambda path="ffmpeg": "ffmpeg")
+    monkeypatch.setattr(video, "available_encoders", lambda exe: "".join(f" V..... {e} x\n" for e in encoders))
+    monkeypatch.setattr(video.subprocess, "Popen", NoProcess)
+    return video.FFmpegWriter("out.mp4", size[0], size[1], 24, codec, crf).cmd
+
+
+def option(cmd, name):
+    """The value of the last ``name`` of an FFmpeg command (the output's, where the input has one too)."""
+    return cmd[len(cmd) - cmd[::-1].index(name)]
+
+
+def test_077_the_codec_fallback_keeps_the_crf_setting(monkeypatch, caplog):
+    # libx264 itself: as before
+    cmd = writer_command(monkeypatch, ["libx264", "mpeg4"], crf=23)
+    assert option(cmd, "-vcodec") == "libx264"
+    assert option(cmd, "-crf") == "23" and option(cmd, "-preset") == "medium" and "-q:v" not in cmd
+    # no libx264: mpeg4's quantiser follows crf (was -q:v 3 whatever the crf); the default crf 20 is still 3
+    with caplog.at_level(logging.WARNING):
+        quant = {crf: int(option(writer_command(monkeypatch, ["mpeg4"], crf=crf), "-q:v")) for crf in (0, 14, 20, 26, 32, 51)}
+    assert quant == {0: 2, 14: 2, 20: 3, 26: 6, 32: 12, 51: 31}
+    assert any("libx264 unavailable; using mpeg4" in r.getMessage() for r in caplog.records)  # and it is said
+    assert "-crf" not in writer_command(monkeypatch, ["mpeg4"], crf=26)
+    # mpeg4 chosen as the codec: the same scale
+    assert option(writer_command(monkeypatch, ["libx264", "mpeg4"], codec="mpeg4", crf=32), "-q:v") == "12"
+    # libopenh264 has no quality setting: a bit rate from crf and the frame (was none: the encoder's default)
+    rate = {crf: int(option(writer_command(monkeypatch, ["libopenh264", "mpeg4"], crf=crf), "-b:v")) for crf in (17, 23, 29)}
+    assert rate[23] == pytest.approx(0.1 * 1920 * 1080 * 24, rel=1e-6)  # 0.1 bit per pixel at crf 23
+    assert rate[17] == pytest.approx(2 * rate[23], rel=1e-6) and rate[29] == pytest.approx(rate[23] / 2, rel=1e-6)
+    small = int(option(writer_command(monkeypatch, ["libopenh264"], crf=23, size=(960, 540)), "-b:v"))
+    assert small == pytest.approx(rate[23] / 4, rel=1e-6)
+    assert video.rate_options("libvpx-vp9", 20, 640, 480, 24) == []  # other encoders: their own defaults, as before
+
+
+def test_078_the_video_is_converted_and_tagged_as_bt709(monkeypatch):
+    for encoders, codec in ((["libx264"], "libx264"), (["mpeg4"], "libx264"), (["libx265", "libx264"], "libx265")):
+        cmd = writer_command(monkeypatch, encoders, codec=codec)
+        # RGB -> YUV with the BT.709 matrix, limited range (FFmpeg's default for RGB input is BT.601) ...
+        assert option(cmd, "-vf") == "scale=out_color_matrix=bt709:out_range=tv"
+        assert option(cmd, "-pix_fmt") == "yuv420p" and cmd.index("-vf") > cmd.index("-i")  # an output option
+        # ... and the stream says so (it was left untagged)
+        assert [option(cmd, k) for k in ("-colorspace", "-color_primaries", "-color_trc", "-color_range")] == \
+            ["bt709", "bt709", "bt709", "tv"]
+        assert cmd[-3:] == ["-movflags", "+faststart", "out.mp4"]
+
+
+def _has_x264():
+    exe = shutil.which("ffmpeg")
+    return bool(exe and shutil.which("ffprobe") and " libx264 " in video.available_encoders(exe))
+
+
+@pytest.mark.skipif(not _has_x264(), reason="needs ffmpeg with libx264 and ffprobe")
+def test_078_colours_of_an_encoded_video_read_back_as_bt709(tmp_path):
+    import json
+
+    width, height = 1280, 720  # HD: players take an untagged video of this size for BT.709
+    colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (27, 175, 122), (235, 104, 52), (0, 131, 0)]
+    path = str(tmp_path / "colours.mp4")
+    writer = video.FFmpegWriter(path, width, height, 24)
+    for rgb in colours:
+        frame = np.zeros((height, width, 4), np.uint8)
+        frame[..., :3], frame[..., 3] = rgb, 255
+        for _ in range(3):
+            writer.write(frame.tobytes())
+    writer.close()
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json",
+                            path], capture_output=True, text=True)
+    assert json.loads(probe.stdout)["streams"][0] == {  # was: {"pix_fmt": "yuv420p"} only
+        "pix_fmt": "yuv420p", "color_range": "tv", "color_space": "bt709", "color_transfer": "bt709",
+        "color_primaries": "bt709"}
+
+    def read(*matrix):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, *matrix, "-pix_fmt", "rgb24", "-f", "rawvideo",
+                              "-"], capture_output=True).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
+        return [tuple(int(v) for v in frames[3 * k + 1, height // 2, width // 2]) for k in range(len(colours))]
+
+    # read with the BT.709 matrix, and as FFmpeg reads it from the tags: the colours that were drawn
+    # (was: green (0, 255, 0) came back as (0, 215, 0), the ion green (0, 131, 0) as (0, 109, 0))
+    for got in (read("-vf", "scale=in_color_matrix=bt709:in_range=tv"), read()):
+        assert np.abs(np.subtract(got, colours)).max() <= 4, got

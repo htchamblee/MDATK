@@ -101,9 +101,11 @@ class _Cam:
     def __init__(self, vp, items: List[Colored], scale: float = 1.0):
         self.R = vp.R
         self.xlim, self.ylim = vp.xlim, vp.ylim
-        self.W, self.H = max(2, int(round(vp.width * scale))), max(2, int(round(vp.height * scale)))
-        self.s = self.W / (self.xlim[1] - self.xlim[0])  # pixels per Å
-        self.sy = self.H / (self.ylim[1] - self.ylim[0])
+        # an odd size at scale 0.5 rounds up: the image then reaches past the right / bottom edge of the
+        # view (it is cropped after upsampling) and keeps the view's scale
+        self.W, self.H = max(2, int(np.ceil(vp.width * scale))), max(2, int(np.ceil(vp.height * scale)))
+        self.s = vp.width * scale / (self.xlim[1] - self.xlim[0])  # pixels per Å
+        self.sy = vp.height * scale / (self.ylim[1] - self.ylim[0])
         self.zmin, self.zmax = depth_range(items, self.R[2])
         self.fog_lo, self.fog_hi = vp.zrange
 
@@ -568,8 +570,10 @@ _NORM_CACHE: dict = {}
 
 def _disc_norm(sig: float, rad: float) -> float:
     """1 / peak of a blurred disc of radius ``rad`` (a glowing residue reaches full alpha)."""
-    key = (round(sig, 2), round(rad, 2))
+    key = (float(sig), float(rad))  # the exact sizes: a rounded key gave the value of whichever size came first
     if key not in _NORM_CACHE:
+        if len(_NORM_CACHE) >= 256:  # a window being resized renders many sizes
+            _NORM_CACHE.clear()
         n = int(np.ceil(3 * sig + rad)) + 2
         yy, xx = np.mgrid[-n:n + 1, -n:n + 1]
         d = ((xx * xx + yy * yy) <= max(rad, 0.5) ** 2).astype(np.float32)
@@ -666,7 +670,11 @@ def composite(cam, pix, rgb, depth, owner, shading: Shading, outline=0.5, outlin
     flat[pix, 3] = 255
     if aa:
         sub = out[y0:y1, x0:x1, 3]
+        # averaged with the real neighbours: one more pixel around the molecule's box where the image has
+        # one (the halo beyond the box is not 0, and taking it for 0 drew the box into the halo)
+        ya, xa = max(y0 - 1, 0), max(x0 - 1, 0)
+        wide = out[ya:min(y1 + 1, H), xa:min(x1 + 1, W), 3].astype(np.float32)
+        a3 = ndimage.uniform_filter(wide, 3, mode="constant")[y0 - ya:y0 - ya + (y1 - y0), x0 - xa:x0 - xa + (x1 - x0)]
         a = sub.astype(np.float32)
-        a3 = ndimage.uniform_filter(a, 3, mode="constant")
         sub[...] = np.where(np.abs(a3 - a) > 1, 0.5 * (a + a3), a).astype(np.uint8)
     return out

@@ -17,7 +17,8 @@ import numpy as np
 from ..config import Project, stable_hash
 from ..data import AnalysisResult
 from ..progress import Reporter
-from ..selections import SelectionError, heavy, select
+from ..selections import SelectionError, groups_by_name, heavy, select
+from ..spatial import periodic_cell
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def key_label(key: str, project: Project) -> str:
 
 def referenced_groups(texts: Sequence[str], project: Project) -> List[Dict[str, str]]:
     """Definitions of all residue groups referenced (directly or nested) by ``texts``."""
-    by_name = {g.name: g for g in project.groups}
+    by_name = groups_by_name(project.groups)
     seen: Dict[str, Dict[str, str]] = {}
     stack = list(texts)
     while stack:
@@ -117,12 +118,16 @@ class AnalysisContext:
         self.topology_path = topology_path
         self.reporter = reporter or Reporter()
         self.use_pbc = project.analyses.use_pbc
+        #: first frame whose cell :meth:`box` could not use although ``use_pbc`` is on (run_analyses reports it)
+        self.no_cell_frame: Optional[int] = None
 
     def select(self, text: str, allow_empty: bool = False, field: str = ""):
         """Atoms of ``text``; a :class:`SelectionError` names ``field``, the setting the text came from
-        (e.g. ``"analyses.mg.ligand_selection"``)."""
+        (e.g. ``"analyses.mg.ligand_selection"``).  Distance keywords (``around 5 resname MG``) are evaluated
+        at the current frame, the first analysed one during an analysis' setup (see :func:`run_analyses`),
+        with periodic images only when ``analyses.use_pbc`` is on, as the analyses' own distances."""
         try:
-            return select(self.u, text, self.project.groups, allow_empty=allow_empty)
+            return select(self.u, text, self.project.groups, allow_empty=allow_empty, periodic=self.use_pbc)
         except SelectionError as exc:
             raise exc.locate(field, self.project)
 
@@ -137,6 +142,8 @@ class AnalysisContext:
     def box(self, ts):
         if not self.use_pbc:
             return None
+        if self.no_cell_frame is None and periodic_cell(ts.dimensions) is None:
+            self.no_cell_frame = int(ts.frame)  # its distances are those without a cell
         return ts.dimensions
 
     def warn(self, message: str) -> None:
@@ -261,6 +268,10 @@ class Analysis:
         return exc
 
 
+def _box_text(box) -> str:
+    return "none" if box is None else " ".join(f"{float(x):g}" for x in np.ravel(box))
+
+
 def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indices: np.ndarray,
                  reporter: Optional[Reporter] = None):
     """Stream the selected frames once, feeding every analysis.
@@ -272,6 +283,11 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     n = len(frame_indices)
     for a in analyses:
         reporter.log(f"Preparing {a.label} ...")
+        # every setup sees the first analysed frame: selections with distance keywords and bonds guessed from
+        # distances took the frame the trajectory happened to be at (frame 0, or the RMSD reference frame for the
+        # analyses set up after the RMSD)
+        if n and ctx.u.trajectory.ts.frame != frame_indices[0]:
+            ctx.u.trajectory[int(frame_indices[0])]
         try:
             a.setup(frame_indices)
         except SelectionError as exc:  # name the setting the failing selection came from
@@ -281,11 +297,27 @@ def run_analyses(ctx: AnalysisContext, analyses: Sequence[Analysis], frame_indic
     every = max(1, n // 200)
     reporter.log(f"Analysing {n} frame(s): {', '.join(a.label for a in analyses)}")
     dt_ps = ctx.project.inputs.dt_ps  # the time step override: frame number x dt, whatever the file's time stamps
+    blown = []  # frames with non-finite coordinates (a blown-up simulation)
+    no_cell = False  # use_pbc without a cell was reported
     for k, ts in enumerate(traj[frame_indices]):
         reporter.check_cancel()
         times[k] = frame_indices[k] * float(dt_ps) if dt_ps else ts.time
+        if not np.isfinite(ts.positions).all():
+            blown.append(int(frame_indices[k]))
+            if len(blown) == 1:
+                n_bad = int((~np.isfinite(ts.positions).all(axis=1)).sum())
+                ctx.warn(f"frame {blown[0]}: {n_bad} atom{'s have' if n_bad != 1 else ' has'} non-finite "
+                         "coordinates; such atoms are in no contact, bond or energy term, and values that "
+                         "need them (RMSD) are NaN")
         for a in analyses:
             a.process(k, ts)
+        if not no_cell and any(a.ctx.no_cell_frame is not None for a in analyses):
+            no_cell = True  # once per run
+            ctx.warn(f"use_pbc is on but frame {int(frame_indices[k])} has no usable periodic cell (box: "
+                     f"{_box_text(ts.dimensions)}); distances of such frames are computed without periodic images")
         if k % every == 0 or k == n - 1:
             reporter.progress((k + 1) / n, f"Analysing frame {k + 1}/{n}")
+    if len(blown) > 1:
+        ctx.warn(f"{len(blown)} of the {n} analysed frames have atoms with non-finite coordinates "
+                 f"(frames {blown[0]} to {blown[-1]})")
     return [a.finalize() for a in analyses], times

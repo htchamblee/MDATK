@@ -15,7 +15,9 @@ from .common import labels, per_row_counts, residue_rows, without
 class ContactAnalysis(Analysis):
     name = "contacts"
     label = "Pairwise contacts"
-    version = 2  # 2: a group with itself: whole per-residue counts, strand ends are no sequence neighbours
+    # 2: a group with itself: whole per-residue counts, strand ends are no sequence neighbours
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    version = 3
     group_slots = 2
     OUTPUT_LABELS = {
         "atom_pairs": "{a}\u2013{b} heavy-atom contacts",

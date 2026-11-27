@@ -15,13 +15,15 @@ from matplotlib.figure import Figure
 from ..config import Project
 from ..data import Dataset
 from ..progress import Reporter
-from .panels import _running_mean, integer_axis, thin_ticks
+from .panels import _running_mean, integer_axis, thin_ticks, time_heatmap
 from .theme import LIGHT, get_theme, style_axes, style_legend
 
 log = logging.getLogger(__name__)
 
 # Internal analyses feed panels, not charts.
 _INTERNAL = ("trace/", "proximity/")
+# Tallest chart in pixels: Agg refuses 2^16 px or more a side before Matplotlib 3.10 (2^23 since)
+MAX_CHART_PIXELS = 65000
 
 
 def _safe(key: str) -> str:
@@ -34,6 +36,10 @@ def chart_keys(dataset: Dataset, project: Project) -> List[str]:
         missing = [k for k in requested if not dataset.has(k)]
         for k in missing:
             log.warning("chart series %s is not available", k)
+        for k in requested:
+            if k not in missing and dataset.kind_of(k) == "pairmaps":
+                log.warning("chart series %s is a residue map; no chart is drawn for it (charts show series "
+                            "and per-residue matrices)", k)
         return [k for k in requested if dataset.has(k) and dataset.kind_of(k) == "series"]
     return [k for k in dataset.series_keys() if not k.startswith(_INTERNAL)]
 
@@ -63,6 +69,11 @@ def _format_title(template: str, label: str, key: str) -> str:
     if not template:
         return label
     return template.replace("{label}", label).replace("{key}", key)
+
+
+def _title_colour(theme, mdatk_chrome: bool) -> dict:
+    """The left-aligned title is not the one style_axes colours: give it the theme's ink."""
+    return {"color": theme.ink} if mdatk_chrome else {}
 
 
 def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: str,
@@ -101,7 +112,7 @@ def render_series_chart(dataset: Dataset, project: Project, key: str, out_dir: s
         ax.set_ylabel(cp.ylabel or s.axis_label)
         if s.unit == "count":
             integer_axis(ax.yaxis)
-        ax.set_title(_format_title(cp.title, s.label, key), loc="left")
+        ax.set_title(_format_title(cp.title, s.label, key), loc="left", **_title_colour(theme, mdatk_chrome))
         if len(t) > 1:
             ax.set_xlim(t[0], t[-1])
         base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}" + (f"_{stamp}" if stamp else ""))
@@ -121,6 +132,11 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
     with _style(cp.style) as mdatk_chrome:
         theme = get_theme(project.visual.theme) if mdatk_chrome else LIGHT
         height = max(cp.height, 0.18 * len(m.row_labels) + 1.5)
+        if height * cp.dpi > MAX_CHART_PIXELS:
+            log.warning("chart %s: %d rows would be %.0f px high at %g dpi; the height is limited to %d px "
+                        "(lower output.charts.dpi for thicker rows)", key, len(m.row_labels), height * cp.dpi,
+                        cp.dpi, MAX_CHART_PIXELS)
+            height = MAX_CHART_PIXELS / cp.dpi
         fig = Figure(figsize=(cp.width, height), dpi=cp.dpi,
                      facecolor=theme.surface if mdatk_chrome else None)
         FigureCanvasAgg(fig)
@@ -128,19 +144,16 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
         ax = fig.add_subplot(1, 1, 1)
         if mdatk_chrome:
             style_axes(ax, theme, grid=False, font_size=11)
-        dt = (t[1] - t[0]) if len(t) > 1 else 1.0
-        extent = [t[0] - dt / 2, t[-1] + dt / 2, len(m.row_labels) - 0.5, -0.5]
         values = np.ma.masked_invalid(np.asarray(m.values, dtype=np.float64))
         if m.kind == "class" and m.classes:
             n = len(m.classes)
-            im = ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent,
-                           cmap=theme.ordinal(n), vmin=-0.5, vmax=n - 0.5)
+            im = time_heatmap(ax, t, values, cmap=theme.ordinal(n), vmin=-0.5, vmax=n - 0.5)
             cb = fig.colorbar(im, ax=ax, ticks=range(n))
             cb.ax.set_yticklabels(m.classes)
         else:
             cmap = theme.sequential().with_extremes(bad=theme.grid)
-            im = ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent, cmap=cmap,
-                           vmin=0, vmax=max(float(values.max()) if values.count() else 1.0, 1e-9))
+            im = time_heatmap(ax, t, values, cmap=cmap,
+                              vmin=0, vmax=max(float(values.max()) if values.count() else 1.0, 1e-9))
             cb = fig.colorbar(im, ax=ax)
             cb.set_label(m.unit or "count")
             if m.kind == "count":
@@ -149,7 +162,11 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
         ax.set_yticks(idx, [m.row_labels[i] for i in idx], fontsize=8)
         ax.set_xlabel(cp.xlabel or dataset.time_label(project.inputs.time_unit))
         ax.set_ylabel("Residue")
-        ax.set_title(_format_title(cp.title, m.label, key), loc="left")
+        ax.set_title(_format_title(cp.title, m.label, key), loc="left", **_title_colour(theme, mdatk_chrome))
+        if mdatk_chrome:  # the colour bar in the theme's colours too (black on the dark theme otherwise)
+            cb.outline.set_edgecolor(theme.grid)
+            cb.ax.tick_params(colors=theme.muted, labelcolor=theme.ink2)
+            cb.ax.yaxis.label.set_color(theme.ink2)
         base = os.path.join(out_dir, f"{cp.prefix}_{_safe(key)}" + (f"_{stamp}" if stamp else ""))
         for fmt in cp.formats or ["png"]:
             path = f"{base}.{fmt.lower().lstrip('.')}"
@@ -161,10 +178,15 @@ def render_matrix_chart(dataset: Dataset, project: Project, key: str, out_dir: s
 def render_charts(dataset: Dataset, project: Project, out_dir: str,
                   reporter: Optional[Reporter] = None, stamp: str = "") -> List[str]:
     reporter = reporter or Reporter()
+    if not dataset.n_frames:
+        raise ValueError("no analysed frames to render")
     os.makedirs(out_dir, exist_ok=True)
     keys = chart_keys(dataset, project)
     mats = ([k for k in dataset.matrix_keys() if not k.startswith(_INTERNAL)]
             if project.output.charts.include_heatmaps else [])
+    for k in project.output.charts.series:  # a per-residue matrix asked for by name is charted as a heatmap
+        if k not in mats and dataset.has(k) and dataset.kind_of(k) == "matrices":
+            mats.append(k)
     jobs = [("series", k) for k in keys] + [("matrix", k) for k in mats]
     paths: List[str] = []
     for n, (kind, key) in enumerate(jobs):

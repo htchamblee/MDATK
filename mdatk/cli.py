@@ -25,6 +25,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import sys
 import time
 import warnings
@@ -32,7 +33,7 @@ from typing import Any, List, Optional
 
 from . import PROJECT_ABBREV, PROJECT_TITLE, __version__
 from .config import Project
-from .progress import Cancelled, Reporter
+from .progress import Cancelled, Reporter, error_text
 
 log = logging.getLogger("mdatk")
 
@@ -66,7 +67,7 @@ def apply_override(project: Project, assignment: str) -> None:
     current: Any = None
     for n, part in enumerate(parts):
         if isinstance(obj, list):
-            if not part.lstrip("-").isdigit() or not -len(obj) <= int(part) < len(obj):
+            if not re.fullmatch(r"-?\d+", part) or not -len(obj) <= int(part) < len(obj):
                 raise ValueError(f"{path}: no list element {part!r}")
             current = obj[int(part)]
         else:
@@ -118,9 +119,13 @@ def load_project(args, resolve: bool = True) -> Project:
         project.cleaning.enabled = args.clean
     if getattr(args, "frames", None):
         parts = (args.frames.split(":") + ["", "", ""])[:3]
-        project.inputs.start = int(parts[0]) if parts[0] else 0
-        project.inputs.stop = int(parts[1]) if parts[1] else None
-        project.inputs.step = int(parts[2]) if parts[2] else 1
+        try:
+            project.inputs.start = int(parts[0]) if parts[0] else 0
+            project.inputs.stop = int(parts[1]) if parts[1] else None
+            project.inputs.step = int(parts[2]) if parts[2] else 1
+        except ValueError:
+            raise ValueError(f"--frames: {args.frames!r} is not a frame number or range "
+                             "(start:stop:step, e.g. 0:100:2)") from None
     for assignment in getattr(args, "set", None) or []:
         apply_override(project, assignment)
     if resolve:
@@ -247,7 +252,7 @@ def cmd_info(args) -> int:
     groups = {}
     for g in project.groups:
         try:
-            ag = select(u, f"group:{g.name}", project.groups)
+            ag = select(u, f"group:{g.name}", project.groups, periodic=project.analyses.use_pbc)
             groups[g.name] = {"atoms": int(ag.n_atoms), "residues": int(ag.residues.n_residues),
                               "first": f"{ag.residues[0].resname}{ag.residues[0].resid}",
                               "last": f"{ag.residues[-1].resname}{ag.residues[-1].resid}"}
@@ -462,6 +467,28 @@ def _density_overrides(project, args) -> None:
         d.angular_step = args.step
 
 
+def _as_written(project: Project, path: str) -> Project:
+    """``project``, loaded from the project file ``path`` and changed by a command, with every setting the
+    command left alone as the file has it.  Loading makes the paths absolute (they are relative to the
+    file); saving the loaded project to that folder would rewrite them all absolute."""
+    from . import projectfile
+
+    written = Project.from_dict(projectfile.read(path)).to_dict()  # no path resolution
+    loaded = Project.load(path).to_dict()
+
+    def merge(new: Any, old: Any, raw: Any) -> Any:
+        if new == old:
+            return raw
+        if isinstance(new, dict) and isinstance(old, dict) and isinstance(raw, dict):
+            return {k: merge(v, old[k], raw[k]) if k in old and k in raw else v for k, v in new.items()}
+        if (isinstance(new, list) and isinstance(old, list) and isinstance(raw, list)
+                and len(new) == len(old) == len(raw)):
+            return [merge(*item) for item in zip(new, old, raw)]
+        return new
+
+    return Project.from_dict(merge(project.to_dict(), loaded, written))
+
+
 def cmd_density_fit(args) -> int:
     project, pipe = _pipeline(args)
     _density_overrides(project, args)
@@ -479,6 +506,14 @@ def cmd_density_fit(args) -> int:
         target = args.save if isinstance(args.save, str) else args.params
         if not target:
             raise ValueError("--save needs a path when no --project was given")
+        folder = os.path.dirname(os.path.abspath(args.params)) if args.params else None
+        if folder == os.path.dirname(os.path.abspath(target)):  # the project's own folder: paths as written
+            project = _as_written(project, args.params)
+            if args.map and not os.path.isabs(os.path.expanduser(args.map)):
+                try:  # a map given relative to the working directory: relative to the project file
+                    project.density.map_path = os.path.relpath(os.path.abspath(args.map), folder)
+                except ValueError:  # another drive (Windows): it stays absolute
+                    pass
         project.save(target)
         out["saved"] = os.path.abspath(target)
     print(json.dumps(out, indent=2))
@@ -505,16 +540,25 @@ def cmd_density_simulate(args) -> int:
     return 0
 
 
+def _input_file(path: str) -> None:
+    """The input file of a command must be a file: the PDB tools take a string that names no file as PDB
+    text, and report a missing file as text without ATOM records."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{path}: {'is a directory, not a file' if os.path.isdir(path) else 'no such file'}")
+
+
 def cmd_pdb(args) -> int:
     from . import pdbtools
     from .projectfile import logged
     if args.pdb_command == "check":
+        _input_file(args.input)
         return pdbtools.run(args)[0]
     name = os.path.basename(args.input)
     if args.pdb_command == "annotate":
         return _pdb_annotate(args, name)
     with logged(_project_file(args), f"pdb {args.pdb_command}", f"PDB clean-up of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        _input_file(args.input)
         code, result = pdbtools.run(args)
         entry.files = list(result.get("files", []))
         entry.summary = "\n".join(result.get("notes", []))
@@ -532,6 +576,7 @@ def _pdb_annotate(args, name: str) -> int:
     from .projectfile import logged
     with logged(_project_file(args), "pdb annotate", f"Base-pair annotation of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        _input_file(args.input)
         res = annotate(args.input, pairs=not args.no_pairs, stacking=not args.no_stacking,
                        dotbracket=not args.no_dotbracket, engine=args.engine,
                        dssr_exe=getattr(args, "dssr_exe", None) or "x3dna-dssr")
@@ -643,6 +688,8 @@ def cmd_build(args) -> int:
         title = f"Rigid-body fit of {os.path.basename(args.input)} into {os.path.basename(args.map)}"
     with logged(_project_file(args), f"build {args.build_command}", title) as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["build"] else ""
+        if args.build_command in ("mutate", "fit"):
+            _input_file(args.input)
         res = builder.run(args)
         for note in res.notes:
             print(f"build: {note}", file=sys.stderr)
@@ -1641,7 +1688,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         if os.environ.get("MDATK_DEBUG"):
             raise
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {error_text(exc)}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - an error nobody expected: still one line, not a traceback
+        if os.environ.get("MDATK_DEBUG"):
+            raise
+        print(f"error: {type(exc).__name__}: {exc} (set MDATK_DEBUG=1 for the traceback)", file=sys.stderr)
         return 1
 
 

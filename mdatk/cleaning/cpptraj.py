@@ -8,11 +8,14 @@ parameters reuses the cleaned files without running cpptraj again.
 
 from __future__ import annotations
 
+import codecs
 import datetime as _dt
 import logging
 import os
+import queue
 import re
 import shutil
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -188,6 +191,27 @@ def cpptraj_command(params: CleaningParams,
         return conda.run_command(exe, env.prefix, ["cpptraj"]) if exe else [env.cpptraj]
 
 
+def _end(proc: "subprocess.Popen") -> None:
+    """End cpptraj and what was started with it: the process group it leads (a 'conda run' line starts
+    cpptraj as a child, which ending conda alone would leave running and writing).  SIGTERM, then SIGKILL
+    to what is left after 10 s.  Without process groups (Windows) the started program alone is ended."""
+    if proc.poll() is not None and os.name != "posix":
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (OSError, AttributeError):  # the group is gone, or there are no groups
+        if proc.poll() is None:
+            proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, AttributeError):
+        pass
+
+
 def run_cpptraj(command: Sequence[str], script_path: str, log_path: str, cwd: str,
                 log_cb: Optional[Callable[[str], None]] = None,
                 progress_cb: Optional[Callable[[float], None]] = None,
@@ -203,21 +227,32 @@ def run_cpptraj(command: Sequence[str], script_path: str, log_path: str, cwd: st
     with open(log_path, "w", encoding="utf-8") as logfh:
         from ..frozen import child_env
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, bufsize=0, env=child_env())
+                                stdin=subprocess.DEVNULL, bufsize=0, env=child_env(),
+                                start_new_session=os.name == "posix")  # a process group of its own: _end()
+        chunks: "queue.Queue[bytes]" = queue.Queue()
+
+        def pump() -> None:  # a read waits until cpptraj prints, which can take long: not in the loop below
+            read = proc.stdout.read1 if hasattr(proc.stdout, "read1") else proc.stdout.read
+            try:
+                for chunk in iter(lambda: read(4096), b""):
+                    chunks.put(chunk)
+            finally:
+                chunks.put(b"")  # end of output
+
+        threading.Thread(target=pump, daemon=True).start()
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # characters may span two chunks
         buf = ""
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
                     raise Cancelled("cpptraj cancelled")
-                chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
-                if not chunk:
+                try:
+                    chunk = chunks.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                text = decoder.decode(chunk, final=not chunk)
+                if not chunk and not text:
                     break
-                text = chunk.decode("utf-8", errors="replace")
                 logfh.write(text)
                 if progress_cb:
                     pct = _PERCENT.findall(text)
@@ -228,8 +263,13 @@ def run_cpptraj(command: Sequence[str], script_path: str, log_path: str, cwd: st
                     line, buf = buf.split("\n", 1)
                     if log_cb:
                         log_cb(line.rstrip())
+                if not chunk:
+                    break
             if buf and log_cb:
                 log_cb(buf.rstrip())
+        except BaseException:  # cancelled, Ctrl-C, an error of a callback: cpptraj must not run on
+            _end(proc)
+            raise
         finally:
             if proc.poll() is None:
                 proc.wait()

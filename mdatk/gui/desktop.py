@@ -98,8 +98,9 @@ def latest_video(out_dir: str, filename: str) -> Optional[str]:
     """Most recent video in ``out_dir`` matching ``filename`` with or without a timestamp."""
     root, ext = os.path.splitext(os.path.basename(filename))
     candidates = glob.glob(os.path.join(out_dir, f"{glob.escape(root)}*{ext}"))
-    candidates = [c for c in candidates if not os.path.basename(c).startswith(".")]
-    return max(candidates, key=os.path.getmtime) if candidates else None
+    candidates = [c for c in candidates if not os.path.basename(c).startswith(".") and os.path.isfile(c)]
+    # the newest; of two written at the same time the one with the later name (the later time stamp)
+    return max(candidates, key=lambda c: (os.path.getmtime(c), c)) if candidates else None
 
 
 def add_launchers(parent: Optional[Gtk.Window], info: Callable[[str, str], None],

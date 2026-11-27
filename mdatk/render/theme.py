@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_hex
 
 CATEGORICAL = {
     "light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
@@ -58,8 +58,9 @@ class Theme:
         if n - 1 <= len(ramp):
             idx = [round(k * (len(ramp) - 1) / max(1, n - 2)) for k in range(n - 1)] if n > 2 else [1]
             cols = [ramp[i] for i in idx]
-        else:
-            cols = ramp
+        else:  # more classes than ramp colours: as many evenly spaced steps along the ramp
+            steps = LinearSegmentedColormap.from_list("mdatk_ordinal", ramp, N=n - 1)
+            cols = [to_hex(steps(k)) for k in range(n - 1)]
         return ListedColormap([zero] + cols[: n - 1])
 
 

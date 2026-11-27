@@ -554,8 +554,13 @@ def demo_project(topology: str, trajectory: str, out_dir: str, n_bp: int,
 def build_demo(out_dir: str, n_frames: int = 120, dt_ps: float = 10.0, solvent: bool = True,
                sequence: str = "GCAUGGCAUCGA", seed: int = 7) -> Dict[str, str]:
     """Write ``demo.parm7``, ``demo.nc`` and the project file ``demo.mdatk.toml`` into ``out_dir``."""
+    import math
     import shutil
 
+    if n_frames < 1:  # before anything is written
+        raise ValueError(f"the demo needs at least one frame (--n-frames {n_frames})")
+    if not (math.isfinite(dt_ps) and dt_ps > 0):
+        raise ValueError(f"the time between frames must be a positive number of ps (--dt {dt_ps})")
     os.makedirs(out_dir, exist_ok=True)
     topo, coords, box = build_system(sequence, n_frames, dt_ps, solvent, seed)
     top = os.path.join(out_dir, "demo.parm7")

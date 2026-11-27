@@ -638,7 +638,11 @@ def _residue_field(resname: str) -> str:
 
 
 def _id_columns(res: Residue) -> str:
-    """Columns 18-27 (residue name, chain, residue number, insertion code); numbers above 9999 wrap."""
+    """Columns 18-27 (residue name, chain, residue number, insertion code); numbers above 9999 wrap, numbers
+    below -999 do not fit the four columns (PDBError)."""
+    if res.resseq < -999:
+        raise PDBError(f"residue number {res.resseq} ({res.chain or '_'}) does not fit the PDB columns "
+                       "(-999 to 9999)")
     resseq = res.resseq % 10000 if res.resseq > 9999 else res.resseq
     return f"{_residue_field(res.name)}{(res.chain or ' ')[:1]}{resseq:>4}{(res.icode or ' ')[:1]}"
 
@@ -697,6 +701,13 @@ def write_pdb(structure: Structure, strip_conect: bool = True, seqres: bool = Fa
         out.extend(_remap_conect(structure.conect, serial_map))
     out.append("END")
     return "\n".join(line.rstrip() for line in out) + "\n"
+
+
+def _serials_repeat(structure: Structure) -> bool:
+    """Whether an input atom serial is that of more than one atom (concatenated files, wrapped numbering):
+    :func:`write_pdb` then cannot remap the CONECT records and writes none."""
+    counts = Counter(a.serial for r in structure.residues() for a in r.atoms if a.serial is not None)
+    return any(n > 1 for n in counts.values())
 
 
 def _remap_conect(lines: Sequence[str], serial_map: Dict[int, List[int]]) -> List[str]:
@@ -1074,11 +1085,12 @@ def sugar_chirality(coords: Dict[str, Vec], base: Optional[str] = None
 Range = Tuple[str, Optional[int], Optional[int]]
 
 
-def parse_ranges(spec) -> List[Range]:
+def parse_ranges(spec, reversed_ok: bool = False) -> List[Range]:
     """Residue ranges -> [(chain, start, end)].
 
     Accepts ``"C:45-73, A:1-5"``, ``"C:45"`` (one residue), ``"C"`` (whole chain), ``":45-73"`` (blank
-    chain), a list of such strings, or (chain, start, end) tuples.
+    chain), a list of such strings, or (chain, start, end) tuples.  A range that ends before it starts
+    (``"A:4-1"``) is a PDBError unless ``reversed_ok`` (a model map pairs such a range in reverse order).
     """
     if spec is None:
         return []
@@ -1097,6 +1109,8 @@ def parse_ranges(spec) -> List[Range]:
             chain, a, b = m.groups()
         start = None if a is None else int(a)
         end = start if b is None else int(b)
+        if start is not None and end < start and not reversed_ok:
+            raise PDBError(f"residue range {chain}:{start}-{end} ends before it starts")
         out.append((chain, start, end))
     return out
 
@@ -1662,6 +1676,8 @@ def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[s
     if not chains:
         return []
     target = chains[0] if into is None else into.strip()
+    if len(target) > 1:  # column 22 holds one character
+        raise PDBError("chain ids must be single characters")
     missing = [c for c in chains if c not in structure.chain_ids()]
     n = 0
     for res in structure.residues():
@@ -2011,8 +2027,13 @@ def clean(source, *, scheme: Optional[str] = None, records: Optional[str] = None
     policy = records or {"rosetta": "rosetta", "pdb": "pdb", "standard": "atom"}.get(scheme or "", "keep")
     notes += set_records(s, policy)
     if s.conect:
-        notes.append(f"Stripped {len(s.conect)} CONECT records" if strip_conect else
-                     "Kept CONECT records (remapped to the new atom serials)")
+        if strip_conect:
+            notes.append(f"Stripped {len(s.conect)} CONECT records")
+        elif _serials_repeat(s):
+            notes.append(f"WARNING: dropped {len(s.conect)} CONECT records: the input's atom serials repeat, so "
+                         "they cannot be remapped")
+        else:
+            notes.append("Kept CONECT records (remapped to the new atom serials)")
     n_atoms = sum(len(r.atoms) for r in s.residues())
     if n_atoms + len(s.segments) > 99999:
         notes.append("WARNING: more than 99999 atoms; serial numbers wrap in the PDB columns")

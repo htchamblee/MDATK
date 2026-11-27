@@ -32,7 +32,9 @@ def group_resids(project: Project, name: str, fallback: int = 12) -> List[int]:
             try:
                 out: List[int] = []
                 for _chain, a, b in parse_residue_ranges(g.residues):
-                    out.extend(range(a, b + 1))
+                    out.extend(range(a, min(b, a + 399 - len(out)) + 1))  # 400 at most: no need for the rest
+                    if len(out) >= 400:
+                        break
                 return out[:400] or list(range(1, fallback + 1))
             except ValueError:
                 break
@@ -133,7 +135,7 @@ def schematic_trace(project: Project, n_frames: int) -> Dict[str, np.ndarray]:
     group_pos = {g.name: k for k, g in enumerate(project.groups)}
     for s, name in enumerate(names[:2]):
         ids = group_resids(project, name)
-        seq = ("GCAUGGCAUCGA" * 10)[:len(ids)]
+        seq = ("GCAUGGCAUCGA" * (len(ids) // 12 + 1))[:len(ids)]  # repeated for as many residues as there are
         if s:  # the complementary strand, read 5' -> 3'
             seq = "".join({"G": "C", "C": "G", "A": "U", "U": "A"}[b] for b in reversed(seq))
         for k, r in enumerate(ids):
@@ -236,7 +238,8 @@ def _example_basepairs(chain: np.ndarray, n_frames: int) -> AnalysisResult:
     builder = CSRBuilder()
     for f in range(n_frames):
         open_end = 2 if (f // 6) % 2 else 0
-        i, j = a[:m - open_end], b[:m - open_end]
+        n = max(m - open_end, 0)  # one strand, or a partner of one residue: no pairs (not a[:-2])
+        i, j = a[:n], b[:n]
         builder.add(i, j, np.ones(len(i)))
     res = AnalysisResult("basepairs", "example", {}, {}, {"example": True})
     res.arrays.update(builder.arrays("map"))

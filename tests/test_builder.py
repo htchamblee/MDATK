@@ -284,7 +284,7 @@ def test_mutations_keep_the_frame_and_compensate():
     assert [after[("A", i)].name for i in (1, 4)] == ["C", "G"]
     assert [after[("B", i)].name for i in (7, 4)] == ["G", "C"]  # the compensatory partners
     assert any("compensatory, compensates A:1 C" in n for n in notes)
-    assert any("dropped 4 hydrogen(s) of the old base" in n for n in notes)
+    assert any("replaced 4 hydrogen(s) of the old base" in n for n in notes)  # and the new base has its own
     # sugar / backbone atoms verbatim, the new glycosidic N on the old one
     old, new = before[("A", 4)], after[("A", 4)]
     for a in old.atoms:
@@ -293,7 +293,8 @@ def test_mutations_keep_the_frame_and_compensate():
     assert np.linalg.norm(np.subtract(new.coords()["N9"], old.coords()["N9"])) < 0.05
     pyr = after[("A", 1)].coords()
     assert np.linalg.norm(np.subtract(pyr["N1"], before[("A", 1)].coords()["N9"])) < 0.1
-    assert not any(a.name in ("H8", "H61", "H62", "H2", "N6") for a in new.atoms)  # old base and its H gone
+    assert not any(a.name in ("H61", "H62", "H2", "N6") for a in new.atoms)  # old base and its H gone
+    assert {"H8", "H1", "H21", "H22"} <= {a.name for a in new.atoms}  # the new G's hydrogens (BUG-099)
     found, _ = pairs_of(text)
     assert len(found) == 7 and all(k == WATSON_CRICK for *_x, k in found)
     assert pt.assign_chirality(s)[0].endswith("0 L and 14 D nucleotides")

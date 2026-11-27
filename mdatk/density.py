@@ -180,8 +180,10 @@ def simulate_map(xyz: np.ndarray, weights: np.ndarray, resolution: float,
     xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
     if not len(xyz):
         raise FitError("no atoms to simulate a map from")
-    if resolution <= 0:
-        raise FitError("the resolution must be positive")
+    if not (math.isfinite(resolution) and resolution > 0):  # not NaN or infinite either
+        raise FitError("the resolution must be a positive number of Å")
+    if spacing and not (math.isfinite(spacing) and spacing > 0):  # none or 0: resolution / 3
+        raise FitError("the grid spacing must be a positive number of Å")
     sigma = sigma_factor * resolution
     h = float(spacing) if spacing else resolution / 3.0
     pad = pad_sigmas * sigma + h
@@ -254,7 +256,18 @@ def sample_map(dmap: DensityMap, xyz: np.ndarray, cval: float = 0.0, order: int 
                                    prefilter=False)
 
 
+def finite_data(data: np.ndarray) -> np.ndarray:
+    """``data`` with its NaN / infinite voxels set to 0: they carry no density (``data`` itself when all
+    voxels are finite)."""
+    bad = ~np.isfinite(data)
+    return np.where(bad, 0, data).astype(data.dtype) if bad.any() else data
+
+
 def map_level(dmap: DensityMap, sigmas: float) -> float:
+    d = dmap.data
+    if not np.isfinite(d).all():  # mean and deviation of the finite voxels (one NaN made the level NaN)
+        d = d[np.isfinite(d)]
+        return float(d.mean()) + sigmas * float(d.std()) if d.size else 0.0
     st = dmap.stats()
     return st["mean"] + sigmas * st["rms"]
 
@@ -288,11 +301,16 @@ class FitProblem:
     def __init__(self, dmap: DensityMap, xyz: np.ndarray, weights: np.ndarray, resolution: float,
                  sigma_factor: float = SIGMA_FACTOR, envelope: float = ENVELOPE_FRACTION,
                  max_points: int = 60000):
-        if resolution <= 0:
+        if not (math.isfinite(resolution) and resolution > 0):
             raise FitError("enter the map resolution (Å) for the simulated map")
         xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
         if len(xyz) < 3:
             raise FitError("at least three atoms are needed for a fit")
+        # NaN / infinite voxels (masked regions) carry no density: set to 0 before anything smooths or
+        # samples the map (one NaN spreads over a whole Gaussian kernel, and its samples count as outside)
+        self.bad_voxels = int(dmap.data.size - np.count_nonzero(np.isfinite(dmap.data)))
+        if self.bad_voxels:
+            dmap = DensityMap(finite_data(dmap.data), dmap.origin, dmap.voxel, dmap.path)
         self.dmap = dmap
         self.resolution = float(resolution)
         self.sigma_factor = sigma_factor
@@ -592,7 +610,7 @@ def _fft_size(n: int) -> int:
 
 def density_centroid(dmap: DensityMap, level: float) -> np.ndarray:
     """Centre (Å) of the map density above ``level`` (the whole map if none is)."""
-    w = np.maximum(dmap.data.astype(np.float64) - level, 0)
+    w = np.maximum(finite_data(dmap.data).astype(np.float64) - level, 0)
     total = float(w.sum())
     if total <= 0:
         return dmap.origin + 0.5 * (np.array(dmap.shape_xyz) - 1) * dmap.voxel
@@ -618,14 +636,23 @@ def fit_model(dmap: DensityMap, xyz: np.ndarray, elements: Sequence[str], resolu
     """
     prob = FitProblem(dmap, xyz, atom_weights(elements), resolution)
     if search == "global":
-        return prob.global_search(angular_step, progress=progress, cancelled=cancelled)
+        return _bad_voxel_note(prob, prob.global_search(angular_step, progress=progress, cancelled=cancelled))
     t0 = start or RigidTransform.identity()
     cc0 = prob.cc(t0)
     fit, cc = prob.refine(t0)
     if progress is not None:
         progress(1.0, "local fit done")
-    return FitResult(fit, cc, "manual" if start is not None else "identity",
-                     evaluations=prob.evaluations, message=f"start CC {cc0:.3f}" + prob._inside_note(fit))
+    return _bad_voxel_note(prob, FitResult(fit, cc, "manual" if start is not None else "identity",
+                                           evaluations=prob.evaluations,
+                                           message=f"start CC {cc0:.3f}" + prob._inside_note(fit)))
+
+
+def _bad_voxel_note(prob: FitProblem, result: FitResult) -> FitResult:
+    """Say in the fit's message how many voxels of the map were not numbers."""
+    if prob.bad_voxels:
+        n = prob.bad_voxels
+        result.message += f"; {n} map voxel{'s' if n != 1 else ''} not finite (NaN / infinite), read as no density"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -701,7 +728,7 @@ def _above_level(dmap: DensityMap, level: float) -> np.ndarray:
     key = (id(dmap), float(level))
     hit = _LEVEL_CACHE.get(key)
     if hit is None or hit[0] is not dmap:
-        arr = np.maximum(dmap.data - np.float32(level), 0).astype(np.float32)
+        arr = np.maximum(finite_data(dmap.data) - np.float32(level), 0).astype(np.float32)
         if len(_LEVEL_CACHE) >= 2:
             _LEVEL_CACHE.pop(next(iter(_LEVEL_CACHE)))
         _LEVEL_CACHE[key] = hit = (dmap, arr)

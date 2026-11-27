@@ -289,9 +289,11 @@ def panel_titles(win):
     return [sp.title for sp in win.collect(validate=False).layout.panels]
 
 
-def test_loading_a_project_drops_pending_chain_reads(tmp_path, held_reads):
+def test_loading_a_project_drops_pending_chain_reads(tmp_path, held_reads, monkeypatch):
     """Chains read for one project, or a topology about to be offered, never reach a project loaded
     since (New, Open): its groups and references stay as saved."""
+    # New and Open ask about the unsaved edits made here: they are dropped
+    monkeypatch.setattr("mdatk.gui.app.ask_unsaved", lambda *_a, **_k: "discard")
     reads = held_reads
     four = write_parm7_bonded(str(tmp_path / "four.parm7"), system_atoms())
     other = write_parm7_bonded(str(tmp_path / "other.parm7"), system_atoms())
@@ -370,9 +372,11 @@ def test_chains_of_a_topology_replaced_while_read_are_dropped(tmp_path, held_rea
         win.destroy()
 
 
-def test_a_new_project_offers_the_same_topology_again(tmp_path):
+def test_a_new_project_offers_the_same_topology_again(tmp_path, monkeypatch):
     """After New, choosing the topology the previous project used fills the defaults again, and the
     previous project's status line is gone.  Panel titles that are not their data's label stay."""
+    # New asks about the unsaved edits made here: they are dropped
+    monkeypatch.setattr("mdatk.gui.app.ask_unsaved", lambda *_a, **_k: "discard")
     win = make_window(Project())
     try:
         titles = panel_titles(win)

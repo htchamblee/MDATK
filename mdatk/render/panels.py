@@ -17,10 +17,10 @@ from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
-from ..config import PanelSpec, Project
+from ..config import PanelSpec, Project, panel_option_problems
 from ..data import Dataset
 from .coloring import frame_colors
-from .residues import residue_shading, tag_rows, warn_once
+from .residues import chain_names, residue_shading, tag_rows, warn_once
 from .orientation import euler_to_matrix
 from .theme import Theme, get_theme, style_axes, style_legend
 
@@ -58,7 +58,7 @@ def integer_axis(axis) -> None:
 
 
 def thin_ticks(n: int, max_ticks: int = 20) -> np.ndarray:
-    step = max(1, int(np.ceil(n / max_ticks)))
+    step = max(1, int(np.ceil(n / max(1, max_ticks))))  # fewer than one tick counts as one
     return np.arange(0, n, step)
 
 
@@ -90,6 +90,10 @@ class Panel:
         self.ok = True
         self.auto_title = ""
         try:
+            if not ctx.dataset.n_frames:  # nothing to draw (an empty cached dataset)
+                raise KeyError("no frames")
+            for text in panel_option_problems(self.type_name, self.options):
+                raise KeyError(text)  # an option of the wrong type or value: say which
             self.setup()
         except KeyError as exc:
             self.show_message(f"No data: {exc.args[0] if exc.args else exc}")
@@ -162,6 +166,7 @@ class StructurePanel(Panel):
             raise KeyError("trace")
         coords = np.asarray(tr.arrays["coords"], dtype=np.float64)
         ions = np.asarray(tr.arrays["ion_coords"], dtype=np.float64)
+        self._warn_non_finite(coords)
         self.view_note = ""
         center, shift = self._view_centre(coords, tr)
         self.center = center
@@ -173,9 +178,9 @@ class StructurePanel(Panel):
         self.links = np.asarray(tr.arrays["links"], dtype=np.int64).reshape(-1, 2)
         n_res = coords.shape[1]
         # Frame the model by its bounding sphere so any orientation fits without zooming.
-        radius = float(np.linalg.norm(self.centred, axis=-1).max())
+        radius = _finite_max(np.linalg.norm(self.centred, axis=-1))  # non-finite residues are not drawn
         if self.ions_centred.size:
-            radius = max(radius, float(np.linalg.norm(self.ions_centred, axis=-1).max()))
+            radius = max(radius, _finite_max(np.linalg.norm(self.ions_centred, axis=-1)))
         radius = max(radius, 1.0)
         self.radius = radius
         view = radius / max(float(v.zoom), 0.05)  # zoom > 1 shows a smaller window
@@ -242,13 +247,22 @@ class StructurePanel(Panel):
         self.stage = MoleculeStage(self, scene, xyz, renderer)
         self.covered[:] = True  # the scene draws every residue (or hides it): no 2D trace
 
+    def _warn_non_finite(self, coords: np.ndarray) -> None:
+        """Name the frames with NaN / infinite coordinates (a blown-up simulation), once."""
+        bad = np.flatnonzero(~np.isfinite(coords).all(axis=(1, 2)))
+        if len(bad):
+            frames = [str(int(f)) for f in self.ctx.dataset.frames[bad[:8]]] + (["..."] if len(bad) > 8 else [])
+            warn_once(f"structure view: frame(s) {', '.join(frames)} have non-finite coordinates; "
+                      "the residues without a position are left out of these frames")
+
     def _view_centre(self, coords: np.ndarray, tr):
         """Centre of the view (reference frame) and its per-frame shift (visual.center_on / center_follow)."""
         v = self.ctx.project.visual
         shift = np.zeros((len(coords), 3))
         spec = (v.center_on or "").strip()
+        model = _finite_mean(coords[0])  # centre of the model
         if not spec:
-            return coords[0].mean(axis=0), shift
+            return model, shift
         if spec.lower() == "origin":
             return np.zeros(3), shift
         from ..selections import SelectionError
@@ -259,9 +273,12 @@ class StructurePanel(Panel):
             from ..problems import describe
             self.view_note = f"centre: {exc}"
             warn_once(f"{describe('visual.center_on')}: {exc}; using the model centre")
-            return coords[0].mean(axis=0), shift
+            return model, shift
+        if not np.isfinite(coords[0, row]).all():  # the centre residue has no position in the reference frame
+            return model, shift
         if v.center_follow:
             shift = coords[:, row] - coords[0, row]
+            shift[~np.isfinite(shift).all(axis=1)] = 0.0  # frames without the residue stay where they are
         return coords[0, row].copy(), shift
 
     def residue_rgb(self, pos: int) -> np.ndarray:
@@ -293,8 +310,9 @@ class StructurePanel(Panel):
         """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
         r = euler_to_matrix(angles)
         self.view_matrix = r
-        self.view = self.centred @ r.T
-        self.ion_view = self.ions_centred @ r.T
+        with np.errstate(invalid="ignore"):  # an infinite coordinate (inf * 0): that residue is left out
+            self.view = self.centred @ r.T
+            self.ion_view = self.ions_centred @ r.T
         self.update_density()
 
     # -- density map shadow
@@ -423,6 +441,8 @@ class StructurePanel(Panel):
 
     def after_layout(self):
         """Equal x/y scale: grow the data window to the panel's pixel aspect ratio."""
+        if not self.ok:  # "No data": setup() did not get to the view
+            return
         self._fit_aspect()
         self.update_density()  # the shadow covers the final window
 
@@ -449,10 +469,12 @@ class StructurePanel(Panel):
         ms = 7
         if v.color_mode == "chain":
             chains = np.unique(tr.arrays["chain"])
+            names = chain_names(tr)  # the letters the sequence panels and residue tags (B:12) show
             for c in chains:
                 k = int(np.flatnonzero(np.asarray(tr.arrays["chain"]) == c)[0])
+                name = str(names[k]).strip() or str(int(c) + 1)  # a chain without a name: its number
                 handles.append(Line2D([], [], ls="", marker="o", ms=ms, color=self.static[k],
-                                      label=f"Chain {int(c) + 1}"))
+                                      label=f"Chain {name}"))
         else:
             gi = np.asarray(tr.arrays["group_index"])
             for k, g in enumerate(project.groups):
@@ -507,12 +529,17 @@ class StructurePanel(Panel):
         ps = v.point_size
         sizes = ps * (0.55 + 0.9 * depth)
         order = np.argsort(xyz[:, 2], kind="stable")
+        finite = np.isfinite(xyz).all(axis=1)
+        if not finite.all():  # a blown-up frame: draw the residues that have a position
+            order = order[finite[order]]
         if three_d:  # residues drawn in 3D leave the 2D trace
             order = order[~self.covered[order]]
         self.points.set_offsets(xyz[order, :2])
         self.points.set_sizes(sizes[order])
         self.points.set_facecolors(colors[order])
         links = self.links
+        if not finite.all() and len(links):
+            links = links[finite[links[:, 0]] & finite[links[:, 1]]]
         if three_d and len(links):
             links = links[~(self.covered[links[:, 0]] | self.covered[links[:, 1]])]
         self.lines.set_segments([])
@@ -529,6 +556,7 @@ class StructurePanel(Panel):
         if three_d and getattr(self.stage.renderer, "draws_glow", False):
             intensity = np.zeros(0)  # the renderer draws the glow around the 3D residues
         sel = np.flatnonzero(intensity > 0.01)
+        sel = sel[finite[sel]]
         if len(sel):
             rgba_o = np.zeros((len(sel), 4))
             rgba_o[:, :3] = self.glow_rgb
@@ -547,16 +575,18 @@ class StructurePanel(Panel):
         if three_d:  # ions are spheres in the 3D scene
             self.ion_points.set_offsets(np.zeros((0, 2)))
         elif self.ion_view.shape[1]:
-            self.ion_points.set_offsets(self.ion_view[pos][:, :2])
+            ions = self.ion_view[pos]
+            self.ion_points.set_offsets(ions[np.isfinite(ions).all(axis=1), :2])
         if self.tags:  # push each label outward, away from the projected centre
             xy = xyz[self.tag_rows, :2]
-            centre = xyz[:, :2].mean(axis=0)
+            centre = _finite_mean(xyz)[:2]
             out = xy - centre
             norm = np.linalg.norm(out, axis=1, keepdims=True)
             out = np.where(norm > 1e-6, out / np.maximum(norm, 1e-6), np.array([[0.0, 1.0]]))
             pos_xy = xy + out * (0.07 * self.radius / max(float(v.zoom), 0.05) + 1.5)
-            for text, (x, y) in zip(self.tags, pos_xy):
+            for text, (x, y), shown in zip(self.tags, pos_xy, finite[self.tag_rows]):
                 text.set_position((x, y))
+                text.set_visible(bool(shown))
         if self.time_text is not None:
             self.time_text.set_text(self.ctx.format_time(pos))
 
@@ -564,6 +594,20 @@ class StructurePanel(Panel):
 # ---------------------------------------------------------------------------
 # Time series
 # ---------------------------------------------------------------------------
+
+
+def _finite_max(values: np.ndarray) -> float:
+    """Largest finite value (0 without one)."""
+    values = values[np.isfinite(values)]
+    return float(values.max()) if values.size else 0.0
+
+
+def _finite_mean(points: np.ndarray) -> np.ndarray:
+    """Mean of the rows without NaN / infinite values (the origin without one)."""
+    ok = np.isfinite(points).all(axis=1)
+    if ok.all():
+        return points.mean(axis=0)
+    return points[ok].mean(axis=0) if ok.any() else np.zeros(points.shape[1])
 
 
 def _running_mean(y: np.ndarray, window: int) -> np.ndarray:
@@ -574,7 +618,13 @@ def _running_mean(y: np.ndarray, window: int) -> np.ndarray:
     pad_l = window // 2
     pad_r = window - 1 - pad_l
     padded = np.pad(y, (pad_l, pad_r), mode="edge")
-    return np.convolve(padded, kernel, mode="valid")
+    ok = np.isfinite(padded)
+    if ok.all():
+        return np.convolve(padded, kernel, mode="valid")
+    # frames without a value (NaN) do not blank their whole window: the mean of the values it has
+    total = np.convolve(np.where(ok, padded, 0.0), np.ones(window), mode="valid")
+    count = np.convolve(ok.astype(np.float64), np.ones(window), mode="valid")
+    return np.where(count > 0.5, total / np.maximum(count, 1.0), np.nan)
 
 
 @register_panel
@@ -695,6 +745,31 @@ class DualAxisPanel(Panel):
 # ---------------------------------------------------------------------------
 
 
+def time_edges(t: np.ndarray) -> np.ndarray:
+    """Column edges of a heatmap over the frame times ``t``: midway between neighbouring frames and half
+    a step beyond the first and the last one (one unit wide for a single frame)."""
+    t = np.asarray(t, dtype=np.float64)
+    if len(t) < 2:
+        return np.array([t[0] - 0.5, t[0] + 0.5])
+    mid = 0.5 * (t[:-1] + t[1:])
+    return np.concatenate([[2 * t[0] - mid[0]], mid, [2 * t[-1] - mid[-1]]])
+
+
+def time_heatmap(ax, t: np.ndarray, values, **kwargs):
+    """Draw ``values`` (rows x frames) with every column centred on its frame time; row k spans k ± 0.5,
+    downward.  Evenly spaced frames give one image as before; otherwise the cells follow the times."""
+    edges = time_edges(t)
+    widths = np.diff(edges)
+    n_rows = values.shape[0]
+    if np.allclose(widths, widths[0], rtol=1e-6, atol=0.0):
+        return ax.imshow(values, aspect="auto", interpolation="nearest",
+                         extent=[edges[0], edges[-1], n_rows - 0.5, -0.5], **kwargs)
+    mesh = ax.pcolormesh(edges, np.arange(n_rows + 1) - 0.5, values, shading="flat", **kwargs)
+    ax.set_xlim(edges[0], edges[-1])
+    ax.set_ylim(n_rows - 0.5, -0.5)
+    return mesh
+
+
 def _set_residue_ticks(axis_set_ticks, labels: Sequence[str], max_ticks: int = 20):
     idx = thin_ticks(len(labels), max_ticks)
     axis_set_ticks(idx, [labels[i] for i in idx])
@@ -717,22 +792,18 @@ class HeatmapPanel(Panel):
             raise KeyError(f"{m.key} is empty")
         self.auto_title = m.label
         t = self.ctx.time
-        dt = (t[1] - t[0]) if len(t) > 1 else 1.0
         values = np.ma.masked_invalid(np.asarray(m.values, dtype=np.float64))
-        extent = [t[0] - dt / 2, t[-1] + dt / 2, len(m.row_labels) - 0.5, -0.5]
         if m.kind == "class" and m.classes:
             n = len(m.classes)
             cmap = self.theme.ordinal(n)
-            im = self.ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent,
-                                cmap=cmap, vmin=-0.5, vmax=n - 0.5)
+            im = time_heatmap(self.ax, t, values, cmap=cmap, vmin=-0.5, vmax=n - 0.5)
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02, ticks=range(n))
             cb.ax.set_yticklabels(m.classes)
         else:
             cmap = self.theme.sequential().with_extremes(bad=self.theme.grid)
             vmax = float(self.options.get("vmax", 0) or (values.max() if values.count() else 1.0))
-            im = self.ax.imshow(values, aspect="auto", interpolation="nearest", extent=extent,
-                                cmap=cmap, vmin=float(self.options.get("vmin", 0.0)),
-                                vmax=max(vmax, 1e-9))
+            im = time_heatmap(self.ax, t, values, cmap=cmap, vmin=float(self.options.get("vmin", 0.0)),
+                              vmax=max(vmax, 1e-9))
             cb = self.fig.colorbar(im, ax=self.ax, fraction=0.04, pad=0.02)
             cb.set_label(m.unit or "count", color=self.theme.ink2, fontsize=self.ctx.font_size * 0.8)
             if m.kind == "count":
