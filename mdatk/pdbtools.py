@@ -1666,6 +1666,8 @@ def combine_chains(structure: Structure, chains: Sequence[str], into: Optional[s
     if not chains:
         return []
     target = chains[0] if into is None else into.strip()
+    if len(target) > 1:  # column 22 holds one character
+        raise PDBError("chain ids must be single characters")
     missing = [c for c in chains if c not in structure.chain_ids()]
     n = 0
     for res in structure.residues():
