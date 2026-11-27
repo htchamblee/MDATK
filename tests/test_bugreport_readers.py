@@ -693,3 +693,86 @@ def test_bug095_missing_input_file_is_named(tmp_path, capsys, monkeypatch):
     from mdatk import pdbtools
     with pytest.raises(pdbtools.PDBError, match="no ATOM/HETATM records"):  # the API still takes text
         pdbtools.read_pdb("REMARK nothing here\n")
+
+
+# ---------------------------------------------------------------------------
+# addendum: cleaning (100, 101)
+# ---------------------------------------------------------------------------
+
+
+def _running(pid):
+    """True while process ``pid`` runs (a zombie nobody has collected yet does not)."""
+    import os
+    try:
+        os.kill(pid, 0)
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "killpg"), reason="needs process groups")
+def test_bug100_cancel_ends_cpptraj_and_its_children_at_once(tmp_path):
+    import os
+    import signal
+    import threading
+    import time
+
+    from mdatk.cleaning.cpptraj import run_cpptraj
+    from mdatk.progress import Cancelled
+    # stands in for 'conda run ... cpptraj': a wrapper whose child goes on, silent for 3 s at a time
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text('#!/bin/sh\necho started\nsleep 30 &\necho $! > child.pid\nsleep 3\n'
+                       'echo "progress 10%"\nwait\n')
+    wrapper.chmod(0o755)
+    cancel = threading.Event()
+    lines = []
+
+    def log(line):
+        lines.append(line)
+        if line == "started":
+            threading.Timer(0.3, cancel.set).start()
+
+    child = None
+    try:
+        with pytest.raises(Cancelled):
+            run_cpptraj([str(wrapper)], "x.in", str(tmp_path / "w.log"), str(tmp_path), log, None, cancel)
+        waited = time.time()
+        child = int((tmp_path / "child.pid").read_text())
+        assert lines == ["started"]  # cancelled while cpptraj was silent, not at its next output
+        while _running(child) and time.time() - waited < 2.0:
+            time.sleep(0.05)
+        assert not _running(child)
+    finally:
+        if child is None and (tmp_path / "child.pid").exists():
+            child = int((tmp_path / "child.pid").read_text())
+        if child and _running(child):
+            os.kill(child, signal.SIGKILL)
+
+
+def test_bug100_cpptraj_output_and_exit_status_are_still_passed_on(tmp_path):
+    import sys
+
+    from mdatk.cleaning.cpptraj import run_cpptraj
+    fake = tmp_path / "fake.py"
+    fake.write_text("import sys\nprint('reading', flush=True)\nprint(' 50% done', flush=True)\n"
+                    "sys.stdout.write('no newline at the end')\nsys.exit(3)\n")
+    lines, progress = [], []
+    code = run_cpptraj([sys.executable, str(fake)], "x.in", str(tmp_path / "f.log"), str(tmp_path), lines.append,
+                       progress.append)
+    assert code == 3 and lines == ["reading", " 50% done", "no newline at the end"] and progress == [0.5]
+    assert (tmp_path / "f.log").read_text() == "reading\n 50% done\nno newline at the end"
+
+
+def test_bug101_utf8_characters_split_between_chunks_are_decoded(tmp_path):
+    import sys
+
+    from mdatk.cleaning.cpptraj import run_cpptraj
+    fake = tmp_path / "fake_utf8.py"
+    fake.write_text("import sys\nsys.stdout.buffer.write(b'a' * 4095 + '\\u00e9\\n'.encode('utf-8'))\n"
+                    "sys.stdout.buffer.write(b'cut \\xc3')\n")
+    lines = []
+    code = run_cpptraj([sys.executable, str(fake)], "x.in", str(tmp_path / "u.log"), str(tmp_path), lines.append)
+    assert code == 0
+    assert lines == ["a" * 4095 + "\u00e9", "cut \ufffd"]  # a character cut off at the end is still replaced
+    assert (tmp_path / "u.log").read_text(encoding="utf-8") == "a" * 4095 + "\u00e9\ncut \ufffd"
