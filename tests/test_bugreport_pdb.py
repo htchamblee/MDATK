@@ -1,10 +1,16 @@
 """Regression tests for the PDB-tools, builder and AppImage items of the 2026-11-26 bug report addendum
 (MDATK-BUG-088, 089, 090, 093, 096, 106)."""
 
+import os
+import shutil
+import subprocess
+
 import pytest
 
 from mdatk import builder, frames, pdbtools as pt
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APPRUN = os.path.join(ROOT, "packaging", "linux", "AppRun")
 WRAP = "WARNING: residue numbers above 9999 wrap in the PDB columns"
 
 
@@ -81,3 +87,40 @@ def test_bug096_reversed_ranges_are_an_error():
     # a model map pairs a reversed side in reverse order, as before
     assert frames.parse_model_map("C:3-1=X:45-47") == {("X", 45): ("C", 3), ("X", 46): ("C", 2),
                                                         ("X", 47): ("C", 1)}
+
+
+# --- MDATK-BUG-106: AppRun adds only the fallback libraries the host lacks ------------------------------
+
+def _shells():
+    return [s for s in ("sh", "bash", "dash") if shutil.which(s)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="AppRun is a POSIX shell script")
+@pytest.mark.parametrize("shell", _shells())
+def test_bug106_apprun_adds_only_the_missing_fallback_libraries(tmp_path, shell):
+    appdir = tmp_path / "AppDir"
+    exe = appdir / "usr" / "lib" / "mdatk" / "mdatk"
+    fallback = exe.parent / "_internal" / "fallback"
+    missing = ["libmdatk-not-on-any-host-a.so.0", "libmdatk-not-on-any-host-b.so.0"]
+    for name in missing + ["libc.so.6"]:  # libc.so.6: on every host, so its copy must not be used
+        (fallback / name).mkdir(parents=True)
+        (fallback / name / name).write_text("")
+    (fallback / "empty-folder").mkdir()  # a folder without its library is skipped
+    exe.write_text('#!/bin/sh\necho "${LD_LIBRARY_PATH:-}"\n')
+    exe.chmod(0o755)
+    apprun = appdir / "AppRun"
+    shutil.copy(APPRUN, apprun)
+    env = {k: v for k, v in os.environ.items() if k not in ("ARGV0", "LD_LIBRARY_PATH")}
+
+    def run(ld_path=None):
+        e = dict(env, **({"LD_LIBRARY_PATH": ld_path} if ld_path is not None else {}))
+        return subprocess.run([shell, str(apprun), "--version"], capture_output=True, text=True, env=e,
+                              check=True).stdout.strip()
+
+    folders = ":".join(str(fallback / name) for name in missing)
+    assert run("/opt/amber/lib") == f"{folders}:/opt/amber/lib"
+    assert run() == folders
+    for name in missing:  # only the copy of a library the host has (libc) is left: nothing is added
+        (fallback / name / name).unlink()
+    assert run("/opt/amber/lib") == "/opt/amber/lib"
+    assert run() == ""

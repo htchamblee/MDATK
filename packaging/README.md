@@ -28,7 +28,7 @@ its own (see [RNAdo](#rnado)).
 | `notices/FFMPEG.txt` | FFmpeg licence / source notice template |
 | `smoke_test.py` | tests a finished build (`--version`, `demo`, `analyze`, `render`, barnaba, GUI and RNAdo start); stdlib only |
 | `linux/build_appimage.sh` | the Linux build: PyInstaller → FFmpeg → licences → AppDir → `appimagetool` |
-| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, `rnado ...` (or a link named `rnado`) → `mdatk rnado ...` (RNAdo, or a workflow action: `rnado write ...`), otherwise the command line; adds `_internal/fallback` (Wayland libraries) to the library path on hosts without them |
+| `linux/AppRun` | AppImage entry point: no argument or a project file → GUI, `rnado ...` (or a link named `rnado`) → `mdatk rnado ...` (RNAdo, or a workflow action: `rnado write ...`), otherwise the command line; adds the `_internal/fallback` folder of each Wayland library the host lacks to the library path |
 | `linux/check_glibc.sh` | newest glibc symbol version the bundle needs (RHEL 9 = 2.34) |
 | `windows/build_windows.sh` | the Windows build, in an MSYS2 UCRT64 shell (optionally installs the dependencies) |
 | `windows/mdatk.iss` | Inno Setup installer (per-user by default, optional PATH entry; Start-menu entries and optional desktop shortcuts for MDATK and RNAdo) |
@@ -163,8 +163,9 @@ GTK 3, PyGObject / pycairo, NumPy, SciPy, Matplotlib (Agg/PDF/PS/SVG back-ends),
 Barnaba + mdtraj (only what `barnaba.annotate` needs), FFmpeg (`_internal/tools`), the Adwaita
 icon theme and the licence texts (`licenses/`). The AppImage also carries the host's Wayland
 client libraries in `_internal/fallback`: PyInstaller leaves them out because they must match the
-host's graphics drivers, so `AppRun` uses the copies only on hosts that have none (minimal or
-server installs, e.g. a cluster node used over `ssh -X`); desktops keep their own.
+host's graphics drivers, so `AppRun` uses each copy (in a folder of its own, `fallback/<name>/<name>`)
+only on hosts that lack that library (minimal or server installs, e.g. a cluster node used over
+`ssh -X`); desktops keep their own.
 
 Left out (`trim.py`): test suites and their data, translations, documentation and headers,
 Matplotlib sample data and toolbar images, Adwaita icons above 48 px and cursors, the build

@@ -161,8 +161,8 @@ def test_apprun_fallback_libraries(tmp_path, libname, used):
     appdir = tmp_path / "AppDir"
     exe = appdir / "usr" / "lib" / "mdatk" / "mdatk"
     fallback = exe.parent / "_internal" / "fallback"
-    fallback.mkdir(parents=True)
-    (fallback / libname).write_text("")
+    (fallback / libname).mkdir(parents=True)  # each copy in a folder of its own (MDATK-BUG-106)
+    (fallback / libname / libname).write_text("")
     exe.write_text('#!/bin/sh\necho "${LD_LIBRARY_PATH:-}"\n')
     exe.chmod(0o755)
     apprun = appdir / "AppRun"
@@ -171,7 +171,7 @@ def test_apprun_fallback_libraries(tmp_path, libname, used):
     env = {k: v for k, v in os.environ.items() if k not in ("ARGV0", "LD_LIBRARY_PATH")}
     env["LD_LIBRARY_PATH"] = "/opt/amber/lib"
     out = subprocess.run([str(apprun), "--version"], capture_output=True, text=True, env=env, check=True).stdout
-    assert out.strip() == (f"{fallback}:/opt/amber/lib" if used else "/opt/amber/lib")
+    assert out.strip() == (f"{fallback / libname}:/opt/amber/lib" if used else "/opt/amber/lib")
 
 
 def test_trim_lists():

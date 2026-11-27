@@ -4,8 +4,8 @@
 #   packaging/linux/build_appimage.sh [--out DIR] [--work DIR] [--no-ffmpeg]
 #
 # Steps: application icons (MDATK, RNAdo) -> PyInstaller bundle (packaging/mdatk.spec: mdatk,
-# rnado-gui) -> Wayland client libraries into _internal/fallback (used only where the host has
-# none) -> static FFmpeg into _internal/tools -> licence notices -> AppDir (AppRun, desktop files,
+# rnado-gui) -> Wayland client libraries into _internal/fallback (each used only where the host
+# lacks it) -> static FFmpeg into _internal/tools -> licence notices -> AppDir (AppRun, desktop files,
 # icons) -> appimagetool. "MDATK-*.AppImage rnado [PROJECT]" starts RNAdo (see AppRun).
 # Result: OUT/MDATK-<version>-x86_64.AppImage (default OUT: dist/) plus the unpacked bundle in
 # WORK/dist/mdatk (default WORK: build/appimage/).
@@ -61,13 +61,15 @@ MDATK_ICON_DIR="$WORK/icons" "$PYTHON" -m PyInstaller --noconfirm --clean --log-
 
 echo "== fallback libraries"
 # PyInstaller never bundles the Wayland client libraries (they belong to the host's graphics
-# stack); AppRun puts these copies on the library path only on hosts that lack them.
+# stack); AppRun puts these copies on the library path only on hosts that lack them, each copy in a
+# folder of its own (fallback/<name>/<name>) so that only the ones the host lacks are used.
 FALLBACK_SOURCES=()
 gdk="$(find "$DIST/_internal" -maxdepth 1 -name 'libgdk-3.so*' | head -n 1)"
 if [ -n "$gdk" ]; then
     mkdir -p "$DIST/_internal/fallback"
     while read -r name path; do
-        cp -L "$path" "$DIST/_internal/fallback/$name"
+        mkdir -p "$DIST/_internal/fallback/$name"
+        cp -L "$path" "$DIST/_internal/fallback/$name/$name"
         FALLBACK_SOURCES+=("$path")
         echo "   $name ($path)"
     done < <(ldd "$gdk" | awk '$1 ~ /^libwayland-/ && $3 ~ /^\// {print $1, $3}')
