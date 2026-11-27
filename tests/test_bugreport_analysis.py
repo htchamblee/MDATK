@@ -567,3 +567,64 @@ def test_bug070_the_net_force_of_a_pair_closer_than_half_an_angstrom_is_that_of_
     np.testing.assert_allclose(force[:3], [abs(de_dr)] * 3, rtol=1e-6)  # (float32 positions: 0.15, 0.2)
     assert force[0] == force[1]
     assert force[3] == 0.0  # at distance 0 the pair has no direction
+
+
+# ----------------------------------------------------------------------------------- MDATK-BUG-022, 024, 025
+def test_bug022_a_guessed_hydrogen_belongs_to_the_donor_nearest_by_the_periodic_distance():
+    """No bonds in the topology, 20 Å box, periodic distances.  N3 at x = 19.6 and its hydrogen at x = 0.6 are
+    1.0 Å apart across the face (19 Å in plain numbers); O2 of the same residue is 1.2 Å from the hydrogen.
+    Both are found within 1.25 Å; 0.1.1 then compared plain distances and gave the hydrogen to O2, so the bond
+    N3-H3...O6 (N...O 2.9 Å, 180 degrees) was lost: O2-H3...O6 has 90 degrees."""
+    atoms = [atom("N3", 1, "U", "N"), atom("H3", 1, "U", "H"), atom("O2", 1, "U", "O"), atom("O6", 2, "G", "O")]
+    frame = [[19.6, 0, 0], [0.6, 0, 0], [0.6, 1.2, 0], [2.5, 0, 0]]
+    u = with_box(make_universe(atoms, [frame]), [20.0, 20.0, 20.0, 90.0, 90.0, 90.0])
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.use_pbc = True
+    assert run_one("hbonds", u, p).arrays["count"].tolist() == [1]
+    # the same atoms unwrapped, without periodic distances: one bond, as before
+    whole = make_universe(atoms, [[[-0.4, 0, 0], [0.6, 0, 0], [0.6, 1.2, 0], [2.5, 0, 0]]])
+    p.analyses.use_pbc = False
+    assert run_one("hbonds", whole, p).arrays["count"].tolist() == [1]
+
+
+def stacked_rings():
+    from mdatk.analysis.stacking import PYRIMIDINE
+
+    ring = np.array([[np.cos(t), np.sin(t), 0.0] for t in np.arange(6) * np.pi / 3]) * 1.4
+    atoms = [atom(n, r, "C", n[0]) for r in (1, 2) for n in PYRIMIDINE]
+    return atoms, np.vstack([ring, ring + [0, 0, 3.4]])  # two six-rings, 3.4 Å apart, centred on the z axis
+
+
+@pytest.mark.parametrize("box", [[20.0, 20.0, 20.0, 90.0, 90.0, 90.0], OCTAHEDRON])
+def test_bug024_a_ring_split_by_wrapping_still_stacks(box):
+    """Per-atom wrapped coordinates: the ring atoms with x < 0 are one box vector away.  The centroid of such a
+    ring lay inside the box and the ring was 'not planar', so it never stacked, with or without use_pbc."""
+    from MDAnalysis.lib.mdamath import triclinic_vectors
+
+    atoms, frame = stacked_rings()
+    c = np.sqrt(0.5)
+    frame = frame @ np.array([[c, 0, -c], [0, 1, 0], [c, 0, c]])  # tilted by 45 degrees: the normal is (c, 0, c)
+    wrapped = frame.copy()
+    wrapped[frame[:, 0] < 0] += triclinic_vectors(np.array(box, dtype=np.float32))[0]  # (the x axis)
+    assert np.flatnonzero(frame[:, 0] < -0.1).tolist() == [2, 3, 4]  # three atoms of the first ring only
+    p = micro_project({"Aptamer": "1", "Target": "2"})
+    p.analyses.use_pbc = True
+    u = with_box(make_universe(atoms, [frame, wrapped]), box)
+    assert run_one("stacking", u, p).arrays["count"].tolist() == [1, 1]
+    p.analyses.use_pbc = False  # without periodic distances the wrapped ring is what the coordinates say
+    assert run_one("stacking", u, p).arrays["count"].tolist() == [1, 0]
+
+
+def test_bug025_the_residues_of_the_proximity_set_are_at_distance_zero_when_no_other_residue_is_shown():
+    """The proximity set holds every residue of the structure view: nothing is left to measure, and the members
+    stayed at 'inf' (far away) instead of 0."""
+    atoms = [atom("P", 1, "G", "P"), atom("P", 2, "C", "P"), atom("P", 3, "U", "P")]
+    u = make_universe(atoms, [[[0, 0, 0], [3, 0, 0], [6, 0, 0]]] * 2)
+    p = micro_project({"Aptamer": "1-2", "Target": "3"})
+    p.visual.proximity_set = "group:Aptamer or group:Target"
+    res = run_one("proximity", u, p)
+    assert res.arrays["member"].tolist() == [True, True, True]
+    assert res.arrays["min_distance"].tolist() == [[0.0, 0.0]] * 3
+    p.visual.proximity_set = "group:Target"  # as before: the others at their distance, the member at 0
+    distances = run_one("proximity", u, p).arrays["min_distance"]
+    np.testing.assert_allclose(distances, [[6.0, 6.0], [3.0, 3.0], [0.0, 0.0]])

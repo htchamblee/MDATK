@@ -26,7 +26,8 @@ class HBondAnalysis(Analysis):
     name = "hbonds"
     label = "Hydrogen bonds"
     # 2: without the angle an atom pair counts once; N carrying H is no acceptor without topology bonds either
-    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    # 3: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group);
+    # a hydrogen without topology bonds belongs to the donor nearest by the periodic distance when those are used
     version = 3
     group_slots = 2
     OUTPUT_LABELS = {
@@ -142,11 +143,12 @@ class HBondAnalysis(Analysis):
     def _guess_hydrogens(self, pos, box):
         heavy_idx = np.flatnonzero(self.cand_donor)
         h_idx = np.flatnonzero(self.is_h)
-        i, j, _ = pairs_within(pos[h_idx], pos[heavy_idx], 1.25, box)
+        # the nearest candidate by the distance of the search (the nearest image with periodic distances: the plain
+        # distance gave a hydrogen wrapped away from its donor to another atom); of two equally near, the first
+        i, j, d = pairs_within(pos[h_idx], pos[heavy_idx], 1.25, box)
         best: Dict[int, tuple] = {}
-        d = np.linalg.norm(pos[h_idx[i]] - pos[heavy_idx[j]], axis=1) if len(i) else []
-        for hi, hj, dist in zip(i, j, d):
-            if hi not in best or dist < best[hi][1]:
+        for hi, hj, dist in zip(i.tolist(), j.tolist(), d.tolist()):
+            if hi not in best or (dist, hj) < (best[hi][1], best[hi][0]):
                 best[hi] = (hj, dist)
         for hi, (hj, _) in best.items():
             self.h_of.setdefault(int(heavy_idx[hj]), []).append(int(h_idx[hi]))

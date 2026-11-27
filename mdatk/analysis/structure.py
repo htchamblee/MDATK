@@ -255,7 +255,8 @@ class ProximityAnalysis(Analysis):
     name = "proximity"
     label = "Proximity to residue set"
     internal = True
-    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group)
+    # 2: an atom's element is the topology's wherever it has one (not guessed from the name for a whole group);
+    # the residues of the set are at distance 0 also when no other residue is shown
     version = 2
 
     @classmethod
@@ -289,6 +290,7 @@ class ProximityAnalysis(Analysis):
         self.dist = np.full((len(residues), self.n_frames), np.inf, dtype=np.float32)
 
     def process(self, k, ts):
+        self.dist[self.member, k] = 0.0  # (also when every residue shown is in the set: they stayed at inf)
         if self.struct.n_atoms == 0:
             return
         i, _, d = pairs_within(self.struct.positions, self.set_atoms.positions, self.radius,

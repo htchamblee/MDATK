@@ -68,7 +68,7 @@ class StackingAnalysis(Analysis):
     name = "stacking"
     label = "π–π stacking"
     # 2: periodic centroid distances are the exact nearest-image distances (a pair at the cutoff no longer depends
-    # on the size of the box)
+    # on the size of the box), and rings split by wrapping are made whole
     version = 2
     group_slots = 2
     OUTPUT_LABELS = {
@@ -164,6 +164,11 @@ class StackingAnalysis(Analysis):
                 ring_ids, ring_pos = ring_ids[whole], ring_pos[whole]
                 if not len(ring_ids):
                     continue
+            if box is not None:
+                # with periodic distances a ring whose atoms were wrapped to opposite faces of the box is put
+                # together around its first atom (its centroid lay inside the box and it was "not planar")
+                first = ring_pos[:, :1, :]
+                ring_pos = first + minimum_image_vectors(ring_pos - first, box)
             c, nvec, pl = ring_geometry(ring_pos)
             cent[ring_ids], norm[ring_ids], planar[ring_ids] = c, nvec, pl
         if p.scope == "inter":
