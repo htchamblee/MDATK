@@ -695,3 +695,40 @@ def test_091_a_non_finite_voxel_is_not_smeared_over_the_density_fit():
     assert b.cc == pytest.approx(a.cc, abs=1e-4)  # was 4e-4 apart
     assert D.rotation_angle(a.transform.rotation @ b.transform.rotation.T) < 0.01  # degrees; was 0.03
     assert "1 map voxel not finite" in b.message and "not finite" not in a.message  # the user is told
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-062 (chain legend), 075 (wrap_degrees)
+# ---------------------------------------------------------------------------
+
+
+def test_062_the_chain_legend_shows_the_chain_names():
+    p = project_with([PanelSpec("structure", [], ""), PanelSpec("sequence", [], "")], "single_strip")
+    p.visual.color_mode = "chain"
+    p.visual.glow_mode = "none"
+
+    def legend(names=None):
+        ds = example_dataset(p, n_frames=2)
+        tr = ds.results["trace"]
+        if names is None:
+            del tr.arrays["chain_name"]  # a trace cached before chain names were stored
+        else:
+            tr.arrays["chain_name"] = np.array([names[int(c)] for c in tr.arrays["chain"]])
+        panels = build_figure(ds, p, 700, 500, 100)[2]
+        return [t.get_text() for t in panels[0].legend.get_texts()], [t.get_text() for t in panels[1].chain_texts]
+
+    assert legend(["A", "B"]) == (["Chain A", "Chain B"], ["A", "B"])  # was: Chain 1, Chain 2 beside A and B
+    assert legend(["R", "S"]) == (["Chain R", "Chain S"], ["R", "S"])
+    assert legend(["R", ""])[0] == ["Chain R", "Chain 2"]  # no name: the chain's number
+    assert legend(None) == (["Chain A", "Chain B"], ["A", "B"])  # the letters the sequence panel shows too
+
+
+def test_075_wrap_degrees_folds_only_minus_180():
+    from mdatk.render.orientation import euler_to_matrix, matrix_to_euler, wrap_degrees
+
+    assert wrap_degrees(-179.999) == pytest.approx(-179.999, abs=1e-12)  # was +180.0
+    assert wrap_degrees(-179.9999) == pytest.approx(-179.9999, abs=1e-12)
+    assert wrap_degrees(-180.0) == 180.0 and wrap_degrees(180.0) == 180.0 and wrap_degrees(540.0) == 180.0
+    assert wrap_degrees(190.0) == pytest.approx(-170.0) and wrap_degrees(0.0) == 0.0
+    angles = matrix_to_euler(euler_to_matrix([-179.999, 10.0, 20.0]))
+    assert angles == pytest.approx((-179.999, 10.0, 20.0), abs=1e-6)  # was (180.0, 10, 20)

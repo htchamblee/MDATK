@@ -20,7 +20,7 @@ from matplotlib.ticker import MaxNLocator
 from ..config import PanelSpec, Project, panel_option_problems
 from ..data import Dataset
 from .coloring import frame_colors
-from .residues import residue_shading, tag_rows, warn_once
+from .residues import chain_names, residue_shading, tag_rows, warn_once
 from .orientation import euler_to_matrix
 from .theme import Theme, get_theme, style_axes, style_legend
 
@@ -468,10 +468,12 @@ class StructurePanel(Panel):
         ms = 7
         if v.color_mode == "chain":
             chains = np.unique(tr.arrays["chain"])
+            names = chain_names(tr)  # the letters the sequence panels and residue tags (B:12) show
             for c in chains:
                 k = int(np.flatnonzero(np.asarray(tr.arrays["chain"]) == c)[0])
+                name = str(names[k]).strip() or str(int(c) + 1)  # a chain without a name: its number
                 handles.append(Line2D([], [], ls="", marker="o", ms=ms, color=self.static[k],
-                                      label=f"Chain {int(c) + 1}"))
+                                      label=f"Chain {name}"))
         else:
             gi = np.asarray(tr.arrays["group_index"])
             for k, g in enumerate(project.groups):

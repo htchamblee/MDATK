@@ -38,7 +38,7 @@ def euler_to_matrix(angles: Sequence[float]) -> np.ndarray:
 
 def wrap_degrees(a: float) -> float:
     a = (a + 180.0) % 360.0 - 180.0
-    return 180.0 if np.isclose(a, -180.0) else a
+    return 180.0 if abs(a + 180.0) < 1e-9 else a  # -180 itself only (isclose folded all of -180 ± 0.0018)
 
 
 def matrix_to_euler(r: np.ndarray) -> Tuple[float, float, float]:
