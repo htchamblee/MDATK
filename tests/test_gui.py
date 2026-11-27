@@ -314,7 +314,8 @@ def test_grid_preset_with_slot_options_that_are_no_json(window):
     assert "Panels not swapped" in win.log_buffer.get_text(*win.log_buffer.get_bounds(), False)
     win.slot_rows[0]["opts"].set_text('{"mode": "frequency"}')
     layout = win.collect(validate=False).layout
-    assert layout.preset == "large_plus_2" and len(layout.panels) == 3
+    # three panels have a slot; the demo's other two are kept (a smaller grid preset deletes no panel)
+    assert layout.preset == "large_plus_2" and len(layout.panels) == 5
     assert layout.panels[0].options == {"mode": "frequency"}
 
 

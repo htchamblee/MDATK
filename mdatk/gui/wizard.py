@@ -140,7 +140,7 @@ class OptionForm(Gtk.Grid):
                     return None
 
             getter = get_opt
-            setter = (lambda v, w=w: w.set_text("" if v is None else f"{v:g}"))
+            setter = (lambda v, w=w: w.set_text("" if v is None else W.number_text(v)))  # every digit
         elif opt.kind == "multiline":
             tv = Gtk.TextView(monospace=True)
             tv.set_wrap_mode(Gtk.WrapMode.NONE)

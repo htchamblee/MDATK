@@ -86,6 +86,56 @@ class DiskState:
         return file_stamp(self.path) != self.stamp
 
 
+def as_written(project: Project, source: Optional[str], target: str) -> Project:
+    """``project`` as a window writes it to the file ``target``.  A window holds every path absolute
+    (:meth:`Project.resolve_paths`); a path that still is the one the project file ``source`` names (the
+    file the project was read from; None: none) is written the way that file spells it - relative to the
+    project's folder, or with ``~`` - so a project folder can be moved or shared after a save as before
+    it.  Saved into another folder, such a relative path is written relative to that folder (it names the
+    same file).  Paths that were changed or added are written as the window holds them."""
+    from .. import projectfile
+
+    try:
+        raw = Project.from_dict(projectfile.read(source)) if source and os.path.isfile(source) else None
+    except (OSError, ValueError):
+        raw = None
+    if raw is None:
+        return project
+    base = os.path.dirname(os.path.abspath(source))
+    folder = os.path.dirname(os.path.abspath(target))
+    resolved = raw.copy()
+    resolved.resolve_paths(base)
+
+    def spelled(was: str, full: str) -> str:
+        """The file's spelling ``was`` of the path(s) ``full`` (several: joined with ';'), for ``folder``."""
+        if folder == base:
+            return was
+        parts, paths = [p.strip() for p in was.split(";") if p.strip()], full.split(";")
+        if len(parts) != len(paths):
+            return full
+        try:
+            return ";".join(p if os.path.isabs(os.path.expanduser(p)) else os.path.relpath(f, folder)
+                            for p, f in zip(parts, paths))
+        except ValueError:  # no relative path between two drives
+            return full
+
+    def walk(now: Any, was: Any, full: Any) -> Any:
+        if isinstance(now, str):
+            same = isinstance(was, str) and isinstance(full, str) and was != full and now == full
+            return spelled(was, full) if same else now
+        if isinstance(now, dict) and isinstance(was, dict) and isinstance(full, dict):
+            return {k: walk(v, was.get(k), full.get(k)) for k, v in now.items()}
+        if isinstance(now, list) and isinstance(was, list) and isinstance(full, list) and len(was) == len(full):
+            if all(isinstance(v, str) for v in now + was + full):  # file lists: by path, whatever the order
+                known = dict(zip(full, was))
+                return [walk(v, known.get(v), v) for v in now]
+            if len(now) == len(was):
+                return [walk(v, w, f) for v, w, f in zip(now, was, full)]
+        return now
+
+    return Project.from_dict(walk(project.to_dict(), raw.to_dict(), resolved.to_dict()))
+
+
 Renames = Sequence[Tuple[str, str, Sequence[str]]]
 
 
