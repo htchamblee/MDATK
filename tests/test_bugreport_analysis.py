@@ -628,3 +628,47 @@ def test_bug025_the_residues_of_the_proximity_set_are_at_distance_zero_when_no_o
     p.visual.proximity_set = "group:Target"  # as before: the others at their distance, the member at 0
     distances = run_one("proximity", u, p).arrays["min_distance"]
     np.testing.assert_allclose(distances, [[6.0, 6.0], [3.0, 3.0], [0.0, 0.0]])
+
+
+# --------------------------------------------------------------------------------------------- MDATK-BUG-071
+def test_bug071_guessed_bonds_include_sulfur_and_phosphorus_bonds_longer_than_1_95():
+    """A topology without bonds: every pair of heavy atoms within 1.95 Å was a bond, so a disulfide (2.05 Å), a
+    P-S bond of a phosphorothioate (1.98 Å) and C-I (2.14 Å) were not drawn; and bonds were only looked for within
+    a residue and between consecutive ones, where the two cysteines of a disulfide bridge rarely are."""
+    from mdatk.analysis.structure import atom_bonds
+
+    atoms = [atom("S1", 1, "LIG", "S"), atom("S2", 1, "LIG", "S"),  # 0-1: S-S 2.05 Å in one residue
+             atom("P", 2, "GS", "P"), atom("S1P", 2, "GS", "S"), atom("OP2", 2, "GS", "O"),  # 2-3 P-S 1.98, 2-4 P-O
+             atom("C5", 3, "IU", "C"), atom("I5", 3, "IU", "I"),  # 5-6: C-I 2.14
+             atom("SG", 4, "CYS", "S"), atom("CB", 4, "CYS", "C"),  # 7-8 C-S 1.82
+             atom("SG", 9, "CYS", "S"),  # 7-9: the disulfide to a residue far along the chain
+             atom("C1", 12, "LIG", "C"), atom("C2", 12, "LIG", "C"), atom("O1", 12, "LIG", "O")]
+    xyz = np.array([[0, 0, 0], [2.05, 0, 0],
+                    [10, 0, 0], [11.98, 0, 0], [10, 1.48, 0],
+                    [20, 0, 0], [22.14, 0, 0],
+                    [30, 0, 0], [30, 1.82, 0],
+                    [32.05, 0, 0],
+                    [40, 0, 0], [41.96, 0, 0], [40, 2.11, 0]], dtype=float)  # C-C 1.96 and C...O 2.11: no bonds
+    u = make_universe(atoms, [xyz])
+    assert atom_bonds(u.atoms).tolist() == [[0, 1], [2, 3], [2, 4], [5, 6], [7, 8], [7, 9]]
+    # only sulfurs bond across distant residues, and only within bonding distance (S...S 2.6 Å is none)
+    far = xyz.copy()
+    far[9] = [32.6, 0, 0]
+    far[12] = [41.4, 0, 0]  # C2-O1 0.56 Å ... in one residue: a bond as before
+    assert atom_bonds(make_universe(atoms, [far]).atoms).tolist() == [[0, 1], [2, 3], [2, 4], [5, 6], [7, 8], [10, 12],
+                                                                    [11, 12]]
+
+
+def test_bug071_the_ends_of_two_chains_are_only_linked_within_bonding_distance():
+    """The report's second half is not changed: the last residue of one chain and the first of the next are
+    candidates like any consecutive residues, but a bond still needs the two atoms within bonding distance, which
+    two chain ends are not (here 3.0 Å, a close contact).  Chains that are joined (1.6 Å, O3'-P) are drawn so."""
+    from mdatk.analysis.structure import atom_bonds
+
+    atoms = [atom("O3'", 12, "G", "O"), atom("P", 13, "C", "P")]
+    apart = make_universe(atoms, [[[0, 0, 0], [3.0, 0, 0]]])
+    apart.add_TopologyAttr("chainIDs", ["A", "B"])
+    assert atom_bonds(apart.atoms).tolist() == []
+    joined = make_universe(atoms, [[[0, 0, 0], [1.6, 0, 0]]])
+    joined.add_TopologyAttr("chainIDs", ["A", "B"])
+    assert atom_bonds(joined.atoms).tolist() == [[0, 1]]
