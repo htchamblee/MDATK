@@ -1156,6 +1156,8 @@ def carry_unknown(old: Any, new: Any) -> None:
     """Give the parameter tree ``new`` the unknown keys of ``old``, the tree it was made from, wherever
     an object was built anew (the GUI rebuilds table rows and the layout from its widgets).  List items
     are matched by their settings (rows that moved), then by position (a row that was edited)."""
+    if old is new:  # (kept as it was, e.g. the plan)
+        return
     if dataclasses.is_dataclass(new) and type(old) is type(new):
         if unknown_keys(old) and UNKNOWN_KEYS not in new.__dict__:
             new.__dict__[UNKNOWN_KEYS] = copy.deepcopy(unknown_keys(old))
