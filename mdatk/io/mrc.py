@@ -10,6 +10,7 @@ supported (cryo-EM maps always are).
 from __future__ import annotations
 
 import gzip
+import zlib
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -76,13 +77,36 @@ def _open(path: str):
     return gzip.open(path, "rb") if gz else open(path, "rb")
 
 
+def _read(fh, size: int) -> bytes:
+    """Up to ``size`` bytes, read in parts: the size comes from the header and the file may be far
+    shorter (a damaged header must not ask for all the memory at once)."""
+    parts, left = [], size
+    while left > 0:
+        part = fh.read(min(left, 1 << 26))
+        if not part:
+            break
+        parts.append(part)
+        left -= len(part)
+    return parts[0] if len(parts) == 1 else b"".join(parts)
+
+
 def read_map(path: str) -> DensityMap:
     """Read an MRC / CCP4 map (optionally gzip-compressed) into Cartesian [z, y, x] order."""
+    try:
+        return _read_map(path)
+    except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
+        raise MapError(f"{path}: the gzip-compressed file is cut off or damaged ({exc})") from exc
+
+
+def _read_map(path: str) -> DensityMap:
     with _open(path) as fh:
         raw = fh.read(HEADER_BYTES)
         if len(raw) < HEADER_BYTES:
             raise MapError(f"{path}: file too short for an MRC header")
-        e = _endian(raw)
+        try:
+            e = _endian(raw)
+        except MapError as exc:
+            raise MapError(f"{path}: {exc}") from None
         ints = np.frombuffer(raw, dtype=f"{e}i4", count=256)
         floats = np.frombuffer(raw, dtype=f"{e}f4", count=256)
         nc, nr, ns, mode = (int(v) for v in ints[0:4])
@@ -94,6 +118,10 @@ def read_map(path: str) -> DensityMap:
         nsymbt = int(ints[23])
         origin_field = np.array(floats[49:52], dtype=np.float64)
         if mode not in MODES:
+            swapped = int.from_bytes(raw[12:16], "big" if e == "<" else "little", signed=True)
+            if swapped in MODES:  # the machine stamp names the other byte order than the header is in
+                raise MapError(f"{path}: cannot determine the byte order of the map header (mode {mode} "
+                               f"in the byte order of its machine stamp, {swapped} in the other)")
             raise MapError(f"{path}: unsupported MRC mode {mode} (supported: 0, 1, 2, 6, 12)")
         if min(nc, nr, ns) <= 0:
             raise MapError(f"{path}: invalid dimensions {nc} x {nr} x {ns}")
@@ -111,7 +139,7 @@ def read_map(path: str) -> DensityMap:
         count = nc * nr * ns
         if nsymbt > 0:
             fh.read(nsymbt)
-        buf = fh.read(count * dtype.itemsize)
+        buf = _read(fh, count * dtype.itemsize)
         if len(buf) < count * dtype.itemsize:
             raise MapError(f"{path}: file is shorter than its header says")
         data = np.frombuffer(buf, dtype=dtype, count=count)

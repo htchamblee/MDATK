@@ -387,3 +387,168 @@ def test_bug072_gro_box_line_with_run_together_negative_values(tmp_path):
     assert _load(_write(tmp_path, "tri.gro", tri)).dimensions is not None
     joined = _load(_write(tmp_path, "joined.gro", GRO_FRAME.replace(box, "1000.000002000.000003000.00000")))
     assert np.allclose(joined.dimensions, [10000, 20000, 30000, 90, 90, 90])
+
+
+# ---------------------------------------------------------------------------
+# command line and messages (028, 030, 065, 066, 083)
+# ---------------------------------------------------------------------------
+
+
+def _main(capsys, *argv):
+    from mdatk.cli import main
+    capsys.readouterr()
+    code = main(list(argv))
+    return code, capsys.readouterr().err
+
+
+def test_bug028_reader_failures_are_one_line_errors_on_the_command_line(demo_dry, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    code, err = _main(capsys, "info", "--top", demo_dry["topology"])
+    assert code == 1 and "Traceback" not in err
+    assert f"error: {demo_dry['topology']} has no coordinates; give a trajectory with --traj" in err
+    pdb = _write(tmp_path, "two.pdb", TWO_PDB)
+    cases = [(["--top", _write(tmp_path, "no_box.gro", GRO_FRAME.rsplit("\n", 2)[0] + "\n")], "missing box line"),
+             (["--top", _write(tmp_path, "empty.pdb", "")], "file is empty"),
+             (["--top", _write(tmp_path, "remark.pdb", "REMARK x\nEND\n")], "no ATOM or HETATM records"),
+             (["--top", pdb, "--traj", _write(tmp_path, "one_frame.mdcrd", "title\n" + MDCRD_FRAME)],
+              "ends with its first frame"),
+             (["--top", pdb, "--traj", _netcdf(tmp_path / "three.nc", [20, 20, 20], n_atoms=3)],
+              "cannot read the Amber NetCDF trajectory")]
+    for args, expected in cases:
+        code, err = _main(capsys, "info", *args)
+        assert code == 1 and "Traceback" not in err, args
+        assert err.startswith("error: ") and expected in err and args[-1] in err, err
+
+
+def test_bug028_unexpected_errors_are_one_line_unless_debugging(capsys, monkeypatch):
+    from mdatk import cli
+
+    def broken(_args):
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    monkeypatch.setattr(cli, "cmd_density_info", broken)
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    code, err = _main(capsys, "density", "info", "x.mrc")
+    assert code == 1
+    assert err == "error: TypeError: 'NoneType' object is not subscriptable (set MDATK_DEBUG=1 for the traceback)\n"
+    monkeypatch.setenv("MDATK_DEBUG", "1")
+    with pytest.raises(TypeError):
+        cli.main(["density", "info", "x.mrc"])
+
+
+def _mrc_header(n, order="<", stamp=(0x44, 0x44, 0, 0), mode=2):
+    import struct
+    h = bytearray(1024)
+    struct.pack_into(order + "3i", h, 0, n, n, n)
+    struct.pack_into(order + "i", h, 12, mode)
+    struct.pack_into(order + "3i", h, 28, n, n, n)
+    struct.pack_into(order + "6f", h, 40, 10, 10, 10, 90, 90, 90)
+    struct.pack_into(order + "3i", h, 64, 1, 2, 3)
+    h[208:212] = b"MAP "
+    h[212:216] = bytes(stamp)
+    return bytes(h)
+
+
+def test_bug030_density_info_on_damaged_maps(tmp_path, capsys, monkeypatch):
+    import gzip
+
+    from mdatk.io.mrc import MapError, read_map
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    huge = _write(tmp_path, "huge.mrc", _mrc_header(100000) + b"\0" * 16)
+    cut = _write(tmp_path, "trunc.mrc.gz", gzip.compress(_mrc_header(4) + b"\0" * 256)[:-30])
+    notgz = _write(tmp_path, "notgz.mrc.gz", b"\x1f\x8b" + b"garbage" * 300)
+    swapped = _write(tmp_path, "swapped.mrc", _mrc_header(4, order=">") + b"\0" * 256)
+    nostamp = _write(tmp_path, "nostamp.mrc", _mrc_header(4, stamp=(0, 0, 0, 0), mode=77) + b"\0" * 256)
+    for path, expected in ((huge, "file is shorter than its header says"),
+                           (cut, "the gzip-compressed file is cut off or damaged"),
+                           (notgz, "the gzip-compressed file is cut off or damaged"),
+                           (swapped, "cannot determine the byte order of the map header (mode 33554432"),
+                           (nostamp, "cannot determine the byte order of the map header")):
+        code, err = _main(capsys, "density", "info", path)
+        assert code == 1 and "Traceback" not in err, path
+        assert err.startswith(f"error: {path}: {expected}"), err
+        with pytest.raises(MapError):
+            read_map(path)
+    good = _write(tmp_path, "good.mrc.gz", gzip.compress(_mrc_header(4) + np.arange(64, dtype="<f4").tobytes()))
+    assert read_map(good).data.shape == (4, 4, 4) and read_map(good).data[3, 3, 3] == 63
+
+
+def test_bug065_keyerror_messages_are_printed_without_quotes(demo_dry, tmp_path, capsys, monkeypatch):
+    from mdatk.config import Project
+    from mdatk.pipeline import Pipeline
+    from mdatk.progress import Reporter
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    code, err = _main(capsys, "analyze", "-p", demo_dry["project"], "-o", str(tmp_path / "o"), "--only", "nope",
+                      "-q")
+    assert code == 1 and err.startswith("error: unknown analysis 'nope' (known: ")
+    from mdatk.progress import error_text
+    assert error_text(KeyError("name")) == "name" and error_text(KeyError(3)) == "3"
+    assert error_text(ValueError("a 'b'")) == "a 'b'"
+    project = Project.load(demo_dry["project"])
+    project.output.charts.series = ["bogus@Nope/x"]
+    logs = []
+    Pipeline(project, Reporter(log_cb=logs.append)).required_analyses(video=False, charts=True)
+    warning = [line for line in logs if "skipping data source" in line]
+    assert len(warning) == 1 and ": unknown analysis " in warning[0] and '"' not in warning[0]
+
+
+def test_bug066_frames_and_list_index_errors_name_the_option(demo_dry, tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    out = str(tmp_path / "x.toml")
+    for frames in ("x", "1.5", "0:y", "0:10:z"):
+        code, err = _main(capsys, "init", out, "--frames", frames)
+        assert code == 1
+        assert err == f"error: --frames: {frames!r} is not a frame number or range (start:stop:step, e.g. 0:100:2)\n"
+    code, err = _main(capsys, "init", out, "-p", demo_dry["project"], "--set", "groups.--1.name=x")
+    assert code == 1 and err == "error: groups.--1.name: no list element '--1'\n"
+    from mdatk.cli import apply_override
+    from mdatk.config import Project
+    project = Project.load(demo_dry["project"])
+    last = project.groups[-1].name
+    apply_override(project, "groups.-1.name=Renamed")  # negative indices still count from the end
+    assert project.groups[-1].name == "Renamed" != last
+    code, err = _main(capsys, "init", out, "--frames", "2:10:2")
+    assert code == 0
+    loaded = Project.load(out).inputs
+    assert (loaded.start, loaded.stop, loaded.step) == (2, 10, 2)
+
+
+def test_bug083_empty_frame_selection_says_end_not_none():
+    from mdatk.io.loader import frame_indices
+    with pytest.raises(ValueError) as info:
+        frame_indices(6, 30, None, 1)
+    assert str(info.value) == "frame selection start=30 stop=end step=1 selects no frames (trajectory has 6)"
+    with pytest.raises(ValueError, match="start=30 stop=40 step=1"):
+        frame_indices(6, 30, 40, 1)
+    assert list(frame_indices(6, 4, None, 1)) == [4, 5]
+
+
+# ---------------------------------------------------------------------------
+# pipeline (084, 085)
+# ---------------------------------------------------------------------------
+
+
+def test_bug084_external_data_files_are_read_before_the_analyses(demo_dry, tmp_path, monkeypatch):
+    from mdatk import pipeline
+    from mdatk.config import ExternalSeries, Project
+    project = Project.load(demo_dry["project"])
+    project.output.out_dir = str(tmp_path / "out")
+    project.output.cache_dir = str(tmp_path / "cache")
+    calls = []
+    real = pipeline.run_analyses
+    monkeypatch.setattr(pipeline, "run_analyses", lambda *a, **k: calls.append(1) or real(*a, **k))
+    missing = str(tmp_path / "missing.dat")
+    bad = tmp_path / "bad.dat"
+    bad.write_text("#Frame RMSD\n1 0.5\n2 oops\n")
+    for path, expected in ((missing, "external data: "), (str(bad), f"external data: {bad}: non-numeric data line")):
+        project.inputs.external = [ExternalSeries(path=path, x_unit="frame1")]
+        with pytest.raises(pipeline.PipelineError) as info:
+            pipeline.Pipeline(project).analyze(["rmsd"])
+        assert str(info.value).startswith(expected) and path in str(info.value)
+        assert calls == []  # found before the frames were read
+    good = tmp_path / "good.dat"
+    good.write_text("#Frame RMSD\n" + "".join(f"{k + 1} {0.1 * k}\n" for k in range(24)))
+    project.inputs.external = [ExternalSeries(path=str(good), x_unit="frame1")]
+    dataset = pipeline.Pipeline(project).analyze(["rmsd"])
+    assert calls == [1]
+    assert np.allclose(dataset.results["external"].arrays["s0_1"], 0.1 * np.arange(24))

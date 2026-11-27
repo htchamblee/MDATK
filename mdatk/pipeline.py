@@ -28,11 +28,11 @@ from .cleaning.cpptraj import MARKER, cpptraj_command
 from .config import Project, file_fingerprint
 from .data import Dataset
 from .io.cache import CacheStore
-from .io.external import load_external
+from .io.external import load_external, read_external
 from .io.loader import frame_indices, load_universe
 from .io.pdb_export import export_frames, frames_from_specs, resolve_export_selection
 from .problems import Problem
-from .progress import Reporter
+from .progress import Reporter, error_text
 from .selections import SelectionError
 
 log = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class Pipeline:
             try:  # the affected panels / charts report "No data"
                 instance_project(p, inst)
             except (KeyError, ValueError) as exc:
-                self.reporter.log(f"WARNING: skipping data source {inst!r}: {exc}")
+                self.reporter.log(f"WARNING: skipping data source {inst!r}: {error_text(exc)}")
                 continue
             usable.append(inst)
         order = list(ANALYSES)
@@ -200,6 +200,12 @@ class Pipeline:
         rep = reporter or self.reporter
         p = self.project
         names = list(self.required_analyses() if names is None else names)
+        external = None
+        if p.inputs.external:  # before the frames are read: a missing or malformed file stops the run here
+            try:
+                external = read_external(p.inputs.external)
+            except (OSError, ValueError) as exc:
+                raise PipelineError(f"external data: {exc}") from exc
         inputs = self.resolve_inputs(rep.sub(0.0, 0.02))
         fp = self.input_fingerprint(inputs)
         projects = {n: instance_project(p, n) for n in names}
@@ -240,7 +246,7 @@ class Pipeline:
         self.apply_display_overrides(dataset)
         if p.inputs.external:
             try:
-                dataset.add(load_external(p.inputs.external, dataset))
+                dataset.add(load_external(p.inputs.external, dataset, external))
             except (OSError, ValueError) as exc:
                 raise PipelineError(f"external data: {exc}") from exc
         self.cache.write_manifest(

@@ -13,6 +13,14 @@ class Cancelled(Exception):
     """Raised when the user cancels a long running operation."""
 
 
+def error_text(exc: BaseException) -> str:
+    """The message of ``exc`` for the user.  ``str()`` of a KeyError is the repr of its argument: a
+    KeyError raised with a sentence would be shown in quotes."""
+    if isinstance(exc, KeyError) and len(exc.args) == 1 and isinstance(exc.args[0], str):
+        return exc.args[0]
+    return str(exc)
+
+
 class Reporter:
     """Forwards log lines and progress fractions to optional callbacks.
 

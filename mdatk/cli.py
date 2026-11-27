@@ -25,6 +25,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import sys
 import time
 import warnings
@@ -32,7 +33,7 @@ from typing import Any, List, Optional
 
 from . import PROJECT_ABBREV, PROJECT_TITLE, __version__
 from .config import Project
-from .progress import Cancelled, Reporter
+from .progress import Cancelled, Reporter, error_text
 
 log = logging.getLogger("mdatk")
 
@@ -66,7 +67,7 @@ def apply_override(project: Project, assignment: str) -> None:
     current: Any = None
     for n, part in enumerate(parts):
         if isinstance(obj, list):
-            if not part.lstrip("-").isdigit() or not -len(obj) <= int(part) < len(obj):
+            if not re.fullmatch(r"-?\d+", part) or not -len(obj) <= int(part) < len(obj):
                 raise ValueError(f"{path}: no list element {part!r}")
             current = obj[int(part)]
         else:
@@ -118,9 +119,13 @@ def load_project(args, resolve: bool = True) -> Project:
         project.cleaning.enabled = args.clean
     if getattr(args, "frames", None):
         parts = (args.frames.split(":") + ["", "", ""])[:3]
-        project.inputs.start = int(parts[0]) if parts[0] else 0
-        project.inputs.stop = int(parts[1]) if parts[1] else None
-        project.inputs.step = int(parts[2]) if parts[2] else 1
+        try:
+            project.inputs.start = int(parts[0]) if parts[0] else 0
+            project.inputs.stop = int(parts[1]) if parts[1] else None
+            project.inputs.step = int(parts[2]) if parts[2] else 1
+        except ValueError:
+            raise ValueError(f"--frames: {args.frames!r} is not a frame number or range "
+                             "(start:stop:step, e.g. 0:100:2)") from None
     for assignment in getattr(args, "set", None) or []:
         apply_override(project, assignment)
     if resolve:
@@ -1641,7 +1646,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         if os.environ.get("MDATK_DEBUG"):
             raise
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {error_text(exc)}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - an error nobody expected: still one line, not a traceback
+        if os.environ.get("MDATK_DEBUG"):
+            raise
+        print(f"error: {type(exc).__name__}: {exc} (set MDATK_DEBUG=1 for the traceback)", file=sys.stderr)
         return 1
 
 
