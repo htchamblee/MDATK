@@ -1085,11 +1085,12 @@ def sugar_chirality(coords: Dict[str, Vec], base: Optional[str] = None
 Range = Tuple[str, Optional[int], Optional[int]]
 
 
-def parse_ranges(spec) -> List[Range]:
+def parse_ranges(spec, reversed_ok: bool = False) -> List[Range]:
     """Residue ranges -> [(chain, start, end)].
 
     Accepts ``"C:45-73, A:1-5"``, ``"C:45"`` (one residue), ``"C"`` (whole chain), ``":45-73"`` (blank
-    chain), a list of such strings, or (chain, start, end) tuples.
+    chain), a list of such strings, or (chain, start, end) tuples.  A range that ends before it starts
+    (``"A:4-1"``) is a PDBError unless ``reversed_ok`` (a model map pairs such a range in reverse order).
     """
     if spec is None:
         return []
@@ -1108,6 +1109,8 @@ def parse_ranges(spec) -> List[Range]:
             chain, a, b = m.groups()
         start = None if a is None else int(a)
         end = start if b is None else int(b)
+        if start is not None and end < start and not reversed_ok:
+            raise PDBError(f"residue range {chain}:{start}-{end} ends before it starts")
         out.append((chain, start, end))
     return out
 

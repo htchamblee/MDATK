@@ -193,7 +193,7 @@ def parse_model_map(text: str) -> Dict[Tuple[str, int], Tuple[str, int]]:
             raise FrameError(f"model map item {item!r}: expected REFERENCE=MODEL, e.g. C:1-29=B:45-73")
         sides = []
         for side in (ref, model):
-            rr = pdbtools.parse_ranges(side)
+            rr = pdbtools.parse_ranges(side, reversed_ok=True)  # a reversed side pairs in reverse
             if len(rr) != 1 or rr[0][1] is None:
                 raise FrameError(f"model map item {item!r}: one chain-qualified range on each side")
             c, a, b = rr[0]

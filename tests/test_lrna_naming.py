@@ -298,9 +298,10 @@ def _ligand_builds(tmp_path):
 # ADE / CYT / GUA) is DNA, and a nucleotide bonded to a residue the schemes do not name is no chain end; then
 # the 2026-11-26 bug report addendum, mdatk.pdbtools alone: residue numbers below -999 refused (MDATK-BUG-088),
 # a multi-character --combine-into chain id refused (MDATK-BUG-089), the note on CONECT records dropped for
-# repeated serials (MDATK-BUG-090)); the build scripts, leap / ParmEd inputs and messages are those of a3b572c
+# repeated serials (MDATK-BUG-090), a residue range that ends before it starts refused (MDATK-BUG-096)); the
+# build scripts, leap / ParmEd inputs and messages are those of a3b572c
 _LIGAND_SAME = {"check.py": "9b3c751ac12a", "cp-lib.py": "c34fff6d74b5", "parmed.in": "19a1cbd00ec2",
-                "pdbtools.py": "f56c7939ef23", "prep.py": "a377a5917762"}
+                "pdbtools.py": "8ffd2b774604", "prep.py": "a377a5917762"}
 LIGAND_BUILDS_A3B572C = {
     "helix": dict(_LIGAND_SAME, **{":issues": "6a48b36ce705", "amber-build.sh": "6afa8ca98cf5",
                                    "tleap.leap": "74b75b71fbec"}),

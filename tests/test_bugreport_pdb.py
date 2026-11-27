@@ -3,7 +3,7 @@
 
 import pytest
 
-from mdatk import builder, pdbtools as pt
+from mdatk import builder, frames, pdbtools as pt
 
 WRAP = "WARNING: residue numbers above 9999 wrap in the PDB columns"
 
@@ -65,3 +65,19 @@ def test_bug093_build_helix_warns_when_numbers_wrap():
     notes = []
     builder.build_helix("GCAU", start=(1, 9996), notes=notes)  # 9996 ... 9999: no wrap, no warning
     assert WRAP not in notes
+
+
+# --- MDATK-BUG-096: reversed residue ranges ------------------------------------------------------------
+
+def test_bug096_reversed_ranges_are_an_error():
+    with pytest.raises(pt.PDBError, match="residue range A:4-1 ends before it starts"):
+        pt.parse_ranges("A:4-1")
+    with pytest.raises(pt.PDBError, match="residue range A:9-2 ends before it starts"):
+        pt.parse_ranges([("A", 9, 2)])
+    assert pt.parse_ranges("A:1-4") == [("A", 1, 4)]
+    assert pt.parse_ranges("A:-4--1") == [("A", -4, -1)]
+    with pytest.raises(pt.PDBError, match="ends before it starts"):
+        pt.clean(builder.build_helix("GCAU"), l_ranges="A:4-1")
+    # a model map pairs a reversed side in reverse order, as before
+    assert frames.parse_model_map("C:3-1=X:45-47") == {("X", 45): ("C", 3), ("X", 46): ("C", 2),
+                                                        ("X", 47): ("C", 1)}
