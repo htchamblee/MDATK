@@ -672,3 +672,62 @@ def test_bug071_the_ends_of_two_chains_are_only_linked_within_bonding_distance()
     joined = make_universe(atoms, [[[0, 0, 0], [1.6, 0, 0]]])
     joined.add_TopologyAttr("chainIDs", ["A", "B"])
     assert atom_bonds(joined.atoms).tolist() == [[0, 1]]
+
+
+# ---------------------------------------------------------------------------------------- MDATK-BUG-073, 074
+def test_bug073_of_two_groups_with_one_name_the_first_is_meant_everywhere():
+    """Project.group('Dup') gave the first group (residues 1-2), 'group:Dup' in a selection the last (3-4)."""
+    from mdatk.analysis.base import referenced_groups as cache_groups
+    from mdatk.config import Project, ResidueGroup
+    from mdatk.selections import expand_groups, referenced_groups, select
+
+    groups = [ResidueGroup("Dup", "1-2"), ResidueGroup("Dup", "3-4"), ResidueGroup("Uses", "", "group:Dup")]
+    project = Project(groups=groups)
+    u = make_universe([atom("P", k, "G", "P") for k in range(1, 6)], [np.zeros((5, 3))])
+    assert project.group("Dup").residues == "1-2"
+    assert expand_groups("group:Dup", groups) == "((resid 1:2))"
+    assert select(u, "group:Dup", groups).resids.tolist() == [1, 2]
+    assert select(u, "Uses", groups).resids.tolist() == [1, 2]
+    assert referenced_groups("group:Uses", groups) == ["Uses", "Dup"]
+    assert [g["residues"] for g in cache_groups(["Dup"], project)] == ["1-2"]  # the cache key follows the same group
+    assert any("must be unique" in problem for problem in project.validate())  # (and the project is refused)
+
+
+@pytest.mark.parametrize("text, name", [("group:Bad name", "Bad name"), ("name P and group:Bad name", "Bad name"),
+                                        ("group:Ünï", "Ünï"), ("group:Aptamerü and name P", "Aptamerü"),
+                                        ("(group:Aptamer,Target) and name P", "Aptamer,Target")])
+def test_bug074_a_group_token_with_characters_no_group_name_has_is_named(text, name):
+    """The token stopped at the first character outside its set: 'group:Bad name' was the unknown group 'Bad',
+    'group:Ünï' went to MDAnalysis unexpanded ("Unknown selection token: 'group:Ünï' (did you mean 'group'?)")."""
+    from mdatk.config import ResidueGroup
+    from mdatk.selections import SelectionError, check_selection, select
+
+    groups = [ResidueGroup("Aptamer", "1-2"), ResidueGroup("Target", "3"), ResidueGroup("Bad name", "1")]
+    u = make_universe([atom("P", k, "G", "P") for k in range(1, 4)], [np.zeros((3, 3))])
+    for run in (lambda: check_selection(text, groups), lambda: select(u, text, groups)):
+        with pytest.raises(SelectionError) as info:
+            run()
+        assert info.value.message == (f"group name {name!r} may only contain letters, digits, '_', '.' and '-' "
+                                      "(no spaces)")
+        assert (info.value.kind, info.value.token) == ("group_name", name)
+
+
+def test_bug074_valid_tokens_and_unknown_groups_are_read_as_before():
+    from mdatk.config import Project, ResidueGroup
+    from mdatk.selections import SelectionError, check_selection, expand_groups
+
+    groups = [ResidueGroup("Aptamer", "1-2"), ResidueGroup("Tar-get_2.x", "3"),
+              ResidueGroup("Inner", "", "group:Ünï")]
+    expanded = expand_groups("(group:Aptamer)and name P or group:Tar-get_2.x", groups)
+    assert expanded == "(((resid 1:2)))and name P or ((resid 3))"
+    with pytest.raises(SelectionError, match="unknown residue group 'Bad' .defined: Aptamer, Tar-get_2.x, Inner."):
+        check_selection("group:Bad name", groups)  # no group is called 'Bad name': 'Bad' is what is unknown
+    with pytest.raises(SelectionError, match="unknown residue group 'A.B'"):
+        check_selection("group:A+B", groups)
+    with pytest.raises(SelectionError, match="group name 'Ünï' in the selection of group 'Inner' may only contain"):
+        check_selection("group:Inner", groups)
+    # the project check reports it at the setting the selection is in
+    p = Project(groups=groups[:2])
+    p.analyses.stacking.selection = "group:Aptamer or group:Tärget"
+    (problem,) = [x for x in p.validate() if x.field == "analyses.stacking.selection"]
+    assert problem.message.startswith("group name 'Tärget' may only contain letters, digits")

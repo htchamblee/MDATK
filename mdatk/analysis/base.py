@@ -17,7 +17,7 @@ import numpy as np
 from ..config import Project, stable_hash
 from ..data import AnalysisResult
 from ..progress import Reporter
-from ..selections import SelectionError, heavy, select
+from ..selections import SelectionError, groups_by_name, heavy, select
 from ..spatial import periodic_cell
 
 log = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def key_label(key: str, project: Project) -> str:
 
 def referenced_groups(texts: Sequence[str], project: Project) -> List[Dict[str, str]]:
     """Definitions of all residue groups referenced (directly or nested) by ``texts``."""
-    by_name = {g.name: g for g in project.groups}
+    by_name = groups_by_name(project.groups)
     seen: Dict[str, Dict[str, str]] = {}
     stack = list(texts)
     while stack:

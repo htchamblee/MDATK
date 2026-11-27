@@ -18,6 +18,8 @@ import numpy as np
 from .problems import Problem, describe
 
 _GROUP_TOKEN = re.compile(r"group:([A-Za-z0-9_.+\-']+)")
+# what is written after "group:", up to a space or a parenthesis: a token when it has the characters above only
+_GROUP_WORD = re.compile(r"group:([^\s()]+)")
 _RANGE_ITEM = re.compile(r"^(?:(?P<chain>[A-Za-z][A-Za-z0-9]*):)?(?P<a>\d+)(?:[-:](?P<b>\d+))?$")
 
 # Single-atom ion residues whose two-letter names would otherwise be mistaken
@@ -33,7 +35,7 @@ class SelectionError(ValueError):
     """Raised for invalid residue ranges or selections.
 
     ``str()`` is the full message.  The error also says what went wrong (``kind``: "unknown_group",
-    "syntax", "empty", "nesting", "range", "missing", "no_text" or "" for other problems) and carries
+    "group_name", "syntax", "empty", "nesting", "range", "missing", "no_text" or "" for other problems) and carries
     the offending ``token`` (a group name, a clause, an MDAnalysis keyword), the selection as written
     (``text``) and expanded (``expanded``), MDAnalysis' own message (``detail``), a ``suggestion``
     and, when the definition of a residue group is at fault, that ``group``.  The code that selected
@@ -85,10 +87,27 @@ def unknown_group_error(name: str, defined: Sequence[str], within: str = "") -> 
     return SelectionError(msg, kind="unknown_group", token=name, suggestion=guess or "", group=within)
 
 
+def groups_by_name(groups: Sequence) -> dict:
+    """The groups by their names.  Of several groups with one name the first is meant, as by
+    :meth:`mdatk.config.Project.group` (validation refuses such a project, but ``info`` and previews select
+    in it all the same)."""
+    by_name: dict = {}
+    for g in groups:
+        by_name.setdefault(g.name, g)
+    return by_name
+
+
+def group_name_error(name: str, within: str = "") -> SelectionError:
+    """``group:<name>`` with characters a group name cannot have (a space, an umlaut, a comma)."""
+    where = f" in the selection of group {within!r}" if within else ""
+    return SelectionError(f"group name {name!r}{where} may only contain letters, digits, '_', '.' and '-' "
+                          "(no spaces)", kind="group_name", token=name, group=within)
+
+
 def referenced_groups(text: str, groups: Sequence) -> List[str]:
     """Names of the defined groups ``text`` uses, directly (``group:<Name>`` or a bare name) or
     through their selections."""
-    by_name = {g.name: g for g in groups}
+    by_name = groups_by_name(groups)
     seen: List[str] = []
     stack = [text or ""]
     while stack:
@@ -157,12 +176,23 @@ def expand_groups(text: str, groups: Sequence, universe=None, _depth: int = 0,
     """Replace ``group:<Name>`` tokens by the group's selection."""
     if _depth > 8:
         raise SelectionError("group definitions are nested too deeply (circular reference?)", kind="nesting")
-    by_name = {g.name: g for g in groups}
+    by_name = groups_by_name(groups)
 
     def repl(m: "re.Match[str]") -> str:
         name = m.group(1)
+        within = _chain[-1] if _chain else ""
+        if not _GROUP_TOKEN.fullmatch(m.group(0)):
+            # the token stopped at the first other character: 'group:Ünï' went to MDAnalysis as it was
+            # ("Unknown selection token ... did you mean 'group'?"), 'group:Aptamer,Target' as '(...),Target'
+            raise group_name_error(name, within)
         if name not in by_name:
-            raise unknown_group_error(name, list(by_name), _chain[-1] if _chain else "")
+            # a defined group whose name has a space ('Bad name') is read up to it: say what is wrong with
+            # the name instead of "unknown residue group 'Bad'"
+            longer = [n for n in by_name if n != name and text.startswith(n, m.start(1))
+                      and not _GROUP_TOKEN.fullmatch(f"group:{n}")]
+            if longer:
+                raise group_name_error(max(longer, key=len), within)
+            raise unknown_group_error(name, list(by_name), within)
         if name in _chain:
             loop = " → ".join(f"group:{n}" for n in _chain[_chain.index(name):] + (name,))
             raise SelectionError(f"group definitions are nested in a circle: {loop}", kind="nesting",
@@ -170,7 +200,7 @@ def expand_groups(text: str, groups: Sequence, universe=None, _depth: int = 0,
         return expand_groups(group_selection(by_name[name], universe), groups, universe, _depth + 1,
                              _chain + (name,))
 
-    return _GROUP_TOKEN.sub(repl, text)
+    return _GROUP_WORD.sub(repl, text)
 
 
 def rename_group_tokens(text: str, old: str, new: str) -> str:
@@ -293,7 +323,7 @@ def explain_empty(universe, text: str, groups: Sequence) -> Tuple[str, str]:
     uses is tried on its own, then each top-level and / or part."""
     shown = (text or "").strip()
     body = shown[4:].strip() if shown.startswith("sel:") else shown
-    by_name = {g.name: g for g in groups}
+    by_name = groups_by_name(groups)
     names = [body] if body in by_name else list(dict.fromkeys(_GROUP_TOKEN.findall(body)))
     empty = []
     for name in names:
