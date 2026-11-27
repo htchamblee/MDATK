@@ -65,6 +65,38 @@ def choose_codec(ffmpeg: str, requested: str) -> str:
     return requested
 
 
+def rate_options(codec: str, crf: int, width: int, height: int, fps: float) -> List[str]:
+    """FFmpeg's quality options of ``codec`` for the CRF setting (x264's scale: 6 steps halve the bit rate).
+
+    Encoders without a CRF get the nearest they have, so the setting also works after a codec fallback:
+    ``mpeg4`` a quantiser scale (2-31; 3 at the default CRF 20, doubling every 6 steps), ``libopenh264``
+    a bit rate (0.1 bit per pixel at CRF 23).  Other encoders keep their own defaults."""
+    crf = int(crf)
+    if codec in ("libx264", "libx265"):
+        return ["-crf", str(crf), "-preset", "medium"]
+    if codec == "mpeg4":
+        return ["-q:v", str(min(31, max(2, int(round(3.0 * 2.0 ** ((crf - 20) / 6.0))))))]
+    if codec == "libopenh264":
+        return ["-b:v", str(max(100_000, int(round(0.1 * 2.0 ** ((23 - crf) / 6.0) * width * height * fps))))]
+    return []
+
+
+def ffmpeg_command(exe: str, path: str, width: int, height: int, fps: float, codec: str, crf: int) -> List[str]:
+    """The FFmpeg call that encodes raw RGBA frames from its standard input into ``path``.
+
+    The frames are converted to YUV with the BT.709 matrix (limited range) and the stream says so:
+    FFmpeg's default for RGB input is BT.601 without any tag, which players read as BT.709 at HD sizes
+    (greens darker, reds shifted)."""
+    cmd = [exe, "-y", "-loglevel", "error", "-f", "rawvideo", "-vcodec", "rawvideo",
+           "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", f"{fps}", "-i", "-", "-an",
+           "-vcodec", codec]
+    cmd += rate_options(codec, crf, width, height, fps)
+    cmd += ["-vf", "scale=out_color_matrix=bt709:out_range=tv", "-pix_fmt", "yuv420p",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
+            "-movflags", "+faststart", path]
+    return cmd
+
+
 class FFmpegWriter:
     """Pipe raw RGBA frames into FFmpeg."""
 
@@ -74,14 +106,7 @@ class FFmpegWriter:
         self.width, self.height = width, height
         exe = find_ffmpeg(ffmpeg)
         codec = choose_codec(exe, codec)
-        cmd = [exe, "-y", "-loglevel", "error", "-f", "rawvideo", "-vcodec", "rawvideo",
-               "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", f"{fps}", "-i", "-", "-an",
-               "-vcodec", codec]
-        if codec in ("libx264", "libx265"):
-            cmd += ["-crf", str(int(crf)), "-preset", "medium"]
-        elif codec == "mpeg4":
-            cmd += ["-q:v", "3"]
-        cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", path]
+        cmd = ffmpeg_command(exe, path, width, height, fps, codec, crf)
         self.cmd = cmd
         self._stderr = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,

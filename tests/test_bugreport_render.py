@@ -732,3 +732,100 @@ def test_075_wrap_degrees_folds_only_minus_180():
     assert wrap_degrees(190.0) == pytest.approx(-170.0) and wrap_degrees(0.0) == 0.0
     angles = matrix_to_euler(euler_to_matrix([-179.999, 10.0, 20.0]))
     assert angles == pytest.approx((-179.999, 10.0, 20.0), abs=1e-6)  # was (180.0, 10, 20)
+
+
+# ---------------------------------------------------------------------------
+# The FFmpeg command line: MDATK-BUG-077 (codec fallback and crf), 078 (colour matrix)
+# ---------------------------------------------------------------------------
+
+
+def writer_command(monkeypatch, encoders, codec="libx264", crf=20, size=(1920, 1080)):
+    """The command FFmpegWriter would run when FFmpeg offers ``encoders`` (FFmpeg itself is not started)."""
+
+    class NoProcess:
+        stdin = None
+
+        def __init__(self, cmd, **_kwargs):
+            self.cmd = cmd
+
+    monkeypatch.setattr(video, "find_ffmpeg", lambda path="ffmpeg": "ffmpeg")
+    monkeypatch.setattr(video, "available_encoders", lambda exe: "".join(f" V..... {e} x\n" for e in encoders))
+    monkeypatch.setattr(video.subprocess, "Popen", NoProcess)
+    return video.FFmpegWriter("out.mp4", size[0], size[1], 24, codec, crf).cmd
+
+
+def option(cmd, name):
+    """The value of the last ``name`` of an FFmpeg command (the output's, where the input has one too)."""
+    return cmd[len(cmd) - cmd[::-1].index(name)]
+
+
+def test_077_the_codec_fallback_keeps_the_crf_setting(monkeypatch, caplog):
+    # libx264 itself: as before
+    cmd = writer_command(monkeypatch, ["libx264", "mpeg4"], crf=23)
+    assert option(cmd, "-vcodec") == "libx264"
+    assert option(cmd, "-crf") == "23" and option(cmd, "-preset") == "medium" and "-q:v" not in cmd
+    # no libx264: mpeg4's quantiser follows crf (was -q:v 3 whatever the crf); the default crf 20 is still 3
+    with caplog.at_level(logging.WARNING):
+        quant = {crf: int(option(writer_command(monkeypatch, ["mpeg4"], crf=crf), "-q:v")) for crf in (0, 14, 20, 26, 32, 51)}
+    assert quant == {0: 2, 14: 2, 20: 3, 26: 6, 32: 12, 51: 31}
+    assert any("libx264 unavailable; using mpeg4" in r.getMessage() for r in caplog.records)  # and it is said
+    assert "-crf" not in writer_command(monkeypatch, ["mpeg4"], crf=26)
+    # mpeg4 chosen as the codec: the same scale
+    assert option(writer_command(monkeypatch, ["libx264", "mpeg4"], codec="mpeg4", crf=32), "-q:v") == "12"
+    # libopenh264 has no quality setting: a bit rate from crf and the frame (was none: the encoder's default)
+    rate = {crf: int(option(writer_command(monkeypatch, ["libopenh264", "mpeg4"], crf=crf), "-b:v")) for crf in (17, 23, 29)}
+    assert rate[23] == pytest.approx(0.1 * 1920 * 1080 * 24, rel=1e-6)  # 0.1 bit per pixel at crf 23
+    assert rate[17] == pytest.approx(2 * rate[23], rel=1e-6) and rate[29] == pytest.approx(rate[23] / 2, rel=1e-6)
+    small = int(option(writer_command(monkeypatch, ["libopenh264"], crf=23, size=(960, 540)), "-b:v"))
+    assert small == pytest.approx(rate[23] / 4, rel=1e-6)
+    assert video.rate_options("libvpx-vp9", 20, 640, 480, 24) == []  # other encoders: their own defaults, as before
+
+
+def test_078_the_video_is_converted_and_tagged_as_bt709(monkeypatch):
+    for encoders, codec in ((["libx264"], "libx264"), (["mpeg4"], "libx264"), (["libx265", "libx264"], "libx265")):
+        cmd = writer_command(monkeypatch, encoders, codec=codec)
+        # RGB -> YUV with the BT.709 matrix, limited range (FFmpeg's default for RGB input is BT.601) ...
+        assert option(cmd, "-vf") == "scale=out_color_matrix=bt709:out_range=tv"
+        assert option(cmd, "-pix_fmt") == "yuv420p" and cmd.index("-vf") > cmd.index("-i")  # an output option
+        # ... and the stream says so (it was left untagged)
+        assert [option(cmd, k) for k in ("-colorspace", "-color_primaries", "-color_trc", "-color_range")] == \
+            ["bt709", "bt709", "bt709", "tv"]
+        assert cmd[-3:] == ["-movflags", "+faststart", "out.mp4"]
+
+
+def _has_x264():
+    exe = shutil.which("ffmpeg")
+    return bool(exe and shutil.which("ffprobe") and " libx264 " in video.available_encoders(exe))
+
+
+@pytest.mark.skipif(not _has_x264(), reason="needs ffmpeg with libx264 and ffprobe")
+def test_078_colours_of_an_encoded_video_read_back_as_bt709(tmp_path):
+    import json
+
+    width, height = 1280, 720  # HD: players take an untagged video of this size for BT.709
+    colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (27, 175, 122), (235, 104, 52), (0, 131, 0)]
+    path = str(tmp_path / "colours.mp4")
+    writer = video.FFmpegWriter(path, width, height, 24)
+    for rgb in colours:
+        frame = np.zeros((height, width, 4), np.uint8)
+        frame[..., :3], frame[..., 3] = rgb, 255
+        for _ in range(3):
+            writer.write(frame.tobytes())
+    writer.close()
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json",
+                            path], capture_output=True, text=True)
+    assert json.loads(probe.stdout)["streams"][0] == {  # was: {"pix_fmt": "yuv420p"} only
+        "pix_fmt": "yuv420p", "color_range": "tv", "color_space": "bt709", "color_transfer": "bt709",
+        "color_primaries": "bt709"}
+
+    def read(*matrix):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, *matrix, "-pix_fmt", "rgb24", "-f", "rawvideo",
+                              "-"], capture_output=True).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
+        return [tuple(int(v) for v in frames[3 * k + 1, height // 2, width // 2]) for k in range(len(colours))]
+
+    # read with the BT.709 matrix, and as FFmpeg reads it from the tags: the colours that were drawn
+    # (was: green (0, 255, 0) came back as (0, 215, 0), the ion green (0, 131, 0) as (0, 109, 0))
+    for got in (read("-vf", "scale=in_color_matrix=bt709:in_range=tv"), read()):
+        assert np.abs(np.subtract(got, colours)).max() <= 4, got
