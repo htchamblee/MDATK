@@ -84,7 +84,7 @@ scripts run only when you start them or ask RNAdo to; what they do is up to the 
 
 ## What's new in 0.1.2
 
-- **Fixes of an external bug report on 0.1.1** (106 items, MDATK-BUG-001 to 106; 102 fixed, 4 by design). Every
+- **Fixes of an external bug report on 0.1.1** (106 items, MDATK-BUG-001 to 106; 103 fixed, 3 by design). Every
   fix was reproduced first and has a regression test; the full list is in [CHANGELOG.md](CHANGELOG.md).
 - **Opening and saving a project in the analysis window keeps it as it was**: numbers outside a spin button's
   range or with more digits, colours such as `tab:orange`, chart formats without a check box, unknown choices,
@@ -2435,7 +2435,8 @@ mdatk build helix --seq AAGAG --triplex reverse-hoogsteen --third-strand GAGAA -
 **Mutations.** `A:5G, B:20C`: the new base is superposed on the old glycosidic frame (C1', N9/N1 and the
 two ring atoms bonded to it: purine N9/C4/C8 ↔ pyrimidine N1/C2/C6); sugar and backbone atoms stay as
 they are, the residue keeps its name scheme, chirality and terminal variant (LG5 → LC5, 0G → 0C,
-G5 → C5) and record type. Hydrogens of the old base are dropped (the new base has heavy atoms only).
+G5 → C5) and record type. A residue with hydrogens gets the new base's hydrogens in place of the old base's
+(placed from the monomer's ideal geometry); a heavy-atom model stays without hydrogens.
 With *compensatory* mutations (default) every mutated base that is Watson-Crick / G·U paired in the
 input (builtin pair detection) gets its partner changed to the complement unless the partner is mutated
 explicitly; `--wobble` keeps a G·U pair where the new base allows it. Every change is listed. A DNA

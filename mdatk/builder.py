@@ -2189,7 +2189,7 @@ def _partners(s: Structure, cutoff: float = 3.5) -> Dict[int, Tuple[int, int]]:
 
 def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
     """Replace the base of ``res`` in place; returns notes and the RMS of the glycosidic-frame fit.  A DNA
-    residue gets the base of the B-DNA monomer."""
+    residue gets the base of the B-DNA monomer; a residue with hydrogens also gets the new base's hydrogens."""
     from .spatial import kabsch
 
     info = pdbtools.parse_residue_name(res.name)
@@ -2201,7 +2201,12 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
         raise BuildError(f"{res.label}: missing atom(s) {', '.join(missing)} of the glycosidic frame")
     before, _ = pdbtools.sugar_chirality(coords, old)
     dna = info.sugar == "dna"
-    t = template(base, hydrogens=False, na="dna") if dna else template(base, hydrogens=False)
+    na = "dna" if dna else "rna"
+    # a residue with hydrogens (an all-atom model) gets the hydrogens of the new base, placed rigidly with it from
+    # the monomer's ideal geometry; a heavy-atom residue gets heavy atoms only
+    with_h = any(pdbtools.standard_atom_name(res.name, a.name.replace("*", "'")).lstrip("0123456789")
+                 .startswith("H") for a in res.atoms)
+    t = template(base, hydrogens=with_h, na=na)
     new_frame = ["C1'"] + list(GLYCOSIDIC[base])
     mob = np.array([t[a] for a in new_frame])
     ref = np.array([coords[a] for a in old_frame])
@@ -2232,7 +2237,7 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
         insert_at = len(keep)
     record = template_c1.record
     new_atoms = []
-    for name in base_names[base]:
+    for name in _base_atoms(base, with_h, na):
         xyz = (t[name] - mc) @ rot.T + rc
         tail = template_c1.tail[:3] + _tail(xyz)[3:33] + template_c1.tail[33:]  # occupancy 1.00, C1' B-factor
         new_atoms.append(Atom(record, name, "", tail, _element(name)))
@@ -2245,9 +2250,11 @@ def _swap_base(res: Residue, base: str) -> Tuple[List[str], float]:
                          f"{vols})")
     notes = [f"{res.chain or '_'}:{res.resseq}{res.icode} {old}->{base} ({old_name} -> {res.name}, "
              f"glycosidic-frame fit {rms:.2f} Å)"]
-    if dropped_h:
-        notes.append(f"{res.chain or '_'}:{res.resseq}{res.icode}: dropped {len(dropped_h)} hydrogen(s) of the "
-                     f"old base ({' '.join(dropped_h)}); the new base has heavy atoms only")
+    if with_h:
+        added = [n for n in _base_atoms(base, True, na) if n not in base_names[base]]
+        notes.append(f"{res.chain or '_'}:{res.resseq}{res.icode}: replaced {len(dropped_h)} hydrogen(s) of the old "
+                     f"base ({' '.join(dropped_h) or 'none'}) with {len(added)} of the new base ({' '.join(added)}), "
+                     "placed from ideal geometry")
     if unknown:
         notes.append(f"WARNING: {res.label}: kept unrecognised atom(s) {' '.join(unknown)}")
     if altlocs:

@@ -15,8 +15,8 @@ the notes below.
 ## 0.1.2 (2026-11-27)
 
 Fixes of an external bug report on 0.1.1 (MDATK-BUG-001 to 106). Every fix was reproduced first and has a
-regression test in one of `tests/test_bugreport_{analysis,gui,readers,render,pdb}.py`. Four items are
-behaviour by design (023, 026, 061, 099; see the end), and one half of 071 was not a bug.
+regression test in one of `tests/test_bugreport_{analysis,gui,readers,render,pdb}.py`. Three items are
+behaviour by design (023, 026, 061; see the end), and one half of 071 was not a bug.
 
 ### Results that change (cached results are recomputed once)
 
@@ -112,6 +112,9 @@ behaviour by design (023, 026, 061, 099; see the end), and one half of 071 was n
 - Residue numbers below -999 are refused when writing a PDB (088); `--combine-into` needs a one-character chain
   id (089); `--keep-conect` warns when it drops the CONECT records (090); `build helix` warns when residue
   numbers above 9999 wrap (093); a residue range that ends before it starts (`A:4-1`) is an error (096).
+- `build mutate` of a model with hydrogens gives the new base its hydrogens, placed from the monomer's ideal
+  geometry (within 0.04 Å of a model built with the new sequence); 0.1.1 dropped the old base's hydrogens and
+  left the new base bare (099). A heavy-atom model stays without hydrogens.
 - The Linux AppImage adds only the Wayland libraries the host lacks to the library path (106).
 
 ### By design
@@ -119,7 +122,6 @@ behaviour by design (023, 026, 061, 099; see the end), and one half of 071 was n
 - 023: base pairs ignore periodic images (documented in `mdatk/analysis/basepairs.py`).
 - 026: `use_parm7` means "when a parm7 is available".
 - 061: the ion selection is documented as Mg²⁺ throughout, so the legend says Mg²⁺.
-- 099: `build mutate` drops the old base's hydrogens (the new base has heavy atoms only; documented).
 - 071, second half (chains linked end to end): not a bug. Consecutive residues of two chains are candidates, but
   a bond still needs the atoms within bonding distance, which two separate chain ends are not; chains that are
   covalently joined (O3'–P across a chain break) are drawn joined.

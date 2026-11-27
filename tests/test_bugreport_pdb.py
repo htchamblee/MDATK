@@ -1,5 +1,5 @@
 """Regression tests for the PDB-tools, builder and AppImage items of the 2026-11-26 bug report addendum
-(MDATK-BUG-088, 089, 090, 093, 096, 106)."""
+(MDATK-BUG-088, 089, 090, 093, 096, 099, 106)."""
 
 import os
 import shutil
@@ -88,6 +88,34 @@ def test_bug096_reversed_ranges_are_an_error():
     assert frames.parse_model_map("C:3-1=X:45-47") == {("X", 45): ("C", 3), ("X", 46): ("C", 2),
                                                         ("X", 47): ("C", 1)}
 
+
+
+# ---------------------------------------------------------------------------------------------- MDATK-BUG-099
+@pytest.mark.parametrize("na,seq,mutation,new_seq,want", [
+    ("rna", "GGCAUCG", "A:4G", "GGCGUCG", ["H8", "H1", "H21", "H22"]),
+    ("dna", "GGCAGCG", "A:5T", "GGCATCG", ["H3", "H71", "H72", "H73", "H6"]),  # the methyl too
+])
+def test_bug099_a_model_with_hydrogens_keeps_them_on_the_new_base(na, seq, mutation, new_seq, want):
+    """0.1.1 dropped the old base's hydrogens and gave the new base none, so an all-atom model came back with
+    bare bases.  The new base's hydrogens are placed with it; they lie where a model built with the new sequence
+    has them."""
+    import numpy as np
+
+    text, notes = builder.mutate(builder.build_helix(seq, hydrogens=True, na=na), mutation, compensatory=False)
+    chain, resseq = mutation.split(":")[0], int(mutation.split(":")[1][:-1])
+    res = {(r.chain, r.resseq): r for r in pt.read_pdb(text).residues()}[(chain, resseq)]
+    assert [a.name for a in res.atoms if a.name.startswith("H") and "'" not in a.name] == want
+    assert any("with %d of the new base" % len(want) in n for n in notes)
+    ref = {(r.chain, r.resseq): r for r in pt.read_pdb(builder.build_helix(new_seq, hydrogens=True, na=na))
+           .residues()}[(chain, resseq)].coords()
+    got = res.coords()
+    assert max(float(np.linalg.norm(np.subtract(got[n], ref[n]))) for n in want) < 0.1
+
+
+def test_bug099_a_heavy_atom_model_stays_without_hydrogens():
+    text, notes = builder.mutate(builder.build_helix("GGCAUCG"), "A:4G")
+    assert not any(a.name.startswith("H") for r in pt.read_pdb(text).residues() for a in r.atoms)
+    assert not any("hydrogen" in n for n in notes)
 
 # --- MDATK-BUG-106: AppRun adds only the fallback libraries the host lacks ------------------------------
 
