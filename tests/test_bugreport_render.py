@@ -570,3 +570,66 @@ def test_081_the_halo_strength_does_not_depend_on_earlier_renders():
     for k in range(600):  # resizing a window renders many sizes: the cache stays small
         software._disc_norm(1.0 + k * 1e-4, 1.5)
     assert len(software._NORM_CACHE) <= 256
+
+
+# ---------------------------------------------------------------------------
+# Example data of the layout preview: MDATK-BUG-037, 079
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chain", [np.zeros(10, dtype=int), np.zeros(1, dtype=int), np.array([0, 0, 0, 0, 0, 1]),
+                                   np.array([0] * 6 + [1] * 6), np.zeros(0, dtype=int)])
+def test_037_example_base_pairs_are_a_consistent_map(chain):
+    from mdatk.render import example
+
+    res = example._example_basepairs(chain, 12)
+    a = res.arrays
+    assert len(a["map_i"]) == len(a["map_j"]) == len(a["map_v"]) == a["map_offsets"][-1]  # was 48, 0, 48 for one strand
+    if len(set(chain.tolist())) < 2:
+        assert len(a["map_i"]) == 0  # one strand has no partner: no pairs
+    if len(chain) == 12:  # a duplex: all six pairs, the frayed end opening every six frames
+        assert np.diff(a["map_offsets"]).tolist() == [6] * 6 + [4] * 6
+
+
+@pytest.mark.parametrize("mode", ["instant", "frequency"])
+def test_037_the_preview_of_a_single_strand_draws_its_base_pair_map(mode):
+    p = project_with([PanelSpec("secondary", [], ""),
+                      PanelSpec("contact_map", ["basepairs/map"], "", {"mode": mode})], "equal_2")
+    p.groups = [ResidueGroup("Only", "1-10", "", "#2a78d6")]
+    ds = example_dataset(p, n_frames=12)
+    fig, canvas, panels = build_figure(ds, p, 600, 300, 100)  # was: IndexError (shape mismatch) in the map panel
+    for pos in range(12):
+        for panel in panels:
+            panel.update(pos)
+    assert [panel.ok for panel in panels] == [True, True]
+
+
+def test_079_example_residues_stop_at_400_without_expanding_the_range(monkeypatch):
+    from mdatk.render import example
+
+    def small_range(*args):  # the module's range(): a whole range of residues must not be listed
+        out = range(*args)
+        assert len(out) <= 400, f"{len(out)} residue numbers expanded for an example of 400"
+        return out
+
+    monkeypatch.setattr(example, "range", small_range, raising=False)
+    p = Project()
+    p.groups = [ResidueGroup("Big", "1-300000000", "", "#2a78d6"),  # was: 8 s and gigabytes, then 400 kept
+                ResidueGroup("Mixed", "A:5-9, 700-900, 3", "", "#eb6834"), ResidueGroup("Long", "1-250, 300-600"),
+                ResidueGroup("Sel", "", "resname G"), ResidueGroup("Bad", "1-x")]
+    assert example.group_resids(p, "Big") == list(range(1, 401))
+    # the ids themselves are those of the ranges, in order, cut at 400 (as before)
+    assert example.group_resids(p, "Mixed") == [5, 6, 7, 8, 9] + list(range(700, 901)) + [3]
+    assert example.group_resids(p, "Long") == list(range(1, 251)) + list(range(300, 450))
+    for name in ("Sel", "Bad", "Missing"):  # no residue ranges to read: the placeholder residues
+        assert example.group_resids(p, name) == list(range(1, 13))
+
+
+def test_079_the_schematic_trace_has_letters_for_groups_beyond_120_residues():
+    p = project_with([PanelSpec("structure", [], ""), PanelSpec("sequence", [], "")], "single_strip")
+    p.groups = [ResidueGroup("Big", "1-200", "", "#2a78d6"), ResidueGroup("Other", "201-400", "", "#eb6834")]
+    ds = example_dataset(p, n_frames=3)  # was: IndexError "string index out of range"
+    tr = ds.results["trace"]
+    assert tr.arrays["coords"].shape == (3, 400, 3) and set("".join(tr.arrays["resname"])) == set("GCAU")
+    assert "".join(tr.arrays["resname"][:24]) == "GCAUGGCAUCGA" * 2  # the 12-letter pattern, repeated
+    assert all(panel.ok for panel in build_figure(ds, p, 600, 400, 100)[2])
