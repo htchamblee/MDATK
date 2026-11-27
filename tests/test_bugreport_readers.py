@@ -619,3 +619,17 @@ def test_bug087_density_fit_save_keeps_the_paths_as_written(tmp_path, capsys, mo
     assert main(["density", "fit", "-p", project, "--search", "manual", "--save", str(other / "copy.toml"),
                  "-q"]) == 0
     assert Project.load(str(other / "copy.toml")).inputs.topology == str(tmp_path / "demo" / "demo.parm7")
+
+
+@pytest.mark.parametrize("options, message", [
+    (["--n-frames", "0"], "the demo needs at least one frame (--n-frames 0)"),
+    (["--n-frames", "-2"], "the demo needs at least one frame (--n-frames -2)"),
+    (["--n-frames", "3", "--dt", "-5"], "the time between frames must be a positive number of ps (--dt -5.0)"),
+    (["--n-frames", "2", "--dt", "nan"], "the time between frames must be a positive number of ps (--dt nan)"),
+    (["--n-frames", "2", "--dt", "0"], "the time between frames must be a positive number of ps (--dt 0.0)")])
+def test_bug092_demo_refuses_impossible_arguments_before_writing(tmp_path, capsys, monkeypatch, options, message):
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    out = tmp_path / "d"
+    code, err = _main(capsys, "demo", str(out), "--no-solvent", "--quiet", *options)
+    assert code == 1 and err == f"error: {message}\n"
+    assert not out.exists()
