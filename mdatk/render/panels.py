@@ -310,8 +310,9 @@ class StructurePanel(Panel):
         """Re-orient the model (degrees about X, Y, Z); used by interactive previews."""
         r = euler_to_matrix(angles)
         self.view_matrix = r
-        self.view = self.centred @ r.T
-        self.ion_view = self.ions_centred @ r.T
+        with np.errstate(invalid="ignore"):  # an infinite coordinate (inf * 0): that residue is left out
+            self.view = self.centred @ r.T
+            self.ion_view = self.ions_centred @ r.T
         self.update_density()
 
     # -- density map shadow
