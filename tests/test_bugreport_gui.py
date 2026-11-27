@@ -1143,3 +1143,79 @@ def test_bug104_the_real_frame_is_loaded_again_after_cleaning(make, monkeypatch)
     win.run_cleaning()
     assert wait(lambda: win.preview_data.get("cleaned")) and loads == [1]
     assert not [m for m in win.messages if m[0] == "error"]
+
+
+# ---------------------------------------------------------------------------
+# MDATK-BUG-105: the rename that ends a save, while another program holds the file (Windows)
+# ---------------------------------------------------------------------------
+
+
+class BusyReplace:
+    """os.replace that reports the file busy (PermissionError, as Windows does) the first ``busy`` times."""
+
+    def __init__(self, busy):
+        self.busy, self.calls, self.real = busy, 0, os.replace
+
+    def __call__(self, src, dst):
+        self.calls += 1
+        if self.calls <= self.busy:
+            raise PermissionError(13, "Access is denied", dst)
+        self.real(src, dst)
+
+
+def test_bug105_a_save_waits_while_another_program_holds_the_file(tmp_path, monkeypatch):
+    """On Windows a virus scanner or sync client that has the file open for a moment made the save fail
+    (PermissionError from the one os.replace) and left the .tmp file beside the project.  The retrying is
+    tested here with an os.replace that reports the file busy, on any system."""
+    path = str(tmp_path / "p.mdatk.toml")
+    project = Project()
+    project.save(path)
+    waits = []
+    monkeypatch.setattr(projectfile, "RETRY_BUSY", True, raising=False)  # as on Windows
+    monkeypatch.setattr(projectfile.time, "sleep", waits.append)
+    busy = BusyReplace(3)
+    monkeypatch.setattr(os, "replace", busy)
+    project.notes = "saved while the file was busy"
+    project.save(path)
+    monkeypatch.setattr(os, "replace", busy.real)
+    assert Project.load(path).notes == "saved while the file was busy"
+    assert busy.calls == 4 and waits == [0.01, 0.02, 0.04]  # 10 ms, doubling
+    assert sorted(os.listdir(tmp_path)) == [".p.mdatk.toml.lock", "p.mdatk.toml"]
+    # busy for good: after about two seconds the system's error, the file as it was, and no .tmp
+    del waits[:]
+    forever = BusyReplace(10 ** 9)
+    monkeypatch.setattr(os, "replace", forever)
+    project.notes = "never written"
+    with pytest.raises(PermissionError, match="Access is denied"):
+        project.save(path)
+    monkeypatch.setattr(os, "replace", forever.real)
+    assert 2.0 <= sum(waits) < 2.2 and max(waits) == 0.1
+    assert Project.load(path).notes == "saved while the file was busy"
+    assert sorted(os.listdir(tmp_path)) == [".p.mdatk.toml.lock", "p.mdatk.toml"]
+    # the parameter log of a run and the user settings are written the same way
+    busy = BusyReplace(2)
+    monkeypatch.setattr(os, "replace", busy)
+    projectfile.write_params_log(str(tmp_path / "MDATK_params_log.toml"), project, {"note": "x"})
+    projectfile.set_user_setting("cat_proof", True)
+    monkeypatch.setattr(os, "replace", busy.real)
+    assert os.path.isfile(tmp_path / "MDATK_params_log.toml") and projectfile.user_setting("cat_proof") is True
+    assert not [name for name in os.listdir(tmp_path) if name.endswith(".tmp")]
+
+
+def test_bug105_elsewhere_a_refused_rename_fails_at_once_and_leaves_no_tmp(tmp_path, monkeypatch):
+    """Where a rename is not refused for a busy file (Linux, macOS) a PermissionError is a real one: one
+    try, as before; the .tmp file no longer stays behind."""
+    path = str(tmp_path / "p.mdatk.toml")
+    project = Project()
+    project.save(path)
+    monkeypatch.setattr(projectfile, "RETRY_BUSY", False, raising=False)
+    waits = []
+    monkeypatch.setattr(projectfile.time, "sleep", waits.append)
+    refused = BusyReplace(10 ** 9)
+    monkeypatch.setattr(os, "replace", refused)
+    project.notes = "never written"
+    with pytest.raises(PermissionError):
+        project.save(path)
+    monkeypatch.setattr(os, "replace", refused.real)
+    assert refused.calls == 1 and waits == []
+    assert Project.load(path).notes == "" and not [n for n in os.listdir(tmp_path) if n.endswith(".tmp")]

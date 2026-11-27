@@ -51,6 +51,34 @@ LOG_MARKER = "# ---- step log (entries are appended; newest last) ----"
 LOG_SPLIT_BYTES = 50 * 1024 * 1024  # beyond this the log moves to a separate file
 LOG_OUTPUT_CHARS = 20000  # program output kept per log entry (its tail)
 RECENT_MAX = 10
+# Windows refuses to replace a file while another program has it open, even for a moment (a virus
+# scanner, the search indexer or a sync client reading the file just written): the rename that ends a
+# save is tried again for this long.  Elsewhere a rename is not refused for that, and is tried once.
+REPLACE_WAIT_S = 2.0
+RETRY_BUSY = os.name == "nt"
+
+
+def replace_file(tmp: str, path: str) -> None:
+    """Move the finished temporary file ``tmp`` over ``path`` (in one step: ``os.replace``).  While the
+    system reports the file busy (see RETRY_BUSY) the move is tried again, after 10 ms, then twice as
+    long each time up to 100 ms, for REPLACE_WAIT_S in all; then, as for any other error, the temporary
+    file is removed and the system's error is raised."""
+    delay, waited = 0.01, 0.0
+    try:
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if not RETRY_BUSY or waited >= REPLACE_WAIT_S:
+                    raise
+                time.sleep(delay)
+                waited += delay
+                delay = min(2 * delay, 0.1)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 _META_DOCS = {
     "format": f"File type marker of an {PROJECT_ABBREV} project; do not change.",
@@ -375,7 +403,7 @@ def _write(path: str, project) -> None:
         fh.write(text)
         if log_part:
             fh.write("\n" + log_part)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def edit_workflow(path: str, edit) -> None:
@@ -532,7 +560,7 @@ def _split_log(path: str) -> str:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(head)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
     log.info("project log moved to %s", sidecar)
     return sidecar
 
@@ -602,7 +630,7 @@ def write_params_log(path: str, project, run: Dict[str, Any]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -667,11 +695,11 @@ def _write_user_settings(data: Dict[str, Any]) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(text)
-        os.replace(tmp, target)
     except OSError:
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
+    replace_file(tmp, target)
 
 
 def user_setting(key: str, default: Any = None) -> Any:
