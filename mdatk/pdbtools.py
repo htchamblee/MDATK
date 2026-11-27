@@ -638,7 +638,11 @@ def _residue_field(resname: str) -> str:
 
 
 def _id_columns(res: Residue) -> str:
-    """Columns 18-27 (residue name, chain, residue number, insertion code); numbers above 9999 wrap."""
+    """Columns 18-27 (residue name, chain, residue number, insertion code); numbers above 9999 wrap, numbers
+    below -999 do not fit the four columns (PDBError)."""
+    if res.resseq < -999:
+        raise PDBError(f"residue number {res.resseq} ({res.chain or '_'}) does not fit the PDB columns "
+                       "(-999 to 9999)")
     resseq = res.resseq % 10000 if res.resseq > 9999 else res.resseq
     return f"{_residue_field(res.name)}{(res.chain or ' ')[:1]}{resseq:>4}{(res.icode or ' ')[:1]}"
 

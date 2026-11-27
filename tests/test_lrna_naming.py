@@ -295,10 +295,11 @@ def _ligand_builds(tmp_path):
 # residues, the CCD's 0DA / 0DT atom names, and prep keeping a phosphate-only residue such as a chimera's
 # PO2 bridge; then clean --dna, for the Amber build of DNA; then 0.0.17: L-DNA names of three characters at the
 # chain ends too; then 0.1.0, mdatk.pdbtools alone: a 2'-deoxy residue under a name that also means RNA (CHARMM's
-# ADE / CYT / GUA) is DNA, and a nucleotide bonded to a residue the schemes do not name is no chain end); the
+# ADE / CYT / GUA) is DNA, and a nucleotide bonded to a residue the schemes do not name is no chain end; then
+# the 2026-11-26 bug report addendum, mdatk.pdbtools alone: residue numbers below -999 refused (MDATK-BUG-088)); the
 # build scripts, leap / ParmEd inputs and messages are those of a3b572c
 _LIGAND_SAME = {"check.py": "9b3c751ac12a", "cp-lib.py": "c34fff6d74b5", "parmed.in": "19a1cbd00ec2",
-                "pdbtools.py": "2b27dfe4f864", "prep.py": "a377a5917762"}
+                "pdbtools.py": "cb8eb4c2de23", "prep.py": "a377a5917762"}
 LIGAND_BUILDS_A3B572C = {
     "helix": dict(_LIGAND_SAME, **{":issues": "6a48b36ce705", "amber-build.sh": "6afa8ca98cf5",
                                    "tleap.leap": "74b75b71fbec"}),
