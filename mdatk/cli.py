@@ -540,16 +540,25 @@ def cmd_density_simulate(args) -> int:
     return 0
 
 
+def _input_file(path: str) -> None:
+    """The input file of a command must be a file: the PDB tools take a string that names no file as PDB
+    text, and report a missing file as text without ATOM records."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{path}: {'is a directory, not a file' if os.path.isdir(path) else 'no such file'}")
+
+
 def cmd_pdb(args) -> int:
     from . import pdbtools
     from .projectfile import logged
     if args.pdb_command == "check":
+        _input_file(args.input)
         return pdbtools.run(args)[0]
     name = os.path.basename(args.input)
     if args.pdb_command == "annotate":
         return _pdb_annotate(args, name)
     with logged(_project_file(args), f"pdb {args.pdb_command}", f"PDB clean-up of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        _input_file(args.input)
         code, result = pdbtools.run(args)
         entry.files = list(result.get("files", []))
         entry.summary = "\n".join(result.get("notes", []))
@@ -567,6 +576,7 @@ def _pdb_annotate(args, name: str) -> int:
     from .projectfile import logged
     with logged(_project_file(args), "pdb annotate", f"Base-pair annotation of {name}") as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["pdb"] else ""
+        _input_file(args.input)
         res = annotate(args.input, pairs=not args.no_pairs, stacking=not args.no_stacking,
                        dotbracket=not args.no_dotbracket, engine=args.engine,
                        dssr_exe=getattr(args, "dssr_exe", None) or "x3dna-dssr")
@@ -678,6 +688,8 @@ def cmd_build(args) -> int:
         title = f"Rigid-body fit of {os.path.basename(args.input)} into {os.path.basename(args.map)}"
     with logged(_project_file(args), f"build {args.build_command}", title) as entry:
         entry.command = " ".join(sys.argv[1:]) if sys.argv[1:2] == ["build"] else ""
+        if args.build_command in ("mutate", "fit"):
+            _input_file(args.input)
         res = builder.run(args)
         for note in res.notes:
             print(f"build: {note}", file=sys.stderr)

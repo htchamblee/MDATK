@@ -676,3 +676,20 @@ def test_bug094_resolution_and_spacing_are_checked_before_any_work(tmp_path, cap
     assert main(["density", "simulate", "-p", project, "--resolution", "6", "--spacing", "0", "--output",
                  "s0.mrc", "-q"]) == 0
     assert simulate_map(xyz, atom_weights(elements), 6.0, 0).voxel[0] == pytest.approx(2.0)
+
+
+def test_bug095_missing_input_file_is_named(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MDATK_DEBUG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "folder").mkdir()
+    for argv in (["pdb", "clean", "nosuch.pdb"], ["pdb", "check", "nosuch.pdb"],
+                 ["pdb", "annotate", "nosuch.pdb", "-o", "a.pdb"],
+                 ["build", "mutate", "nosuch.pdb", "A:2G", "-o", "x.pdb"],
+                 ["build", "fit", "nosuch.pdb", "h.mrc", "--resolution", "6", "-o", "f.pdb"]):
+        code, err = _main(capsys, *argv)
+        assert code == 1 and err == "error: nosuch.pdb: no such file\n", argv
+    code, err = _main(capsys, "pdb", "clean", "folder")
+    assert code == 1 and err == "error: folder: is a directory, not a file\n"
+    from mdatk import pdbtools
+    with pytest.raises(pdbtools.PDBError, match="no ATOM/HETATM records"):  # the API still takes text
+        pdbtools.read_pdb("REMARK nothing here\n")
