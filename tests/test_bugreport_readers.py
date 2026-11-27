@@ -575,3 +575,47 @@ def test_bug085_pdb_export_checks_every_frame_before_writing(tmp_path):
     paths = export_frames(u, [0, 1], u.atoms, str(out), "x")
     assert [p.rsplit("/", 1)[-1] for p in paths] == ["x_00000.pdb", "x_00001.pdb"]
     assert "1.500" in open(paths[1]).read()
+
+
+# ---------------------------------------------------------------------------
+# addendum: command line (087, 092, 094, 095)
+# ---------------------------------------------------------------------------
+
+
+def _settings(path, *keys):
+    """The lines of a project file that set ``keys`` (first occurrence of each)."""
+    lines = open(path, encoding="utf-8").read().splitlines()
+    return [next(line for line in lines if line.startswith(f"{key} = ")) for key in keys]
+
+
+def test_bug087_density_fit_save_keeps_the_paths_as_written(tmp_path, capsys, monkeypatch):
+    from mdatk.cli import main
+    from mdatk.config import Project
+    monkeypatch.chdir(tmp_path)
+    assert main(["demo", "demo", "--n-frames", "2", "--no-solvent", "--quiet"]) == 0
+    project = "demo/demo.mdatk.toml"
+    keys = ("topology", "trajectories", "out_dir", "cache_dir")
+    before = _settings(project, *keys)
+    assert before[:3] == ['topology = "demo.parm7"', 'trajectories = ["demo.nc"]', 'out_dir = "MDATK_output"']
+    assert main(["density", "simulate", "-p", project, "--resolution", "8", "--output", "demo/sim.mrc", "-q"]) == 0
+    capsys.readouterr()
+    assert main(["density", "fit", "-p", project, "--map", "demo/sim.mrc", "--resolution", "8", "--step",
+                 "45", "--save", "-q"]) == 0
+    assert _settings(project, *keys) == before
+    assert _settings(project, "map_path") == ['map_path = "sim.mrc"']
+    saved = Project.load(project)  # the placement is stored, and the file loads as before
+    assert len(saved.density.transform) == 12 and saved.density.resolution == 8
+    assert saved.density.map_path == str(tmp_path / "demo" / "sim.mrc")
+    assert saved.inputs.topology == str(tmp_path / "demo" / "demo.parm7")
+    # a second fit without --map keeps the map as the file has it; other settings given on the command
+    # line are saved as before
+    assert main(["density", "fit", "-p", project, "--search", "manual", "--save", "-q", "--set",
+                 "inputs.step=2"]) == 0
+    assert _settings(project, *keys, "map_path") == before + ['map_path = "sim.mrc"']
+    assert Project.load(project).inputs.step == 2
+    # saved to another folder the paths must be absolute to stay valid
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    assert main(["density", "fit", "-p", project, "--search", "manual", "--save", str(other / "copy.toml"),
+                 "-q"]) == 0
+    assert Project.load(str(other / "copy.toml")).inputs.topology == str(tmp_path / "demo" / "demo.parm7")

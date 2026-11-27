@@ -467,6 +467,28 @@ def _density_overrides(project, args) -> None:
         d.angular_step = args.step
 
 
+def _as_written(project: Project, path: str) -> Project:
+    """``project``, loaded from the project file ``path`` and changed by a command, with every setting the
+    command left alone as the file has it.  Loading makes the paths absolute (they are relative to the
+    file); saving the loaded project to that folder would rewrite them all absolute."""
+    from . import projectfile
+
+    written = Project.from_dict(projectfile.read(path)).to_dict()  # no path resolution
+    loaded = Project.load(path).to_dict()
+
+    def merge(new: Any, old: Any, raw: Any) -> Any:
+        if new == old:
+            return raw
+        if isinstance(new, dict) and isinstance(old, dict) and isinstance(raw, dict):
+            return {k: merge(v, old[k], raw[k]) if k in old and k in raw else v for k, v in new.items()}
+        if (isinstance(new, list) and isinstance(old, list) and isinstance(raw, list)
+                and len(new) == len(old) == len(raw)):
+            return [merge(*item) for item in zip(new, old, raw)]
+        return new
+
+    return Project.from_dict(merge(project.to_dict(), loaded, written))
+
+
 def cmd_density_fit(args) -> int:
     project, pipe = _pipeline(args)
     _density_overrides(project, args)
@@ -484,6 +506,14 @@ def cmd_density_fit(args) -> int:
         target = args.save if isinstance(args.save, str) else args.params
         if not target:
             raise ValueError("--save needs a path when no --project was given")
+        folder = os.path.dirname(os.path.abspath(args.params)) if args.params else None
+        if folder == os.path.dirname(os.path.abspath(target)):  # the project's own folder: paths as written
+            project = _as_written(project, args.params)
+            if args.map and not os.path.isabs(os.path.expanduser(args.map)):
+                try:  # a map given relative to the working directory: relative to the project file
+                    project.density.map_path = os.path.relpath(os.path.abspath(args.map), folder)
+                except ValueError:  # another drive (Windows): it stays absolute
+                    pass
         project.save(target)
         out["saved"] = os.path.abspath(target)
     print(json.dumps(out, indent=2))
